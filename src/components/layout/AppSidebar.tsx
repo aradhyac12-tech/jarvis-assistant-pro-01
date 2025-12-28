@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -13,12 +12,15 @@ import {
   ChevronRight,
   Bot,
   LogOut,
+  Menu,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 const navItems = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
@@ -31,8 +33,12 @@ const navItems = [
   { title: "Settings", url: "/settings", icon: Settings2 },
 ];
 
-export function AppSidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+interface AppSidebarProps {
+  isOpen?: boolean;
+  onToggle?: () => void;
+}
+
+export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
   const location = useLocation();
   const { toast } = useToast();
 
@@ -41,107 +47,137 @@ export function AppSidebar() {
     toast({ title: "Signed out successfully" });
   };
 
+  const handleNavClick = () => {
+    // Auto-close sidebar on mobile after navigation
+    if (window.innerWidth < 768 && onToggle) {
+      onToggle();
+    }
+  };
+
   return (
-    <aside
-      className={cn(
-        "h-screen flex flex-col bg-sidebar border-r border-sidebar-border transition-all duration-300 ease-in-out relative",
-        collapsed ? "w-16" : "w-64"
+    <>
+      {/* Mobile menu button */}
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={onToggle}
+        className="fixed top-4 left-4 z-50 md:hidden bg-sidebar/80 backdrop-blur-sm"
+      >
+        {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+      </Button>
+
+      {/* Overlay for mobile */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 bg-background/80 backdrop-blur-sm z-30 md:hidden"
+          onClick={onToggle}
+        />
       )}
-    >
-      {/* Logo Header */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border">
-        {!collapsed && (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center pulse-neon">
-              <Bot className="w-5 h-5 text-primary-foreground" />
-            </div>
-            <span className="font-bold text-lg neon-text">JARVIS</span>
-          </div>
+
+      <aside
+        className={cn(
+          "fixed md:sticky top-0 left-0 h-screen flex flex-col bg-sidebar border-r border-sidebar-border transition-all duration-300 ease-in-out z-40",
+          isOpen ? "w-64 translate-x-0" : "w-16 -translate-x-full md:translate-x-0"
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setCollapsed(!collapsed)}
-          className={cn("hover:bg-sidebar-accent", collapsed && "mx-auto")}
-        >
-          {collapsed ? (
-            <ChevronRight className="h-4 w-4" />
-          ) : (
-            <ChevronLeft className="h-4 w-4" />
+      >
+        {/* Logo Header */}
+        <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border shrink-0">
+          {isOpen && (
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center pulse-neon">
+                <Bot className="w-5 h-5 text-primary-foreground" />
+              </div>
+              <span className="font-bold text-lg neon-text">JARVIS</span>
+            </div>
           )}
-        </Button>
-      </div>
-
-      {/* Navigation */}
-      <nav className="flex-1 p-2 space-y-1 overflow-y-auto scrollbar-thin">
-        {navItems.map((item) => {
-          const isActive = location.pathname === item.url;
-          const linkContent = (
-            <NavLink
-              to={item.url}
-              className={cn(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
-                "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                isActive && "bg-primary/10 text-primary neon-glow",
-                collapsed && "justify-center px-2"
-              )}
-            >
-              <item.icon
-                className={cn(
-                  "h-5 w-5 flex-shrink-0",
-                  isActive && "text-primary"
-                )}
-              />
-              {!collapsed && (
-                <span className={cn("font-medium", isActive && "text-primary")}>
-                  {item.title}
-                </span>
-              )}
-            </NavLink>
-          );
-
-          if (collapsed) {
-            return (
-              <Tooltip key={item.url} delayDuration={0}>
-                <TooltipTrigger asChild>{linkContent}</TooltipTrigger>
-                <TooltipContent side="right" className="font-medium">
-                  {item.title}
-                </TooltipContent>
-              </Tooltip>
-            );
-          }
-
-          return <div key={item.url}>{linkContent}</div>;
-        })}
-      </nav>
-
-      {/* User Section */}
-      <div className="p-2 border-t border-sidebar-border">
-        {collapsed ? (
-          <Tooltip delayDuration={0}>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleSignOut}
-                className="w-full hover:bg-destructive/10 hover:text-destructive"
-              >
-                <LogOut className="h-5 w-5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">Sign Out</TooltipContent>
-          </Tooltip>
-        ) : (
           <Button
             variant="ghost"
-            onClick={handleSignOut}
-            className="w-full justify-start gap-3 hover:bg-destructive/10 hover:text-destructive"
+            size="icon"
+            onClick={onToggle}
+            className={cn("hover:bg-sidebar-accent hidden md:flex", !isOpen && "mx-auto")}
           >
-            <LogOut className="h-5 w-5" />
-            Sign Out
+            {isOpen ? (
+              <ChevronLeft className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
           </Button>
-        )}
-      </div>
-    </aside>
+        </div>
+
+        {/* Navigation - fixed, not scrolling with page */}
+        <ScrollArea className="flex-1">
+          <nav className="p-2 space-y-1">
+            {navItems.map((item) => {
+              const isActive = location.pathname === item.url;
+              const linkContent = (
+                <NavLink
+                  to={item.url}
+                  onClick={handleNavClick}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
+                    "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                    isActive && "bg-primary/10 text-primary neon-glow",
+                    !isOpen && "justify-center px-2"
+                  )}
+                >
+                  <item.icon
+                    className={cn(
+                      "h-5 w-5 flex-shrink-0",
+                      isActive && "text-primary"
+                    )}
+                  />
+                  {isOpen && (
+                    <span className={cn("font-medium", isActive && "text-primary")}>
+                      {item.title}
+                    </span>
+                  )}
+                </NavLink>
+              );
+
+              if (!isOpen) {
+                return (
+                  <Tooltip key={item.url} delayDuration={0}>
+                    <TooltipTrigger asChild>{linkContent}</TooltipTrigger>
+                    <TooltipContent side="right" className="font-medium">
+                      {item.title}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              }
+
+              return <div key={item.url}>{linkContent}</div>;
+            })}
+          </nav>
+        </ScrollArea>
+
+        {/* User Section */}
+        <div className="p-2 border-t border-sidebar-border shrink-0">
+          {!isOpen ? (
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleSignOut}
+                  className="w-full hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <LogOut className="h-5 w-5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Sign Out</TooltipContent>
+            </Tooltip>
+          ) : (
+            <Button
+              variant="ghost"
+              onClick={handleSignOut}
+              className="w-full justify-start gap-3 hover:bg-destructive/10 hover:text-destructive"
+            >
+              <LogOut className="h-5 w-5" />
+              Sign Out
+            </Button>
+          )}
+        </div>
+      </aside>
+    </>
   );
 }

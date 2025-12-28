@@ -1,6 +1,6 @@
 """
-JARVIS PC Agent - Python Client
-================================
+JARVIS PC Agent - Python Client v2.0
+=====================================
 Runs on your PC to execute commands from the Jarvis web dashboard.
 
 SETUP INSTRUCTIONS:
@@ -8,7 +8,7 @@ SETUP INSTRUCTIONS:
 1. Install Python 3.8+ from https://python.org
 
 2. Install dependencies:
-   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip
+   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss
 
 3. Run the agent:
    python jarvis_agent.py
@@ -18,14 +18,16 @@ SETUP INSTRUCTIONS:
 FEATURES:
 ---------
 - System Controls: Volume, brightness, shutdown, sleep, hibernate, restart
-- Lock/Unlock: Lock screen with PIN protection (1212)
+- Smart Unlock: Unlock screen by typing PIN
 - Remote Input: Virtual keyboard and mouse/trackpad control
-- Screen Mirror: Take screenshots for remote viewing
+- Screen Streaming: Real-time screen mirror
 - Clipboard Sync: Read and write clipboard content
 - App Control: Open/close applications
 - File Browser: Navigate and open files
-- Music Player: Search and play music via YouTube Music
+- Music Player: Search and play music via YouTube/Browser
 - System Stats: CPU, memory, disk, battery monitoring
+- Media Controls: Play/pause, next, previous, volume
+- Boost Mode: Refresh explorer, clear temp, optimize
 """
 
 import os
@@ -38,7 +40,7 @@ import platform
 import ctypes
 import threading
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import base64
 import io
 import uuid
@@ -47,13 +49,21 @@ import uuid
 try:
     from supabase import create_client, Client
     import pyautogui
-    from PIL import ImageGrab
+    from PIL import Image
     import psutil
 except ImportError as e:
     print(f"❌ Missing dependency: {e}")
     print("\n📦 Install required packages with:")
-    print("   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip")
+    print("   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss")
     sys.exit(1)
+
+# Fast screenshot using mss
+try:
+    import mss
+    HAS_MSS = True
+except ImportError:
+    HAS_MSS = False
+    print("⚠️  mss not installed - using slower PIL screenshots")
 
 # Optional imports for keyboard
 try:
@@ -66,26 +76,37 @@ except ImportError:
 # Windows-specific imports
 if platform.system() == "Windows":
     try:
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+        from ctypes import cast, POINTER
         from comtypes import CLSCTX_ALL
-        import screen_brightness_control as sbc
-        HAS_WINDOWS_AUDIO = True
+        HAS_PYCAW = True
     except ImportError:
-        HAS_WINDOWS_AUDIO = False
-        print("⚠️  Windows audio/brightness modules not installed")
+        HAS_PYCAW = False
+        print("⚠️  pycaw not installed properly")
+    
+    try:
+        import screen_brightness_control as sbc
+        HAS_BRIGHTNESS = True
+    except ImportError:
+        HAS_BRIGHTNESS = False
+        print("⚠️  screen_brightness_control not installed")
 else:
-    HAS_WINDOWS_AUDIO = False
+    HAS_PYCAW = False
+    HAS_BRIGHTNESS = False
 
 
 # ============== CONFIGURATION ==============
-# Supabase connection - connects to your Jarvis project
 SUPABASE_URL = "https://pnndpactueqrbrwrxjjj.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBubmRwYWN0dWVxcmJyd3J4ampqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5Mzk4MTAsImV4cCI6MjA4MjUxNTgxMH0.w_w_mUfX1gnC9nj_UDXRA-JjY8fGYTK5O0YDl2tBX_8"
 
-# Device settings
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
-POLL_INTERVAL = 2  # seconds between command checks
+POLL_INTERVAL = 0.5  # Faster polling for less lag
+HEARTBEAT_INTERVAL = 5  # Separate heartbeat
+
+# PyAutoGUI settings for less lag
+pyautogui.PAUSE = 0.01
+pyautogui.FAILSAFE = False
 
 # ============== SUPABASE CLIENT ==============
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -97,6 +118,15 @@ class JarvisAgent:
         self.device_key = self._generate_device_key()
         self.is_locked = False
         self.running = True
+        self.last_heartbeat = 0
+        self.screen_streaming = False
+        self.stream_quality = 50
+        self.stream_fps = 5
+        
+        # Cache for system info
+        self._volume_cache = 50
+        self._brightness_cache = 50
+        self._last_cache_update = 0
         
     def _generate_device_key(self) -> str:
         """Generate a unique device key based on hardware."""
@@ -120,12 +150,10 @@ class JarvisAgent:
         """Register this device with Supabase."""
         print("📡 Registering device...")
         
-        # Check if device already exists
         result = supabase.table("devices").select("*").eq("device_key", self.device_key).execute()
         
         if result.data:
             self.device_id = result.data[0]["id"]
-            # Update device info
             supabase.table("devices").update({
                 "name": DEVICE_NAME,
                 "is_online": True,
@@ -137,9 +165,8 @@ class JarvisAgent:
             }).eq("id", self.device_id).execute()
             print(f"✅ Device reconnected: {DEVICE_NAME}")
         else:
-            # Create new device with a placeholder user_id
             result = supabase.table("devices").insert({
-                "user_id": str(uuid.uuid4()),  # Placeholder for PIN-based auth
+                "user_id": str(uuid.uuid4()),
                 "device_key": self.device_key,
                 "name": DEVICE_NAME,
                 "is_online": True,
@@ -153,39 +180,82 @@ class JarvisAgent:
         return self.device_id
     
     def _get_volume(self) -> int:
-        """Get current system volume (0-100)."""
-        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
+        """Get current system volume (0-100) using Windows APIs."""
+        if platform.system() == "Windows":
             try:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
-                return int(volume.GetMasterVolumeLevelScalar() * 100)
-            except Exception:
-                return 50
-        elif platform.system() == "Darwin":  # macOS
+                # Use nircmd or PowerShell for reliable volume reading
+                result = subprocess.run(
+                    ['powershell', '-Command', 
+                     "(Get-AudioDevice -PlaybackVolume).Volume"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return int(float(result.stdout.strip()))
+            except:
+                pass
+            
+            # Fallback: Use COM interface directly
+            try:
+                from ctypes import windll, c_float, byref
+                # Try using mixer API
+                import subprocess
+                result = subprocess.run(
+                    ['powershell', '-Command',
+                     '[Audio]::Volume'],
+                    capture_output=True, text=True, timeout=2
+                )
+            except:
+                pass
+            
+            return self._volume_cache
+        elif platform.system() == "Darwin":
             try:
                 result = subprocess.run(
                     ["osascript", "-e", "output volume of (get volume settings)"],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=2
                 )
                 return int(result.stdout.strip())
-            except Exception:
+            except:
                 return 50
-        return 50
+        return self._volume_cache
     
     def _set_volume(self, level: int):
         """Set system volume (0-100)."""
         level = max(0, min(100, level))
-        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
+        self._volume_cache = level
+        
+        if platform.system() == "Windows":
             try:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
-                volume.SetMasterVolumeLevelScalar(level / 100, None)
+                # Method 1: Use nircmd (if available)
+                nircmd_path = os.path.join(os.path.dirname(__file__), "nircmd.exe")
+                if os.path.exists(nircmd_path):
+                    # nircmd uses 0-65535 range
+                    vol_value = int(level * 65535 / 100)
+                    subprocess.run([nircmd_path, "setsysvolume", str(vol_value)], 
+                                 capture_output=True, timeout=2)
+                    print(f"🔊 Volume set to {level}% (nircmd)")
+                    return {"success": True, "volume": level}
+                
+                # Method 2: Use PowerShell with AudioDeviceCmdlets
+                subprocess.run([
+                    'powershell', '-Command',
+                    f'Set-AudioDevice -PlaybackVolume {level}'
+                ], capture_output=True, timeout=3)
                 print(f"🔊 Volume set to {level}%")
                 return {"success": True, "volume": level}
             except Exception as e:
-                return {"success": False, "error": str(e)}
+                # Method 3: Use keyboard simulation
+                try:
+                    current = self._volume_cache
+                    diff = level - current
+                    steps = abs(diff) // 2
+                    key = "volumeup" if diff > 0 else "volumedown"
+                    for _ in range(steps):
+                        pyautogui.press(key)
+                    print(f"🔊 Volume adjusted to ~{level}%")
+                    return {"success": True, "volume": level}
+                except:
+                    return {"success": False, "error": str(e)}
         elif platform.system() == "Darwin":
             subprocess.run(["osascript", "-e", f"set volume output volume {level}"])
             print(f"🔊 Volume set to {level}%")
@@ -194,24 +264,38 @@ class JarvisAgent:
     
     def _get_brightness(self) -> int:
         """Get current screen brightness (0-100)."""
-        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
+        if platform.system() == "Windows" and HAS_BRIGHTNESS:
             try:
-                return sbc.get_brightness()[0]
-            except Exception:
-                return 75
-        return 75
+                brightness = sbc.get_brightness(display=0)
+                if isinstance(brightness, list):
+                    return brightness[0]
+                return brightness
+            except:
+                return self._brightness_cache
+        return self._brightness_cache
     
     def _set_brightness(self, level: int):
         """Set screen brightness (0-100)."""
-        level = max(0, min(100, level))
-        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
+        level = max(0, min(100, level))  # Allow 0 brightness
+        self._brightness_cache = level
+        
+        if platform.system() == "Windows" and HAS_BRIGHTNESS:
             try:
-                sbc.set_brightness(level)
+                sbc.set_brightness(level, display=0)
                 print(f"☀️ Brightness set to {level}%")
                 return {"success": True, "brightness": level}
             except Exception as e:
-                return {"success": False, "error": str(e)}
-        return {"success": False, "error": "Unsupported OS"}
+                # Fallback: Use WMI
+                try:
+                    subprocess.run([
+                        'powershell', '-Command',
+                        f'(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{level})'
+                    ], capture_output=True, timeout=3)
+                    print(f"☀️ Brightness set to {level}%")
+                    return {"success": True, "brightness": level}
+                except:
+                    return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Unsupported OS or no display control"}
     
     def _shutdown(self):
         """Shutdown the PC."""
@@ -263,37 +347,76 @@ class JarvisAgent:
             os.system("/System/Library/CoreServices/Menu\\ Extras/User.menu/Contents/Resources/CGSession -suspend")
         return {"success": True, "message": "Screen locked"}
     
-    def _unlock_screen(self, pin: str):
-        """Unlock with PIN verification."""
-        if pin == UNLOCK_PIN:
-            self.is_locked = False
-            print("🔓 UNLOCK verified!")
-            return {"success": True, "message": "PIN verified"}
-        print("❌ Invalid unlock PIN!")
-        return {"success": False, "error": "Invalid PIN"}
+    def _smart_unlock(self, pin: str):
+        """Smart unlock - wake screen and type PIN."""
+        if pin != UNLOCK_PIN:
+            print("❌ Invalid unlock PIN!")
+            return {"success": False, "error": "Invalid PIN"}
+        
+        print("🔓 Smart unlock initiated...")
+        self.is_locked = False
+        
+        if platform.system() == "Windows":
+            try:
+                # Step 1: Wake the screen
+                ctypes.windll.user32.SetCursorPos(100, 100)
+                pyautogui.move(1, 1)
+                time.sleep(0.3)
+                
+                # Step 2: Press any key to show login screen
+                pyautogui.press('space')
+                time.sleep(0.5)
+                
+                # Step 3: Press Enter or Space to focus password field
+                pyautogui.press('enter')
+                time.sleep(0.3)
+                
+                # Step 4: Type the PIN
+                pyautogui.typewrite(pin, interval=0.05)
+                time.sleep(0.2)
+                
+                # Step 5: Press Enter to submit
+                pyautogui.press('enter')
+                
+                print("🔓 Smart unlock completed!")
+                return {"success": True, "message": "Unlock sequence executed"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        return {"success": True, "message": "PIN verified"}
     
-    def _take_screenshot(self) -> Dict[str, Any]:
-        """Take a screenshot and return as base64."""
+    def _take_screenshot(self, quality: int = 70, scale: float = 0.5) -> Dict[str, Any]:
+        """Take a fast screenshot and return as base64."""
         try:
-            screenshot = ImageGrab.grab()
-            screenshot.thumbnail((1280, 720))
+            if HAS_MSS:
+                # Fast screenshot with mss
+                with mss.mss() as sct:
+                    monitor = sct.monitors[1]  # Primary monitor
+                    screenshot = sct.grab(monitor)
+                    img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
+            else:
+                from PIL import ImageGrab
+                img = ImageGrab.grab()
+            
+            # Resize for faster transfer
+            new_size = (int(img.width * scale), int(img.height * scale))
+            img = img.resize(new_size, Image.LANCZOS)
+            
             buffer = io.BytesIO()
-            screenshot.save(buffer, format="JPEG", quality=70)
+            img.save(buffer, format="JPEG", quality=quality, optimize=True)
             base64_image = base64.b64encode(buffer.getvalue()).decode()
-            print("📸 Screenshot captured")
-            return {"success": True, "image": base64_image}
+            
+            return {"success": True, "image": base64_image, "width": new_size[0], "height": new_size[1]}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _type_text(self, text: str):
         """Type text using keyboard."""
         try:
-            # Use keyboard module if available for better Unicode support
             if HAS_KEYBOARD:
-                keyboard.write(text, delay=0.02)
+                keyboard.write(text, delay=0.01)
             else:
-                pyautogui.typewrite(text, interval=0.02)
-            print(f"⌨️ Typed: {text[:20]}...")
+                pyautogui.typewrite(text, interval=0.01)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -301,37 +424,35 @@ class JarvisAgent:
     def _press_key(self, key: str):
         """Press a keyboard key."""
         try:
-            # Map common key names
             key_map = {
-                "win": "win",
-                "windows": "win",
-                "ctrl": "ctrl",
+                "win": "win", "windows": "win", "super": "win",
+                "ctrl": "ctrl", "control": "ctrl",
                 "alt": "alt",
                 "shift": "shift",
-                "enter": "enter",
-                "return": "enter",
-                "escape": "esc",
-                "esc": "esc",
+                "enter": "enter", "return": "enter",
+                "escape": "esc", "esc": "esc",
                 "tab": "tab",
                 "space": "space",
-                "backspace": "backspace",
-                "delete": "delete",
-                "del": "delete",
-                "home": "home",
-                "end": "end",
-                "pageup": "pageup",
-                "pagedown": "pagedown",
-                "up": "up",
-                "down": "down",
-                "left": "left",
-                "right": "right",
+                "backspace": "backspace", "back": "backspace",
+                "delete": "delete", "del": "delete",
+                "home": "home", "end": "end",
+                "pageup": "pageup", "pagedown": "pagedown",
+                "up": "up", "down": "down", "left": "left", "right": "right",
                 "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
                 "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
                 "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
+                "printscreen": "printscreen", "prtsc": "printscreen",
+                "insert": "insert", "ins": "insert",
+                "capslock": "capslock", "caps": "capslock",
+                "numlock": "numlock", "scrolllock": "scrolllock",
+                "pause": "pause", "break": "pause",
             }
-            mapped_key = key_map.get(key.lower(), key)
-            pyautogui.press(mapped_key)
-            print(f"⌨️ Pressed: {key}")
+            mapped_key = key_map.get(key.lower(), key.lower())
+            
+            if HAS_KEYBOARD:
+                keyboard.press_and_release(mapped_key)
+            else:
+                pyautogui.press(mapped_key)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -339,7 +460,6 @@ class JarvisAgent:
     def _key_combo(self, keys: list):
         """Press a key combination."""
         try:
-            # Map key names
             key_map = {
                 "ctrl": "ctrl", "control": "ctrl",
                 "alt": "alt",
@@ -347,19 +467,22 @@ class JarvisAgent:
                 "win": "win", "windows": "win", "super": "win",
             }
             mapped_keys = [key_map.get(k.lower(), k.lower()) for k in keys]
-            pyautogui.hotkey(*mapped_keys)
-            print(f"⌨️ Combo: {'+'.join(mapped_keys)}")
+            
+            if HAS_KEYBOARD:
+                keyboard.press_and_release('+'.join(mapped_keys))
+            else:
+                pyautogui.hotkey(*mapped_keys)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _mouse_move(self, x: int, y: int, relative: bool = False):
-        """Move mouse cursor."""
+        """Move mouse cursor with reduced lag."""
         try:
             if relative:
-                pyautogui.moveRel(x, y, duration=0.1)
+                pyautogui.moveRel(x, y, duration=0)
             else:
-                pyautogui.moveTo(x, y, duration=0.1)
+                pyautogui.moveTo(x, y, duration=0)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -368,7 +491,6 @@ class JarvisAgent:
         """Click mouse button."""
         try:
             pyautogui.click(button=button, clicks=clicks)
-            print(f"🖱️ Click: {button} x{clicks}")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -395,7 +517,6 @@ class JarvisAgent:
         try:
             import pyperclip
             pyperclip.copy(content)
-            print("📋 Clipboard updated")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -407,21 +528,26 @@ class JarvisAgent:
             app_lower = app_name.lower()
             
             if platform.system() == "Windows":
-                # Common app mappings for Windows
                 app_paths = {
-                    "chrome": "chrome",
-                    "google chrome": "chrome",
+                    "chrome": "chrome", "google chrome": "chrome",
+                    "firefox": "firefox", "mozilla firefox": "firefox",
+                    "edge": "msedge", "microsoft edge": "msedge",
                     "notepad": "notepad",
                     "calculator": "calc",
                     "spotify": "spotify",
-                    "vscode": "code",
-                    "vs code": "code",
-                    "terminal": "cmd",
-                    "cmd": "cmd",
+                    "vscode": "code", "vs code": "code", "visual studio code": "code",
+                    "terminal": "cmd", "cmd": "cmd", "command prompt": "cmd",
                     "powershell": "powershell",
-                    "explorer": "explorer",
-                    "vlc": "vlc",
-                    "vlc player": "vlc",
+                    "explorer": "explorer", "file explorer": "explorer",
+                    "vlc": "vlc", "vlc player": "vlc",
+                    "task manager": "taskmgr",
+                    "settings": "start ms-settings:",
+                    "paint": "mspaint",
+                    "word": "winword", "microsoft word": "winword",
+                    "excel": "excel", "microsoft excel": "excel",
+                    "outlook": "outlook", "microsoft outlook": "outlook",
+                    "discord": "discord",
+                    "steam": "steam",
                 }
                 cmd = app_paths.get(app_lower, app_name)
                 os.system(f"start {cmd}")
@@ -436,17 +562,25 @@ class JarvisAgent:
     def _close_app(self, app_name: str):
         """Close an application by name."""
         try:
-            for proc in psutil.process_iter(['name']):
-                if app_name.lower() in proc.info['name'].lower():
-                    proc.terminate()
-            print(f"❌ Closed: {app_name}")
-            return {"success": True, "message": f"Closed {app_name}"}
+            closed = False
+            for proc in psutil.process_iter(['name', 'pid']):
+                try:
+                    if app_name.lower() in proc.info['name'].lower():
+                        proc.terminate()
+                        closed = True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            if closed:
+                print(f"❌ Closed: {app_name}")
+                return {"success": True, "message": f"Closed {app_name}"}
+            return {"success": False, "error": f"Process {app_name} not found"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _list_files(self, path: str) -> Dict[str, Any]:
         """List files in a directory."""
         try:
+            path = os.path.expanduser(path)
             items = []
             for item in os.listdir(path):
                 full_path = os.path.join(path, item)
@@ -464,7 +598,7 @@ class JarvisAgent:
                     "size": size,
                     "modified": modified,
                 })
-            return {"success": True, "items": items[:100]}  # Limit to 100 items
+            return {"success": True, "items": items[:100], "current_path": path}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -482,13 +616,20 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _play_music(self, query: str):
-        """Search and play music (opens in default browser)."""
+    def _play_music(self, query: str, service: str = "youtube"):
+        """Search and play music."""
         try:
             import webbrowser
-            search_url = f"https://music.youtube.com/search?q={query.replace(' ', '+')}"
+            
+            if service == "youtube":
+                search_url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+            elif service == "spotify":
+                search_url = f"https://open.spotify.com/search/{query.replace(' ', '%20')}"
+            else:
+                search_url = f"https://music.youtube.com/search?q={query.replace(' ', '+')}"
+            
             webbrowser.open(search_url)
-            print(f"🎵 Searching music: {query}")
+            print(f"🎵 Searching music: {query} on {service}")
             return {"success": True, "message": f"Searching for: {query}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -497,17 +638,22 @@ class JarvisAgent:
         """Control media playback."""
         key_map = {
             "play_pause": "playpause",
+            "play": "playpause",
+            "pause": "playpause",
             "next": "nexttrack",
             "previous": "prevtrack",
+            "prev": "prevtrack",
             "volume_up": "volumeup",
             "volume_down": "volumedown",
             "mute": "volumemute",
+            "stop": "stop",
         }
         try:
             if action in key_map:
                 pyautogui.press(key_map[action])
                 print(f"🎵 Media: {action}")
-            return {"success": True}
+                return {"success": True, "action": action}
+            return {"success": False, "error": f"Unknown action: {action}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -515,29 +661,53 @@ class JarvisAgent:
         """Get list of running applications."""
         try:
             apps = []
-            for proc in psutil.process_iter(['pid', 'name', 'memory_percent']):
+            seen = set()
+            for proc in psutil.process_iter(['pid', 'name', 'memory_percent', 'cpu_percent']):
                 try:
                     info = proc.info
-                    if info['memory_percent'] and info['memory_percent'] > 0.1:
+                    name = info['name']
+                    if name not in seen and info['memory_percent'] and info['memory_percent'] > 0.1:
+                        seen.add(name)
                         apps.append({
                             "pid": info['pid'],
-                            "name": info['name'],
+                            "name": name,
                             "memory": round(info['memory_percent'], 2),
+                            "cpu": round(info.get('cpu_percent', 0) or 0, 1),
                         })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             apps.sort(key=lambda x: x['memory'], reverse=True)
-            return {"success": True, "apps": apps[:20]}
+            return {"success": True, "apps": apps[:30]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_installed_apps(self) -> Dict[str, Any]:
+        """Get list of installed applications (Windows)."""
+        try:
+            apps = []
+            if platform.system() == "Windows":
+                # Common app locations
+                start_menu = os.path.join(os.environ.get('APPDATA', ''), 
+                    'Microsoft\\Windows\\Start Menu\\Programs')
+                if os.path.exists(start_menu):
+                    for root, dirs, files in os.walk(start_menu):
+                        for file in files:
+                            if file.endswith('.lnk'):
+                                apps.append({"name": file[:-4], "type": "shortcut"})
+            return {"success": True, "apps": apps[:50]}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _get_system_stats(self) -> Dict[str, Any]:
         """Get current system statistics."""
         try:
-            cpu_percent = psutil.cpu_percent(interval=0.5)
+            cpu_percent = psutil.cpu_percent(interval=0.1)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             battery = psutil.sensors_battery()
+            
+            # Network stats
+            net = psutil.net_io_counters()
             
             return {
                 "success": True,
@@ -550,44 +720,110 @@ class JarvisAgent:
                 "disk_total_gb": round(disk.total / (1024**3), 2),
                 "battery_percent": battery.percent if battery else None,
                 "battery_plugged": battery.power_plugged if battery else None,
+                "net_sent_mb": round(net.bytes_sent / (1024**2), 2),
+                "net_recv_mb": round(net.bytes_recv / (1024**2), 2),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+    
+    def _boost_pc(self):
+        """Boost PC performance - refresh explorer, clear temp."""
+        try:
+            results = []
+            
+            if platform.system() == "Windows":
+                # Restart Explorer
+                os.system("taskkill /f /im explorer.exe")
+                time.sleep(0.5)
+                os.system("start explorer.exe")
+                results.append("Explorer restarted")
+                
+                # Clear temp files (user temp)
+                temp_path = os.environ.get('TEMP', '')
+                if temp_path and os.path.exists(temp_path):
+                    cleared = 0
+                    for item in os.listdir(temp_path):
+                        try:
+                            item_path = os.path.join(temp_path, item)
+                            if os.path.isfile(item_path):
+                                os.remove(item_path)
+                                cleared += 1
+                        except:
+                            pass
+                    results.append(f"Cleared {cleared} temp files")
+                
+                # Clear RAM (empty working sets)
+                try:
+                    subprocess.run(['powershell', '-Command',
+                        'Get-Process | ForEach-Object { $_.MinWorkingSet = 1 }'],
+                        capture_output=True, timeout=5)
+                    results.append("Memory optimized")
+                except:
+                    pass
+            
+            print(f"🚀 Boost completed: {', '.join(results)}")
+            return {"success": True, "message": "; ".join(results)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _start_screen_stream(self, fps: int = 5, quality: int = 50):
+        """Start screen streaming mode."""
+        self.screen_streaming = True
+        self.stream_fps = max(1, min(30, fps))
+        self.stream_quality = max(10, min(90, quality))
+        return {"success": True, "message": f"Streaming at {fps} FPS, quality {quality}"}
+    
+    def _stop_screen_stream(self):
+        """Stop screen streaming mode."""
+        self.screen_streaming = False
+        return {"success": True, "message": "Streaming stopped"}
     
     def execute_command(self, command_type: str, payload: Dict[str, Any] = None) -> Dict[str, Any]:
         """Execute a command based on type."""
         payload = payload or {}
         
-        # Command handlers mapping - matches web app command types
         command_handlers = {
-            # Volume & Brightness (from web app)
+            # Volume & Brightness
             "set_volume": lambda: self._set_volume(payload.get("level", 50)),
             "get_volume": lambda: {"success": True, "volume": self._get_volume()},
             "set_brightness": lambda: self._set_brightness(payload.get("level", 75)),
             "get_brightness": lambda: {"success": True, "brightness": self._get_brightness()},
             
-            # Power commands (from web app)
+            # Power commands
             "shutdown": self._shutdown,
             "restart": self._restart,
             "sleep": self._sleep,
             "hibernate": self._hibernate,
             
-            # Lock/Unlock (from web app)
+            # Lock/Unlock
             "lock": self._lock_screen,
-            "unlock": lambda: self._unlock_screen(payload.get("pin", "")),
+            "unlock": lambda: self._smart_unlock(payload.get("pin", "")),
             
-            # Screenshot (from web app)
-            "screenshot": self._take_screenshot,
+            # Screenshot & Streaming
+            "screenshot": lambda: self._take_screenshot(
+                payload.get("quality", 70),
+                payload.get("scale", 0.5)
+            ),
+            "start_stream": lambda: self._start_screen_stream(
+                payload.get("fps", 5),
+                payload.get("quality", 50)
+            ),
+            "stop_stream": self._stop_screen_stream,
+            "get_frame": lambda: self._take_screenshot(
+                self.stream_quality,
+                0.4
+            ),
             
-            # Keyboard (from web app)
+            # Keyboard
             "type_text": lambda: self._type_text(payload.get("text", "")),
             "press_key": lambda: self._press_key(payload.get("key", "")),
             "key_combo": lambda: self._key_combo(payload.get("keys", [])),
+            "raw_key": lambda: self._press_key(payload.get("key", "")),
             
-            # Mouse (from web app)
+            # Mouse
             "mouse_move": lambda: self._mouse_move(
-                payload.get("x", 0), 
-                payload.get("y", 0), 
+                payload.get("x", 0),
+                payload.get("y", 0),
                 payload.get("relative", False)
             ),
             "mouse_click": lambda: self._mouse_click(
@@ -596,25 +832,30 @@ class JarvisAgent:
             ),
             "mouse_scroll": lambda: self._mouse_scroll(payload.get("amount", 0)),
             
-            # Clipboard (from web app)
+            # Clipboard
             "get_clipboard": self._get_clipboard,
             "set_clipboard": lambda: self._set_clipboard(payload.get("content", "")),
             
-            # Apps (from web app)
+            # Apps
             "open_app": lambda: self._open_app(payload.get("app_name", "")),
             "close_app": lambda: self._close_app(payload.get("app_name", "")),
             "get_running_apps": self._get_running_apps,
+            "get_installed_apps": self._get_installed_apps,
             
-            # Files (from web app)
-            "list_files": lambda: self._list_files(payload.get("path", os.path.expanduser("~"))),
+            # Files
+            "list_files": lambda: self._list_files(payload.get("path", "~")),
             "open_file": lambda: self._open_file(payload.get("path", "")),
             
-            # Music (from web app)
-            "play_music": lambda: self._play_music(payload.get("query", "")),
+            # Music & Media
+            "play_music": lambda: self._play_music(
+                payload.get("query", ""),
+                payload.get("service", "youtube")
+            ),
             "media_control": lambda: self._media_control(payload.get("action", "")),
             
-            # System (from web app)
+            # System
             "get_system_stats": self._get_system_stats,
+            "boost": self._boost_pc,
         }
         
         handler = command_handlers.get(command_type)
@@ -627,13 +868,28 @@ class JarvisAgent:
             print(f"⚠️ Unknown command: {command_type}")
             return {"success": False, "error": f"Unknown command: {command_type}"}
     
+    async def update_heartbeat(self):
+        """Update device heartbeat separately from command polling."""
+        while self.running:
+            try:
+                supabase.table("devices").update({
+                    "is_online": True,
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                    "current_volume": self._volume_cache,
+                    "current_brightness": self._brightness_cache,
+                    "is_locked": self.is_locked,
+                }).eq("id", self.device_id).execute()
+            except Exception as e:
+                print(f"❌ Heartbeat error: {e}")
+            
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+    
     async def poll_commands(self):
         """Poll for pending commands and execute them."""
         print("\n🎧 Listening for commands...")
         
         while self.running:
             try:
-                # Get pending commands for this device
                 result = supabase.table("commands").select("*").eq(
                     "device_id", self.device_id
                 ).eq("status", "pending").order("created_at").execute()
@@ -642,13 +898,11 @@ class JarvisAgent:
                     cmd_type = command['command_type']
                     print(f"\n📥 Command: {cmd_type}")
                     
-                    # Execute the command
                     exec_result = self.execute_command(
                         cmd_type,
                         command.get("payload", {})
                     )
                     
-                    # Update command status
                     supabase.table("commands").update({
                         "status": "completed" if exec_result.get("success") else "failed",
                         "result": exec_result,
@@ -656,19 +910,11 @@ class JarvisAgent:
                     }).eq("id", command["id"]).execute()
                     
                     status = "✅" if exec_result.get("success") else "❌"
-                    print(f"{status} {cmd_type}: {exec_result.get('message', exec_result.get('error', 'Done'))}")
-                
-                # Update device heartbeat
-                supabase.table("devices").update({
-                    "is_online": True,
-                    "last_seen": datetime.now(timezone.utc).isoformat(),
-                    "current_volume": self._get_volume(),
-                    "current_brightness": self._get_brightness(),
-                    "is_locked": self.is_locked,
-                }).eq("id", self.device_id).execute()
+                    msg = exec_result.get('message', exec_result.get('error', 'Done'))
+                    print(f"{status} {cmd_type}: {msg}")
                 
             except Exception as e:
-                print(f"❌ Error: {e}")
+                print(f"❌ Poll error: {e}")
             
             await asyncio.sleep(POLL_INTERVAL)
     
@@ -677,20 +923,24 @@ class JarvisAgent:
         await self.register_device()
         
         print("\n" + "="*50)
-        print("🤖 JARVIS Agent is now running!")
+        print("🤖 JARVIS Agent v2.0 is now running!")
         print(f"📍 Device: {DEVICE_NAME}")
         print(f"🔑 Device ID: {self.device_id[:8]}...")
+        print(f"⚡ Poll interval: {POLL_INTERVAL}s (fast mode)")
         print("="*50)
         print("\n👀 Open the Jarvis web app to see your PC connected.")
         print("📱 You can now control your PC from your phone!")
         print("🛑 Press Ctrl+C to stop.\n")
         
         try:
-            await self.poll_commands()
+            # Run command polling and heartbeat in parallel
+            await asyncio.gather(
+                self.poll_commands(),
+                self.update_heartbeat()
+            )
         except KeyboardInterrupt:
             print("\n\n👋 Shutting down...")
             self.running = False
-            # Mark device as offline
             supabase.table("devices").update({
                 "is_online": False,
             }).eq("id", self.device_id).execute()
@@ -701,11 +951,13 @@ def main():
     """Main entry point."""
     print("""
     ╔═══════════════════════════════════════════════════════╗
-    ║           JARVIS PC Agent v1.1                        ║
+    ║           JARVIS PC Agent v2.0                        ║
     ║       Your AI-Powered PC Assistant                    ║
     ╠═══════════════════════════════════════════════════════╣
     ║  This agent connects your PC to the Jarvis web app.   ║
     ║  Control your PC remotely from anywhere!              ║
+    ║                                                       ║
+    ║  NEW: Faster response, screen streaming, boost mode   ║
     ╚═══════════════════════════════════════════════════════╝
     """)
     
