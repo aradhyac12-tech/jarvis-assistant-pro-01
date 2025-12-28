@@ -13,9 +13,7 @@ SETUP INSTRUCTIONS:
 3. Run the agent:
    python jarvis_agent.py
 
-4. When prompted, just press Enter (no user ID needed for PIN-based auth)
-
-5. Open the Jarvis web app and you'll see your PC connected!
+4. Open the Jarvis web app and you'll see your PC connected!
 
 FEATURES:
 ---------
@@ -290,7 +288,11 @@ class JarvisAgent:
     def _type_text(self, text: str):
         """Type text using keyboard."""
         try:
-            pyautogui.typewrite(text, interval=0.02)
+            # Use keyboard module if available for better Unicode support
+            if HAS_KEYBOARD:
+                keyboard.write(text, delay=0.02)
+            else:
+                pyautogui.typewrite(text, interval=0.02)
             print(f"⌨️ Typed: {text[:20]}...")
             return {"success": True}
         except Exception as e:
@@ -299,7 +301,36 @@ class JarvisAgent:
     def _press_key(self, key: str):
         """Press a keyboard key."""
         try:
-            pyautogui.press(key)
+            # Map common key names
+            key_map = {
+                "win": "win",
+                "windows": "win",
+                "ctrl": "ctrl",
+                "alt": "alt",
+                "shift": "shift",
+                "enter": "enter",
+                "return": "enter",
+                "escape": "esc",
+                "esc": "esc",
+                "tab": "tab",
+                "space": "space",
+                "backspace": "backspace",
+                "delete": "delete",
+                "del": "delete",
+                "home": "home",
+                "end": "end",
+                "pageup": "pageup",
+                "pagedown": "pagedown",
+                "up": "up",
+                "down": "down",
+                "left": "left",
+                "right": "right",
+                "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
+                "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
+                "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
+            }
+            mapped_key = key_map.get(key.lower(), key)
+            pyautogui.press(mapped_key)
             print(f"⌨️ Pressed: {key}")
             return {"success": True}
         except Exception as e:
@@ -308,8 +339,16 @@ class JarvisAgent:
     def _key_combo(self, keys: list):
         """Press a key combination."""
         try:
-            pyautogui.hotkey(*keys)
-            print(f"⌨️ Combo: {'+'.join(keys)}")
+            # Map key names
+            key_map = {
+                "ctrl": "ctrl", "control": "ctrl",
+                "alt": "alt",
+                "shift": "shift",
+                "win": "win", "windows": "win", "super": "win",
+            }
+            mapped_keys = [key_map.get(k.lower(), k.lower()) for k in keys]
+            pyautogui.hotkey(*mapped_keys)
+            print(f"⌨️ Combo: {'+'.join(mapped_keys)}")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -318,9 +357,9 @@ class JarvisAgent:
         """Move mouse cursor."""
         try:
             if relative:
-                pyautogui.moveRel(x, y)
+                pyautogui.moveRel(x, y, duration=0.1)
             else:
-                pyautogui.moveTo(x, y)
+                pyautogui.moveTo(x, y, duration=0.1)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -329,7 +368,7 @@ class JarvisAgent:
         """Click mouse button."""
         try:
             pyautogui.click(button=button, clicks=clicks)
-            print(f"🖱️ Click: {button}")
+            print(f"🖱️ Click: {button} x{clicks}")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -365,8 +404,27 @@ class JarvisAgent:
         """Open an application."""
         try:
             print(f"🚀 Opening: {app_name}")
+            app_lower = app_name.lower()
+            
             if platform.system() == "Windows":
-                os.startfile(app_name)
+                # Common app mappings for Windows
+                app_paths = {
+                    "chrome": "chrome",
+                    "google chrome": "chrome",
+                    "notepad": "notepad",
+                    "calculator": "calc",
+                    "spotify": "spotify",
+                    "vscode": "code",
+                    "vs code": "code",
+                    "terminal": "cmd",
+                    "cmd": "cmd",
+                    "powershell": "powershell",
+                    "explorer": "explorer",
+                    "vlc": "vlc",
+                    "vlc player": "vlc",
+                }
+                cmd = app_paths.get(app_lower, app_name)
+                os.system(f"start {cmd}")
             elif platform.system() == "Darwin":
                 subprocess.Popen(["open", "-a", app_name])
             else:
@@ -500,32 +558,33 @@ class JarvisAgent:
         """Execute a command based on type."""
         payload = payload or {}
         
+        # Command handlers mapping - matches web app command types
         command_handlers = {
-            # Volume & Brightness
+            # Volume & Brightness (from web app)
             "set_volume": lambda: self._set_volume(payload.get("level", 50)),
             "get_volume": lambda: {"success": True, "volume": self._get_volume()},
             "set_brightness": lambda: self._set_brightness(payload.get("level", 75)),
             "get_brightness": lambda: {"success": True, "brightness": self._get_brightness()},
             
-            # Power
+            # Power commands (from web app)
             "shutdown": self._shutdown,
             "restart": self._restart,
             "sleep": self._sleep,
             "hibernate": self._hibernate,
             
-            # Lock/Unlock
+            # Lock/Unlock (from web app)
             "lock": self._lock_screen,
             "unlock": lambda: self._unlock_screen(payload.get("pin", "")),
             
-            # Screenshot
+            # Screenshot (from web app)
             "screenshot": self._take_screenshot,
             
-            # Keyboard
+            # Keyboard (from web app)
             "type_text": lambda: self._type_text(payload.get("text", "")),
             "press_key": lambda: self._press_key(payload.get("key", "")),
             "key_combo": lambda: self._key_combo(payload.get("keys", [])),
             
-            # Mouse
+            # Mouse (from web app)
             "mouse_move": lambda: self._mouse_move(
                 payload.get("x", 0), 
                 payload.get("y", 0), 
@@ -537,24 +596,24 @@ class JarvisAgent:
             ),
             "mouse_scroll": lambda: self._mouse_scroll(payload.get("amount", 0)),
             
-            # Clipboard
+            # Clipboard (from web app)
             "get_clipboard": self._get_clipboard,
             "set_clipboard": lambda: self._set_clipboard(payload.get("content", "")),
             
-            # Apps
+            # Apps (from web app)
             "open_app": lambda: self._open_app(payload.get("app_name", "")),
             "close_app": lambda: self._close_app(payload.get("app_name", "")),
             "get_running_apps": self._get_running_apps,
             
-            # Files
+            # Files (from web app)
             "list_files": lambda: self._list_files(payload.get("path", os.path.expanduser("~"))),
             "open_file": lambda: self._open_file(payload.get("path", "")),
             
-            # Music
+            # Music (from web app)
             "play_music": lambda: self._play_music(payload.get("query", "")),
             "media_control": lambda: self._media_control(payload.get("action", "")),
             
-            # System
+            # System (from web app)
             "get_system_stats": self._get_system_stats,
         }
         
@@ -565,6 +624,7 @@ class JarvisAgent:
             except Exception as e:
                 return {"success": False, "error": str(e)}
         else:
+            print(f"⚠️ Unknown command: {command_type}")
             return {"success": False, "error": f"Unknown command: {command_type}"}
     
     async def poll_commands(self):
@@ -622,6 +682,7 @@ class JarvisAgent:
         print(f"🔑 Device ID: {self.device_id[:8]}...")
         print("="*50)
         print("\n👀 Open the Jarvis web app to see your PC connected.")
+        print("📱 You can now control your PC from your phone!")
         print("🛑 Press Ctrl+C to stop.\n")
         
         try:
@@ -640,7 +701,7 @@ def main():
     """Main entry point."""
     print("""
     ╔═══════════════════════════════════════════════════════╗
-    ║           JARVIS PC Agent v1.0                        ║
+    ║           JARVIS PC Agent v1.1                        ║
     ║       Your AI-Powered PC Assistant                    ║
     ╠═══════════════════════════════════════════════════════╣
     ║  This agent connects your PC to the Jarvis web app.   ║
