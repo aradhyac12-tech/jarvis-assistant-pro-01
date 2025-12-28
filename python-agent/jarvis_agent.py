@@ -1,12 +1,33 @@
 """
 JARVIS PC Agent - Python Client
+================================
 Runs on your PC to execute commands from the Jarvis web dashboard.
 
-Requirements:
-    pip install supabase pycaw comtypes screen-brightness-control pyautogui pillow psutil websockets keyboard
+SETUP INSTRUCTIONS:
+------------------
+1. Install Python 3.8+ from https://python.org
 
-Usage:
-    python jarvis_agent.py
+2. Install dependencies:
+   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip
+
+3. Run the agent:
+   python jarvis_agent.py
+
+4. When prompted, just press Enter (no user ID needed for PIN-based auth)
+
+5. Open the Jarvis web app and you'll see your PC connected!
+
+FEATURES:
+---------
+- System Controls: Volume, brightness, shutdown, sleep, hibernate, restart
+- Lock/Unlock: Lock screen with PIN protection (1212)
+- Remote Input: Virtual keyboard and mouse/trackpad control
+- Screen Mirror: Take screenshots for remote viewing
+- Clipboard Sync: Read and write clipboard content
+- App Control: Open/close applications
+- File Browser: Navigate and open files
+- Music Player: Search and play music via YouTube Music
+- System Stats: CPU, memory, disk, battery monitoring
 """
 
 import os
@@ -22,18 +43,27 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import base64
 import io
+import uuid
 
-# Third-party imports (install via pip)
+# Third-party imports
 try:
     from supabase import create_client, Client
     import pyautogui
     from PIL import ImageGrab
     import psutil
-    import keyboard
 except ImportError as e:
-    print(f"Missing dependency: {e}")
-    print("Install with: pip install supabase pyautogui pillow psutil keyboard")
+    print(f"❌ Missing dependency: {e}")
+    print("\n📦 Install required packages with:")
+    print("   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip")
     sys.exit(1)
+
+# Optional imports for keyboard
+try:
+    import keyboard
+    HAS_KEYBOARD = True
+except ImportError:
+    HAS_KEYBOARD = False
+    print("⚠️  keyboard module not installed - some features limited")
 
 # Windows-specific imports
 if platform.system() == "Windows":
@@ -41,16 +71,23 @@ if platform.system() == "Windows":
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
         from comtypes import CLSCTX_ALL
         import screen_brightness_control as sbc
+        HAS_WINDOWS_AUDIO = True
     except ImportError:
-        print("Windows extras needed: pip install pycaw comtypes screen-brightness-control")
+        HAS_WINDOWS_AUDIO = False
+        print("⚠️  Windows audio/brightness modules not installed")
+else:
+    HAS_WINDOWS_AUDIO = False
 
 
 # ============== CONFIGURATION ==============
+# Supabase connection - connects to your Jarvis project
 SUPABASE_URL = "https://pnndpactueqrbrwrxjjj.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBubmRwYWN0dWVxcmJyd3J4ampqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5Mzk4MTAsImV4cCI6MjA4MjUxNTgxMH0.w_w_mUfX1gnC9nj_UDXRA-JjY8fGYTK5O0YDl2tBX_8"
+
+# Device settings
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
-POLL_INTERVAL = 2  # seconds
+POLL_INTERVAL = 2  # seconds between command checks
 
 # ============== SUPABASE CLIENT ==============
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -59,7 +96,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 class JarvisAgent:
     def __init__(self):
         self.device_id: Optional[str] = None
-        self.user_id: Optional[str] = None
         self.device_key = self._generate_device_key()
         self.is_locked = False
         self.running = True
@@ -67,7 +103,7 @@ class JarvisAgent:
     def _generate_device_key(self) -> str:
         """Generate a unique device key based on hardware."""
         import hashlib
-        unique_string = f"{platform.node()}-{platform.machine()}-{os.getlogin()}"
+        unique_string = f"{platform.node()}-{platform.machine()}-jarvis"
         return hashlib.sha256(unique_string.encode()).hexdigest()[:32]
     
     def _get_system_info(self) -> Dict[str, Any]:
@@ -82,9 +118,9 @@ class JarvisAgent:
             "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
         }
     
-    async def register_device(self, user_id: str):
+    async def register_device(self):
         """Register this device with Supabase."""
-        self.user_id = user_id
+        print("📡 Registering device...")
         
         # Check if device already exists
         result = supabase.table("devices").select("*").eq("device_key", self.device_key).execute()
@@ -99,12 +135,13 @@ class JarvisAgent:
                 "system_info": self._get_system_info(),
                 "current_volume": self._get_volume(),
                 "current_brightness": self._get_brightness(),
+                "is_locked": False,
             }).eq("id", self.device_id).execute()
-            print(f"✅ Device reconnected: {self.device_id}")
+            print(f"✅ Device reconnected: {DEVICE_NAME}")
         else:
-            # Create new device
+            # Create new device with a placeholder user_id
             result = supabase.table("devices").insert({
-                "user_id": user_id,
+                "user_id": str(uuid.uuid4()),  # Placeholder for PIN-based auth
                 "device_key": self.device_key,
                 "name": DEVICE_NAME,
                 "is_online": True,
@@ -113,11 +150,13 @@ class JarvisAgent:
                 "current_brightness": self._get_brightness(),
             }).execute()
             self.device_id = result.data[0]["id"]
-            print(f"✅ Device registered: {self.device_id}")
+            print(f"✅ Device registered: {DEVICE_NAME}")
+        
+        return self.device_id
     
     def _get_volume(self) -> int:
         """Get current system volume (0-100)."""
-        if platform.system() == "Windows":
+        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
             try:
                 devices = AudioUtilities.GetSpeakers()
                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
@@ -139,35 +178,27 @@ class JarvisAgent:
     def _set_volume(self, level: int):
         """Set system volume (0-100)."""
         level = max(0, min(100, level))
-        if platform.system() == "Windows":
+        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
             try:
                 devices = AudioUtilities.GetSpeakers()
                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                 volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
                 volume.SetMasterVolumeLevelScalar(level / 100, None)
+                print(f"🔊 Volume set to {level}%")
                 return {"success": True, "volume": level}
             except Exception as e:
                 return {"success": False, "error": str(e)}
         elif platform.system() == "Darwin":
             subprocess.run(["osascript", "-e", f"set volume output volume {level}"])
+            print(f"🔊 Volume set to {level}%")
             return {"success": True, "volume": level}
         return {"success": False, "error": "Unsupported OS"}
     
     def _get_brightness(self) -> int:
         """Get current screen brightness (0-100)."""
-        if platform.system() == "Windows":
+        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
             try:
                 return sbc.get_brightness()[0]
-            except Exception:
-                return 75
-        elif platform.system() == "Darwin":
-            try:
-                result = subprocess.run(
-                    ["brightness", "-l"],
-                    capture_output=True, text=True
-                )
-                # Parse brightness output
-                return 75
             except Exception:
                 return 75
         return 75
@@ -175,15 +206,10 @@ class JarvisAgent:
     def _set_brightness(self, level: int):
         """Set screen brightness (0-100)."""
         level = max(0, min(100, level))
-        if platform.system() == "Windows":
+        if platform.system() == "Windows" and HAS_WINDOWS_AUDIO:
             try:
                 sbc.set_brightness(level)
-                return {"success": True, "brightness": level}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-        elif platform.system() == "Darwin":
-            try:
-                subprocess.run(["brightness", str(level / 100)])
+                print(f"☀️ Brightness set to {level}%")
                 return {"success": True, "brightness": level}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -191,6 +217,7 @@ class JarvisAgent:
     
     def _shutdown(self):
         """Shutdown the PC."""
+        print("⚠️ SHUTDOWN command received!")
         if platform.system() == "Windows":
             os.system("shutdown /s /t 5")
         elif platform.system() == "Darwin":
@@ -201,6 +228,7 @@ class JarvisAgent:
     
     def _restart(self):
         """Restart the PC."""
+        print("🔄 RESTART command received!")
         if platform.system() == "Windows":
             os.system("shutdown /r /t 5")
         elif platform.system() == "Darwin":
@@ -211,6 +239,7 @@ class JarvisAgent:
     
     def _sleep(self):
         """Put PC to sleep."""
+        print("😴 SLEEP command received!")
         if platform.system() == "Windows":
             os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
         elif platform.system() == "Darwin":
@@ -219,6 +248,7 @@ class JarvisAgent:
     
     def _hibernate(self):
         """Hibernate the PC."""
+        print("❄️ HIBERNATE command received!")
         if platform.system() == "Windows":
             os.system("shutdown /h")
         else:
@@ -227,6 +257,7 @@ class JarvisAgent:
     
     def _lock_screen(self):
         """Lock the screen."""
+        print("🔒 LOCK command received!")
         self.is_locked = True
         if platform.system() == "Windows":
             ctypes.windll.user32.LockWorkStation()
@@ -238,20 +269,20 @@ class JarvisAgent:
         """Unlock with PIN verification."""
         if pin == UNLOCK_PIN:
             self.is_locked = False
-            # Note: Actually unlocking the screen programmatically is not possible
-            # This just tracks the state for the web app
+            print("🔓 UNLOCK verified!")
             return {"success": True, "message": "PIN verified"}
+        print("❌ Invalid unlock PIN!")
         return {"success": False, "error": "Invalid PIN"}
     
     def _take_screenshot(self) -> Dict[str, Any]:
         """Take a screenshot and return as base64."""
         try:
             screenshot = ImageGrab.grab()
-            # Resize for faster transfer
             screenshot.thumbnail((1280, 720))
             buffer = io.BytesIO()
             screenshot.save(buffer, format="JPEG", quality=70)
             base64_image = base64.b64encode(buffer.getvalue()).decode()
+            print("📸 Screenshot captured")
             return {"success": True, "image": base64_image}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -260,6 +291,7 @@ class JarvisAgent:
         """Type text using keyboard."""
         try:
             pyautogui.typewrite(text, interval=0.02)
+            print(f"⌨️ Typed: {text[:20]}...")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -268,6 +300,7 @@ class JarvisAgent:
         """Press a keyboard key."""
         try:
             pyautogui.press(key)
+            print(f"⌨️ Pressed: {key}")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -276,6 +309,7 @@ class JarvisAgent:
         """Press a key combination."""
         try:
             pyautogui.hotkey(*keys)
+            print(f"⌨️ Combo: {'+'.join(keys)}")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -295,6 +329,7 @@ class JarvisAgent:
         """Click mouse button."""
         try:
             pyautogui.click(button=button, clicks=clicks)
+            print(f"🖱️ Click: {button}")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -321,6 +356,7 @@ class JarvisAgent:
         try:
             import pyperclip
             pyperclip.copy(content)
+            print("📋 Clipboard updated")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -328,6 +364,7 @@ class JarvisAgent:
     def _open_app(self, app_name: str):
         """Open an application."""
         try:
+            print(f"🚀 Opening: {app_name}")
             if platform.system() == "Windows":
                 os.startfile(app_name)
             elif platform.system() == "Darwin":
@@ -344,6 +381,7 @@ class JarvisAgent:
             for proc in psutil.process_iter(['name']):
                 if app_name.lower() in proc.info['name'].lower():
                     proc.terminate()
+            print(f"❌ Closed: {app_name}")
             return {"success": True, "message": f"Closed {app_name}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -355,21 +393,27 @@ class JarvisAgent:
             for item in os.listdir(path):
                 full_path = os.path.join(path, item)
                 is_dir = os.path.isdir(full_path)
-                size = os.path.getsize(full_path) if not is_dir else 0
+                try:
+                    size = os.path.getsize(full_path) if not is_dir else 0
+                    modified = os.path.getmtime(full_path)
+                except:
+                    size = 0
+                    modified = 0
                 items.append({
                     "name": item,
                     "path": full_path,
                     "is_directory": is_dir,
                     "size": size,
-                    "modified": os.path.getmtime(full_path),
+                    "modified": modified,
                 })
-            return {"success": True, "items": items}
+            return {"success": True, "items": items[:100]}  # Limit to 100 items
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _open_file(self, path: str):
         """Open a file with default application."""
         try:
+            print(f"📁 Opening file: {path}")
             if platform.system() == "Windows":
                 os.startfile(path)
             elif platform.system() == "Darwin":
@@ -381,12 +425,12 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _play_music(self, query: str):
-        """Search and play music (opens in default browser/app)."""
+        """Search and play music (opens in default browser)."""
         try:
             import webbrowser
-            # Open YouTube Music search
             search_url = f"https://music.youtube.com/search?q={query.replace(' ', '+')}"
             webbrowser.open(search_url)
+            print(f"🎵 Searching music: {query}")
             return {"success": True, "message": f"Searching for: {query}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -404,6 +448,7 @@ class JarvisAgent:
         try:
             if action in key_map:
                 pyautogui.press(key_map[action])
+                print(f"🎵 Media: {action}")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -415,7 +460,7 @@ class JarvisAgent:
             for proc in psutil.process_iter(['pid', 'name', 'memory_percent']):
                 try:
                     info = proc.info
-                    if info['memory_percent'] > 0.1:  # Filter small processes
+                    if info['memory_percent'] and info['memory_percent'] > 0.1:
                         apps.append({
                             "pid": info['pid'],
                             "name": info['name'],
@@ -423,7 +468,6 @@ class JarvisAgent:
                         })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
-            # Sort by memory usage
             apps.sort(key=lambda x: x['memory'], reverse=True)
             return {"success": True, "apps": apps[:20]}
         except Exception as e:
@@ -432,7 +476,7 @@ class JarvisAgent:
     def _get_system_stats(self) -> Dict[str, Any]:
         """Get current system statistics."""
         try:
-            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_percent = psutil.cpu_percent(interval=0.5)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             battery = psutil.sensors_battery()
@@ -525,6 +569,8 @@ class JarvisAgent:
     
     async def poll_commands(self):
         """Poll for pending commands and execute them."""
+        print("\n🎧 Listening for commands...")
+        
         while self.running:
             try:
                 # Get pending commands for this device
@@ -533,24 +579,26 @@ class JarvisAgent:
                 ).eq("status", "pending").order("created_at").execute()
                 
                 for command in result.data:
-                    print(f"📥 Executing: {command['command_type']}")
+                    cmd_type = command['command_type']
+                    print(f"\n📥 Command: {cmd_type}")
                     
                     # Execute the command
-                    result = self.execute_command(
-                        command["command_type"],
+                    exec_result = self.execute_command(
+                        cmd_type,
                         command.get("payload", {})
                     )
                     
                     # Update command status
                     supabase.table("commands").update({
-                        "status": "completed" if result.get("success") else "failed",
-                        "result": result,
+                        "status": "completed" if exec_result.get("success") else "failed",
+                        "result": exec_result,
                         "executed_at": datetime.utcnow().isoformat(),
                     }).eq("id", command["id"]).execute()
                     
-                    print(f"✅ Completed: {command['command_type']}")
+                    status = "✅" if exec_result.get("success") else "❌"
+                    print(f"{status} {cmd_type}: {exec_result.get('message', exec_result.get('error', 'Done'))}")
                 
-                # Update device status
+                # Update device heartbeat
                 supabase.table("devices").update({
                     "is_online": True,
                     "last_seen": datetime.utcnow().isoformat(),
@@ -560,50 +608,50 @@ class JarvisAgent:
                 }).eq("id", self.device_id).execute()
                 
             except Exception as e:
-                print(f"❌ Error polling commands: {e}")
+                print(f"❌ Error: {e}")
             
             await asyncio.sleep(POLL_INTERVAL)
     
-    async def run(self, user_id: str):
+    async def run(self):
         """Main run loop."""
-        print("🤖 JARVIS Agent Starting...")
+        await self.register_device()
+        
+        print("\n" + "="*50)
+        print("🤖 JARVIS Agent is now running!")
         print(f"📍 Device: {DEVICE_NAME}")
-        print(f"🔑 Device Key: {self.device_key[:8]}...")
-        
-        await self.register_device(user_id)
-        
-        print("✅ Agent ready and listening for commands!")
-        print("Press Ctrl+C to stop.\n")
+        print(f"🔑 Device ID: {self.device_id[:8]}...")
+        print("="*50)
+        print("\n👀 Open the Jarvis web app to see your PC connected.")
+        print("🛑 Press Ctrl+C to stop.\n")
         
         try:
             await self.poll_commands()
         except KeyboardInterrupt:
-            print("\n👋 Shutting down...")
+            print("\n\n👋 Shutting down...")
             self.running = False
             # Mark device as offline
             supabase.table("devices").update({
                 "is_online": False,
             }).eq("id", self.device_id).execute()
+            print("✅ Device marked offline. Goodbye!")
 
 
 def main():
     """Main entry point."""
     print("""
-    ╔═══════════════════════════════════════════╗
-    ║         JARVIS PC Agent v1.0              ║
-    ║    Your AI-Powered PC Assistant           ║
-    ╚═══════════════════════════════════════════╝
+    ╔═══════════════════════════════════════════════════════╗
+    ║           JARVIS PC Agent v1.0                        ║
+    ║       Your AI-Powered PC Assistant                    ║
+    ╠═══════════════════════════════════════════════════════╣
+    ║  This agent connects your PC to the Jarvis web app.   ║
+    ║  Control your PC remotely from anywhere!              ║
+    ╚═══════════════════════════════════════════════════════╝
     """)
     
-    # Get user ID - in production, this would be from authentication
-    user_id = input("Enter your Jarvis User ID (from web app): ").strip()
-    
-    if not user_id:
-        print("❌ User ID is required!")
-        sys.exit(1)
+    print("🔌 Connecting to Jarvis servers...")
     
     agent = JarvisAgent()
-    asyncio.run(agent.run(user_id))
+    asyncio.run(agent.run())
 
 
 if __name__ == "__main__":

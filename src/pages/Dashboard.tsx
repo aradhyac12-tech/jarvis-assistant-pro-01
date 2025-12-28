@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Mic,
   Monitor,
@@ -13,25 +14,101 @@ import {
   Lock,
   Unlock,
   Bot,
+  RefreshCw,
+  Cpu,
+  HardDrive,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
+import { Link } from "react-router-dom";
+
+interface SystemInfo {
+  os?: string;
+  hostname?: string;
+  cpu_count?: number;
+  memory_total_gb?: number;
+}
+
+interface Device {
+  id: string;
+  name: string;
+  device_key: string;
+  is_online: boolean;
+  is_locked: boolean | null;
+  current_volume: number | null;
+  current_brightness: number | null;
+  last_seen: string | null;
+  system_info: SystemInfo | null;
+}
 
 export default function Dashboard() {
-  const [isConnected, setIsConnected] = useState(false);
-  const [volume, setVolume] = useState(50);
-  const [brightness, setBrightness] = useState(75);
-  const [isLocked, setIsLocked] = useState(false);
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
 
-  // Simulate connection status
+  const activeDevice = devices.find(d => d.is_online) || devices[0];
+
+  const fetchDevices = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("devices")
+        .select("*")
+        .order("last_seen", { ascending: false });
+
+      if (error) throw error;
+      setDevices((data as unknown as Device[]) || []);
+    } catch (error) {
+      console.error("Error fetching devices:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const timer = setTimeout(() => setIsConnected(true), 1500);
-    return () => clearTimeout(timer);
+    fetchDevices();
+
+    // Subscribe to realtime device updates
+    const channel = supabase
+      .channel("devices-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "devices",
+        },
+        (payload) => {
+          console.log("Device update:", payload);
+          if (payload.eventType === "INSERT") {
+            setDevices((prev) => [payload.new as Device, ...prev]);
+            toast({ title: "New device connected!", description: (payload.new as Device).name });
+          } else if (payload.eventType === "UPDATE") {
+            setDevices((prev) =>
+              prev.map((d) => (d.id === (payload.new as Device).id ? (payload.new as Device) : d))
+            );
+          } else if (payload.eventType === "DELETE") {
+            setDevices((prev) => prev.filter((d) => d.id !== (payload.old as Device).id));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
+
+  const isConnected = activeDevice?.is_online || false;
+  const volume = activeDevice?.current_volume || 0;
+  const brightness = activeDevice?.current_brightness || 0;
+  const isLocked = activeDevice?.is_locked || false;
 
   const statusCards = [
     {
       title: "PC Connection",
-      value: isConnected ? "Connected" : "Disconnected",
+      value: isConnected ? "Connected" : devices.length > 0 ? "Offline" : "No Device",
       icon: isConnected ? Wifi : WifiOff,
       color: isConnected ? "text-neon-green" : "text-destructive",
       bgColor: isConnected ? "bg-neon-green/10" : "bg-destructive/10",
@@ -72,21 +149,57 @@ export default function Dashboard() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold neon-text">Dashboard</h1>
-            <p className="text-muted-foreground">Welcome back, Commander</p>
+            <p className="text-muted-foreground">
+              {activeDevice ? `Connected to ${activeDevice.name}` : "Welcome, Commander"}
+            </p>
           </div>
-          <Badge
-            variant="outline"
-            className={cn(
-              "gap-2 px-4 py-2",
-              isConnected
-                ? "border-neon-green/50 text-neon-green bg-neon-green/10"
-                : "border-destructive/50 text-destructive bg-destructive/10"
-            )}
-          >
-            <span className={cn("w-2 h-2 rounded-full", isConnected ? "bg-neon-green animate-pulse" : "bg-destructive")} />
-            {isConnected ? "PC Online" : "PC Offline"}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={fetchDevices}
+              className="border-border/50"
+            >
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            </Button>
+            <Badge
+              variant="outline"
+              className={cn(
+                "gap-2 px-4 py-2",
+                isConnected
+                  ? "border-neon-green/50 text-neon-green bg-neon-green/10"
+                  : "border-destructive/50 text-destructive bg-destructive/10"
+              )}
+            >
+              <span className={cn("w-2 h-2 rounded-full", isConnected ? "bg-neon-green animate-pulse" : "bg-destructive")} />
+              {isConnected ? "PC Online" : "PC Offline"}
+            </Badge>
+          </div>
         </div>
+
+        {/* No Device Warning */}
+        {!loading && devices.length === 0 && (
+          <Card className="glass-dark border-neon-orange/50 bg-neon-orange/5">
+            <CardContent className="p-6">
+              <div className="flex items-start gap-4">
+                <div className="p-3 rounded-xl bg-neon-orange/10">
+                  <Monitor className="h-6 w-6 text-neon-orange" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-lg mb-1">No PC Connected</h3>
+                  <p className="text-muted-foreground mb-4">
+                    Run the Python agent on your PC to connect it to Jarvis.
+                  </p>
+                  <div className="bg-secondary/50 rounded-lg p-4 font-mono text-sm">
+                    <p className="text-muted-foreground mb-2"># Install & run the agent:</p>
+                    <p>pip install supabase pyautogui pillow psutil keyboard pycaw screen-brightness-control</p>
+                    <p className="mt-2">python jarvis_agent.py</p>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Status Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -110,6 +223,43 @@ export default function Dashboard() {
             </Card>
           ))}
         </div>
+
+        {/* System Info */}
+        {activeDevice?.system_info && (
+          <Card className="glass-dark border-border/50">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Cpu className="h-5 w-5 text-primary" />
+                System Information
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-4 rounded-lg bg-secondary/30">
+                  <p className="text-sm text-muted-foreground">OS</p>
+                  <p className="font-medium">{activeDevice.system_info.os || "Unknown"}</p>
+                </div>
+                <div className="p-4 rounded-lg bg-secondary/30">
+                  <p className="text-sm text-muted-foreground">Hostname</p>
+                  <p className="font-medium">{activeDevice.system_info.hostname || activeDevice.name}</p>
+                </div>
+                <div className="p-4 rounded-lg bg-secondary/30">
+                  <p className="text-sm text-muted-foreground">CPU Cores</p>
+                  <p className="font-medium">{activeDevice.system_info.cpu_count || "N/A"}</p>
+                </div>
+                <div className="p-4 rounded-lg bg-secondary/30">
+                  <p className="text-sm text-muted-foreground">RAM</p>
+                  <p className="font-medium">{activeDevice.system_info.memory_total_gb || "N/A"} GB</p>
+                </div>
+              </div>
+              {activeDevice.last_seen && (
+                <p className="text-xs text-muted-foreground mt-4">
+                  Last seen: {new Date(activeDevice.last_seen).toLocaleString()}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* AI Status */}
         <Card className="glass-dark border-border/50 overflow-hidden">
@@ -144,24 +294,24 @@ export default function Dashboard() {
           <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {quickActions.map((action, index) => (
-              <Card
-                key={action.title}
-                className="glass-dark border-border/50 hover:border-primary/50 transition-all cursor-pointer hover-scale group"
-                style={{ animationDelay: `${(index + 4) * 100}ms` }}
-                onClick={() => window.location.href = action.href}
-              >
-                <CardHeader>
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 rounded-xl bg-primary/10 group-hover:bg-primary/20 transition-colors">
-                      <action.icon className="h-6 w-6 text-primary" />
+              <Link key={action.title} to={action.href}>
+                <Card
+                  className="glass-dark border-border/50 hover:border-primary/50 transition-all cursor-pointer hover-scale group"
+                  style={{ animationDelay: `${(index + 4) * 100}ms` }}
+                >
+                  <CardHeader>
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 rounded-xl bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                        <action.icon className="h-6 w-6 text-primary" />
+                      </div>
+                      <div>
+                        <CardTitle className="text-lg">{action.title}</CardTitle>
+                        <CardDescription>{action.description}</CardDescription>
+                      </div>
                     </div>
-                    <div>
-                      <CardTitle className="text-lg">{action.title}</CardTitle>
-                      <CardDescription>{action.description}</CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-              </Card>
+                  </CardHeader>
+                </Card>
+              </Link>
             ))}
           </div>
         </div>

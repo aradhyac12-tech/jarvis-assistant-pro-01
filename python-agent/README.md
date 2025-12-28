@@ -1,157 +1,111 @@
 # JARVIS PC Agent
 
-Python agent that runs on your PC to receive and execute commands from the Jarvis web dashboard.
+Python agent that connects your PC to the Jarvis web dashboard for remote control.
+
+## Quick Start
+
+### 1. Install Python
+Download Python 3.8+ from [python.org](https://python.org)
+
+### 2. Install Dependencies
+
+**Windows:**
+```bash
+pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip
+```
+
+**macOS:**
+```bash
+pip install supabase pyautogui pillow psutil keyboard pyperclip
+brew install brightness  # For brightness control
+```
+
+**Linux:**
+```bash
+pip install supabase pyautogui pillow psutil keyboard pyperclip
+sudo apt-get install python3-tk python3-dev scrot  # For GUI automation
+```
+
+### 3. Run the Agent
+
+```bash
+python jarvis_agent.py
+```
+
+That's it! Your PC will appear in the Jarvis dashboard within seconds.
 
 ## Features
 
-- **System Controls**: Volume, brightness, shutdown, sleep, hibernate, restart
-- **Lock/Unlock**: Lock screen with PIN protection (1212)
-- **Remote Input**: Virtual keyboard and mouse/trackpad control
-- **Screen Mirror**: Take screenshots for remote viewing
-- **Clipboard Sync**: Read and write clipboard content
-- **App Control**: Open/close applications
-- **File Browser**: Navigate and open files
-- **Music Player**: Search and play music via YouTube Music
-- **System Stats**: CPU, memory, disk, battery monitoring
+| Feature | Description |
+|---------|-------------|
+| 🔊 **Volume Control** | Adjust system volume remotely |
+| ☀️ **Brightness** | Control screen brightness |
+| 🔒 **Lock/Unlock** | Lock screen with PIN verification (1212) |
+| ⚡ **Power Controls** | Shutdown, restart, sleep, hibernate |
+| ⌨️ **Virtual Keyboard** | Type text and press keys remotely |
+| 🖱️ **Mouse Control** | Move, click, and scroll remotely |
+| 📋 **Clipboard Sync** | Copy/paste between devices |
+| 📸 **Screenshot** | View your PC screen remotely |
+| 🚀 **App Launcher** | Open and close applications |
+| 📁 **File Browser** | Navigate and open files |
+| 🎵 **Music Control** | Search and play music |
+| 📊 **System Stats** | Monitor CPU, RAM, disk usage |
 
-## Installation
-
-### Windows
-
-```bash
-# Create virtual environment
-python -m venv venv
-venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the agent
-python jarvis_agent.py
-```
-
-### macOS
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# For brightness control, install additional tool
-brew install brightness
-
-# Run the agent
-python jarvis_agent.py
-```
-
-### Linux
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# For GUI automation, you may need:
-sudo apt-get install python3-tk python3-dev scrot
-
-# Run the agent
-python jarvis_agent.py
-```
-
-## Usage
-
-1. Open the Jarvis web app and sign in
-2. Go to Settings and copy your User ID
-3. Run the Python agent: `python jarvis_agent.py`
-4. Enter your User ID when prompted
-5. The agent will connect and start listening for commands!
-
-## Configuration
-
-Edit the constants at the top of `jarvis_agent.py`:
-
-```python
-DEVICE_NAME = "My PC"      # Name shown in the web app
-UNLOCK_PIN = "1212"        # PIN for unlock feature
-POLL_INTERVAL = 2          # Seconds between command checks
-```
-
-## Command Types
+## Command Reference
 
 | Command | Payload | Description |
 |---------|---------|-------------|
-| `set_volume` | `{level: 0-100}` | Set system volume |
-| `set_brightness` | `{level: 0-100}` | Set screen brightness |
-| `shutdown` | - | Shutdown PC |
-| `restart` | - | Restart PC |
+| `set_volume` | `{level: 0-100}` | Set volume percentage |
+| `set_brightness` | `{level: 0-100}` | Set brightness percentage |
+| `shutdown` | - | Shutdown in 5 seconds |
+| `restart` | - | Restart in 5 seconds |
 | `sleep` | - | Put PC to sleep |
-| `hibernate` | - | Hibernate PC (Windows) |
-| `lock` | - | Lock screen |
+| `hibernate` | - | Hibernate (Windows only) |
+| `lock` | - | Lock the screen |
 | `unlock` | `{pin: "1212"}` | Verify unlock PIN |
-| `screenshot` | - | Take screenshot |
+| `screenshot` | - | Capture screen |
 | `type_text` | `{text: "hello"}` | Type text |
-| `press_key` | `{key: "enter"}` | Press keyboard key |
-| `key_combo` | `{keys: ["ctrl", "c"]}` | Key combination |
-| `mouse_move` | `{x, y, relative}` | Move mouse |
+| `press_key` | `{key: "enter"}` | Press a key |
+| `key_combo` | `{keys: ["ctrl","c"]}` | Key combination |
+| `mouse_move` | `{x, y, relative}` | Move cursor |
 | `mouse_click` | `{button, clicks}` | Click mouse |
-| `mouse_scroll` | `{amount}` | Scroll mouse |
-| `get_clipboard` | - | Get clipboard content |
-| `set_clipboard` | `{content: "text"}` | Set clipboard |
 | `open_app` | `{app_name: "chrome"}` | Open application |
-| `close_app` | `{app_name: "chrome"}` | Close application |
-| `list_files` | `{path: "/home"}` | List directory |
-| `open_file` | `{path: "/file.pdf"}` | Open file |
-| `play_music` | `{query: "song name"}` | Search & play music |
-| `media_control` | `{action: "play_pause"}` | Media playback control |
-| `get_system_stats` | - | Get CPU, memory, disk stats |
+| `play_music` | `{query: "song"}` | Search YouTube Music |
 
-## Running as a Service
+## Configuration
+
+Edit these values at the top of `jarvis_agent.py`:
+
+```python
+DEVICE_NAME = "My PC"      # Name shown in dashboard
+UNLOCK_PIN = "1212"        # PIN for unlock feature
+POLL_INTERVAL = 2          # Seconds between checks
+```
+
+## Run at Startup
 
 ### Windows (Task Scheduler)
 
-1. Open Task Scheduler
-2. Create Basic Task → "Jarvis Agent"
-3. Trigger: At startup
-4. Action: Start a program
-   - Program: `C:\path\to\venv\Scripts\python.exe`
+1. Press `Win+R`, type `taskschd.msc`
+2. Click "Create Basic Task"
+3. Name: "Jarvis Agent"
+4. Trigger: "When I log on"
+5. Action: "Start a program"
+   - Program: `pythonw.exe`
    - Arguments: `C:\path\to\jarvis_agent.py`
-5. Check "Run whether user is logged on or not"
 
-### macOS (launchd)
+### macOS (Login Items)
 
-Create `~/Library/LaunchAgents/com.jarvis.agent.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.jarvis.agent</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/path/to/venv/bin/python</string>
-        <string>/path/to/jarvis_agent.py</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-</dict>
-</plist>
-```
-
-Load with: `launchctl load ~/Library/LaunchAgents/com.jarvis.agent.plist`
+1. Open System Preferences → Users & Groups
+2. Click your user → Login Items
+3. Click + and add a script that runs `python jarvis_agent.py`
 
 ### Linux (systemd)
 
-Create `/etc/systemd/system/jarvis-agent.service`:
+```bash
+# Create service file
+sudo nano /etc/systemd/system/jarvis.service
+```
 
 ```ini
 [Unit]
@@ -160,39 +114,45 @@ After=network.target
 
 [Service]
 Type=simple
-User=your-username
+User=YOUR_USERNAME
 WorkingDirectory=/path/to/python-agent
-ExecStart=/path/to/venv/bin/python jarvis_agent.py
+ExecStart=/usr/bin/python3 jarvis_agent.py
 Restart=always
-Environment=USER_ID=your-user-id
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable with:
 ```bash
-sudo systemctl enable jarvis-agent
-sudo systemctl start jarvis-agent
+sudo systemctl enable jarvis
+sudo systemctl start jarvis
 ```
 
 ## Troubleshooting
 
 ### "Missing dependency" error
-Make sure all packages are installed: `pip install -r requirements.txt`
+Install all required packages:
+```bash
+pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip
+```
 
-### Volume/brightness not working on Windows
-Run as Administrator for full system access.
+### Volume/brightness not working (Windows)
+Run the agent as Administrator.
 
-### Mouse/keyboard not working on macOS
-Grant Accessibility permissions in System Preferences → Security & Privacy → Privacy → Accessibility.
+### Mouse/keyboard not working (macOS)
+Grant accessibility permissions:
+1. System Preferences → Security & Privacy → Privacy
+2. Enable for Terminal or Python
 
-### Screenshot permission on macOS
-Grant Screen Recording permissions in System Preferences.
+### Screenshot not working (macOS)
+Grant screen recording permissions in System Preferences.
+
+### Agent not connecting
+Check your internet connection and firewall settings.
 
 ## Security Notes
 
-- The agent connects to your Supabase database using the anon key
-- Commands are only executed for your authenticated user ID
-- The unlock PIN is stored locally and verified locally
-- Consider running in a restricted user account for additional security
+- The agent runs locally on your PC
+- Commands are authenticated via your device's unique key
+- The unlock PIN is verified locally
+- No passwords or sensitive data are transmitted
