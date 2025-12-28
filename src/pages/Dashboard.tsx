@@ -16,94 +16,22 @@ import {
   Bot,
   RefreshCw,
   Cpu,
-  HardDrive,
-  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "react-router-dom";
-
-interface SystemInfo {
-  os?: string;
-  hostname?: string;
-  cpu_count?: number;
-  memory_total_gb?: number;
-}
-
-interface Device {
-  id: string;
-  name: string;
-  device_key: string;
-  is_online: boolean;
-  is_locked: boolean | null;
-  current_volume: number | null;
-  current_brightness: number | null;
-  last_seen: string | null;
-  system_info: SystemInfo | null;
-}
+import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { DeviceSelector } from "@/components/DeviceSelector";
+import { CommandCenter } from "@/components/CommandCenter";
 
 export default function Dashboard() {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
   const { toast } = useToast();
 
-  const activeDevice = devices.find(d => d.is_online) || devices[0];
-
-  const fetchDevices = async () => {
-    try {
-      const { data, error } = await supabase
-        .from("devices")
-        .select("*")
-        .order("last_seen", { ascending: false });
-
-      if (error) throw error;
-      setDevices((data as unknown as Device[]) || []);
-    } catch (error) {
-      console.error("Error fetching devices:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchDevices();
-
-    // Subscribe to realtime device updates
-    const channel = supabase
-      .channel("devices-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "devices",
-        },
-        (payload) => {
-          console.log("Device update:", payload);
-          if (payload.eventType === "INSERT") {
-            setDevices((prev) => [payload.new as Device, ...prev]);
-            toast({ title: "New device connected!", description: (payload.new as Device).name });
-          } else if (payload.eventType === "UPDATE") {
-            setDevices((prev) =>
-              prev.map((d) => (d.id === (payload.new as Device).id ? (payload.new as Device) : d))
-            );
-          } else if (payload.eventType === "DELETE") {
-            setDevices((prev) => prev.filter((d) => d.id !== (payload.old as Device).id));
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const isConnected = activeDevice?.is_online || false;
-  const volume = activeDevice?.current_volume || 0;
-  const brightness = activeDevice?.current_brightness || 0;
-  const isLocked = activeDevice?.is_locked || false;
+  const isConnected = selectedDevice?.is_online || false;
+  const volume = selectedDevice?.current_volume || 0;
+  const brightness = selectedDevice?.current_brightness || 0;
+  const isLocked = false; // Not tracked in current schema
 
   const statusCards = [
     {
@@ -146,18 +74,19 @@ export default function Dashboard() {
     <DashboardLayout>
       <div className="space-y-6 animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold neon-text">Dashboard</h1>
             <p className="text-muted-foreground">
-              {activeDevice ? `Connected to ${activeDevice.name}` : "Welcome, Commander"}
+              {selectedDevice ? `Connected to ${selectedDevice.name}` : "Welcome, Commander"}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <DeviceSelector />
             <Button
               variant="outline"
               size="icon"
-              onClick={fetchDevices}
+              onClick={refreshDevices}
               className="border-border/50"
             >
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
@@ -201,6 +130,9 @@ export default function Dashboard() {
           </Card>
         )}
 
+        {/* Command Center */}
+        <CommandCenter />
+
         {/* Status Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {statusCards.map((card, index) => (
@@ -225,7 +157,7 @@ export default function Dashboard() {
         </div>
 
         {/* System Info */}
-        {activeDevice?.system_info && (
+        {selectedDevice?.system_info && (
           <Card className="glass-dark border-border/50">
             <CardHeader className="pb-2">
               <CardTitle className="text-lg flex items-center gap-2">
@@ -237,24 +169,24 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="p-4 rounded-lg bg-secondary/30">
                   <p className="text-sm text-muted-foreground">OS</p>
-                  <p className="font-medium">{activeDevice.system_info.os || "Unknown"}</p>
+                  <p className="font-medium">{(selectedDevice.system_info as Record<string, unknown>)?.os as string || "Unknown"}</p>
                 </div>
                 <div className="p-4 rounded-lg bg-secondary/30">
                   <p className="text-sm text-muted-foreground">Hostname</p>
-                  <p className="font-medium">{activeDevice.system_info.hostname || activeDevice.name}</p>
+                  <p className="font-medium">{(selectedDevice.system_info as Record<string, unknown>)?.hostname as string || selectedDevice.name}</p>
                 </div>
                 <div className="p-4 rounded-lg bg-secondary/30">
                   <p className="text-sm text-muted-foreground">CPU Cores</p>
-                  <p className="font-medium">{activeDevice.system_info.cpu_count || "N/A"}</p>
+                  <p className="font-medium">{(selectedDevice.system_info as Record<string, unknown>)?.cpu_count as number || "N/A"}</p>
                 </div>
                 <div className="p-4 rounded-lg bg-secondary/30">
                   <p className="text-sm text-muted-foreground">RAM</p>
-                  <p className="font-medium">{activeDevice.system_info.memory_total_gb || "N/A"} GB</p>
+                  <p className="font-medium">{(selectedDevice.system_info as Record<string, unknown>)?.memory_total_gb as number || "N/A"} GB</p>
                 </div>
               </div>
-              {activeDevice.last_seen && (
+              {selectedDevice.last_seen && (
                 <p className="text-xs text-muted-foreground mt-4">
-                  Last seen: {new Date(activeDevice.last_seen).toLocaleString()}
+                  Last seen: {new Date(selectedDevice.last_seen).toLocaleString()}
                 </p>
               )}
             </CardContent>
@@ -273,7 +205,7 @@ export default function Dashboard() {
                 <p className="text-muted-foreground mb-3">
                   Your intelligent assistant is ready. Say "Hey Jarvis" or click the mic to start.
                 </p>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-4 flex-wrap">
                   <Badge variant="secondary" className="bg-neon-green/10 text-neon-green border-neon-green/30">
                     Voice Active
                   </Badge>

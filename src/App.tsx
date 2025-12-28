@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
+import { DeviceProvider } from "@/hooks/useDeviceContext";
 
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -13,6 +14,7 @@ import MusicPlayer from "./pages/MusicPlayer";
 import Apps from "./pages/Apps";
 import Files from "./pages/Files";
 import RemoteControl from "./pages/RemoteControl";
+import MicCamera from "./pages/MicCamera";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -90,6 +92,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/miccamera"
+        element={
+          <ProtectedRoute>
+            <MicCamera />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/settings"
         element={
           <ProtectedRoute>
@@ -106,11 +116,13 @@ const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <AuthProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
+        <DeviceProvider>
+          <Toaster />
+          <Sonner />
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </DeviceProvider>
       </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>

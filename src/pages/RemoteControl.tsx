@@ -177,63 +177,78 @@ export default function RemoteControl() {
   };
 
   // Screenshot / Streaming
+  const [streamStatus, setStreamStatus] = useState<"idle" | "starting" | "active" | "stopping">("idle");
+  const [lastFrameTime, setLastFrameTime] = useState<number>(0);
+  const streamAbortRef = useRef<boolean>(false);
+
   const takeScreenshot = async () => {
     setIsLoadingScreenshot(true);
-    await sendCommand("screenshot", { quality: 75, scale: 0.6 });
-    
-    // Poll for result
-    setTimeout(async () => {
-      const { data } = await supabase
-        .from("commands")
-        .select("result")
-        .eq("command_type", "screenshot")
-        .eq("status", "completed")
-        .order("executed_at", { ascending: false })
-        .limit(1);
-      
-      const result = data?.[0]?.result as Record<string, unknown> | null;
-      if (result?.image) {
-        setScreenshot(result.image as string);
+    try {
+      const result = await sendCommand("screenshot", { quality: 75, scale: 0.6 }, { awaitResult: true, timeoutMs: 5000 });
+      if (result.success && "result" in result && result.result?.image) {
+        setScreenshot(result.result.image as string);
       }
-      setIsLoadingScreenshot(false);
-    }, 1500);
+    } catch (error) {
+      console.error("Screenshot error:", error);
+    }
+    setIsLoadingScreenshot(false);
+  };
+
+  const startStreaming = async () => {
+    setStreamStatus("starting");
+    streamAbortRef.current = false;
+    
+    await sendCommand("start_stream", { fps: streamFps, quality: 40 });
+    setIsStreaming(true);
+    setStreamStatus("active");
+    
+    // Improved frame polling loop
+    const pollFrames = async () => {
+      while (!streamAbortRef.current) {
+        try {
+          const result = await sendCommand("get_frame", {}, { awaitResult: true, timeoutMs: 3000 });
+          if (result.success && "result" in result && result.result?.image) {
+            setScreenshot(result.result.image as string);
+            setLastFrameTime(Date.now());
+          }
+        } catch (e) {
+          console.error("Frame poll error:", e);
+        }
+        
+        await new Promise(r => setTimeout(r, 1000 / streamFps));
+      }
+    };
+    
+    pollFrames();
+  };
+
+  const stopStreaming = async () => {
+    setStreamStatus("stopping");
+    streamAbortRef.current = true;
+    
+    if (streamInterval.current) {
+      clearInterval(streamInterval.current);
+      streamInterval.current = null;
+    }
+    
+    await sendCommand("stop_stream", {});
+    setIsStreaming(false);
+    setStreamStatus("idle");
+    toast({ title: "Streaming Stopped" });
   };
 
   const toggleStreaming = async () => {
-    if (isStreaming) {
-      setIsStreaming(false);
-      if (streamInterval.current) {
-        clearInterval(streamInterval.current);
-        streamInterval.current = null;
-      }
-      await sendCommand("stop_stream", {});
+    if (isStreaming || streamStatus === "active") {
+      await stopStreaming();
     } else {
-      setIsStreaming(true);
-      await sendCommand("start_stream", { fps: streamFps, quality: 40 });
-      
-      // Start polling for frames
-      streamInterval.current = setInterval(async () => {
-        await sendCommand("get_frame", {});
-        
-        const { data } = await supabase
-          .from("commands")
-          .select("result")
-          .eq("command_type", "get_frame")
-          .eq("status", "completed")
-          .order("executed_at", { ascending: false })
-          .limit(1);
-        
-        const result = data?.[0]?.result as Record<string, unknown> | null;
-        if (result?.image) {
-          setScreenshot(result.image as string);
-        }
-      }, 1000 / streamFps);
+      await startStreaming();
     }
   };
 
   // Cleanup streaming on unmount
   useEffect(() => {
     return () => {
+      streamAbortRef.current = true;
       if (streamInterval.current) {
         clearInterval(streamInterval.current);
       }
@@ -510,22 +525,44 @@ export default function RemoteControl() {
             <TabsContent value="screen">
               <Card className="glass-dark border-border/50">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">Screen Mirror</CardTitle>
-                  <CardDescription className="text-sm">View your PC screen in real-time</CardDescription>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg">Screen Mirror</CardTitle>
+                      <CardDescription className="text-sm">View your PC screen in real-time</CardDescription>
+                    </div>
+                    {isStreaming && (
+                      <Badge className={cn(
+                        "animate-pulse",
+                        streamStatus === "active" ? "bg-neon-green/20 text-neon-green" : "bg-neon-orange/20 text-neon-orange"
+                      )}>
+                        <span className="w-2 h-2 rounded-full bg-current mr-2" />
+                        {streamStatus === "starting" ? "Starting..." : 
+                         streamStatus === "stopping" ? "Stopping..." : 
+                         `LIVE • ${streamFps} FPS`}
+                      </Badge>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="aspect-video bg-secondary/30 rounded-xl border border-border flex items-center justify-center overflow-hidden">
+                  <div className="aspect-video bg-secondary/30 rounded-xl border border-border flex items-center justify-center overflow-hidden relative">
                     {screenshot ? (
-                      <img 
-                        src={`data:image/jpeg;base64,${screenshot}`} 
-                        alt="Screenshot" 
-                        className="w-full h-full object-contain" 
-                      />
+                      <>
+                        <img 
+                          src={`data:image/jpeg;base64,${screenshot}`} 
+                          alt="Screenshot" 
+                          className="w-full h-full object-contain" 
+                        />
+                        {isStreaming && lastFrameTime > 0 && (
+                          <div className="absolute bottom-2 right-2 text-xs bg-background/80 px-2 py-1 rounded">
+                            Last frame: {Math.round((Date.now() - lastFrameTime) / 1000)}s ago
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <div className="text-center p-4">
                         <Monitor className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                         <p className="text-muted-foreground text-sm">
-                          {isStreaming ? "Starting stream..." : "Click to take screenshot or start streaming"}
+                          {streamStatus === "starting" ? "Starting stream..." : "Click to take screenshot or start streaming"}
                         </p>
                       </div>
                     )}
@@ -547,9 +584,20 @@ export default function RemoteControl() {
                     
                     <Button 
                       onClick={toggleStreaming}
+                      disabled={streamStatus === "starting" || streamStatus === "stopping"}
                       className={isStreaming ? "bg-destructive hover:bg-destructive/90" : "gradient-primary"}
                     >
-                      {isStreaming ? (
+                      {streamStatus === "starting" ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Starting...
+                        </>
+                      ) : streamStatus === "stopping" ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Stopping...
+                        </>
+                      ) : isStreaming ? (
                         <>
                           <Pause className="h-4 w-4 mr-2" />
                           Stop Stream
