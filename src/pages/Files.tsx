@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -22,28 +21,30 @@ import {
   Video,
   FileCode,
   FileArchive,
-  ChevronRight,
   Home,
-  Upload,
-  Download,
-  Trash2,
-  MoreVertical,
   Loader2,
+  RefreshCw,
+  ArrowUp,
+  FolderUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { supabase } from "@/integrations/supabase/client";
 
 interface FileItem {
-  id: string;
   name: string;
-  type: "folder" | "file";
-  extension?: string;
-  size?: string;
-  modified?: string;
+  path: string;
+  is_directory: boolean;
+  size: number;
+  modified: number;
 }
 
-const getFileIcon = (extension?: string) => {
-  switch (extension) {
+const getFileIcon = (name: string, isDirectory: boolean) => {
+  if (isDirectory) return FolderOpen;
+  
+  const ext = name.split('.').pop()?.toLowerCase();
+  switch (ext) {
     case "txt":
     case "doc":
     case "docx":
@@ -54,177 +55,248 @@ const getFileIcon = (extension?: string) => {
     case "png":
     case "gif":
     case "webp":
+    case "bmp":
+    case "ico":
       return Image;
     case "mp3":
     case "wav":
     case "flac":
+    case "m4a":
+    case "ogg":
       return Music;
     case "mp4":
     case "mkv":
     case "avi":
+    case "mov":
+    case "wmv":
       return Video;
     case "js":
     case "ts":
     case "py":
     case "html":
     case "css":
+    case "json":
+    case "jsx":
+    case "tsx":
       return FileCode;
     case "zip":
     case "rar":
     case "7z":
+    case "tar":
+    case "gz":
       return FileArchive;
     default:
       return File;
   }
 };
 
+const formatSize = (bytes: number): string => {
+  if (bytes === 0) return "";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+};
+
 export default function Files() {
   const [searchQuery, setSearchQuery] = useState("");
-  const [currentPath, setCurrentPath] = useState<string[]>(["Home"]);
+  const [currentPath, setCurrentPath] = useState("~");
+  const [fullPath, setFullPath] = useState("");
+  const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
+  const { sendCommand } = useDeviceCommands();
 
-  const [files] = useState<FileItem[]>([
-    { id: "1", name: "Documents", type: "folder" },
-    { id: "2", name: "Downloads", type: "folder" },
-    { id: "3", name: "Pictures", type: "folder" },
-    { id: "4", name: "Music", type: "folder" },
-    { id: "5", name: "Videos", type: "folder" },
-    { id: "6", name: "Desktop", type: "folder" },
-    { id: "7", name: "project.pdf", type: "file", extension: "pdf", size: "2.4 MB", modified: "Dec 28, 2024" },
-    { id: "8", name: "notes.txt", type: "file", extension: "txt", size: "12 KB", modified: "Dec 27, 2024" },
-    { id: "9", name: "photo.jpg", type: "file", extension: "jpg", size: "4.1 MB", modified: "Dec 26, 2024" },
-    { id: "10", name: "song.mp3", type: "file", extension: "mp3", size: "8.2 MB", modified: "Dec 25, 2024" },
-  ]);
+  // Fetch files from PC
+  const fetchFiles = async (path: string = currentPath) => {
+    setIsLoading(true);
+    await sendCommand("list_files", { path });
+    
+    setTimeout(async () => {
+      const { data } = await supabase
+        .from("commands")
+        .select("result")
+        .eq("command_type", "list_files")
+        .eq("status", "completed")
+        .order("executed_at", { ascending: false })
+        .limit(1);
+      
+      const result = data?.[0]?.result as Record<string, unknown> | null;
+      if (result?.items) {
+        const items = result.items as FileItem[];
+        // Sort: folders first, then alphabetically
+        items.sort((a, b) => {
+          if (a.is_directory && !b.is_directory) return -1;
+          if (!a.is_directory && b.is_directory) return 1;
+          return a.name.localeCompare(b.name);
+        });
+        setFiles(items);
+        if (result.current_path) {
+          setFullPath(result.current_path as string);
+        }
+      }
+      setIsLoading(false);
+    }, 1000);
+  };
 
-  const filteredFiles = files.filter((file) =>
-    file.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  useEffect(() => {
+    fetchFiles();
+  }, []);
 
-  const handleNavigate = (item: FileItem) => {
-    if (item.type === "folder") {
-      setCurrentPath((prev) => [...prev, item.name]);
+  const handleNavigate = async (item: FileItem) => {
+    if (item.is_directory) {
+      setCurrentPath(item.path);
+      await fetchFiles(item.path);
     } else {
       handleOpenFile(item);
     }
   };
 
   const handleOpenFile = async (file: FileItem) => {
+    await sendCommand("open_file", { path: file.path });
     toast({ title: "Opening File", description: `Opening ${file.name}...` });
   };
 
-  const handleBreadcrumbClick = (index: number) => {
-    setCurrentPath((prev) => prev.slice(0, index + 1));
+  const handleGoUp = async () => {
+    // Go to parent directory
+    const parentPath = fullPath.split(/[/\\]/).slice(0, -1).join("/") || "/";
+    setCurrentPath(parentPath);
+    await fetchFiles(parentPath);
   };
+
+  const handleGoHome = async () => {
+    setCurrentPath("~");
+    await fetchFiles("~");
+  };
+
+  const filteredFiles = files.filter((file) =>
+    file.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // Parse path for breadcrumbs
+  const pathParts = fullPath ? fullPath.split(/[/\\]/).filter(Boolean) : ["Home"];
 
   return (
     <DashboardLayout>
-      <div className="space-y-6 animate-fade-in">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold neon-text">Files</h1>
-            <p className="text-muted-foreground">Browse and manage files on your PC</p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="secondary">
-              <Upload className="h-4 w-4 mr-2" /> Upload
-            </Button>
-            <Button variant="secondary">
-              <Download className="h-4 w-4 mr-2" /> Download
-            </Button>
-          </div>
-        </div>
-
-        {/* Breadcrumb & Search */}
-        <Card className="glass-dark border-border/50">
-          <CardContent className="p-4">
-            <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-              <Breadcrumb>
-                <BreadcrumbList>
-                  {currentPath.map((path, index) => (
-                    <BreadcrumbItem key={index}>
-                      {index === 0 ? (
-                        <BreadcrumbLink
-                          className="flex items-center gap-1 cursor-pointer hover:text-primary"
-                          onClick={() => handleBreadcrumbClick(index)}
-                        >
-                          <Home className="h-4 w-4" />
-                          {path}
-                        </BreadcrumbLink>
-                      ) : (
-                        <>
-                          <BreadcrumbSeparator />
-                          <BreadcrumbLink
-                            className="cursor-pointer hover:text-primary"
-                            onClick={() => handleBreadcrumbClick(index)}
-                          >
-                            {path}
-                          </BreadcrumbLink>
-                        </>
-                      )}
-                    </BreadcrumbItem>
-                  ))}
-                </BreadcrumbList>
-              </Breadcrumb>
-
-              <div className="relative w-full md:w-64">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search files..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10"
-                />
-              </div>
+      <ScrollArea className="h-[calc(100vh-2rem)]">
+        <div className="space-y-4 animate-fade-in pr-4 pt-12 md:pt-0">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold neon-text">Files</h1>
+              <p className="text-muted-foreground text-sm">Browse files on your PC</p>
             </div>
-          </CardContent>
-        </Card>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={handleGoHome}>
+                <Home className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleGoUp}>
+                <FolderUp className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => fetchFiles()} disabled={isLoading}>
+                <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+              </Button>
+            </div>
+          </div>
 
-        {/* Files Grid */}
-        <Card className="glass-dark border-border/50">
-          <CardContent className="p-4">
-            {isLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          {/* Breadcrumb & Search */}
+          <Card className="glass-dark border-border/50">
+            <CardContent className="p-3">
+              <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-muted-foreground truncate" title={fullPath}>
+                    {fullPath || "Loading..."}
+                  </p>
+                </div>
+
+                <div className="relative w-full md:w-64 shrink-0">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search files..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-10"
+                  />
+                </div>
               </div>
-            ) : (
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                {filteredFiles.map((file) => {
-                  const FileIcon = file.type === "folder" ? FolderOpen : getFileIcon(file.extension);
-                  return (
-                    <div
-                      key={file.id}
-                      className="p-4 rounded-lg bg-secondary/30 hover:bg-secondary/50 cursor-pointer transition-all hover-scale text-center group"
-                      onDoubleClick={() => handleNavigate(file)}
-                    >
-                      <div className="w-12 h-12 rounded-xl bg-secondary/50 flex items-center justify-center mx-auto mb-3 group-hover:bg-primary/10 transition-colors">
-                        <FileIcon
-                          className={cn(
-                            "h-6 w-6",
-                            file.type === "folder" ? "text-neon-blue" : "text-muted-foreground"
-                          )}
-                        />
+            </CardContent>
+          </Card>
+
+          {/* Quick Access */}
+          <div className="flex gap-2 flex-wrap">
+            {[
+              { name: "Desktop", path: "~/Desktop" },
+              { name: "Documents", path: "~/Documents" },
+              { name: "Downloads", path: "~/Downloads" },
+              { name: "Pictures", path: "~/Pictures" },
+              { name: "Music", path: "~/Music" },
+              { name: "Videos", path: "~/Videos" },
+            ].map((folder) => (
+              <Button
+                key={folder.name}
+                variant="secondary"
+                size="sm"
+                className="text-xs"
+                onClick={() => {
+                  setCurrentPath(folder.path);
+                  fetchFiles(folder.path);
+                }}
+              >
+                <FolderOpen className="h-3 w-3 mr-1" />
+                {folder.name}
+              </Button>
+            ))}
+          </div>
+
+          {/* Files Grid */}
+          <Card className="glass-dark border-border/50">
+            <CardContent className="p-4">
+              {isLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                </div>
+              ) : filteredFiles.length > 0 ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                  {filteredFiles.map((file, index) => {
+                    const FileIcon = getFileIcon(file.name, file.is_directory);
+                    return (
+                      <div
+                        key={`${file.name}-${index}`}
+                        className="p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 cursor-pointer transition-all hover-scale text-center group"
+                        onClick={() => handleNavigate(file)}
+                      >
+                        <div className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center mx-auto mb-2 group-hover:bg-primary/10 transition-colors">
+                          <FileIcon
+                            className={cn(
+                              "h-5 w-5",
+                              file.is_directory ? "text-neon-blue" : "text-muted-foreground"
+                            )}
+                          />
+                        </div>
+                        <p className="font-medium text-xs truncate" title={file.name}>
+                          {file.name}
+                        </p>
+                        {!file.is_directory && file.size > 0 && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {formatSize(file.size)}
+                          </p>
+                        )}
                       </div>
-                      <p className="font-medium text-sm truncate">{file.name}</p>
-                      {file.size && (
-                        <p className="text-xs text-muted-foreground mt-1">{file.size}</p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {filteredFiles.length === 0 && !isLoading && (
-              <div className="text-center py-12">
-                <FolderOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <p className="text-muted-foreground">No files found</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <FolderOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">
+                    {files.length === 0 ? "No files in this directory" : "No files match your search"}
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </ScrollArea>
     </DashboardLayout>
   );
 }
