@@ -444,20 +444,20 @@ class JarvisAgent:
                 "home": "home", "end": "end",
                 "pageup": "pageup", "pagedown": "pagedown",
                 "up": "up", "down": "down", "left": "left", "right": "right",
-                
+
                 # Function keys
                 "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
                 "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
                 "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
-                
+
                 # Special keys
                 "printscreen": "printscreen", "prtsc": "printscreen",
                 "insert": "insert", "ins": "insert",
                 "capslock": "capslock", "caps": "capslock",
                 "numlock": "numlock", "scrolllock": "scrolllock",
                 "pause": "pause", "break": "pause",
-                
-                # Media keys - pyautogui names for Windows
+
+                # Media keys (some libraries don't support these — we'll fallback)
                 "playpause": "playpause",
                 "mediaplaypause": "playpause",
                 "play_pause": "playpause",
@@ -475,20 +475,49 @@ class JarvisAgent:
                 "volumemute": "volumemute",
                 "mute": "volumemute",
             }
-            
-            mapped_key = key_map.get(key.lower(), key.lower())
-            
-            if HAS_KEYBOARD:
-                keyboard.press_and_release(mapped_key)
-            else:
-                pyautogui.press(mapped_key)
-            
-            print(f"⌨️ Key pressed: {key} -> {mapped_key}")
-            return {"success": True, "key": key}
+
+            raw = (key or "").lower().strip()
+            mapped_key = key_map.get(raw, raw)
+
+            try:
+                if HAS_KEYBOARD:
+                    keyboard.press_and_release(mapped_key)
+                else:
+                    pyautogui.press(mapped_key)
+
+                print(f"⌨️ Key pressed: {key} -> {mapped_key}")
+                return {"success": True, "key": key}
+            except Exception as e:
+                # Media-key fallback (fixes: "Key 'mediaplaypause' is not mapped")
+                if raw in {
+                    "mediaplaypause", "playpause", "play_pause",
+                    "medianexttrack", "nexttrack", "next_track",
+                    "mediaprevioustrack", "prevtrack", "prev_track",
+                    "mediastop", "stop",
+                }:
+                    action_map = {
+                        "mediaplaypause": "play_pause",
+                        "playpause": "play_pause",
+                        "play_pause": "play_pause",
+                        "medianexttrack": "next",
+                        "nexttrack": "next",
+                        "next_track": "next",
+                        "mediaprevioustrack": "previous",
+                        "prevtrack": "previous",
+                        "prev_track": "previous",
+                        "mediastop": "stop",
+                        "stop": "stop",
+                    }
+                    action = action_map.get(raw, "play_pause")
+                    print(f"🎵 Media key fallback: {raw} -> media_control({action})")
+                    return self._media_control(action)
+
+                raise e
+
         except Exception as e:
             print(f"❌ press_key: {e}")
             return {"success": False, "error": str(e)}
-    
+
     def _key_combo(self, keys: list):
         """Press a key combination."""
         try:
@@ -553,13 +582,34 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _open_app(self, app_name: str):
-        """Open an application - smart search on Windows."""
+    def _open_app(self, app_name: str, app_id: Optional[str] = None):
+        """Open an application.
+
+        - If app_id is provided (UWP StartApps id), launch via shell:AppsFolder
+        - Else fall back to known mappings and Windows Search typing
+        """
         try:
-            print(f"🚀 Opening: {app_name}")
+            app_name = (app_name or "").strip()
             app_lower = app_name.lower().strip()
-            
+            app_id = (app_id or "").strip() or None
+
+            print(f"🚀 Opening: {app_name} | app_id={app_id}")
+
             if platform.system() == "Windows":
+                # Prefer AppID when available (more reliable than typing search)
+                if app_id:
+                    try:
+                        subprocess.Popen(
+                            f'explorer shell:AppsFolder\\{app_id}',
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        print(f"✅ Opened via AppID: {app_id}")
+                        return {"success": True, "message": f"Opened {app_name}"}
+                    except Exception as e:
+                        print(f"⚠️ AppID launch failed, falling back to search: {e}")
+
                 # Known app mappings
                 app_paths = {
                     "chrome": "chrome", "google chrome": "chrome",
@@ -601,36 +651,40 @@ class JarvisAgent:
                     "postman": "postman",
                     "docker": "docker",
                 }
-                
+
                 cmd = app_paths.get(app_lower)
-                
+
                 if cmd:
-                    # Use known command
                     if cmd.startswith("ms-"):
                         os.system(f"start {cmd}")
                     else:
                         subprocess.Popen(f"start {cmd}", shell=True)
                     print(f"✅ Opened via known path: {cmd}")
                     return {"success": True, "message": f"Opened {app_name}"}
-                
-                # Try Windows Search - press Win, type app name, press Enter
+
+                # Windows Search - press Win, type app name, press Enter
+                if not app_name:
+                    return {"success": False, "error": "Missing app name"}
+
                 print(f"🔍 Searching via Windows Search: {app_name}")
-                pyautogui.press('win')
+                pyautogui.press("win")
                 time.sleep(0.4)
                 pyautogui.typewrite(app_name, interval=0.02)
                 time.sleep(0.5)
-                pyautogui.press('enter')
-                
+                pyautogui.press("enter")
+
                 return {"success": True, "message": f"Searched and opened: {app_name}"}
-                
-            elif platform.system() == "Darwin":
+
+            if platform.system() == "Darwin":
                 subprocess.Popen(["open", "-a", app_name])
-            else:
-                subprocess.Popen([app_name])
+                return {"success": True, "message": f"Opened {app_name}"}
+
+            subprocess.Popen([app_name])
             return {"success": True, "message": f"Opened {app_name}"}
+
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
+
     def _search_app(self, app_name: str):
         """Search for an app using Windows Search and open it."""
         try:
@@ -919,20 +973,61 @@ class JarvisAgent:
     def _get_installed_apps(self) -> Dict[str, Any]:
         """Get list of installed applications (Windows)."""
         try:
-            apps = []
+            apps: List[Dict[str, Any]] = []
+
             if platform.system() == "Windows":
-                # Common app locations
-                start_menu = os.path.join(os.environ.get('APPDATA', ''), 
-                    'Microsoft\\Windows\\Start Menu\\Programs')
-                if os.path.exists(start_menu):
-                    for root, dirs, files in os.walk(start_menu):
-                        for file in files:
-                            if file.endswith('.lnk'):
-                                apps.append({"name": file[:-4], "type": "shortcut"})
-            return {"success": True, "apps": apps[:50]}
+                # Best source: Start menu apps via PowerShell (includes UWP AppID)
+                try:
+                    ps = subprocess.run(
+                        [
+                            "powershell",
+                            "-NoProfile",
+                            "-Command",
+                            "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Depth 2",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=8,
+                    )
+
+                    if ps.returncode == 0 and ps.stdout.strip():
+                        data = json.loads(ps.stdout)
+                        if isinstance(data, dict):
+                            data = [data]
+
+                        for item in data:
+                            name = (item.get("Name") or "").strip()
+                            app_id = (item.get("AppID") or "").strip() or None
+                            if name:
+                                apps.append({"name": name, "app_id": app_id, "source": "StartApps"})
+                except Exception as e:
+                    print(f"⚠️ Get-StartApps failed: {e}")
+
+                # Fallback: scan Start Menu shortcuts
+                if not apps:
+                    start_menu = os.path.join(
+                        os.environ.get("APPDATA", ""), "Microsoft\\Windows\\Start Menu\\Programs"
+                    )
+                    if os.path.exists(start_menu):
+                        for root, _dirs, files in os.walk(start_menu):
+                            for file in files:
+                                if file.endswith(".lnk"):
+                                    apps.append({"name": file[:-4], "app_id": None, "source": "StartMenu"})
+
+            # De-dupe by name
+            seen = set()
+            deduped = []
+            for a in sorted(apps, key=lambda x: x["name"].lower()):
+                k = a["name"].lower()
+                if k in seen:
+                    continue
+                seen.add(k)
+                deduped.append(a)
+
+            return {"success": True, "apps": deduped[:1000]}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
+
     def _get_system_stats(self) -> Dict[str, Any]:
         """Get current system statistics."""
         try:
@@ -1074,12 +1169,12 @@ class JarvisAgent:
             "set_clipboard": lambda: self._set_clipboard(payload.get("content", "")),
             
             # Apps
-            "open_app": lambda: self._open_app(payload.get("app_name", "")),
+            "open_app": lambda: self._open_app(payload.get("app_name", ""), payload.get("app_id", None)),
             "search_app": lambda: self._search_app(payload.get("app_name", "")),
             "close_app": lambda: self._close_app(payload.get("app_name", "")),
             "get_running_apps": self._get_running_apps,
             "get_installed_apps": self._get_installed_apps,
-            
+
             # Files
             "list_files": lambda: self._list_files(payload.get("path", "~")),
             "open_file": lambda: self._open_file(payload.get("path", "")),
