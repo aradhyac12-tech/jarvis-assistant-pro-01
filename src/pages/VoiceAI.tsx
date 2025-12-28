@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Mic, MicOff, Send, Bot, User, Loader2, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 
 interface Message {
   id: string;
@@ -18,27 +20,100 @@ interface Message {
 
 export default function VoiceAI() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [inputText, setInputText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+  const { sendCommand } = useDeviceCommands();
 
-  // Waveform animation bars
+  const { isRecording, toggleRecording, isSupported } = useVoiceRecorder({
+    onTranscript: (text) => {
+      setInputText(text);
+      // Auto-send after voice input
+      handleSendMessage(text);
+    },
+    onError: (error) => {
+      toast({
+        title: "Voice Error",
+        description: error,
+        variant: "destructive",
+      });
+    },
+  });
+
   const waveformBars = Array.from({ length: 20 }, (_, i) => i);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSendMessage = async () => {
-    if (!inputText.trim() || isProcessing) return;
+  const parseAndExecuteCommands = async (response: string) => {
+    const lowerResponse = response.toLowerCase();
+    
+    // Volume commands
+    if (lowerResponse.includes("volume")) {
+      const match = response.match(/(\d+)/);
+      if (match) {
+        await sendCommand("set_volume", { level: parseInt(match[1]) });
+      } else if (lowerResponse.includes("mute")) {
+        await sendCommand("set_volume", { level: 0 });
+      } else if (lowerResponse.includes("max") || lowerResponse.includes("full")) {
+        await sendCommand("set_volume", { level: 100 });
+      }
+    }
+    
+    // Brightness commands
+    if (lowerResponse.includes("brightness")) {
+      const match = response.match(/(\d+)/);
+      if (match) {
+        await sendCommand("set_brightness", { level: parseInt(match[1]) });
+      } else if (lowerResponse.includes("dim")) {
+        await sendCommand("set_brightness", { level: 25 });
+      } else if (lowerResponse.includes("max") || lowerResponse.includes("full")) {
+        await sendCommand("set_brightness", { level: 100 });
+      }
+    }
+    
+    // App commands
+    if (lowerResponse.includes("open") || lowerResponse.includes("launch")) {
+      const apps = ["chrome", "notepad", "spotify", "vscode", "terminal", "calculator"];
+      for (const app of apps) {
+        if (lowerResponse.includes(app)) {
+          await sendCommand("open_app", { app_name: app });
+          break;
+        }
+      }
+    }
+    
+    // Power commands
+    if (lowerResponse.includes("shutdown") || lowerResponse.includes("shut down")) {
+      await sendCommand("shutdown", {});
+    } else if (lowerResponse.includes("restart") || lowerResponse.includes("reboot")) {
+      await sendCommand("restart", {});
+    } else if (lowerResponse.includes("sleep")) {
+      await sendCommand("sleep", {});
+    } else if (lowerResponse.includes("lock")) {
+      await sendCommand("lock", {});
+    }
+    
+    // Music commands
+    if (lowerResponse.includes("play") && (lowerResponse.includes("music") || lowerResponse.includes("song"))) {
+      const query = response.replace(/play|music|song/gi, "").trim();
+      if (query) {
+        await sendCommand("play_music", { query });
+      }
+    }
+  };
+
+  const handleSendMessage = async (text?: string) => {
+    const messageText = text || inputText;
+    if (!messageText.trim() || isProcessing) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: inputText,
+      content: messageText,
       timestamp: new Date(),
     };
 
@@ -47,7 +122,6 @@ export default function VoiceAI() {
     setIsProcessing(true);
 
     try {
-      // Call AI edge function
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/jarvis-chat`,
         {
@@ -57,7 +131,7 @@ export default function VoiceAI() {
             Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           },
           body: JSON.stringify({
-            message: inputText,
+            message: messageText,
           }),
         }
       );
@@ -78,13 +152,11 @@ export default function VoiceAI() {
 
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Play audio response if available
-      if (data.audioUrl) {
-        setIsSpeaking(true);
-        const audio = new Audio(data.audioUrl);
-        audio.onended = () => setIsSpeaking(false);
-        audio.play();
-      }
+      // Parse response for commands to execute
+      await parseAndExecuteCommands(data.response);
+
+      // Speak the response using browser TTS or ElevenLabs
+      speakResponse(data.response, data.language);
     } catch (error) {
       console.error("Error:", error);
       toast({
@@ -97,14 +169,26 @@ export default function VoiceAI() {
     }
   };
 
-  const handleMicToggle = () => {
-    if (isRecording) {
-      setIsRecording(false);
-      toast({ title: "Recording stopped" });
-    } else {
-      setIsRecording(true);
-      toast({ title: "Listening...", description: "Speak now" });
-      // Voice recording would be implemented with Web Speech API or similar
+  const speakResponse = (text: string, language: string = "en") => {
+    // Use browser's built-in TTS as fallback
+    if ("speechSynthesis" in window) {
+      setIsSpeaking(true);
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = language === "hi" ? "hi-IN" : "en-US";
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = () => setIsSpeaking(false);
+      
+      window.speechSynthesis.speak(utterance);
+    }
+  };
+
+  const stopSpeaking = () => {
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
     }
   };
 
@@ -112,41 +196,41 @@ export default function VoiceAI() {
     <DashboardLayout>
       <div className="h-[calc(100vh-6rem)] flex flex-col animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div>
-            <h1 className="text-3xl font-bold neon-text">Voice AI</h1>
-            <p className="text-muted-foreground">Talk to Jarvis in Hindi or English</p>
+            <h1 className="text-2xl md:text-3xl font-bold neon-text">Voice AI</h1>
+            <p className="text-muted-foreground text-sm md:text-base">Talk to Jarvis in Hindi or English</p>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="bg-neon-green/10 text-neon-green border-neon-green/30">
-              ElevenLabs Active
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <Badge variant="secondary" className="bg-neon-green/10 text-neon-green border-neon-green/30 text-xs">
+              Voice Active
             </Badge>
-            <Badge variant="secondary" className="bg-neon-blue/10 text-neon-blue border-neon-blue/30">
+            <Badge variant="secondary" className="bg-neon-blue/10 text-neon-blue border-neon-blue/30 text-xs hidden md:flex">
               Multi-language
             </Badge>
           </div>
         </div>
 
         {/* Chat Area */}
-        <Card className="flex-1 glass-dark border-border/50 overflow-hidden flex flex-col">
+        <Card className="flex-1 glass-dark border-border/50 overflow-hidden flex flex-col min-h-0">
           <ScrollArea className="flex-1 p-4">
             {messages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center p-8">
-                <div className="w-24 h-24 rounded-3xl gradient-primary flex items-center justify-center pulse-neon mb-6">
-                  <Bot className="w-14 h-14 text-primary-foreground" />
+              <div className="h-full flex flex-col items-center justify-center text-center p-4 md:p-8">
+                <div className="w-20 h-20 md:w-24 md:h-24 rounded-3xl gradient-primary flex items-center justify-center pulse-neon mb-4 md:mb-6">
+                  <Bot className="w-12 h-12 md:w-14 md:h-14 text-primary-foreground" />
                 </div>
-                <h2 className="text-2xl font-bold mb-2">Hey, I'm Jarvis!</h2>
-                <p className="text-muted-foreground max-w-md">
-                  Your personal AI assistant. I can control your PC, play music, search the web, and much more.
-                  Just type or speak to get started!
+                <h2 className="text-xl md:text-2xl font-bold mb-2">Hey, I'm Jarvis!</h2>
+                <p className="text-muted-foreground max-w-md text-sm md:text-base">
+                  Your personal AI assistant. I can control your PC, play music, and much more.
+                  {isSupported ? " Tap the mic or type to start!" : " Type a message to start!"}
                 </p>
-                <div className="flex flex-wrap gap-2 mt-6 justify-center">
-                  {["What can you do?", "Play some music", "Check system status", "Open Chrome"].map((suggestion) => (
+                <div className="flex flex-wrap gap-2 mt-4 md:mt-6 justify-center">
+                  {["Set volume 50%", "Open Chrome", "What can you do?"].map((suggestion) => (
                     <Button
                       key={suggestion}
                       variant="outline"
                       size="sm"
-                      className="border-border/50 hover:border-primary/50"
+                      className="border-border/50 hover:border-primary/50 text-xs md:text-sm"
                       onClick={() => setInputText(suggestion)}
                     >
                       {suggestion}
@@ -160,24 +244,24 @@ export default function VoiceAI() {
                   <div
                     key={message.id}
                     className={cn(
-                      "flex gap-3",
+                      "flex gap-2 md:gap-3",
                       message.role === "user" ? "justify-end" : "justify-start"
                     )}
                   >
                     {message.role === "assistant" && (
-                      <div className="w-10 h-10 rounded-xl gradient-primary flex items-center justify-center flex-shrink-0">
-                        <Bot className="w-6 h-6 text-primary-foreground" />
+                      <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl gradient-primary flex items-center justify-center flex-shrink-0">
+                        <Bot className="w-5 h-5 md:w-6 md:h-6 text-primary-foreground" />
                       </div>
                     )}
                     <div
                       className={cn(
-                        "max-w-[70%] rounded-2xl px-4 py-3",
+                        "max-w-[80%] md:max-w-[70%] rounded-2xl px-3 py-2 md:px-4 md:py-3",
                         message.role === "user"
                           ? "bg-primary text-primary-foreground"
                           : "bg-secondary text-secondary-foreground"
                       )}
                     >
-                      <p>{message.content}</p>
+                      <p className="text-sm md:text-base">{message.content}</p>
                       <div className="flex items-center gap-2 mt-1">
                         <span className="text-xs opacity-70">
                           {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -190,20 +274,20 @@ export default function VoiceAI() {
                       </div>
                     </div>
                     {message.role === "user" && (
-                      <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
-                        <User className="w-6 h-6" />
+                      <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
+                        <User className="w-5 h-5 md:w-6 md:h-6" />
                       </div>
                     )}
                   </div>
                 ))}
                 {isProcessing && (
-                  <div className="flex gap-3">
-                    <div className="w-10 h-10 rounded-xl gradient-primary flex items-center justify-center">
-                      <Bot className="w-6 h-6 text-primary-foreground" />
+                  <div className="flex gap-2 md:gap-3">
+                    <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl gradient-primary flex items-center justify-center">
+                      <Bot className="w-5 h-5 md:w-6 md:h-6 text-primary-foreground" />
                     </div>
-                    <div className="bg-secondary rounded-2xl px-4 py-3 flex items-center gap-2">
+                    <div className="bg-secondary rounded-2xl px-3 py-2 md:px-4 md:py-3 flex items-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Thinking...</span>
+                      <span className="text-sm">Thinking...</span>
                     </div>
                   </div>
                 )}
@@ -232,51 +316,58 @@ export default function VoiceAI() {
           )}
 
           {/* Input Area */}
-          <CardContent className="p-4 border-t border-border/30">
-            <div className="flex items-center gap-3">
-              <Button
-                variant={isRecording ? "destructive" : "secondary"}
-                size="icon"
-                className={cn(
-                  "h-12 w-12 rounded-xl flex-shrink-0",
-                  isRecording && "animate-pulse"
-                )}
-                onClick={handleMicToggle}
-              >
-                {isRecording ? (
-                  <MicOff className="h-5 w-5" />
-                ) : (
-                  <Mic className="h-5 w-5" />
-                )}
-              </Button>
+          <CardContent className="p-3 md:p-4 border-t border-border/30 flex-shrink-0">
+            <div className="flex items-center gap-2 md:gap-3">
+              {isSupported && (
+                <Button
+                  variant={isRecording ? "destructive" : "secondary"}
+                  size="icon"
+                  className={cn(
+                    "h-10 w-10 md:h-12 md:w-12 rounded-xl flex-shrink-0",
+                    isRecording && "animate-pulse"
+                  )}
+                  onClick={toggleRecording}
+                >
+                  {isRecording ? (
+                    <MicOff className="h-4 w-4 md:h-5 md:w-5" />
+                  ) : (
+                    <Mic className="h-4 w-4 md:h-5 md:w-5" />
+                  )}
+                </Button>
+              )}
 
               <div className="flex-1 relative">
                 <input
                   type="text"
-                  placeholder="Type a message or speak..."
+                  placeholder={isRecording ? "Listening..." : "Type a message or speak..."}
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                  className="w-full h-12 px-4 rounded-xl bg-secondary border border-border/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+                  className="w-full h-10 md:h-12 px-3 md:px-4 rounded-xl bg-secondary border border-border/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors text-sm md:text-base"
                 />
               </div>
 
               <Button
                 size="icon"
-                className="h-12 w-12 rounded-xl gradient-primary flex-shrink-0"
-                onClick={handleSendMessage}
+                className="h-10 w-10 md:h-12 md:w-12 rounded-xl gradient-primary flex-shrink-0"
+                onClick={() => handleSendMessage()}
                 disabled={!inputText.trim() || isProcessing}
               >
                 {isProcessing ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <Loader2 className="h-4 w-4 md:h-5 md:w-5 animate-spin" />
                 ) : (
-                  <Send className="h-5 w-5" />
+                  <Send className="h-4 w-4 md:h-5 md:w-5" />
                 )}
               </Button>
 
               {isSpeaking && (
-                <Button variant="secondary" size="icon" className="h-12 w-12 rounded-xl flex-shrink-0">
-                  <Volume2 className="h-5 w-5 text-neon-blue animate-pulse" />
+                <Button 
+                  variant="secondary" 
+                  size="icon" 
+                  className="h-10 w-10 md:h-12 md:w-12 rounded-xl flex-shrink-0"
+                  onClick={stopSpeaking}
+                >
+                  <Volume2 className="h-4 w-4 md:h-5 md:w-5 text-neon-blue animate-pulse" />
                 </Button>
               )}
             </div>
