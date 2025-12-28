@@ -7,8 +7,6 @@ import { Badge } from "@/components/ui/badge";
 import { Mic, MicOff, Send, Bot, User, Loader2, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth";
 
 interface Message {
   id: string;
@@ -26,7 +24,6 @@ export default function VoiceAI() {
   const [inputText, setInputText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
-  const { user } = useAuth();
 
   // Waveform animation bars
   const waveformBars = Array.from({ length: 20 }, (_, i) => i);
@@ -61,7 +58,6 @@ export default function VoiceAI() {
           },
           body: JSON.stringify({
             message: inputText,
-            userId: user?.id,
           }),
         }
       );
