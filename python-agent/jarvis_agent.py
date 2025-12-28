@@ -1,5 +1,5 @@
 """
-JARVIS PC Agent - Python Client v2.0
+JARVIS PC Agent - Python Client v2.1
 =====================================
 Runs on your PC to execute commands from the Jarvis web dashboard.
 
@@ -22,11 +22,13 @@ FEATURES:
 - Remote Input: Virtual keyboard and mouse/trackpad control
 - Screen Streaming: Real-time screen mirror
 - Clipboard Sync: Read and write clipboard content
-- App Control: Open/close applications
+- App Control: Open/close applications, search and launch
 - File Browser: Navigate and open files
-- Music Player: Search and play music via YouTube/Browser
+- Music Player: Play music on YouTube (default) or other platforms
+- Open Websites: Open any URL in default browser
+- AI Search: Search on ChatGPT, Perplexity, Wikipedia, Google
 - System Stats: CPU, memory, disk, battery monitoring
-- Media Controls: Play/pause, next, previous, volume
+- Media Controls: Play/pause, next, previous, volume (Windows-specific)
 - Boost Mode: Refresh explorer, clear temp, optimize
 """
 
@@ -44,6 +46,8 @@ from typing import Optional, Dict, Any, List
 import base64
 import io
 import uuid
+import webbrowser
+import urllib.parse
 
 # Third-party imports
 try:
@@ -422,9 +426,11 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _press_key(self, key: str):
-        """Press a keyboard key."""
+        """Press a keyboard key with comprehensive mapping."""
         try:
+            # Comprehensive key mapping for Windows
             key_map = {
+                # Basic keys
                 "win": "win", "windows": "win", "super": "win",
                 "ctrl": "ctrl", "control": "ctrl",
                 "alt": "alt",
@@ -438,23 +444,49 @@ class JarvisAgent:
                 "home": "home", "end": "end",
                 "pageup": "pageup", "pagedown": "pagedown",
                 "up": "up", "down": "down", "left": "left", "right": "right",
+                
+                # Function keys
                 "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
                 "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
                 "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
+                
+                # Special keys
                 "printscreen": "printscreen", "prtsc": "printscreen",
                 "insert": "insert", "ins": "insert",
                 "capslock": "capslock", "caps": "capslock",
                 "numlock": "numlock", "scrolllock": "scrolllock",
                 "pause": "pause", "break": "pause",
+                
+                # Media keys - pyautogui names for Windows
+                "playpause": "playpause",
+                "mediaplaypause": "playpause",
+                "play_pause": "playpause",
+                "nexttrack": "nexttrack",
+                "medianexttrack": "nexttrack",
+                "next_track": "nexttrack",
+                "prevtrack": "prevtrack",
+                "previoustrack": "prevtrack",
+                "mediaprevioustrack": "prevtrack",
+                "prev_track": "prevtrack",
+                "stop": "stop",
+                "mediastop": "stop",
+                "volumeup": "volumeup",
+                "volumedown": "volumedown",
+                "volumemute": "volumemute",
+                "mute": "volumemute",
             }
+            
             mapped_key = key_map.get(key.lower(), key.lower())
             
             if HAS_KEYBOARD:
                 keyboard.press_and_release(mapped_key)
             else:
                 pyautogui.press(mapped_key)
-            return {"success": True}
+            
+            print(f"⌨️ Key pressed: {key} -> {mapped_key}")
+            return {"success": True, "key": key}
         except Exception as e:
+            print(f"❌ press_key: {e}")
             return {"success": False, "error": str(e)}
     
     def _key_combo(self, keys: list):
@@ -522,40 +554,96 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _open_app(self, app_name: str):
-        """Open an application."""
+        """Open an application - smart search on Windows."""
         try:
             print(f"🚀 Opening: {app_name}")
-            app_lower = app_name.lower()
+            app_lower = app_name.lower().strip()
             
             if platform.system() == "Windows":
+                # Known app mappings
                 app_paths = {
                     "chrome": "chrome", "google chrome": "chrome",
                     "firefox": "firefox", "mozilla firefox": "firefox",
                     "edge": "msedge", "microsoft edge": "msedge",
                     "notepad": "notepad",
-                    "calculator": "calc",
+                    "calculator": "calc", "calc": "calc",
                     "spotify": "spotify",
                     "vscode": "code", "vs code": "code", "visual studio code": "code",
-                    "terminal": "cmd", "cmd": "cmd", "command prompt": "cmd",
+                    "terminal": "wt", "cmd": "cmd", "command prompt": "cmd",
                     "powershell": "powershell",
                     "explorer": "explorer", "file explorer": "explorer",
                     "vlc": "vlc", "vlc player": "vlc",
-                    "task manager": "taskmgr",
-                    "settings": "start ms-settings:",
+                    "task manager": "taskmgr", "taskmgr": "taskmgr",
+                    "settings": "ms-settings:",
                     "paint": "mspaint",
                     "word": "winword", "microsoft word": "winword",
                     "excel": "excel", "microsoft excel": "excel",
+                    "powerpoint": "powerpnt", "microsoft powerpoint": "powerpnt",
                     "outlook": "outlook", "microsoft outlook": "outlook",
                     "discord": "discord",
                     "steam": "steam",
+                    "telegram": "telegram",
+                    "whatsapp": "whatsapp",
+                    "obs": "obs64", "obs studio": "obs64",
+                    "zoom": "zoom",
+                    "teams": "ms-teams", "microsoft teams": "ms-teams",
+                    "slack": "slack",
+                    "brave": "brave",
+                    "opera": "opera",
+                    "vivaldi": "vivaldi",
+                    "photoshop": "photoshop",
+                    "premiere": "premiere",
+                    "audacity": "audacity",
+                    "gimp": "gimp",
+                    "blender": "blender",
+                    "unity": "unity",
+                    "git bash": "git-bash",
+                    "postman": "postman",
+                    "docker": "docker",
                 }
-                cmd = app_paths.get(app_lower, app_name)
-                os.system(f"start {cmd}")
+                
+                cmd = app_paths.get(app_lower)
+                
+                if cmd:
+                    # Use known command
+                    if cmd.startswith("ms-"):
+                        os.system(f"start {cmd}")
+                    else:
+                        subprocess.Popen(f"start {cmd}", shell=True)
+                    print(f"✅ Opened via known path: {cmd}")
+                    return {"success": True, "message": f"Opened {app_name}"}
+                
+                # Try Windows Search - press Win, type app name, press Enter
+                print(f"🔍 Searching via Windows Search: {app_name}")
+                pyautogui.press('win')
+                time.sleep(0.4)
+                pyautogui.typewrite(app_name, interval=0.02)
+                time.sleep(0.5)
+                pyautogui.press('enter')
+                
+                return {"success": True, "message": f"Searched and opened: {app_name}"}
+                
             elif platform.system() == "Darwin":
                 subprocess.Popen(["open", "-a", app_name])
             else:
                 subprocess.Popen([app_name])
             return {"success": True, "message": f"Opened {app_name}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _search_app(self, app_name: str):
+        """Search for an app using Windows Search and open it."""
+        try:
+            print(f"🔍 Searching for app: {app_name}")
+            if platform.system() == "Windows":
+                pyautogui.press('win')
+                time.sleep(0.4)
+                pyautogui.typewrite(app_name, interval=0.02)
+                time.sleep(0.6)
+                pyautogui.press('enter')
+                return {"success": True, "message": f"Searched and launched: {app_name}"}
+            else:
+                return self._open_app(app_name)
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -616,45 +704,192 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _play_music(self, query: str, service: str = "youtube"):
-        """Search and play music."""
+    def _open_url(self, url: str):
+        """Open a URL in the default browser."""
         try:
-            import webbrowser
+            # Ensure URL has protocol
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "https://" + url
             
-            if service == "youtube":
-                search_url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
-            elif service == "spotify":
-                search_url = f"https://open.spotify.com/search/{query.replace(' ', '%20')}"
+            webbrowser.open(url)
+            print(f"🌐 Opened URL: {url}")
+            return {"success": True, "message": f"Opened {url}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _open_website(self, site: str, query: str = ""):
+        """Open a specific website, optionally with a search query."""
+        try:
+            site_lower = site.lower().strip()
+            
+            # Website URL mappings with search query support
+            site_urls = {
+                "google": ("https://www.google.com", "https://www.google.com/search?q="),
+                "youtube": ("https://www.youtube.com", "https://www.youtube.com/results?search_query="),
+                "chatgpt": ("https://chat.openai.com", "https://chat.openai.com/?q="),
+                "perplexity": ("https://www.perplexity.ai", "https://www.perplexity.ai/search?q="),
+                "wikipedia": ("https://www.wikipedia.org", "https://en.wikipedia.org/wiki/Special:Search?search="),
+                "github": ("https://github.com", "https://github.com/search?q="),
+                "reddit": ("https://www.reddit.com", "https://www.reddit.com/search/?q="),
+                "twitter": ("https://twitter.com", "https://twitter.com/search?q="),
+                "x": ("https://x.com", "https://x.com/search?q="),
+                "facebook": ("https://www.facebook.com", "https://www.facebook.com/search/top/?q="),
+                "instagram": ("https://www.instagram.com", "https://www.instagram.com/explore/tags/"),
+                "linkedin": ("https://www.linkedin.com", "https://www.linkedin.com/search/results/all/?keywords="),
+                "amazon": ("https://www.amazon.com", "https://www.amazon.com/s?k="),
+                "ebay": ("https://www.ebay.com", "https://www.ebay.com/sch/i.html?_nkw="),
+                "netflix": ("https://www.netflix.com", "https://www.netflix.com/search?q="),
+                "spotify": ("https://open.spotify.com", "https://open.spotify.com/search/"),
+                "twitch": ("https://www.twitch.tv", "https://www.twitch.tv/search?term="),
+                "stackoverflow": ("https://stackoverflow.com", "https://stackoverflow.com/search?q="),
+                "gmail": ("https://mail.google.com", None),
+                "drive": ("https://drive.google.com", None),
+                "maps": ("https://maps.google.com", "https://www.google.com/maps/search/"),
+                "news": ("https://news.google.com", "https://news.google.com/search?q="),
+            }
+            
+            if site_lower in site_urls:
+                base_url, search_url = site_urls[site_lower]
+                if query and search_url:
+                    url = search_url + urllib.parse.quote(query)
+                else:
+                    url = base_url
             else:
-                search_url = f"https://music.youtube.com/search?q={query.replace(' ', '+')}"
+                # Try to make a URL from the site name
+                if not site_lower.startswith("http"):
+                    url = f"https://{site_lower}"
+                    if "." not in site_lower:
+                        url += ".com"
+                else:
+                    url = site
             
-            webbrowser.open(search_url)
-            print(f"🎵 Searching music: {query} on {service}")
-            return {"success": True, "message": f"Searching for: {query}"}
+            webbrowser.open(url)
+            print(f"🌐 Opened: {url}")
+            return {"success": True, "message": f"Opened {site}" + (f" with query: {query}" if query else "")}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _search_web(self, query: str, engine: str = "google"):
+        """Search the web with a query."""
+        try:
+            engine_lower = engine.lower()
+            
+            search_urls = {
+                "google": f"https://www.google.com/search?q={urllib.parse.quote(query)}",
+                "bing": f"https://www.bing.com/search?q={urllib.parse.quote(query)}",
+                "duckduckgo": f"https://duckduckgo.com/?q={urllib.parse.quote(query)}",
+                "youtube": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}",
+                "wikipedia": f"https://en.wikipedia.org/wiki/Special:Search?search={urllib.parse.quote(query)}",
+                "chatgpt": f"https://chat.openai.com/?q={urllib.parse.quote(query)}",
+                "perplexity": f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}",
+            }
+            
+            url = search_urls.get(engine_lower, search_urls["google"])
+            webbrowser.open(url)
+            print(f"🔎 Searching {engine}: {query}")
+            return {"success": True, "message": f"Searching {engine} for: {query}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _play_music(self, query: str, service: str = "youtube"):
+        """Search and play music on a streaming service."""
+        try:
+            service_lower = service.lower().strip()
+            
+            # Service URL mappings
+            service_urls = {
+                "youtube": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
+                "yt": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
+                "youtube music": f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
+                "ytm": f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
+                "spotify": f"https://open.spotify.com/search/{urllib.parse.quote(query)}",
+                "soundcloud": f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
+                "apple music": f"https://music.apple.com/us/search?term={urllib.parse.quote(query)}",
+                "amazon music": f"https://music.amazon.com/search/{urllib.parse.quote(query)}",
+                "deezer": f"https://www.deezer.com/search/{urllib.parse.quote(query)}",
+                "tidal": f"https://tidal.com/search?q={urllib.parse.quote(query)}",
+            }
+            
+            # Default to YouTube
+            url = service_urls.get(service_lower, service_urls["youtube"])
+            
+            webbrowser.open(url)
+            print(f"🎵 Playing music: {query} on {service}")
+            return {"success": True, "message": f"Searching for: {query} on {service}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _media_control(self, action: str):
-        """Control media playback."""
-        key_map = {
-            "play_pause": "playpause",
-            "play": "playpause",
-            "pause": "playpause",
-            "next": "nexttrack",
-            "previous": "prevtrack",
-            "prev": "prevtrack",
-            "volume_up": "volumeup",
-            "volume_down": "volumedown",
-            "mute": "volumemute",
-            "stop": "stop",
-        }
+        """Control media playback using Windows virtual keys."""
         try:
-            if action in key_map:
-                pyautogui.press(key_map[action])
+            action_lower = action.lower().strip()
+            
+            if platform.system() == "Windows":
+                # Use ctypes to send proper media key events
+                import ctypes
+                from ctypes import wintypes
+                
+                # Virtual key codes for media keys
+                VK_MEDIA_PLAY_PAUSE = 0xB3
+                VK_MEDIA_NEXT_TRACK = 0xB0
+                VK_MEDIA_PREV_TRACK = 0xB1
+                VK_MEDIA_STOP = 0xB2
+                VK_VOLUME_MUTE = 0xAD
+                VK_VOLUME_DOWN = 0xAE
+                VK_VOLUME_UP = 0xAF
+                
+                action_map = {
+                    "play_pause": VK_MEDIA_PLAY_PAUSE,
+                    "play": VK_MEDIA_PLAY_PAUSE,
+                    "pause": VK_MEDIA_PLAY_PAUSE,
+                    "playpause": VK_MEDIA_PLAY_PAUSE,
+                    "next": VK_MEDIA_NEXT_TRACK,
+                    "next_track": VK_MEDIA_NEXT_TRACK,
+                    "nexttrack": VK_MEDIA_NEXT_TRACK,
+                    "previous": VK_MEDIA_PREV_TRACK,
+                    "prev": VK_MEDIA_PREV_TRACK,
+                    "prev_track": VK_MEDIA_PREV_TRACK,
+                    "prevtrack": VK_MEDIA_PREV_TRACK,
+                    "stop": VK_MEDIA_STOP,
+                    "volume_up": VK_VOLUME_UP,
+                    "volumeup": VK_VOLUME_UP,
+                    "volume_down": VK_VOLUME_DOWN,
+                    "volumedown": VK_VOLUME_DOWN,
+                    "mute": VK_VOLUME_MUTE,
+                    "volumemute": VK_VOLUME_MUTE,
+                }
+                
+                vk_code = action_map.get(action_lower)
+                
+                if vk_code:
+                    # Simulate key press using SendInput
+                    KEYEVENTF_KEYUP = 0x0002
+                    
+                    # Press key down
+                    ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
+                    time.sleep(0.05)
+                    # Release key
+                    ctypes.windll.user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+                    
+                    print(f"🎵 Media control: {action}")
+                    return {"success": True, "action": action}
+                else:
+                    return {"success": False, "error": f"Unknown media action: {action}"}
+            else:
+                # Fallback for non-Windows
+                key_map = {
+                    "play_pause": "playpause",
+                    "next": "nexttrack",
+                    "previous": "prevtrack",
+                    "stop": "stop",
+                }
+                key = key_map.get(action_lower, action_lower)
+                pyautogui.press(key)
                 print(f"🎵 Media: {action}")
                 return {"success": True, "action": action}
-            return {"success": False, "error": f"Unknown action: {action}"}
+                
         except Exception as e:
+            print(f"❌ media_control error: {e}")
             return {"success": False, "error": str(e)}
     
     def _get_running_apps(self) -> Dict[str, Any]:
@@ -771,12 +1006,14 @@ class JarvisAgent:
         self.screen_streaming = True
         self.stream_fps = max(1, min(30, fps))
         self.stream_quality = max(10, min(90, quality))
-        return {"success": True, "message": f"Streaming at {fps} FPS, quality {quality}"}
+        print(f"📺 Screen streaming started at {self.stream_fps} FPS, quality {self.stream_quality}")
+        return {"success": True, "streaming": True, "fps": self.stream_fps, "quality": self.stream_quality}
     
     def _stop_screen_stream(self):
         """Stop screen streaming mode."""
         self.screen_streaming = False
-        return {"success": True, "message": "Streaming stopped"}
+        print("📺 Screen streaming stopped")
+        return {"success": True, "streaming": False, "message": "Streaming stopped"}
     
     def execute_command(self, command_type: str, payload: Dict[str, Any] = None) -> Dict[str, Any]:
         """Execute a command based on type."""
@@ -838,6 +1075,7 @@ class JarvisAgent:
             
             # Apps
             "open_app": lambda: self._open_app(payload.get("app_name", "")),
+            "search_app": lambda: self._search_app(payload.get("app_name", "")),
             "close_app": lambda: self._close_app(payload.get("app_name", "")),
             "get_running_apps": self._get_running_apps,
             "get_installed_apps": self._get_installed_apps,
@@ -845,6 +1083,17 @@ class JarvisAgent:
             # Files
             "list_files": lambda: self._list_files(payload.get("path", "~")),
             "open_file": lambda: self._open_file(payload.get("path", "")),
+            
+            # Web / URLs
+            "open_url": lambda: self._open_url(payload.get("url", "")),
+            "open_website": lambda: self._open_website(
+                payload.get("site", ""),
+                payload.get("query", "")
+            ),
+            "search_web": lambda: self._search_web(
+                payload.get("query", ""),
+                payload.get("engine", "google")
+            ),
             
             # Music & Media
             "play_music": lambda: self._play_music(
@@ -863,6 +1112,7 @@ class JarvisAgent:
             try:
                 return handler()
             except Exception as e:
+                print(f"❌ Command error ({command_type}): {e}")
                 return {"success": False, "error": str(e)}
         else:
             print(f"⚠️ Unknown command: {command_type}")
@@ -923,7 +1173,7 @@ class JarvisAgent:
         await self.register_device()
         
         print("\n" + "="*50)
-        print("🤖 JARVIS Agent v2.0 is now running!")
+        print("🤖 JARVIS Agent v2.1 is now running!")
         print(f"📍 Device: {DEVICE_NAME}")
         print(f"🔑 Device ID: {self.device_id[:8]}...")
         print(f"⚡ Poll interval: {POLL_INTERVAL}s (fast mode)")
@@ -951,13 +1201,14 @@ def main():
     """Main entry point."""
     print("""
     ╔═══════════════════════════════════════════════════════╗
-    ║           JARVIS PC Agent v2.0                        ║
+    ║           JARVIS PC Agent v2.1                        ║
     ║       Your AI-Powered PC Assistant                    ║
     ╠═══════════════════════════════════════════════════════╣
     ║  This agent connects your PC to the Jarvis web app.   ║
     ║  Control your PC remotely from anywhere!              ║
     ║                                                       ║
-    ║  NEW: Faster response, screen streaming, boost mode   ║
+    ║  NEW: Open websites, play music, search on ChatGPT    ║
+    ║       Perplexity, Wikipedia & more!                   ║
     ╚═══════════════════════════════════════════════════════╝
     """)
     
