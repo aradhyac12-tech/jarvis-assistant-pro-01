@@ -1,17 +1,14 @@
 import { useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-
-interface CommandPayload {
-  [key: string]: unknown;
-}
+import type { Json } from "@/integrations/supabase/types";
 
 export function useDeviceCommands() {
   const { toast } = useToast();
 
   const sendCommand = useCallback(async (
     commandType: string, 
-    payload: CommandPayload = {}
+    payload: Record<string, unknown> = {}
   ) => {
     try {
       // Get the first online device
@@ -40,18 +37,18 @@ export function useDeviceCommands() {
         .insert([{
           device_id: deviceId,
           command_type: commandType,
-          payload,
+          payload: payload as Json,
           status: "pending",
           user_id: crypto.randomUUID(),
         }])
         .select()
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
 
       console.log(`Command sent: ${commandType}`, payload);
       
-      return { success: true, commandId: data.id };
+      return { success: true, commandId: data?.id };
     } catch (error) {
       console.error("Error sending command:", error);
       toast({
