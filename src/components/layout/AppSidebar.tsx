@@ -14,6 +14,7 @@ import {
   LogOut,
   Menu,
   X,
+  Camera,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ const navItems = [
   { title: "Apps", url: "/apps", icon: AppWindow },
   { title: "Files", url: "/files", icon: FolderOpen },
   { title: "Remote Control", url: "/remote", icon: Keyboard },
+  { title: "Mic & Camera", url: "/miccamera", icon: Camera },
   { title: "Settings", url: "/settings", icon: Settings2 },
 ];
 

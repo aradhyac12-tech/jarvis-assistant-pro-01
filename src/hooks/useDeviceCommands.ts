@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { useDeviceContext } from "@/hooks/useDeviceContext";
 import type { Json } from "@/integrations/supabase/types";
 
 type SendCommandOptions = {
@@ -22,6 +23,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export function useDeviceCommands() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { selectedDevice } = useDeviceContext();
 
   const waitForCommandResult = useCallback(
     async (commandId: string, options: SendCommandOptions = {}) => {
@@ -68,16 +70,20 @@ export function useDeviceCommands() {
   const sendCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, options?: SendCommandOptions) => {
       try {
-        // Get the first online device (single-device setup)
-        const { data: devices, error: deviceError } = await supabase
-          .from("devices")
-          .select("id")
-          .eq("is_online", true)
-          .limit(1);
+        // Use selected device from context, fallback to first online device
+        let deviceId = selectedDevice?.id;
 
-        if (deviceError) throw deviceError;
+        if (!deviceId) {
+          // Fallback: Get the first online device
+          const { data: devices, error: deviceError } = await supabase
+            .from("devices")
+            .select("id")
+            .eq("is_online", true)
+            .limit(1);
 
-        const deviceId = devices?.[0]?.id;
+          if (deviceError) throw deviceError;
+          deviceId = devices?.[0]?.id;
+        }
 
         if (!deviceId) {
           toast({
@@ -107,7 +113,7 @@ export function useDeviceCommands() {
         if (error) throw error;
 
         const commandId = data?.id;
-        console.log(`Command sent: ${commandType}`, { payload, commandId });
+        console.log(`Command sent: ${commandType}`, { payload, commandId, deviceId });
 
         if (!commandId || !options?.awaitResult) {
           return { success: true, commandId } as const;
@@ -125,7 +131,7 @@ export function useDeviceCommands() {
         return { success: false, error } as const;
       }
     },
-    [toast, user?.id, waitForCommandResult]
+    [toast, user?.id, waitForCommandResult, selectedDevice]
   );
 
   return { sendCommand };
