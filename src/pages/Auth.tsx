@@ -1,52 +1,47 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bot, Mail, Lock, Eye, EyeOff, Loader2 } from "lucide-react";
+import { Bot, Lock, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAuth } from "@/hooks/useAuth";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { useToast } from "@/hooks/use-toast";
 
+const UNLOCK_PIN = "1212";
+
 export default function Auth() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
+  const [pin, setPin] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const { signIn, signUp, user } = useAuth();
+  const [error, setError] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
-    if (user) {
+    // Check if already unlocked
+    if (localStorage.getItem("jarvis_unlocked") === "true") {
       navigate("/dashboard");
     }
-  }, [user, navigate]);
+  }, [navigate]);
 
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    const { error } = await signIn(email, password);
-    setIsLoading(false);
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: "Welcome back!" });
-      navigate("/dashboard");
-    }
-  };
-
-  const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    const { error } = await signUp(email, password);
-    setIsLoading(false);
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: "Account created!", description: "You can now sign in." });
+  const handlePinComplete = async (value: string) => {
+    setPin(value);
+    if (value.length === 4) {
+      setIsLoading(true);
+      setError(false);
+      
+      // Small delay for effect
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (value === UNLOCK_PIN) {
+        localStorage.setItem("jarvis_unlocked", "true");
+        toast({ title: "Access Granted", description: "Welcome to JARVIS" });
+        navigate("/dashboard");
+      } else {
+        setError(true);
+        setPin("");
+        toast({ title: "Access Denied", description: "Invalid passcode", variant: "destructive" });
+      }
+      setIsLoading(false);
     }
   };
 
@@ -66,119 +61,52 @@ export default function Auth() {
           <div>
             <CardTitle className="text-3xl font-bold neon-text">JARVIS</CardTitle>
             <CardDescription className="text-muted-foreground">
-              Your AI-powered PC assistant
+              Enter passcode to unlock
             </CardDescription>
           </div>
         </CardHeader>
 
-        <CardContent>
-          <Tabs defaultValue="signin" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 mb-6">
-              <TabsTrigger value="signin">Sign In</TabsTrigger>
-              <TabsTrigger value="signup">Sign Up</TabsTrigger>
-            </TabsList>
+        <CardContent className="flex flex-col items-center space-y-6">
+          <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center">
+            <Lock className={`w-6 h-6 ${error ? 'text-destructive animate-shake' : 'text-primary'}`} />
+          </div>
 
-            <TabsContent value="signin">
-              <form onSubmit={handleSignIn} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email-signin">Email</Label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="email-signin"
-                      type="email"
-                      placeholder="you@example.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="pl-10"
-                      required
-                    />
-                  </div>
-                </div>
+          <InputOTP
+            maxLength={4}
+            value={pin}
+            onChange={handlePinComplete}
+            disabled={isLoading}
+          >
+            <InputOTPGroup className="gap-3">
+              <InputOTPSlot 
+                index={0} 
+                className={`w-14 h-14 text-2xl border-2 ${error ? 'border-destructive' : 'border-border'} bg-muted/30 rounded-xl`}
+              />
+              <InputOTPSlot 
+                index={1} 
+                className={`w-14 h-14 text-2xl border-2 ${error ? 'border-destructive' : 'border-border'} bg-muted/30 rounded-xl`}
+              />
+              <InputOTPSlot 
+                index={2} 
+                className={`w-14 h-14 text-2xl border-2 ${error ? 'border-destructive' : 'border-border'} bg-muted/30 rounded-xl`}
+              />
+              <InputOTPSlot 
+                index={3} 
+                className={`w-14 h-14 text-2xl border-2 ${error ? 'border-destructive' : 'border-border'} bg-muted/30 rounded-xl`}
+              />
+            </InputOTPGroup>
+          </InputOTP>
 
-                <div className="space-y-2">
-                  <Label htmlFor="password-signin">Password</Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="password-signin"
-                      type={showPassword ? "text" : "password"}
-                      placeholder="••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="pl-10 pr-10"
-                      required
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    >
-                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                  </div>
-                </div>
+          {isLoading && (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>Verifying...</span>
+            </div>
+          )}
 
-                <Button type="submit" className="w-full gradient-primary" disabled={isLoading}>
-                  {isLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  ) : null}
-                  Sign In
-                </Button>
-              </form>
-            </TabsContent>
-
-            <TabsContent value="signup">
-              <form onSubmit={handleSignUp} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email-signup">Email</Label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="email-signup"
-                      type="email"
-                      placeholder="you@example.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="pl-10"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="password-signup">Password</Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="password-signup"
-                      type={showPassword ? "text" : "password"}
-                      placeholder="••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="pl-10 pr-10"
-                      minLength={6}
-                      required
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    >
-                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                <Button type="submit" className="w-full gradient-primary" disabled={isLoading}>
-                  {isLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  ) : null}
-                  Create Account
-                </Button>
-              </form>
-            </TabsContent>
-          </Tabs>
+          <p className="text-xs text-muted-foreground text-center">
+            Your AI-powered PC assistant
+          </p>
         </CardContent>
       </Card>
     </div>
