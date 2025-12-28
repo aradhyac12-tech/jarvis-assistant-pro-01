@@ -37,7 +37,7 @@ import subprocess
 import platform
 import ctypes
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import base64
 import io
@@ -129,7 +129,7 @@ class JarvisAgent:
             supabase.table("devices").update({
                 "name": DEVICE_NAME,
                 "is_online": True,
-                "last_seen": datetime.utcnow().isoformat(),
+                "last_seen": datetime.now(timezone.utc).isoformat(),
                 "system_info": self._get_system_info(),
                 "current_volume": self._get_volume(),
                 "current_brightness": self._get_brightness(),
@@ -652,7 +652,7 @@ class JarvisAgent:
                     supabase.table("commands").update({
                         "status": "completed" if exec_result.get("success") else "failed",
                         "result": exec_result,
-                        "executed_at": datetime.utcnow().isoformat(),
+                        "executed_at": datetime.now(timezone.utc).isoformat(),
                     }).eq("id", command["id"]).execute()
                     
                     status = "✅" if exec_result.get("success") else "❌"
@@ -661,7 +661,7 @@ class JarvisAgent:
                 # Update device heartbeat
                 supabase.table("devices").update({
                     "is_online": True,
-                    "last_seen": datetime.utcnow().isoformat(),
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
                     "current_volume": self._get_volume(),
                     "current_brightness": self._get_brightness(),
                     "is_locked": self.is_locked,
