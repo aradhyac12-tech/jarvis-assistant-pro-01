@@ -1,0 +1,22 @@
+# JARVIS PC Agent Dependencies
+
+# Core
+supabase>=2.0.0
+asyncio-compat>=0.1.1
+
+# System Control (Windows)
+pycaw>=20230407          # Windows audio control
+comtypes>=1.2.0          # COM interface for Windows
+screen-brightness-control>=0.22.0  # Brightness control
+
+# Input Control
+pyautogui>=0.9.54        # Mouse & keyboard automation
+keyboard>=0.13.5         # Low-level keyboard events
+pyperclip>=1.8.2         # Clipboard access
+
+# System Info
+psutil>=5.9.0            # System and process utilities
+pillow>=10.0.0           # Screenshot handling
+
+# Optional: For music features
+# youtube-search-python>=1.6.6
