@@ -6,14 +6,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
 import { 
   Keyboard, Mouse, Clipboard, Monitor, Send, Copy, 
   ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
-  Loader2, Check, RefreshCw
+  Loader2, Check, RefreshCw, Play, Pause, SkipForward, SkipBack,
+  Volume2, ToggleLeft, ToggleRight
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { supabase } from "@/integrations/supabase/client";
 
 export default function RemoteControl() {
   const [textInput, setTextInput] = useState("");
@@ -22,52 +27,60 @@ export default function RemoteControl() {
   const [lastKey, setLastKey] = useState<string | null>(null);
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [isLoadingScreenshot, setIsLoadingScreenshot] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamFps, setStreamFps] = useState(5);
+  const [rawKeyMode, setRawKeyMode] = useState(false);
   const trackpadRef = useRef<HTMLDivElement>(null);
   const lastPosition = useRef({ x: 0, y: 0 });
+  const streamInterval = useRef<NodeJS.Timeout | null>(null);
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
 
-  // Handle physical keyboard input
+  // Handle physical keyboard input - both raw and text modes
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Only capture when textarea is not focused
       const target = e.target as HTMLElement;
+      // Only capture when not in text input
       if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") return;
       
       e.preventDefault();
       
       const key = e.key;
-      const keys: string[] = [];
+      const code = e.code;
       
-      if (e.ctrlKey) keys.push("ctrl");
-      if (e.altKey) keys.push("alt");
-      if (e.shiftKey && keys.length > 0) keys.push("shift");
-      if (e.metaKey) keys.push("win");
+      // Build key combo
+      const modifiers: string[] = [];
+      if (e.ctrlKey) modifiers.push("ctrl");
+      if (e.altKey) modifiers.push("alt");
+      if (e.shiftKey && modifiers.length > 0) modifiers.push("shift");
+      if (e.metaKey) modifiers.push("win");
       
-      if (keys.length > 0 && key !== "Control" && key !== "Alt" && key !== "Shift" && key !== "Meta") {
-        keys.push(key.toLowerCase());
-        sendCommand("key_combo", { keys });
-        setLastKey(keys.join("+"));
-      } else if (key.length === 1) {
-        sendCommand("type_text", { text: key });
+      if (modifiers.length > 0 && !["Control", "Alt", "Shift", "Meta"].includes(key)) {
+        modifiers.push(key.toLowerCase());
+        sendCommand("key_combo", { keys: modifiers });
+        setLastKey(modifiers.join("+"));
+      } else if (rawKeyMode || key.length > 1) {
+        // Raw mode or special keys
+        sendCommand("press_key", { key: key.toLowerCase() });
         setLastKey(key);
       } else {
-        sendCommand("press_key", { key: key.toLowerCase() });
+        // Text mode - send as typed text
+        sendCommand("type_text", { text: key });
         setLastKey(key);
       }
       
-      setTimeout(() => setLastKey(null), 500);
+      setTimeout(() => setLastKey(null), 300);
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [sendCommand]);
+  }, [sendCommand, rawKeyMode]);
 
   const sendKeyboard = async () => {
     if (!textInput.trim()) return;
     setIsSending(true);
     await sendCommand("type_text", { text: textInput });
-    toast({ title: "Text Sent", description: `Typed: ${textInput.slice(0, 30)}${textInput.length > 30 ? "..." : ""}` });
+    toast({ title: "Text Sent", description: `Typed: ${textInput.slice(0, 30)}...` });
     setTextInput("");
     setIsSending(false);
   };
@@ -82,7 +95,7 @@ export default function RemoteControl() {
       await sendCommand("press_key", { key: key.toLowerCase() });
     }
     
-    setTimeout(() => setLastKey(null), 300);
+    setTimeout(() => setLastKey(null), 200);
   };
 
   const quickKeys = [
@@ -90,21 +103,21 @@ export default function RemoteControl() {
     { label: "Esc", key: "escape" },
     { label: "Tab", key: "tab" },
     { label: "Space", key: "space" },
-    { label: "Backspace", key: "backspace" },
-    { label: "Delete", key: "delete" },
+    { label: "⌫", key: "backspace" },
+    { label: "Del", key: "delete" },
     { label: "Ctrl+C", key: "ctrl+c" },
     { label: "Ctrl+V", key: "ctrl+v" },
     { label: "Ctrl+Z", key: "ctrl+z" },
+    { label: "Ctrl+S", key: "ctrl+s" },
     { label: "Alt+Tab", key: "alt+tab" },
     { label: "Win", key: "win" },
     { label: "Ctrl+A", key: "ctrl+a" },
     { label: "F5", key: "f5" },
     { label: "F11", key: "f11" },
-    { label: "Home", key: "home" },
-    { label: "End", key: "end" },
+    { label: "PrtSc", key: "printscreen" },
   ];
 
-  // Trackpad handling
+  // Trackpad handling with reduced lag
   const handleTrackpadStart = useCallback((e: React.TouchEvent | React.MouseEvent) => {
     const point = "touches" in e ? e.touches[0] : e;
     lastPosition.current = { x: point.clientX, y: point.clientY };
@@ -116,33 +129,38 @@ export default function RemoteControl() {
     }
     
     const point = "touches" in e ? e.touches[0] : e;
-    const deltaX = (point.clientX - lastPosition.current.x) * 2;
-    const deltaY = (point.clientY - lastPosition.current.y) * 2;
+    const deltaX = (point.clientX - lastPosition.current.x) * 2.5;
+    const deltaY = (point.clientY - lastPosition.current.y) * 2.5;
     
     lastPosition.current = { x: point.clientX, y: point.clientY };
     
-    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
       sendCommand("mouse_move", { x: Math.round(deltaX), y: Math.round(deltaY), relative: true });
     }
   }, [sendCommand]);
 
   const handleMouseClick = async (button: string = "left", clicks: number = 1) => {
     await sendCommand("mouse_click", { button, clicks });
-    toast({ title: "Click", description: `${button} click` });
   };
 
   const handleMouseScroll = async (direction: "up" | "down") => {
-    await sendCommand("mouse_scroll", { amount: direction === "up" ? 3 : -3 });
+    await sendCommand("mouse_scroll", { amount: direction === "up" ? 5 : -5 });
   };
 
   const handleArrowMove = async (direction: "up" | "down" | "left" | "right") => {
     const moves: Record<string, { x: number; y: number }> = {
-      up: { x: 0, y: -20 },
-      down: { x: 0, y: 20 },
-      left: { x: -20, y: 0 },
-      right: { x: 20, y: 0 },
+      up: { x: 0, y: -30 },
+      down: { x: 0, y: 30 },
+      left: { x: -30, y: 0 },
+      right: { x: 30, y: 0 },
     };
     await sendCommand("mouse_move", { ...moves[direction], relative: true });
+  };
+
+  // Media controls
+  const handleMediaControl = async (action: string) => {
+    await sendCommand("media_control", { action });
+    toast({ title: "Media", description: action.replace("_", " ") });
   };
 
   // Clipboard
@@ -154,29 +172,82 @@ export default function RemoteControl() {
 
   const getClipboardFromPC = async () => {
     const result = await sendCommand("get_clipboard", {});
-    if (result.success) {
-      toast({ title: "Getting Clipboard", description: "Fetching from PC..." });
+    // Listen for command result
+    toast({ title: "Getting Clipboard", description: "Fetching from PC..." });
+  };
+
+  // Screenshot / Streaming
+  const takeScreenshot = async () => {
+    setIsLoadingScreenshot(true);
+    await sendCommand("screenshot", { quality: 75, scale: 0.6 });
+    
+    // Poll for result
+    setTimeout(async () => {
+      const { data } = await supabase
+        .from("commands")
+        .select("result")
+        .eq("command_type", "screenshot")
+        .eq("status", "completed")
+        .order("executed_at", { ascending: false })
+        .limit(1);
+      
+      const result = data?.[0]?.result as Record<string, unknown> | null;
+      if (result?.image) {
+        setScreenshot(result.image as string);
+      }
+      setIsLoadingScreenshot(false);
+    }, 1500);
+  };
+
+  const toggleStreaming = async () => {
+    if (isStreaming) {
+      setIsStreaming(false);
+      if (streamInterval.current) {
+        clearInterval(streamInterval.current);
+        streamInterval.current = null;
+      }
+      await sendCommand("stop_stream", {});
+    } else {
+      setIsStreaming(true);
+      await sendCommand("start_stream", { fps: streamFps, quality: 40 });
+      
+      // Start polling for frames
+      streamInterval.current = setInterval(async () => {
+        await sendCommand("get_frame", {});
+        
+        const { data } = await supabase
+          .from("commands")
+          .select("result")
+          .eq("command_type", "get_frame")
+          .eq("status", "completed")
+          .order("executed_at", { ascending: false })
+          .limit(1);
+        
+        const result = data?.[0]?.result as Record<string, unknown> | null;
+        if (result?.image) {
+          setScreenshot(result.image as string);
+        }
+      }, 1000 / streamFps);
     }
   };
 
-  // Screenshot
-  const takeScreenshot = async () => {
-    setIsLoadingScreenshot(true);
-    const result = await sendCommand("screenshot", {});
-    if (result.success) {
-      toast({ title: "Screenshot Requested", description: "Check back in a few seconds" });
-    }
-    setIsLoadingScreenshot(false);
-  };
+  // Cleanup streaming on unmount
+  useEffect(() => {
+    return () => {
+      if (streamInterval.current) {
+        clearInterval(streamInterval.current);
+      }
+    };
+  }, []);
 
   return (
     <DashboardLayout>
-      <ScrollArea className="h-[calc(100vh-6rem)]">
-        <div className="space-y-6 animate-fade-in pr-4">
+      <ScrollArea className="h-[calc(100vh-2rem)]">
+        <div className="space-y-4 animate-fade-in pr-4 pt-12 md:pt-0">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl md:text-3xl font-bold neon-text">Remote Control</h1>
-              <p className="text-muted-foreground text-sm md:text-base">Control your PC remotely</p>
+              <p className="text-muted-foreground text-sm">Control your PC remotely</p>
             </div>
             {lastKey && (
               <Badge variant="secondary" className="bg-neon-green/10 text-neon-green animate-pulse">
@@ -186,8 +257,37 @@ export default function RemoteControl() {
             )}
           </div>
 
+          {/* Media Controls Bar */}
+          <Card className="glass-dark border-border/50">
+            <CardContent className="p-3">
+              <div className="flex items-center justify-center gap-2 flex-wrap">
+                <Button variant="secondary" size="sm" onClick={() => handleMediaControl("previous")}>
+                  <SkipBack className="h-4 w-4" />
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => handleMediaControl("play_pause")}>
+                  <Play className="h-4 w-4" />
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => handleMediaControl("next")}>
+                  <SkipForward className="h-4 w-4" />
+                </Button>
+                <div className="w-px h-6 bg-border mx-2" />
+                <Button variant="secondary" size="sm" onClick={() => handleMediaControl("volume_down")}>
+                  <Volume2 className="h-4 w-4" />
+                  <ArrowDown className="h-3 w-3" />
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => handleMediaControl("mute")}>
+                  <Volume2 className="h-4 w-4" />
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => handleMediaControl("volume_up")}>
+                  <Volume2 className="h-4 w-4" />
+                  <ArrowUp className="h-3 w-3" />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
           <Tabs defaultValue="keyboard" className="w-full">
-            <TabsList className="grid w-full grid-cols-4 mb-4 md:mb-6">
+            <TabsList className="grid w-full grid-cols-4 mb-4">
               <TabsTrigger value="keyboard" className="text-xs md:text-sm">
                 <Keyboard className="h-4 w-4 md:mr-2" />
                 <span className="hidden md:inline">Keyboard</span>
@@ -209,10 +309,22 @@ export default function RemoteControl() {
             <TabsContent value="keyboard">
               <Card className="glass-dark border-border/50">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg md:text-xl">Virtual Keyboard</CardTitle>
-                  <CardDescription className="text-sm">
-                    Type here or use your physical keyboard (when not in text field)
-                  </CardDescription>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg">Virtual Keyboard</CardTitle>
+                      <CardDescription className="text-sm">
+                        Type or use your physical keyboard
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="raw-mode" className="text-sm">Raw Keys</Label>
+                      <Switch 
+                        id="raw-mode" 
+                        checked={rawKeyMode} 
+                        onCheckedChange={setRawKeyMode}
+                      />
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex gap-2">
@@ -220,7 +332,7 @@ export default function RemoteControl() {
                       placeholder="Type here to send to PC..." 
                       value={textInput} 
                       onChange={(e) => setTextInput(e.target.value)} 
-                      className="min-h-[80px] md:min-h-[100px] text-sm md:text-base"
+                      className="min-h-[80px] text-sm"
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && e.ctrlKey) {
                           e.preventDefault();
@@ -251,7 +363,7 @@ export default function RemoteControl() {
                           variant="secondary" 
                           size="sm" 
                           className={cn(
-                            "text-xs md:text-sm transition-all",
+                            "text-xs transition-all",
                             lastKey === k.label && "bg-neon-green/20 border-neon-green"
                           )}
                           onClick={() => sendKey(k.key)}
@@ -261,6 +373,29 @@ export default function RemoteControl() {
                       ))}
                     </div>
                   </div>
+
+                  {/* Arrow keys for text navigation */}
+                  <div className="border-t border-border/30 pt-4">
+                    <p className="text-sm text-muted-foreground mb-3">Navigation</p>
+                    <div className="flex justify-center">
+                      <div className="grid grid-cols-3 gap-1">
+                        <div />
+                        <Button variant="secondary" size="sm" onClick={() => sendKey("up")}>
+                          <ArrowUp className="h-4 w-4" />
+                        </Button>
+                        <div />
+                        <Button variant="secondary" size="sm" onClick={() => sendKey("left")}>
+                          <ArrowLeft className="h-4 w-4" />
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={() => sendKey("down")}>
+                          <ArrowDown className="h-4 w-4" />
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={() => sendKey("right")}>
+                          <ArrowRight className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -268,25 +403,25 @@ export default function RemoteControl() {
             <TabsContent value="trackpad">
               <Card className="glass-dark border-border/50">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg md:text-xl">Virtual Trackpad</CardTitle>
-                  <CardDescription className="text-sm">Drag to move mouse, tap buttons to click</CardDescription>
+                  <CardTitle className="text-lg">Virtual Trackpad</CardTitle>
+                  <CardDescription className="text-sm">Drag to move mouse, tap to click</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div 
                     ref={trackpadRef}
-                    className="aspect-video bg-secondary/30 rounded-xl border-2 border-dashed border-border cursor-crosshair touch-none select-none flex items-center justify-center"
+                    className="aspect-video bg-secondary/30 rounded-xl border-2 border-dashed border-border cursor-crosshair touch-none select-none flex items-center justify-center min-h-[200px]"
                     onMouseDown={handleTrackpadStart}
                     onMouseMove={handleTrackpadMove}
                     onTouchStart={handleTrackpadStart}
                     onTouchMove={handleTrackpadMove}
                   >
-                    <p className="text-muted-foreground text-sm md:text-base pointer-events-none">
+                    <p className="text-muted-foreground text-sm pointer-events-none">
                       Drag here to move mouse
                     </p>
                   </div>
                   
                   <div className="grid grid-cols-2 gap-4">
-                    {/* Arrow keys */}
+                    {/* Arrow keys for cursor */}
                     <div className="flex flex-col items-center gap-2">
                       <p className="text-xs text-muted-foreground mb-1">Move Cursor</p>
                       <div className="grid grid-cols-3 gap-1">
@@ -299,7 +434,7 @@ export default function RemoteControl() {
                           <ArrowLeft className="h-4 w-4" />
                         </Button>
                         <Button variant="secondary" size="sm" onClick={() => handleMouseClick("left")}>
-                          Click
+                          •
                         </Button>
                         <Button variant="secondary" size="sm" onClick={() => handleArrowMove("right")}>
                           <ArrowRight className="h-4 w-4" />
@@ -316,23 +451,23 @@ export default function RemoteControl() {
                     <div className="flex flex-col items-center gap-2">
                       <p className="text-xs text-muted-foreground mb-1">Click Actions</p>
                       <div className="grid grid-cols-2 gap-2 w-full">
-                        <Button variant="secondary" onClick={() => handleMouseClick("left")}>
-                          Left Click
+                        <Button variant="secondary" size="sm" onClick={() => handleMouseClick("left")}>
+                          Left
                         </Button>
-                        <Button variant="secondary" onClick={() => handleMouseClick("right")}>
-                          Right Click
+                        <Button variant="secondary" size="sm" onClick={() => handleMouseClick("right")}>
+                          Right
                         </Button>
-                        <Button variant="secondary" onClick={() => handleMouseClick("left", 2)}>
-                          Double Click
+                        <Button variant="secondary" size="sm" onClick={() => handleMouseClick("left", 2)}>
+                          Double
                         </Button>
-                        <Button variant="secondary" onClick={() => handleMouseClick("middle")}>
-                          Middle Click
+                        <Button variant="secondary" size="sm" onClick={() => handleMouseClick("middle")}>
+                          Middle
                         </Button>
-                        <Button variant="secondary" onClick={() => handleMouseScroll("up")}>
-                          Scroll Up
+                        <Button variant="secondary" size="sm" onClick={() => handleMouseScroll("up")}>
+                          Scroll ↑
                         </Button>
-                        <Button variant="secondary" onClick={() => handleMouseScroll("down")}>
-                          Scroll Down
+                        <Button variant="secondary" size="sm" onClick={() => handleMouseScroll("down")}>
+                          Scroll ↓
                         </Button>
                       </div>
                     </div>
@@ -344,7 +479,7 @@ export default function RemoteControl() {
             <TabsContent value="clipboard">
               <Card className="glass-dark border-border/50">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg md:text-xl">Clipboard Sync</CardTitle>
+                  <CardTitle className="text-lg">Clipboard Sync</CardTitle>
                   <CardDescription className="text-sm">Share clipboard between devices</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -352,7 +487,7 @@ export default function RemoteControl() {
                     placeholder="Paste text here to send to PC..." 
                     value={clipboardText} 
                     onChange={(e) => setClipboardText(e.target.value)} 
-                    className="min-h-[120px] md:min-h-[150px] text-sm md:text-base"
+                    className="min-h-[120px] text-sm"
                   />
                   <div className="flex gap-2">
                     <Button 
@@ -375,43 +510,72 @@ export default function RemoteControl() {
             <TabsContent value="screen">
               <Card className="glass-dark border-border/50">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg md:text-xl">Screen View</CardTitle>
-                  <CardDescription className="text-sm">View your PC screen</CardDescription>
+                  <CardTitle className="text-lg">Screen Mirror</CardTitle>
+                  <CardDescription className="text-sm">View your PC screen in real-time</CardDescription>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
                   <div className="aspect-video bg-secondary/30 rounded-xl border border-border flex items-center justify-center overflow-hidden">
                     {screenshot ? (
-                      <img src={`data:image/jpeg;base64,${screenshot}`} alt="Screenshot" className="w-full h-full object-contain" />
+                      <img 
+                        src={`data:image/jpeg;base64,${screenshot}`} 
+                        alt="Screenshot" 
+                        className="w-full h-full object-contain" 
+                      />
                     ) : (
                       <div className="text-center p-4">
-                        <Monitor className="h-12 w-12 md:h-16 md:w-16 text-muted-foreground mx-auto mb-4" />
-                        <p className="text-muted-foreground text-sm md:text-base">Click to take screenshot</p>
-                        <Button 
-                          className="mt-4 gradient-primary" 
-                          onClick={takeScreenshot}
-                          disabled={isLoadingScreenshot}
-                        >
-                          {isLoadingScreenshot ? (
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          ) : (
-                            <RefreshCw className="h-4 w-4 mr-2" />
-                          )}
-                          Take Screenshot
-                        </Button>
+                        <Monitor className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                        <p className="text-muted-foreground text-sm">
+                          {isStreaming ? "Starting stream..." : "Click to take screenshot or start streaming"}
+                        </p>
                       </div>
                     )}
                   </div>
-                  {screenshot && (
+                  
+                  <div className="flex items-center gap-4 flex-wrap">
                     <Button 
-                      className="w-full mt-4" 
-                      variant="secondary"
                       onClick={takeScreenshot}
-                      disabled={isLoadingScreenshot}
+                      disabled={isLoadingScreenshot || isStreaming}
+                      variant="secondary"
                     >
-                      <RefreshCw className={cn("h-4 w-4 mr-2", isLoadingScreenshot && "animate-spin")} />
-                      Refresh Screenshot
+                      {isLoadingScreenshot ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                      )}
+                      Screenshot
                     </Button>
-                  )}
+                    
+                    <Button 
+                      onClick={toggleStreaming}
+                      className={isStreaming ? "bg-destructive hover:bg-destructive/90" : "gradient-primary"}
+                    >
+                      {isStreaming ? (
+                        <>
+                          <Pause className="h-4 w-4 mr-2" />
+                          Stop Stream
+                        </>
+                      ) : (
+                        <>
+                          <Play className="h-4 w-4 mr-2" />
+                          Start Stream
+                        </>
+                      )}
+                    </Button>
+                    
+                    <div className="flex items-center gap-2">
+                      <Label className="text-sm">FPS:</Label>
+                      <Slider
+                        value={[streamFps]}
+                        onValueChange={([v]) => setStreamFps(v)}
+                        min={1}
+                        max={10}
+                        step={1}
+                        className="w-24"
+                        disabled={isStreaming}
+                      />
+                      <span className="text-sm w-6">{streamFps}</span>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>

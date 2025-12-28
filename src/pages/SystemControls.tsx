@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Progress } from "@/components/ui/progress";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,6 +38,11 @@ import {
   Lock,
   Unlock,
   Monitor,
+  Cpu,
+  HardDrive,
+  Zap,
+  RefreshCw,
+  Battery,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -44,6 +50,18 @@ import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { supabase } from "@/integrations/supabase/client";
 
 const UNLOCK_PIN = "1212";
+
+interface SystemStats {
+  cpu_percent?: number;
+  memory_percent?: number;
+  memory_used_gb?: number;
+  memory_total_gb?: number;
+  disk_percent?: number;
+  disk_used_gb?: number;
+  disk_total_gb?: number;
+  battery_percent?: number;
+  battery_plugged?: boolean;
+}
 
 export default function SystemControls() {
   const [volume, setVolume] = useState(50);
@@ -53,6 +71,8 @@ export default function SystemControls() {
   const [showPinDialog, setShowPinDialog] = useState(false);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
+  const [systemStats, setSystemStats] = useState<SystemStats>({});
+  const [isLoadingStats, setIsLoadingStats] = useState(false);
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
 
@@ -73,8 +93,8 @@ export default function SystemControls() {
     };
 
     loadDeviceState();
+    fetchSystemStats();
 
-    // Subscribe to device updates
     const channel = supabase
       .channel("device-controls")
       .on(
@@ -94,17 +114,47 @@ export default function SystemControls() {
     };
   }, []);
 
-  const handleVolumeChange = (value: number[]) => {
-    const newVolume = value[0];
-    setVolume(newVolume);
-    sendCommand("set_volume", { level: newVolume });
+  const fetchSystemStats = async () => {
+    setIsLoadingStats(true);
+    await sendCommand("get_system_stats", {});
+    
+    // Poll for result
+    setTimeout(async () => {
+      const { data } = await supabase
+        .from("commands")
+        .select("result")
+        .eq("command_type", "get_system_stats")
+        .eq("status", "completed")
+        .order("executed_at", { ascending: false })
+        .limit(1);
+      
+      const result = data?.[0]?.result as Record<string, unknown> | null;
+      if (result?.success) {
+        setSystemStats(result as unknown as SystemStats);
+      }
+      setIsLoadingStats(false);
+    }, 1000);
   };
 
-  const handleBrightnessChange = (value: number[]) => {
+  // Debounced volume change
+  const handleVolumeChange = useCallback((value: number[]) => {
+    const newVolume = value[0];
+    setVolume(newVolume);
+  }, []);
+
+  const handleVolumeCommit = useCallback((value: number[]) => {
+    sendCommand("set_volume", { level: value[0] });
+  }, [sendCommand]);
+
+  // Debounced brightness change
+  const handleBrightnessChange = useCallback((value: number[]) => {
     const newBrightness = value[0];
     setBrightness(newBrightness);
-    sendCommand("set_brightness", { level: newBrightness });
-  };
+  }, []);
+
+  const handleBrightnessCommit = useCallback((value: number[]) => {
+    sendCommand("set_brightness", { level: value[0] });
+  }, [sendCommand]);
 
   const handleMuteToggle = () => {
     const newMuted = !isMuted;
@@ -133,11 +183,16 @@ export default function SystemControls() {
       setPinError(false);
       setShowPinDialog(false);
       sendCommand("unlock", { pin: UNLOCK_PIN });
-      toast({ title: "PC Unlocked", description: "Your PC has been unlocked" });
+      toast({ title: "Unlocking PC", description: "Smart unlock sequence initiated" });
     } else {
       setPinError(true);
       setPinInput("");
     }
+  };
+
+  const handleBoost = async () => {
+    await sendCommand("boost", {});
+    toast({ title: "Boost Mode", description: "Optimizing PC performance..." });
   };
 
   const powerActions = [
@@ -149,25 +204,87 @@ export default function SystemControls() {
 
   return (
     <DashboardLayout>
-      <ScrollArea className="h-[calc(100vh-6rem)]">
-        <div className="space-y-6 animate-fade-in pr-4">
+      <ScrollArea className="h-[calc(100vh-2rem)]">
+        <div className="space-y-4 animate-fade-in pr-4 pt-12 md:pt-0">
           {/* Header */}
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold neon-text">System Controls</h1>
-            <p className="text-muted-foreground text-sm md:text-base">Manage your PC settings remotely</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold neon-text">System Controls</h1>
+              <p className="text-muted-foreground text-sm">Manage your PC settings remotely</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={fetchSystemStats} disabled={isLoadingStats}>
+              <RefreshCw className={cn("h-4 w-4 mr-2", isLoadingStats && "animate-spin")} />
+              Refresh
+            </Button>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+          {/* System Stats */}
+          {Object.keys(systemStats).length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Card className="glass-dark border-border/50">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Cpu className="h-4 w-4 text-neon-blue" />
+                    <span className="text-sm">CPU</span>
+                  </div>
+                  <p className="text-2xl font-bold text-neon-blue">{systemStats.cpu_percent || 0}%</p>
+                  <Progress value={systemStats.cpu_percent || 0} className="mt-2 h-1" />
+                </CardContent>
+              </Card>
+              
+              <Card className="glass-dark border-border/50">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Zap className="h-4 w-4 text-neon-purple" />
+                    <span className="text-sm">RAM</span>
+                  </div>
+                  <p className="text-2xl font-bold text-neon-purple">{systemStats.memory_percent || 0}%</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {systemStats.memory_used_gb || 0} / {systemStats.memory_total_gb || 0} GB
+                  </p>
+                </CardContent>
+              </Card>
+              
+              <Card className="glass-dark border-border/50">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <HardDrive className="h-4 w-4 text-neon-orange" />
+                    <span className="text-sm">Disk</span>
+                  </div>
+                  <p className="text-2xl font-bold text-neon-orange">{systemStats.disk_percent || 0}%</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {systemStats.disk_used_gb || 0} / {systemStats.disk_total_gb || 0} GB
+                  </p>
+                </CardContent>
+              </Card>
+              
+              <Card className="glass-dark border-border/50">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Battery className="h-4 w-4 text-neon-green" />
+                    <span className="text-sm">Battery</span>
+                  </div>
+                  <p className="text-2xl font-bold text-neon-green">
+                    {systemStats.battery_percent !== null ? `${systemStats.battery_percent}%` : "N/A"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {systemStats.battery_plugged ? "⚡ Charging" : "On battery"}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Volume Control */}
             <Card className="glass-dark border-border/50">
               <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-3 text-lg md:text-xl">
+                <CardTitle className="flex items-center gap-3 text-lg">
                   <div className="p-2 rounded-lg bg-neon-blue/10">
                     <Volume2 className="h-5 w-5 text-neon-blue" />
                   </div>
                   Volume Control
                 </CardTitle>
-                <CardDescription className="text-sm">Adjust your PC's volume level</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -177,6 +294,7 @@ export default function SystemControls() {
                 <Slider
                   value={[isMuted ? 0 : volume]}
                   onValueChange={handleVolumeChange}
+                  onValueCommit={handleVolumeCommit}
                   max={100}
                   step={5}
                   className="cursor-pointer"
@@ -203,13 +321,12 @@ export default function SystemControls() {
             {/* Brightness Control */}
             <Card className="glass-dark border-border/50">
               <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-3 text-lg md:text-xl">
+                <CardTitle className="flex items-center gap-3 text-lg">
                   <div className="p-2 rounded-lg bg-neon-orange/10">
                     <Sun className="h-5 w-5 text-neon-orange" />
                   </div>
                   Brightness Control
                 </CardTitle>
-                <CardDescription className="text-sm">Adjust your screen brightness</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -219,6 +336,8 @@ export default function SystemControls() {
                 <Slider
                   value={[brightness]}
                   onValueChange={handleBrightnessChange}
+                  onValueCommit={handleBrightnessCommit}
+                  min={0}
                   max={100}
                   step={5}
                   className="cursor-pointer"
@@ -228,11 +347,21 @@ export default function SystemControls() {
                     variant="secondary" 
                     className="flex-1" 
                     onClick={() => {
-                      setBrightness(25);
-                      sendCommand("set_brightness", { level: 25 });
+                      setBrightness(0);
+                      sendCommand("set_brightness", { level: 0 });
                     }}
                   >
-                    <Moon className="h-4 w-4 mr-2" /> Dim
+                    <Moon className="h-4 w-4 mr-2" /> Off
+                  </Button>
+                  <Button 
+                    variant="secondary" 
+                    className="flex-1" 
+                    onClick={() => {
+                      setBrightness(50);
+                      sendCommand("set_brightness", { level: 50 });
+                    }}
+                  >
+                    <Sun className="h-4 w-4 mr-2" /> 50%
                   </Button>
                   <Button 
                     variant="secondary" 
@@ -251,7 +380,7 @@ export default function SystemControls() {
             {/* Lock/Unlock Control */}
             <Card className="glass-dark border-border/50">
               <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-3 text-lg md:text-xl">
+                <CardTitle className="flex items-center gap-3 text-lg">
                   <div className={cn("p-2 rounded-lg", isLocked ? "bg-neon-pink/10" : "bg-neon-green/10")}>
                     {isLocked ? (
                       <Lock className="h-5 w-5 text-neon-pink" />
@@ -266,17 +395,17 @@ export default function SystemControls() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center justify-between p-3 md:p-4 rounded-lg bg-secondary">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
                   <div className="flex items-center gap-3">
-                    <Monitor className="h-6 w-6 md:h-8 md:w-8 text-muted-foreground" />
+                    <Monitor className="h-6 w-6 text-muted-foreground" />
                     <div>
-                      <p className="font-medium text-sm md:text-base">Lock Status</p>
-                      <p className={cn("text-xs md:text-sm", isLocked ? "text-neon-pink" : "text-neon-green")}>
+                      <p className="font-medium text-sm">Lock Status</p>
+                      <p className={cn("text-xs", isLocked ? "text-neon-pink" : "text-neon-green")}>
                         {isLocked ? "Locked" : "Unlocked"}
                       </p>
                     </div>
                   </div>
-                  <div className={cn("w-3 h-3 md:w-4 md:h-4 rounded-full", isLocked ? "bg-neon-pink" : "bg-neon-green")} />
+                  <div className={cn("w-3 h-3 rounded-full", isLocked ? "bg-neon-pink" : "bg-neon-green")} />
                 </div>
 
                 {isLocked ? (
@@ -284,7 +413,7 @@ export default function SystemControls() {
                     className="w-full gradient-primary"
                     onClick={() => setShowPinDialog(true)}
                   >
-                    <Unlock className="h-4 w-4 mr-2" /> Unlock PC
+                    <Unlock className="h-4 w-4 mr-2" /> Smart Unlock
                   </Button>
                 ) : (
                   <Button variant="secondary" className="w-full" onClick={handleLock}>
@@ -294,25 +423,33 @@ export default function SystemControls() {
               </CardContent>
             </Card>
 
-            {/* Power Options */}
+            {/* Power Options + Boost */}
             <Card className="glass-dark border-border/50">
               <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-3 text-lg md:text-xl">
+                <CardTitle className="flex items-center gap-3 text-lg">
                   <div className="p-2 rounded-lg bg-destructive/10">
                     <Power className="h-5 w-5 text-destructive" />
                   </div>
                   Power Options
                 </CardTitle>
-                <CardDescription className="text-sm">Control your PC's power state</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 gap-2 md:gap-3">
+              <CardContent className="space-y-3">
+                <Button 
+                  variant="secondary" 
+                  className="w-full bg-neon-green/10 hover:bg-neon-green/20 text-neon-green border-neon-green/30"
+                  onClick={handleBoost}
+                >
+                  <Zap className="h-4 w-4 mr-2" />
+                  Boost PC (Refresh Explorer + Clear Temp)
+                </Button>
+                
+                <div className="grid grid-cols-2 gap-2">
                   {powerActions.map((action) => (
                     <AlertDialog key={action.command}>
                       <AlertDialogTrigger asChild>
-                        <Button variant="secondary" className="h-auto py-3 md:py-4 flex flex-col gap-1 md:gap-2 hover-scale">
-                          <action.icon className={cn("h-5 w-5 md:h-6 md:w-6", action.color)} />
-                          <span className="text-xs md:text-sm">{action.title}</span>
+                        <Button variant="secondary" className="h-auto py-3 flex flex-col gap-1">
+                          <action.icon className={cn("h-5 w-5", action.color)} />
+                          <span className="text-xs">{action.title}</span>
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent className="glass-dark border-border/50 max-w-[90vw] md:max-w-md">
@@ -350,10 +487,10 @@ export default function SystemControls() {
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <Unlock className="h-5 w-5 text-primary" />
-                  Enter PIN to Unlock
+                  Smart Unlock
                 </DialogTitle>
                 <DialogDescription>
-                  Enter your 4-digit PIN to unlock the PC
+                  Enter your PIN to unlock. This will wake the screen and type the PIN.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
