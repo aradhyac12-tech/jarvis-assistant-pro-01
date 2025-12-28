@@ -17,6 +17,7 @@ pyperclip>=1.8.2         # Clipboard access
 # System Info
 psutil>=5.9.0            # System and process utilities
 pillow>=10.0.0           # Screenshot handling
+mss>=9.0.0               # Fast multi-monitor screenshots
 
 # Optional: For music features
 # youtube-search-python>=1.6.6
