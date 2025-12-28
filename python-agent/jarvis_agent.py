@@ -1,5 +1,5 @@
 """
-JARVIS PC Agent - Python Client v2.1
+JARVIS PC Agent - Python Client v2.2
 =====================================
 Runs on your PC to execute commands from the Jarvis web dashboard.
 
@@ -8,7 +8,7 @@ SETUP INSTRUCTIONS:
 1. Install Python 3.8+ from https://python.org
 
 2. Install dependencies:
-   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss
+   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss pyaudio opencv-python websockets
 
 3. Run the agent:
    python jarvis_agent.py
@@ -30,6 +30,8 @@ FEATURES:
 - System Stats: CPU, memory, disk, battery monitoring
 - Media Controls: Play/pause, next, previous, volume (Windows-specific)
 - Boost Mode: Refresh explorer, clear temp, optimize
+- Audio Relay: Stream audio bidirectionally between phone and PC
+- Camera Streaming: Stream PC camera to phone
 """
 
 import os
@@ -58,7 +60,7 @@ try:
 except ImportError as e:
     print(f"❌ Missing dependency: {e}")
     print("\n📦 Install required packages with:")
-    print("   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss")
+    print("   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss pyaudio opencv-python websockets")
     sys.exit(1)
 
 # Fast screenshot using mss
@@ -76,6 +78,30 @@ try:
 except ImportError:
     HAS_KEYBOARD = False
     print("⚠️  keyboard module not installed - some features limited")
+
+# Audio streaming
+try:
+    import pyaudio
+    HAS_PYAUDIO = True
+except ImportError:
+    HAS_PYAUDIO = False
+    print("⚠️  pyaudio not installed - audio relay disabled")
+
+# Camera streaming
+try:
+    import cv2
+    HAS_OPENCV = True
+except ImportError:
+    HAS_OPENCV = False
+    print("⚠️  opencv-python not installed - camera streaming disabled")
+
+# WebSocket
+try:
+    import websockets
+    HAS_WEBSOCKETS = True
+except ImportError:
+    HAS_WEBSOCKETS = False
+    print("⚠️  websockets not installed - real-time streaming disabled")
 
 # Windows-specific imports
 if platform.system() == "Windows":
@@ -100,8 +126,9 @@ else:
 
 
 # ============== CONFIGURATION ==============
-SUPABASE_URL = "https://pnndpactueqrbrwrxjjj.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBubmRwYWN0dWVxcmJyd3J4ampqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5Mzk4MTAsImV4cCI6MjA4MjUxNTgxMH0.w_w_mUfX1gnC9nj_UDXRA-JjY8fGYTK5O0YDl2tBX_8"
+SUPABASE_URL = "https://gatcapfurmevdesilwco.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdhdGNhcGZ1cm1ldmRlc2lsd2NvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5NTQ0ODAsImV4cCI6MjA4MjUzMDQ4MH0.ZhGMwqiDgPkmAgc7ij5sxFU4dVHFZbDU-i4A0CUtg0A"
+AUDIO_RELAY_WS_URL = "wss://gatcapfurmevdesilwco.supabase.co/functions/v1/audio-relay"
 
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
@@ -116,6 +143,276 @@ pyautogui.FAILSAFE = False
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+class AudioStreamer:
+    """Handles bidirectional audio streaming between phone and PC."""
+    
+    def __init__(self):
+        self.running = False
+        self.ws = None
+        self.session_id = None
+        self.direction = "phone_to_pc"  # or "pc_to_phone" or "bidirectional"
+        
+        # Audio settings
+        self.sample_rate = 44100
+        self.channels = 1
+        self.chunk_size = 1024
+        self.format = pyaudio.paInt16 if HAS_PYAUDIO else None
+        
+        # PyAudio instances
+        self.pa = None
+        self.input_stream = None
+        self.output_stream = None
+        
+    async def connect(self, session_id: str, direction: str = "phone_to_pc"):
+        """Connect to the audio relay WebSocket."""
+        if not HAS_WEBSOCKETS:
+            print("❌ WebSockets not available")
+            return False
+            
+        self.session_id = session_id
+        self.direction = direction
+        
+        ws_url = f"{AUDIO_RELAY_WS_URL}?sessionId={session_id}&type=pc&direction={direction}"
+        print(f"🔊 Connecting to audio relay: {ws_url}")
+        
+        try:
+            self.ws = await websockets.connect(ws_url)
+            self.running = True
+            print(f"✅ Audio relay connected (direction: {direction})")
+            return True
+        except Exception as e:
+            print(f"❌ Audio relay connection failed: {e}")
+            return False
+    
+    async def start_playback(self):
+        """Start playing received audio through PC speakers."""
+        if not HAS_PYAUDIO:
+            print("❌ PyAudio not available for playback")
+            return
+            
+        try:
+            self.pa = pyaudio.PyAudio()
+            self.output_stream = self.pa.open(
+                format=self.format,
+                channels=self.channels,
+                rate=self.sample_rate,
+                output=True,
+                frames_per_buffer=self.chunk_size
+            )
+            
+            print("🔊 PC speaker playback started")
+            
+            while self.running and self.ws:
+                try:
+                    message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
+                    
+                    if isinstance(message, bytes):
+                        # Play audio data
+                        self.output_stream.write(message)
+                    elif isinstance(message, str):
+                        data = json.loads(message)
+                        if data.get("type") == "peer_disconnected":
+                            print("📱 Phone disconnected from audio relay")
+                        elif data.get("type") == "audio"):
+                            # Base64 encoded audio
+                            audio_bytes = base64.b64decode(data["data"])
+                            self.output_stream.write(audio_bytes)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    if self.running:
+                        print(f"⚠️ Playback error: {e}")
+                    break
+                    
+        except Exception as e:
+            print(f"❌ Playback setup error: {e}")
+        finally:
+            self._cleanup_output()
+    
+    async def start_capture(self):
+        """Start capturing PC mic and sending to phone."""
+        if not HAS_PYAUDIO:
+            print("❌ PyAudio not available for capture")
+            return
+            
+        try:
+            self.pa = self.pa or pyaudio.PyAudio()
+            self.input_stream = self.pa.open(
+                format=self.format,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size
+            )
+            
+            print("🎤 PC microphone capture started")
+            
+            while self.running and self.ws:
+                try:
+                    # Read audio from mic
+                    audio_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
+                    
+                    # Send as binary WebSocket message
+                    await self.ws.send(audio_data)
+                    
+                except Exception as e:
+                    if self.running:
+                        print(f"⚠️ Capture error: {e}")
+                    break
+                    
+        except Exception as e:
+            print(f"❌ Capture setup error: {e}")
+        finally:
+            self._cleanup_input()
+    
+    def _cleanup_input(self):
+        if self.input_stream:
+            self.input_stream.stop_stream()
+            self.input_stream.close()
+            self.input_stream = None
+    
+    def _cleanup_output(self):
+        if self.output_stream:
+            self.output_stream.stop_stream()
+            self.output_stream.close()
+            self.output_stream = None
+    
+    async def stop(self):
+        """Stop audio streaming."""
+        self.running = False
+        self._cleanup_input()
+        self._cleanup_output()
+        
+        if self.pa:
+            self.pa.terminate()
+            self.pa = None
+            
+        if self.ws:
+            await self.ws.close()
+            self.ws = None
+            
+        print("🔇 Audio relay stopped")
+
+
+class CameraStreamer:
+    """Handles PC camera streaming to phone."""
+    
+    def __init__(self):
+        self.running = False
+        self.ws = None
+        self.session_id = None
+        self.camera = None
+        self.quality = 50
+        self.fps = 10
+        
+    async def connect(self, session_id: str):
+        """Connect to WebSocket for camera streaming."""
+        if not HAS_WEBSOCKETS or not HAS_OPENCV:
+            print("❌ WebSockets or OpenCV not available")
+            return False
+            
+        self.session_id = session_id
+        
+        # Use the same audio-relay endpoint but with camera data
+        ws_url = f"{AUDIO_RELAY_WS_URL}?sessionId={session_id}&type=pc&direction=pc_to_phone"
+        print(f"📷 Connecting camera stream: {ws_url}")
+        
+        try:
+            self.ws = await websockets.connect(ws_url)
+            self.running = True
+            print("✅ Camera stream connected")
+            return True
+        except Exception as e:
+            print(f"❌ Camera stream connection failed: {e}")
+            return False
+    
+    async def start_streaming(self, camera_index: int = 0):
+        """Start streaming camera to phone."""
+        if not HAS_OPENCV:
+            print("❌ OpenCV not available for camera")
+            return
+            
+        try:
+            self.camera = cv2.VideoCapture(camera_index)
+            if not self.camera.isOpened():
+                print(f"❌ Could not open camera {camera_index}")
+                return
+                
+            print(f"📷 Camera {camera_index} streaming started")
+            
+            frame_interval = 1.0 / self.fps
+            
+            while self.running and self.ws:
+                start_time = time.time()
+                
+                ret, frame = self.camera.read()
+                if not ret:
+                    continue
+                
+                # Resize for faster transfer
+                frame = cv2.resize(frame, (640, 480))
+                
+                # Encode as JPEG
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
+                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                # Send frame
+                try:
+                    await self.ws.send(json.dumps({
+                        "type": "camera_frame",
+                        "data": frame_base64,
+                        "width": 640,
+                        "height": 480
+                    }))
+                except Exception as e:
+                    print(f"⚠️ Camera send error: {e}")
+                    break
+                
+                # Maintain FPS
+                elapsed = time.time() - start_time
+                if elapsed < frame_interval:
+                    await asyncio.sleep(frame_interval - elapsed)
+                    
+        except Exception as e:
+            print(f"❌ Camera streaming error: {e}")
+        finally:
+            self._cleanup()
+    
+    def _cleanup(self):
+        if self.camera:
+            self.camera.release()
+            self.camera = None
+    
+    async def stop(self):
+        """Stop camera streaming."""
+        self.running = False
+        self._cleanup()
+        
+        if self.ws:
+            await self.ws.close()
+            self.ws = None
+            
+        print("📷 Camera stream stopped")
+    
+    def get_available_cameras(self) -> List[Dict[str, Any]]:
+        """Get list of available cameras."""
+        if not HAS_OPENCV:
+            return []
+            
+        cameras = []
+        for i in range(5):  # Check first 5 camera indices
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                cameras.append({
+                    "index": i,
+                    "name": f"Camera {i}",
+                    "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                    "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                })
+                cap.release()
+        return cameras
+
+
 class JarvisAgent:
     def __init__(self):
         self.device_id: Optional[str] = None
@@ -126,6 +423,12 @@ class JarvisAgent:
         self.screen_streaming = False
         self.stream_quality = 50
         self.stream_fps = 5
+        
+        # Audio/Video streamers
+        self.audio_streamer = AudioStreamer()
+        self.camera_streamer = CameraStreamer()
+        self.audio_session_id = None
+        self.camera_session_id = None
         
         # Cache for system info
         self._volume_cache = 50
@@ -148,6 +451,9 @@ class JarvisAgent:
             "hostname": platform.node(),
             "cpu_count": psutil.cpu_count(),
             "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
+            "has_audio": HAS_PYAUDIO,
+            "has_camera": HAS_OPENCV,
+            "has_websockets": HAS_WEBSOCKETS,
         }
     
     async def register_device(self):
@@ -184,10 +490,9 @@ class JarvisAgent:
         return self.device_id
     
     def _get_volume(self) -> int:
-        """Get current system volume (0-100) using Windows APIs."""
+        """Get current system volume (0-100)."""
         if platform.system() == "Windows":
             try:
-                # Use nircmd or PowerShell for reliable volume reading
                 result = subprocess.run(
                     ['powershell', '-Command', 
                      "(Get-AudioDevice -PlaybackVolume).Volume"],
@@ -197,20 +502,6 @@ class JarvisAgent:
                     return int(float(result.stdout.strip()))
             except:
                 pass
-            
-            # Fallback: Use COM interface directly
-            try:
-                from ctypes import windll, c_float, byref
-                # Try using mixer API
-                import subprocess
-                result = subprocess.run(
-                    ['powershell', '-Command',
-                     '[Audio]::Volume'],
-                    capture_output=True, text=True, timeout=2
-                )
-            except:
-                pass
-            
             return self._volume_cache
         elif platform.system() == "Darwin":
             try:
@@ -230,17 +521,14 @@ class JarvisAgent:
         
         if platform.system() == "Windows":
             try:
-                # Method 1: Use nircmd (if available)
                 nircmd_path = os.path.join(os.path.dirname(__file__), "nircmd.exe")
                 if os.path.exists(nircmd_path):
-                    # nircmd uses 0-65535 range
                     vol_value = int(level * 65535 / 100)
                     subprocess.run([nircmd_path, "setsysvolume", str(vol_value)], 
                                  capture_output=True, timeout=2)
                     print(f"🔊 Volume set to {level}% (nircmd)")
                     return {"success": True, "volume": level}
                 
-                # Method 2: Use PowerShell with AudioDeviceCmdlets
                 subprocess.run([
                     'powershell', '-Command',
                     f'Set-AudioDevice -PlaybackVolume {level}'
@@ -248,7 +536,6 @@ class JarvisAgent:
                 print(f"🔊 Volume set to {level}%")
                 return {"success": True, "volume": level}
             except Exception as e:
-                # Method 3: Use keyboard simulation
                 try:
                     current = self._volume_cache
                     diff = level - current
@@ -280,7 +567,7 @@ class JarvisAgent:
     
     def _set_brightness(self, level: int):
         """Set screen brightness (0-100)."""
-        level = max(0, min(100, level))  # Allow 0 brightness
+        level = max(0, min(100, level))
         self._brightness_cache = level
         
         if platform.system() == "Windows" and HAS_BRIGHTNESS:
@@ -289,7 +576,6 @@ class JarvisAgent:
                 print(f"☀️ Brightness set to {level}%")
                 return {"success": True, "brightness": level}
             except Exception as e:
-                # Fallback: Use WMI
                 try:
                     subprocess.run([
                         'powershell', '-Command',
@@ -362,24 +648,15 @@ class JarvisAgent:
         
         if platform.system() == "Windows":
             try:
-                # Step 1: Wake the screen
                 ctypes.windll.user32.SetCursorPos(100, 100)
                 pyautogui.move(1, 1)
                 time.sleep(0.3)
-                
-                # Step 2: Press any key to show login screen
                 pyautogui.press('space')
                 time.sleep(0.5)
-                
-                # Step 3: Press Enter or Space to focus password field
                 pyautogui.press('enter')
                 time.sleep(0.3)
-                
-                # Step 4: Type the PIN
                 pyautogui.typewrite(pin, interval=0.05)
                 time.sleep(0.2)
-                
-                # Step 5: Press Enter to submit
                 pyautogui.press('enter')
                 
                 print("🔓 Smart unlock completed!")
@@ -393,16 +670,14 @@ class JarvisAgent:
         """Take a fast screenshot and return as base64."""
         try:
             if HAS_MSS:
-                # Fast screenshot with mss
                 with mss.mss() as sct:
-                    monitor = sct.monitors[1]  # Primary monitor
+                    monitor = sct.monitors[1]
                     screenshot = sct.grab(monitor)
                     img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
             else:
                 from PIL import ImageGrab
                 img = ImageGrab.grab()
             
-            # Resize for faster transfer
             new_size = (int(img.width * scale), int(img.height * scale))
             img = img.resize(new_size, Image.LANCZOS)
             
@@ -428,9 +703,7 @@ class JarvisAgent:
     def _press_key(self, key: str):
         """Press a keyboard key with comprehensive mapping."""
         try:
-            # Comprehensive key mapping for Windows
             key_map = {
-                # Basic keys
                 "win": "win", "windows": "win", "super": "win",
                 "ctrl": "ctrl", "control": "ctrl",
                 "alt": "alt",
@@ -444,20 +717,14 @@ class JarvisAgent:
                 "home": "home", "end": "end",
                 "pageup": "pageup", "pagedown": "pagedown",
                 "up": "up", "down": "down", "left": "left", "right": "right",
-
-                # Function keys
                 "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
                 "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
                 "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
-
-                # Special keys
                 "printscreen": "printscreen", "prtsc": "printscreen",
                 "insert": "insert", "ins": "insert",
                 "capslock": "capslock", "caps": "capslock",
                 "numlock": "numlock", "scrolllock": "scrolllock",
                 "pause": "pause", "break": "pause",
-
-                # Media keys (some libraries don't support these — we'll fallback)
                 "playpause": "playpause",
                 "mediaplaypause": "playpause",
                 "play_pause": "playpause",
@@ -488,7 +755,6 @@ class JarvisAgent:
                 print(f"⌨️ Key pressed: {key} -> {mapped_key}")
                 return {"success": True, "key": key}
             except Exception as e:
-                # Media-key fallback (fixes: "Key 'mediaplaypause' is not mapped")
                 if raw in {
                     "mediaplaypause", "playpause", "play_pause",
                     "medianexttrack", "nexttrack", "next_track",
@@ -511,7 +777,6 @@ class JarvisAgent:
                     action = action_map.get(raw, "play_pause")
                     print(f"🎵 Media key fallback: {raw} -> media_control({action})")
                     return self._media_control(action)
-
                 raise e
 
         except Exception as e:
@@ -538,7 +803,7 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _mouse_move(self, x: int, y: int, relative: bool = False):
-        """Move mouse cursor with reduced lag."""
+        """Move mouse cursor."""
         try:
             if relative:
                 pyautogui.moveRel(x, y, duration=0)
@@ -583,11 +848,7 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _open_app(self, app_name: str, app_id: Optional[str] = None):
-        """Open an application.
-
-        - If app_id is provided (UWP StartApps id), launch via shell:AppsFolder
-        - Else fall back to known mappings and Windows Search typing
-        """
+        """Open an application."""
         try:
             app_name = (app_name or "").strip()
             app_lower = app_name.lower().strip()
@@ -596,7 +857,6 @@ class JarvisAgent:
             print(f"🚀 Opening: {app_name} | app_id={app_id}")
 
             if platform.system() == "Windows":
-                # Prefer AppID when available (more reliable than typing search)
                 if app_id:
                     try:
                         subprocess.Popen(
@@ -610,7 +870,6 @@ class JarvisAgent:
                     except Exception as e:
                         print(f"⚠️ AppID launch failed, falling back to search: {e}")
 
-                # Known app mappings
                 app_paths = {
                     "chrome": "chrome", "google chrome": "chrome",
                     "firefox": "firefox", "mozilla firefox": "firefox",
@@ -641,15 +900,6 @@ class JarvisAgent:
                     "brave": "brave",
                     "opera": "opera",
                     "vivaldi": "vivaldi",
-                    "photoshop": "photoshop",
-                    "premiere": "premiere",
-                    "audacity": "audacity",
-                    "gimp": "gimp",
-                    "blender": "blender",
-                    "unity": "unity",
-                    "git bash": "git-bash",
-                    "postman": "postman",
-                    "docker": "docker",
                 }
 
                 cmd = app_paths.get(app_lower)
@@ -662,7 +912,6 @@ class JarvisAgent:
                     print(f"✅ Opened via known path: {cmd}")
                     return {"success": True, "message": f"Opened {app_name}"}
 
-                # Windows Search - press Win, type app name, press Enter
                 if not app_name:
                     return {"success": False, "error": "Missing app name"}
 
@@ -761,7 +1010,6 @@ class JarvisAgent:
     def _open_url(self, url: str):
         """Open a URL in the default browser."""
         try:
-            # Ensure URL has protocol
             if not url.startswith("http://") and not url.startswith("https://"):
                 url = "https://" + url
             
@@ -776,7 +1024,6 @@ class JarvisAgent:
         try:
             site_lower = site.lower().strip()
             
-            # Website URL mappings with search query support
             site_urls = {
                 "google": ("https://www.google.com", "https://www.google.com/search?q="),
                 "youtube": ("https://www.youtube.com", "https://www.youtube.com/results?search_query="),
@@ -809,7 +1056,6 @@ class JarvisAgent:
                 else:
                     url = base_url
             else:
-                # Try to make a URL from the site name
                 if not site_lower.startswith("http"):
                     url = f"https://{site_lower}"
                     if "." not in site_lower:
@@ -850,53 +1096,40 @@ class JarvisAgent:
         try:
             service_lower = service.lower().strip()
             
-            # Service URL mappings
             service_urls = {
                 "youtube": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
-                "yt": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
-                "youtube music": f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
-                "ytm": f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
                 "spotify": f"https://open.spotify.com/search/{urllib.parse.quote(query)}",
                 "soundcloud": f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
-                "apple music": f"https://music.apple.com/us/search?term={urllib.parse.quote(query)}",
-                "amazon music": f"https://music.amazon.com/search/{urllib.parse.quote(query)}",
+                "apple": f"https://music.apple.com/search?term={urllib.parse.quote(query)}",
                 "deezer": f"https://www.deezer.com/search/{urllib.parse.quote(query)}",
-                "tidal": f"https://tidal.com/search?q={urllib.parse.quote(query)}",
             }
             
-            # Default to YouTube
             url = service_urls.get(service_lower, service_urls["youtube"])
-            
             webbrowser.open(url)
             print(f"🎵 Playing music: {query} on {service}")
-            return {"success": True, "message": f"Searching for: {query} on {service}"}
+            return {"success": True, "message": f"Playing {query} on {service}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _media_control(self, action: str):
-        """Control media playback using Windows virtual keys."""
+        """Control media playback using Windows virtual key codes."""
         try:
             action_lower = action.lower().strip()
             
             if platform.system() == "Windows":
-                # Use ctypes to send proper media key events
-                import ctypes
-                from ctypes import wintypes
-                
-                # Virtual key codes for media keys
                 VK_MEDIA_PLAY_PAUSE = 0xB3
                 VK_MEDIA_NEXT_TRACK = 0xB0
                 VK_MEDIA_PREV_TRACK = 0xB1
                 VK_MEDIA_STOP = 0xB2
-                VK_VOLUME_MUTE = 0xAD
-                VK_VOLUME_DOWN = 0xAE
                 VK_VOLUME_UP = 0xAF
+                VK_VOLUME_DOWN = 0xAE
+                VK_VOLUME_MUTE = 0xAD
                 
                 action_map = {
                     "play_pause": VK_MEDIA_PLAY_PAUSE,
+                    "playpause": VK_MEDIA_PLAY_PAUSE,
                     "play": VK_MEDIA_PLAY_PAUSE,
                     "pause": VK_MEDIA_PLAY_PAUSE,
-                    "playpause": VK_MEDIA_PLAY_PAUSE,
                     "next": VK_MEDIA_NEXT_TRACK,
                     "next_track": VK_MEDIA_NEXT_TRACK,
                     "nexttrack": VK_MEDIA_NEXT_TRACK,
@@ -916,13 +1149,9 @@ class JarvisAgent:
                 vk_code = action_map.get(action_lower)
                 
                 if vk_code:
-                    # Simulate key press using SendInput
                     KEYEVENTF_KEYUP = 0x0002
-                    
-                    # Press key down
                     ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
                     time.sleep(0.05)
-                    # Release key
                     ctypes.windll.user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
                     
                     print(f"🎵 Media control: {action}")
@@ -930,7 +1159,6 @@ class JarvisAgent:
                 else:
                     return {"success": False, "error": f"Unknown media action: {action}"}
             else:
-                # Fallback for non-Windows
                 key_map = {
                     "play_pause": "playpause",
                     "next": "nexttrack",
@@ -976,7 +1204,6 @@ class JarvisAgent:
             apps: List[Dict[str, Any]] = []
 
             if platform.system() == "Windows":
-                # Best source: Start menu apps via PowerShell (includes UWP AppID)
                 try:
                     ps = subprocess.run(
                         [
@@ -1003,7 +1230,6 @@ class JarvisAgent:
                 except Exception as e:
                     print(f"⚠️ Get-StartApps failed: {e}")
 
-                # Fallback: scan Start Menu shortcuts
                 if not apps:
                     start_menu = os.path.join(
                         os.environ.get("APPDATA", ""), "Microsoft\\Windows\\Start Menu\\Programs"
@@ -1014,7 +1240,6 @@ class JarvisAgent:
                                 if file.endswith(".lnk"):
                                     apps.append({"name": file[:-4], "app_id": None, "source": "StartMenu"})
 
-            # De-dupe by name
             seen = set()
             deduped = []
             for a in sorted(apps, key=lambda x: x["name"].lower()):
@@ -1035,8 +1260,6 @@ class JarvisAgent:
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             battery = psutil.sensors_battery()
-            
-            # Network stats
             net = psutil.net_io_counters()
             
             return {
@@ -1057,18 +1280,16 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _boost_pc(self):
-        """Boost PC performance - refresh explorer, clear temp."""
+        """Boost PC performance."""
         try:
             results = []
             
             if platform.system() == "Windows":
-                # Restart Explorer
                 os.system("taskkill /f /im explorer.exe")
                 time.sleep(0.5)
                 os.system("start explorer.exe")
                 results.append("Explorer restarted")
                 
-                # Clear temp files (user temp)
                 temp_path = os.environ.get('TEMP', '')
                 if temp_path and os.path.exists(temp_path):
                     cleared = 0
@@ -1082,7 +1303,6 @@ class JarvisAgent:
                             pass
                     results.append(f"Cleared {cleared} temp files")
                 
-                # Clear RAM (empty working sets)
                 try:
                     subprocess.run(['powershell', '-Command',
                         'Get-Process | ForEach-Object { $_.MinWorkingSet = 1 }'],
@@ -1110,9 +1330,110 @@ class JarvisAgent:
         print("📺 Screen streaming stopped")
         return {"success": True, "streaming": False, "message": "Streaming stopped"}
     
+    # ==================== AUDIO/VIDEO STREAMING ====================
+    
+    async def _start_audio_relay(self, session_id: str, direction: str = "phone_to_pc"):
+        """Start audio relay - connect to WebSocket and stream audio."""
+        try:
+            self.audio_session_id = session_id
+            connected = await self.audio_streamer.connect(session_id, direction)
+            
+            if not connected:
+                return {"success": False, "error": "Failed to connect to audio relay"}
+            
+            # Start appropriate streaming based on direction
+            if direction == "phone_to_pc":
+                asyncio.create_task(self.audio_streamer.start_playback())
+            elif direction == "pc_to_phone":
+                asyncio.create_task(self.audio_streamer.start_capture())
+            elif direction == "bidirectional":
+                asyncio.create_task(self.audio_streamer.start_playback())
+                asyncio.create_task(self.audio_streamer.start_capture())
+            
+            return {
+                "success": True, 
+                "message": f"Audio relay started ({direction})",
+                "session_id": session_id,
+                "direction": direction
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _stop_audio_relay(self):
+        """Stop audio relay."""
+        try:
+            await self.audio_streamer.stop()
+            self.audio_session_id = None
+            return {"success": True, "message": "Audio relay stopped"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _start_camera_stream(self, session_id: str, camera_index: int = 0):
+        """Start PC camera streaming to phone."""
+        try:
+            if not HAS_OPENCV:
+                return {"success": False, "error": "OpenCV not available"}
+            
+            self.camera_session_id = session_id
+            connected = await self.camera_streamer.connect(session_id)
+            
+            if not connected:
+                return {"success": False, "error": "Failed to connect camera stream"}
+            
+            asyncio.create_task(self.camera_streamer.start_streaming(camera_index))
+            
+            return {
+                "success": True,
+                "message": f"Camera stream started (camera {camera_index})",
+                "session_id": session_id
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _stop_camera_stream(self):
+        """Stop PC camera streaming."""
+        try:
+            await self.camera_streamer.stop()
+            self.camera_session_id = None
+            return {"success": True, "message": "Camera stream stopped"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_cameras(self):
+        """Get list of available cameras."""
+        cameras = self.camera_streamer.get_available_cameras()
+        return {"success": True, "cameras": cameras}
+    
     def execute_command(self, command_type: str, payload: Dict[str, Any] = None) -> Dict[str, Any]:
         """Execute a command based on type."""
         payload = payload or {}
+        
+        # Handle async commands
+        async_commands = {
+            "start_audio_relay": lambda: asyncio.create_task(
+                self._start_audio_relay(
+                    payload.get("session_id", str(uuid.uuid4())),
+                    payload.get("direction", "phone_to_pc")
+                )
+            ),
+            "stop_audio_relay": lambda: asyncio.create_task(self._stop_audio_relay()),
+            "start_camera_stream": lambda: asyncio.create_task(
+                self._start_camera_stream(
+                    payload.get("session_id", str(uuid.uuid4())),
+                    payload.get("camera_index", 0)
+                )
+            ),
+            "stop_camera_stream": lambda: asyncio.create_task(self._stop_camera_stream()),
+        }
+        
+        if command_type in async_commands:
+            try:
+                # Run async command
+                loop = asyncio.get_event_loop()
+                result = loop.run_until_complete(async_commands[command_type]())
+                return result if result else {"success": True}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
         
         command_handlers = {
             # Volume & Brightness
@@ -1200,6 +1521,9 @@ class JarvisAgent:
             # System
             "get_system_stats": self._get_system_stats,
             "boost": self._boost_pc,
+            
+            # Camera
+            "get_cameras": self._get_cameras,
         }
         
         handler = command_handlers.get(command_type)
@@ -1214,7 +1538,7 @@ class JarvisAgent:
             return {"success": False, "error": f"Unknown command: {command_type}"}
     
     async def update_heartbeat(self):
-        """Update device heartbeat separately from command polling."""
+        """Update device heartbeat."""
         while self.running:
             try:
                 supabase.table("devices").update({
@@ -1268,17 +1592,18 @@ class JarvisAgent:
         await self.register_device()
         
         print("\n" + "="*50)
-        print("🤖 JARVIS Agent v2.1 is now running!")
+        print("🤖 JARVIS Agent v2.2 is now running!")
         print(f"📍 Device: {DEVICE_NAME}")
         print(f"🔑 Device ID: {self.device_id[:8]}...")
         print(f"⚡ Poll interval: {POLL_INTERVAL}s (fast mode)")
+        print(f"🔊 Audio relay: {'✅ Available' if HAS_PYAUDIO else '❌ Not available'}")
+        print(f"📷 Camera: {'✅ Available' if HAS_OPENCV else '❌ Not available'}")
         print("="*50)
         print("\n👀 Open the Jarvis web app to see your PC connected.")
         print("📱 You can now control your PC from your phone!")
         print("🛑 Press Ctrl+C to stop.\n")
         
         try:
-            # Run command polling and heartbeat in parallel
             await asyncio.gather(
                 self.poll_commands(),
                 self.update_heartbeat()
@@ -1286,6 +1611,11 @@ class JarvisAgent:
         except KeyboardInterrupt:
             print("\n\n👋 Shutting down...")
             self.running = False
+            
+            # Cleanup streamers
+            await self.audio_streamer.stop()
+            await self.camera_streamer.stop()
+            
             supabase.table("devices").update({
                 "is_online": False,
             }).eq("id", self.device_id).execute()
@@ -1296,21 +1626,27 @@ def main():
     """Main entry point."""
     print("""
     ╔═══════════════════════════════════════════════════════╗
-    ║           JARVIS PC Agent v2.1                        ║
+    ║           JARVIS PC Agent v2.2                        ║
     ║       Your AI-Powered PC Assistant                    ║
     ╠═══════════════════════════════════════════════════════╣
     ║  This agent connects your PC to the Jarvis web app.   ║
-    ║  Control your PC remotely from anywhere!              ║
-    ║                                                       ║
-    ║  NEW: Open websites, play music, search on ChatGPT    ║
-    ║       Perplexity, Wikipedia & more!                   ║
+    ║  Features:                                            ║
+    ║  • Control volume, brightness, power                  ║
+    ║  • Open apps, files, websites                        ║
+    ║  • Media controls, music player                      ║
+    ║  • Screen streaming                                  ║
+    ║  • Audio relay (phone ↔ PC)                          ║
+    ║  • Camera streaming (PC → phone)                     ║
+    ║  • System monitoring                                 ║
     ╚═══════════════════════════════════════════════════════╝
     """)
     
-    print("🔌 Connecting to Jarvis servers...")
-    
     agent = JarvisAgent()
-    asyncio.run(agent.run())
+    
+    try:
+        asyncio.run(agent.run())
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
 
 
 if __name__ == "__main__":
