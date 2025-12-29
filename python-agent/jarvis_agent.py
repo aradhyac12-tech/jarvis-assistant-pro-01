@@ -146,17 +146,24 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 class AudioStreamer:
-    """Handles bidirectional audio streaming between phone and PC."""
+    """Handles bidirectional audio streaming between phone and PC.
+    
+    Supports:
+    - Mic capture (input device)
+    - System audio capture (WASAPI loopback on Windows)
+    - Speaker playback (output device)
+    """
     
     def __init__(self):
         self.running = False
         self.ws = None
         self.session_id = None
         self.direction = "phone_to_pc"  # or "pc_to_phone" or "bidirectional"
+        self.use_system_audio = False  # When True, capture desktop audio instead of mic
         
         # Audio settings
         self.sample_rate = 44100
-        self.channels = 1
+        self.channels = 2  # Stereo for system audio
         self.chunk_size = 1024
         self.format = pyaudio.paInt16 if HAS_PYAUDIO else None
         
@@ -165,7 +172,12 @@ class AudioStreamer:
         self.input_stream = None
         self.output_stream = None
         
-    async def connect(self, session_id: str, direction: str = "phone_to_pc"):
+        # Stats for debug
+        self.bytes_sent = 0
+        self.bytes_received = 0
+        self.last_stats_time = time.time()
+        
+    async def connect(self, session_id: str, direction: str = "phone_to_pc", use_system_audio: bool = False):
         """Connect to the audio relay WebSocket."""
         if not HAS_WEBSOCKETS:
             print("❌ WebSockets not available")
@@ -173,6 +185,7 @@ class AudioStreamer:
             
         self.session_id = session_id
         self.direction = direction
+        self.use_system_audio = use_system_audio
         
         ws_url = f"{AUDIO_RELAY_WS_URL}?sessionId={session_id}&type=pc&direction={direction}"
         print(f"🔊 Connecting to audio relay: {ws_url}")
@@ -180,11 +193,57 @@ class AudioStreamer:
         try:
             self.ws = await websockets.connect(ws_url)
             self.running = True
-            print(f"✅ Audio relay connected (direction: {direction})")
+            self.bytes_sent = 0
+            self.bytes_received = 0
+            self.last_stats_time = time.time()
+            print(f"✅ Audio relay connected (direction: {direction}, system_audio: {use_system_audio})")
             return True
         except Exception as e:
             print(f"❌ Audio relay connection failed: {e}")
             return False
+    
+    def _get_loopback_device_index(self) -> Optional[int]:
+        """Find WASAPI loopback device for system audio capture (Windows only)."""
+        if not HAS_PYAUDIO or platform.system() != "Windows":
+            return None
+            
+        try:
+            p = pyaudio.PyAudio()
+            wasapi_info = None
+            
+            # Find WASAPI host API
+            for i in range(p.get_host_api_count()):
+                info = p.get_host_api_info_by_index(i)
+                if "WASAPI" in info.get("name", ""):
+                    wasapi_info = info
+                    break
+            
+            if not wasapi_info:
+                print("⚠️ WASAPI not found")
+                p.terminate()
+                return None
+            
+            # Find default output device as loopback source
+            default_output = p.get_default_output_device_info()
+            output_name = default_output.get("name", "")
+            
+            # Look for loopback device with same name
+            for i in range(p.get_device_count()):
+                dev_info = p.get_device_info_by_index(i)
+                dev_name = dev_info.get("name", "")
+                max_input = dev_info.get("maxInputChannels", 0)
+                
+                # Loopback devices show up as input devices with the speaker name
+                if max_input > 0 and output_name.split(" (")[0] in dev_name:
+                    print(f"🔊 Found loopback device: {dev_name} (index {i})")
+                    p.terminate()
+                    return i
+            
+            p.terminate()
+            return None
+        except Exception as e:
+            print(f"⚠️ Loopback detection error: {e}")
+            return None
     
     async def start_playback(self):
         """Start playing received audio through PC speakers."""
@@ -211,6 +270,7 @@ class AudioStreamer:
                     if isinstance(message, bytes):
                         # Play audio data
                         self.output_stream.write(message)
+                        self.bytes_received += len(message)
                     elif isinstance(message, str):
                         data = json.loads(message)
                         if data.get("type") == "peer_disconnected":
@@ -219,6 +279,7 @@ class AudioStreamer:
                             # Base64 encoded audio
                             audio_bytes = base64.b64decode(data["data"])
                             self.output_stream.write(audio_bytes)
+                            self.bytes_received += len(audio_bytes)
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
@@ -232,30 +293,49 @@ class AudioStreamer:
             self._cleanup_output()
     
     async def start_capture(self):
-        """Start capturing PC mic and sending to phone."""
+        """Start capturing PC audio (mic or system) and sending to phone."""
         if not HAS_PYAUDIO:
             print("❌ PyAudio not available for capture")
             return
             
         try:
             self.pa = self.pa or pyaudio.PyAudio()
+            
+            input_device_index = None
+            channels = 1  # Default mono for mic
+            
+            # Try to use system audio (loopback) if requested
+            if self.use_system_audio:
+                loopback_idx = self._get_loopback_device_index()
+                if loopback_idx is not None:
+                    input_device_index = loopback_idx
+                    channels = 2  # Stereo for system audio
+                    print("🔊 Using system audio (WASAPI loopback)")
+                else:
+                    print("⚠️ Loopback not available, falling back to microphone")
+            
+            self.channels = channels
+            
             self.input_stream = self.pa.open(
                 format=self.format,
-                channels=self.channels,
+                channels=channels,
                 rate=self.sample_rate,
                 input=True,
+                input_device_index=input_device_index,
                 frames_per_buffer=self.chunk_size
             )
             
-            print("🎤 PC microphone capture started")
+            source = "system audio" if self.use_system_audio and input_device_index else "microphone"
+            print(f"🎤 PC {source} capture started")
             
             while self.running and self.ws:
                 try:
-                    # Read audio from mic
+                    # Read audio
                     audio_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
                     
                     # Send as binary WebSocket message
                     await self.ws.send(audio_data)
+                    self.bytes_sent += len(audio_data)
                     
                 except Exception as e:
                     if self.running:
@@ -266,6 +346,19 @@ class AudioStreamer:
             print(f"❌ Capture setup error: {e}")
         finally:
             self._cleanup_input()
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get streaming statistics."""
+        now = time.time()
+        elapsed = max(now - self.last_stats_time, 0.001)
+        return {
+            "bytes_sent": self.bytes_sent,
+            "bytes_received": self.bytes_received,
+            "send_rate_kbps": round((self.bytes_sent * 8) / (elapsed * 1000), 2),
+            "recv_rate_kbps": round((self.bytes_received * 8) / (elapsed * 1000), 2),
+            "running": self.running,
+            "connected": self.ws is not None and self.ws.open if self.ws else False,
+        }
     
     def _cleanup_input(self):
         if self.input_stream:
@@ -296,8 +389,12 @@ class AudioStreamer:
         print("🔇 Audio relay stopped")
 
 
+# Camera relay WebSocket URL (dedicated endpoint)
+CAMERA_RELAY_WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/camera-relay"
+
+
 class CameraStreamer:
-    """Handles PC camera streaming to phone."""
+    """Handles PC camera streaming to phone via dedicated camera-relay endpoint."""
     
     def __init__(self):
         self.running = False
@@ -307,29 +404,65 @@ class CameraStreamer:
         self.quality = 50
         self.fps = 10
         
-    async def connect(self, session_id: str):
-        """Connect to WebSocket for camera streaming."""
+        # Stats for debug
+        self.frame_count = 0
+        self.bytes_sent = 0
+        self.last_frame_time = 0
+        self.last_stats_time = time.time()
+        
+        # Reconnect settings
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        
+    async def connect(self, session_id: str, fps: int = 10, quality: int = 50):
+        """Connect to dedicated camera relay WebSocket."""
         if not HAS_WEBSOCKETS or not HAS_OPENCV:
             print("❌ WebSockets or OpenCV not available")
             return False
             
         self.session_id = session_id
+        self.fps = fps
+        self.quality = quality
         
-        # Use the same audio-relay endpoint but with camera data
-        ws_url = f"{AUDIO_RELAY_WS_URL}?sessionId={session_id}&type=pc&direction=pc_to_phone"
+        # Use the dedicated camera-relay endpoint
+        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=pc&fps={fps}&quality={quality}"
         print(f"📷 Connecting camera stream: {ws_url}")
         
         try:
             self.ws = await websockets.connect(ws_url)
             self.running = True
+            self.frame_count = 0
+            self.bytes_sent = 0
+            self.last_stats_time = time.time()
+            self.reconnect_attempts = 0
             print("✅ Camera stream connected")
             return True
         except Exception as e:
             print(f"❌ Camera stream connection failed: {e}")
             return False
     
+    async def _reconnect(self):
+        """Attempt to reconnect to the camera relay."""
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            print("❌ Max reconnect attempts reached")
+            return False
+            
+        self.reconnect_attempts += 1
+        print(f"🔄 Reconnecting camera... (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+        
+        await asyncio.sleep(1)  # Wait before reconnecting
+        
+        try:
+            ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={self.session_id}&type=pc&fps={self.fps}&quality={self.quality}"
+            self.ws = await websockets.connect(ws_url)
+            print("✅ Camera stream reconnected")
+            return True
+        except Exception as e:
+            print(f"❌ Reconnect failed: {e}")
+            return False
+    
     async def start_streaming(self, camera_index: int = 0):
-        """Start streaming camera to phone."""
+        """Start streaming camera to phone with frame throttling."""
         if not HAS_OPENCV:
             print("❌ OpenCV not available for camera")
             return
@@ -340,15 +473,22 @@ class CameraStreamer:
                 print(f"❌ Could not open camera {camera_index}")
                 return
                 
-            print(f"📷 Camera {camera_index} streaming started")
+            print(f"📷 Camera {camera_index} streaming started (target {self.fps} FPS, quality {self.quality})")
             
             frame_interval = 1.0 / self.fps
             
-            while self.running and self.ws:
+            while self.running:
                 start_time = time.time()
+                
+                # Check WebSocket connection
+                if not self.ws or not self.ws.open:
+                    if not await self._reconnect():
+                        break
+                    continue
                 
                 ret, frame = self.camera.read()
                 if not ret:
+                    await asyncio.sleep(0.01)
                     continue
                 
                 # Resize for faster transfer
@@ -357,6 +497,7 @@ class CameraStreamer:
                 # Encode as JPEG
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
                 frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                frame_size = len(buffer)
                 
                 # Send frame
                 try:
@@ -366,9 +507,15 @@ class CameraStreamer:
                         "width": 640,
                         "height": 480
                     }))
+                    self.frame_count += 1
+                    self.bytes_sent += frame_size
+                    self.last_frame_time = time.time()
                 except Exception as e:
                     print(f"⚠️ Camera send error: {e}")
-                    break
+                    # Try to reconnect
+                    if not await self._reconnect():
+                        break
+                    continue
                 
                 # Maintain FPS
                 elapsed = time.time() - start_time
@@ -379,6 +526,21 @@ class CameraStreamer:
             print(f"❌ Camera streaming error: {e}")
         finally:
             self._cleanup()
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get streaming statistics."""
+        now = time.time()
+        elapsed = max(now - self.last_stats_time, 0.001)
+        return {
+            "frame_count": self.frame_count,
+            "bytes_sent": self.bytes_sent,
+            "fps_actual": round(self.frame_count / elapsed, 1),
+            "fps_target": self.fps,
+            "quality": self.quality,
+            "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
+            "running": self.running,
+            "connected": self.ws is not None and self.ws.open if self.ws else False,
+        }
     
     def _cleanup(self):
         if self.camera:
@@ -1375,11 +1537,11 @@ class JarvisAgent:
     
     # ==================== AUDIO/VIDEO STREAMING ====================
     
-    async def _start_audio_relay(self, session_id: str, direction: str = "phone_to_pc"):
+    async def _start_audio_relay(self, session_id: str, direction: str = "phone_to_pc", use_system_audio: bool = False):
         """Start audio relay - connect to WebSocket and stream audio."""
         try:
             self.audio_session_id = session_id
-            connected = await self.audio_streamer.connect(session_id, direction)
+            connected = await self.audio_streamer.connect(session_id, direction, use_system_audio)
             
             if not connected:
                 return {"success": False, "error": "Failed to connect to audio relay"}
@@ -1395,9 +1557,10 @@ class JarvisAgent:
             
             return {
                 "success": True, 
-                "message": f"Audio relay started ({direction})",
+                "message": f"Audio relay started ({direction}, system_audio={use_system_audio})",
                 "session_id": session_id,
-                "direction": direction
+                "direction": direction,
+                "use_system_audio": use_system_audio
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1411,14 +1574,18 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    async def _start_camera_stream(self, session_id: str, camera_index: int = 0):
+    def _get_audio_stats(self):
+        """Get audio streaming statistics."""
+        return {"success": True, **self.audio_streamer.get_stats()}
+    
+    async def _start_camera_stream(self, session_id: str, camera_index: int = 0, fps: int = 10, quality: int = 50):
         """Start PC camera streaming to phone."""
         try:
             if not HAS_OPENCV:
                 return {"success": False, "error": "OpenCV not available"}
             
             self.camera_session_id = session_id
-            connected = await self.camera_streamer.connect(session_id)
+            connected = await self.camera_streamer.connect(session_id, fps, quality)
             
             if not connected:
                 return {"success": False, "error": "Failed to connect camera stream"}
@@ -1427,8 +1594,10 @@ class JarvisAgent:
             
             return {
                 "success": True,
-                "message": f"Camera stream started (camera {camera_index})",
-                "session_id": session_id
+                "message": f"Camera stream started (camera {camera_index}, {fps} FPS)",
+                "session_id": session_id,
+                "fps": fps,
+                "quality": quality
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1442,10 +1611,39 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    def _get_camera_stats(self):
+        """Get camera streaming statistics."""
+        return {"success": True, **self.camera_streamer.get_stats()}
+    
     def _get_cameras(self):
         """Get list of available cameras."""
         cameras = self.camera_streamer.get_available_cameras()
         return {"success": True, "cameras": cameras}
+    
+    def _get_dependency_status(self):
+        """Get status of all optional dependencies."""
+        deps = {
+            "pyaudio": {"installed": HAS_PYAUDIO, "purpose": "Audio streaming (mic/speaker)"},
+            "opencv": {"installed": HAS_OPENCV, "purpose": "Camera streaming"},
+            "websockets": {"installed": HAS_WEBSOCKETS, "purpose": "Real-time streaming"},
+            "keyboard": {"installed": HAS_KEYBOARD, "purpose": "Keyboard control"},
+            "mss": {"installed": HAS_MSS, "purpose": "Fast screenshots"},
+            "pycaw": {"installed": HAS_PYCAW, "purpose": "Volume control (Windows)"},
+            "brightness": {"installed": HAS_BRIGHTNESS, "purpose": "Brightness control"},
+        }
+        
+        missing = [name for name, info in deps.items() if not info["installed"]]
+        all_installed = len(missing) == 0
+        
+        return {
+            "success": True,
+            "all_installed": all_installed,
+            "missing_count": len(missing),
+            "missing": missing,
+            "dependencies": deps,
+            "install_command": "pip install pyaudio opencv-python websockets keyboard mss pycaw screen-brightness-control" if missing else None
+        }
+
     
     def execute_command(self, command_type: str, payload: Dict[str, Any] = None) -> Dict[str, Any]:
         """Execute a command based on type."""
@@ -1456,14 +1654,17 @@ class JarvisAgent:
             "start_audio_relay": lambda: asyncio.create_task(
                 self._start_audio_relay(
                     payload.get("session_id", str(uuid.uuid4())),
-                    payload.get("direction", "phone_to_pc")
+                    payload.get("direction", "phone_to_pc"),
+                    payload.get("use_system_audio", False)
                 )
             ),
             "stop_audio_relay": lambda: asyncio.create_task(self._stop_audio_relay()),
             "start_camera_stream": lambda: asyncio.create_task(
                 self._start_camera_stream(
                     payload.get("session_id", str(uuid.uuid4())),
-                    payload.get("camera_index", 0)
+                    payload.get("camera_index", 0),
+                    payload.get("fps", 10),
+                    payload.get("quality", 50)
                 )
             ),
             "stop_camera_stream": lambda: asyncio.create_task(self._stop_camera_stream()),
@@ -1565,8 +1766,13 @@ class JarvisAgent:
             "get_system_stats": self._get_system_stats,
             "boost": self._boost_pc,
             
-            # Camera
+            # Camera & Streaming
             "get_cameras": self._get_cameras,
+            "get_audio_stats": self._get_audio_stats,
+            "get_camera_stats": self._get_camera_stats,
+            
+            # Health check
+            "get_dependency_status": self._get_dependency_status,
         }
         
         handler = command_handlers.get(command_type)

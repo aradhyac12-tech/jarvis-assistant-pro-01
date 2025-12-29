@@ -66,10 +66,23 @@ export default function MicCamera() {
   // ==================== PC AUDIO TO PHONE ====================
   const [pcAudioActive, setPcAudioActive] = useState(false);
   const pcAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [useSystemAudio, setUseSystemAudio] = useState(false);
 
-  // Use the Edge Function WebSocket domain (functions.supabase.co)
-  // Note: using a fixed URL avoids issues when env vars aren't present in some builds.
+  // ==================== DEBUG PANEL STATE ====================
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugStats, setDebugStats] = useState({
+    audioWsConnected: false,
+    audioPeerConnected: false,
+    audioBytesSent: 0,
+    cameraWsConnected: false,
+    cameraPeerConnected: false,
+    lastFrameTime: 0,
+    frameCount: 0,
+  });
+
+  // Use the Edge Function WebSocket domains
   const WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/audio-relay";
+  const CAMERA_WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/camera-relay";
 
   // ==================== PHONE CAMERA ====================
   const startPhoneCamera = useCallback(async () => {
@@ -136,8 +149,8 @@ export default function MicCamera() {
         camera_index: selectedPcCamera,
       });
 
-      // Connect to WebSocket to receive frames
-      const ws = new WebSocket(`${WS_URL}?sessionId=${sessionId}&type=phone&direction=pc_to_phone`);
+      // Connect to dedicated camera-relay WebSocket
+      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=50`);
       pcCameraWsRef.current = ws;
 
       ws.onmessage = (event) => {
@@ -387,12 +400,50 @@ export default function MicCamera() {
                 Bidirectional audio & video streaming between phone and PC
               </p>
             </div>
-            {selectedDevice && (
-              <Badge variant="secondary" className="bg-primary/10 text-primary">
-                {selectedDevice.name}
-              </Badge>
-            )}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDebug(!showDebug)}
+                className={showDebug ? "bg-primary/20" : ""}
+              >
+                Debug
+              </Button>
+              {selectedDevice && (
+                <Badge variant="secondary" className="bg-primary/10 text-primary">
+                  {selectedDevice.name}
+                </Badge>
+              )}
+            </div>
           </div>
+
+          {/* Debug Panel */}
+          {showDebug && (
+            <Card className="glass-dark border-border/50 p-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div>
+                  <span className="text-muted-foreground">Audio WS:</span>{" "}
+                  <Badge variant={audioWsRef.current ? "default" : "secondary"} className="text-xs">
+                    {audioWsRef.current ? "Connected" : "Disconnected"}
+                  </Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Camera WS:</span>{" "}
+                  <Badge variant={pcCameraWsRef.current ? "default" : "secondary"} className="text-xs">
+                    {pcCameraWsRef.current ? "Connected" : "Disconnected"}
+                  </Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Audio Level:</span>{" "}
+                  <span className="font-mono">{Math.round(audioLevel * 100)}%</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Session:</span>{" "}
+                  <span className="font-mono">{audioSessionId?.slice(0, 8) || "—"}</span>
+                </div>
+              </div>
+            </Card>
+          )}
 
           <Tabs defaultValue="audio" className="w-full">
             <TabsList className="grid w-full grid-cols-3 mb-4">

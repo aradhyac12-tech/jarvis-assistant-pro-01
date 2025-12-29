@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.audio-relay]
 verify_jwt = false
+
+[functions.camera-relay]
+verify_jwt = false
