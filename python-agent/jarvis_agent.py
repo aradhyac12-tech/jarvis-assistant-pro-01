@@ -128,7 +128,9 @@ else:
 # ============== CONFIGURATION ==============
 SUPABASE_URL = "https://gatcapfurmevdesilwco.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdhdGNhcGZ1cm1ldmRlc2lsd2NvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5NTQ0ODAsImV4cCI6MjA4MjUzMDQ4MH0.ZhGMwqiDgPkmAgc7ij5sxFU4dVHFZbDU-i4A0CUtg0A"
-AUDIO_RELAY_WS_URL = "wss://gatcapfurmevdesilwco.supabase.co/functions/v1/audio-relay"
+
+# WebSocket endpoint for realtime streaming (Edge Functions domain)
+AUDIO_RELAY_WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/audio-relay"
 
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
@@ -1092,25 +1094,66 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _play_music(self, query: str, service: str = "youtube"):
-        """Search and play music on a streaming service."""
+        """Search and play music on a streaming service.
+
+        For YouTube, this opens the FIRST video result automatically.
+        """
         try:
-            service_lower = service.lower().strip()
-            
+            service_lower = (service or "youtube").lower().strip()
+            query = (query or "").strip()
+
+            if not query:
+                return {"success": False, "error": "Missing query"}
+
+            # YouTube: open first result automatically (no API key)
+            if service_lower == "youtube":
+                search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+
+                try:
+                    import urllib.request
+
+                    req = urllib.request.Request(
+                        search_url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                        },
+                    )
+
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        html = resp.read().decode("utf-8", errors="ignore")
+
+                    # Find first /watch?v=... occurrence
+                    import re
+
+                    m = re.search(r"\/watch\?v=([a-zA-Z0-9_-]{11})", html)
+                    if m:
+                        video_id = m.group(1)
+                        url = f"https://www.youtube.com/watch?v={video_id}&autoplay=1"
+                    else:
+                        # fallback: open search page
+                        url = search_url
+                except Exception as scrape_err:
+                    print(f"⚠️ YouTube scrape failed, opening search page instead: {scrape_err}")
+                    url = search_url
+
+                webbrowser.open(url)
+                print(f"🎵 Playing (first result) on YouTube: {query}")
+                return {"success": True, "message": f"Playing {query} on YouTube"}
+
             service_urls = {
-                "youtube": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
                 "spotify": f"https://open.spotify.com/search/{urllib.parse.quote(query)}",
                 "soundcloud": f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
                 "apple": f"https://music.apple.com/search?term={urllib.parse.quote(query)}",
                 "deezer": f"https://www.deezer.com/search/{urllib.parse.quote(query)}",
             }
-            
-            url = service_urls.get(service_lower, service_urls["youtube"])
+
+            url = service_urls.get(service_lower) or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
             webbrowser.open(url)
-            print(f"🎵 Playing music: {query} on {service}")
-            return {"success": True, "message": f"Playing {query} on {service}"}
+            print(f"🎵 Playing music: {query} on {service_lower}")
+            return {"success": True, "message": f"Playing {query} on {service_lower}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
+
     def _media_control(self, action: str):
         """Control media playback using Windows virtual key codes."""
         try:
