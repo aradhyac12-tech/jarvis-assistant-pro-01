@@ -213,7 +213,7 @@ class AudioStreamer:
                         data = json.loads(message)
                         if data.get("type") == "peer_disconnected":
                             print("📱 Phone disconnected from audio relay")
-                        elif data.get("type") == "audio"):
+                        elif data.get("type") == "audio":
                             # Base64 encoded audio
                             audio_bytes = base64.b64decode(data["data"])
                             self.output_stream.write(audio_bytes)
