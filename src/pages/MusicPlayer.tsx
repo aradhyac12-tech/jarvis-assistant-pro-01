@@ -24,6 +24,8 @@ import {
   RefreshCw,
   Phone,
   PhoneOff,
+  Youtube,
+  Radio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -43,7 +45,7 @@ interface MediaState {
   title: string;
   artist: string;
   isPlaying: boolean;
-  position: number; // 0-100 percent
+  position: number;
   positionMs: number;
   durationMs: number;
   volume: number;
@@ -60,6 +62,7 @@ export default function MusicPlayer() {
   const [autoMuteOnCall, setAutoMuteOnCall] = useState(true);
   const [isOnCall, setIsOnCall] = useState(false);
   const [wasPlayingBeforeCall, setWasPlayingBeforeCall] = useState(false);
+  const [isFetching, setIsFetching] = useState(false);
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { selectedDevice } = useDeviceContext();
@@ -91,42 +94,47 @@ export default function MusicPlayer() {
 
   // Fetch current media state from PC
   const fetchMediaState = useCallback(async () => {
-    if (!selectedDevice?.is_online) return;
+    if (!selectedDevice?.is_online || isFetching) return;
     
+    setIsFetching(true);
     try {
-      const result = await sendCommand("get_media_state", {}, { awaitResult: true, timeoutMs: 3000 }) as any;
-      if (result?.success && result?.result?.success) {
-        const state = result.result;
-        setMediaState({
-          title: state.title || "No media playing",
-          artist: state.artist || "Unknown artist",
-          isPlaying: state.is_playing ?? false,
-          position: state.position_percent ?? 0,
-          positionMs: state.position_ms ?? 0,
-          durationMs: state.duration_ms ?? 0,
-          volume: state.volume ?? 80,
-          muted: state.muted ?? false,
-        });
-        setVolume(state.volume ?? 80);
-        setIsMuted(state.muted ?? false);
+      const result = await sendCommand("get_media_state", {}, { awaitResult: true, timeoutMs: 4000 });
+      if (result?.success && 'result' in result && result.result) {
+        const state = result.result as Record<string, unknown>;
+        if (state.success) {
+          setMediaState({
+            title: (state.title as string) || "No media playing",
+            artist: (state.artist as string) || "Unknown artist",
+            isPlaying: (state.is_playing as boolean) ?? false,
+            position: (state.position_percent as number) ?? 0,
+            positionMs: (state.position_ms as number) ?? 0,
+            durationMs: (state.duration_ms as number) ?? 0,
+            volume: (state.volume as number) ?? 80,
+            muted: (state.muted as boolean) ?? false,
+          });
+          setVolume((state.volume as number) ?? 80);
+          setIsMuted((state.muted as boolean) ?? false);
+        }
       }
     } catch (error) {
       console.error("Failed to fetch media state:", error);
+    } finally {
+      setIsFetching(false);
     }
-  }, [selectedDevice, sendCommand]);
+  }, [selectedDevice, sendCommand, isFetching]);
 
-  // Poll media state every 2 seconds
+  // Poll media state every 3 seconds (reduced from 2 to avoid overwhelming)
   useEffect(() => {
     if (selectedDevice?.is_online) {
       fetchMediaState();
-      pollIntervalRef.current = setInterval(fetchMediaState, 2000);
+      pollIntervalRef.current = setInterval(fetchMediaState, 3000);
     }
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
     };
-  }, [selectedDevice, fetchMediaState]);
+  }, [selectedDevice]);
 
   // Media controls
   const handlePlayPause = async () => {
