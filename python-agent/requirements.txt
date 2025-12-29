@@ -19,5 +19,10 @@ psutil>=5.9.0            # System and process utilities
 pillow>=10.0.0           # Screenshot handling
 mss>=9.0.0               # Fast multi-monitor screenshots
 
+# Streaming / realtime
+websockets>=12.0         # WS streaming (audio/camera)
+pyaudio>=0.2.14          # Microphone/system audio capture
+opencv-python>=4.9.0.80  # PC camera capture
+
 # Optional: For music features
 # youtube-search-python>=1.6.6
