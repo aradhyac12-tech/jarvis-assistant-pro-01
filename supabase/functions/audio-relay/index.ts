@@ -160,10 +160,10 @@ serve(async (req) => {
         });
 
         return new Response(
-          JSON.stringify({ 
-            success: true, 
+          JSON.stringify({
+            success: true,
             sessionId: newSessionId,
-            wsUrl: `wss://gatcapfurmevdesilwco.supabase.co/functions/v1/audio-relay?sessionId=${newSessionId}`
+            wsUrl: `wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/audio-relay?sessionId=${newSessionId}`
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );

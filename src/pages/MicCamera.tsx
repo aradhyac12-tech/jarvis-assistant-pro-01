@@ -67,8 +67,9 @@ export default function MicCamera() {
   const [pcAudioActive, setPcAudioActive] = useState(false);
   const pcAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-  const WS_URL = SUPABASE_URL?.replace("https://", "wss://") + "/functions/v1/audio-relay";
+  // Use the Edge Function WebSocket domain (functions.supabase.co)
+  // Note: using a fixed URL avoids issues when env vars aren't present in some builds.
+  const WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/audio-relay";
 
   // ==================== PHONE CAMERA ====================
   const startPhoneCamera = useCallback(async () => {
