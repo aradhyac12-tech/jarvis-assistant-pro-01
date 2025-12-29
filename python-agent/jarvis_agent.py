@@ -1188,11 +1188,13 @@ class JarvisAgent:
         try:
             site_lower = site.lower().strip()
             
+            # Site URLs: (base_url, search_url_pattern)
+            # For ChatGPT and Perplexity, we open and type the query directly for better UX
             site_urls = {
                 "google": ("https://www.google.com", "https://www.google.com/search?q="),
                 "youtube": ("https://www.youtube.com", "https://www.youtube.com/results?search_query="),
-                "chatgpt": ("https://chat.openai.com", "https://chat.openai.com/?q="),
-                "perplexity": ("https://www.perplexity.ai", "https://www.perplexity.ai/search?q="),
+                "chatgpt": ("https://chatgpt.com", None),  # Will handle separately
+                "perplexity": ("https://www.perplexity.ai", None),  # Will handle separately
                 "wikipedia": ("https://www.wikipedia.org", "https://en.wikipedia.org/wiki/Special:Search?search="),
                 "github": ("https://github.com", "https://github.com/search?q="),
                 "reddit": ("https://www.reddit.com", "https://www.reddit.com/search/?q="),
@@ -1212,6 +1214,26 @@ class JarvisAgent:
                 "maps": ("https://maps.google.com", "https://www.google.com/maps/search/"),
                 "news": ("https://news.google.com", "https://news.google.com/search?q="),
             }
+            
+            # Special handling for ChatGPT - open and type query
+            if site_lower == "chatgpt" and query:
+                webbrowser.open("https://chatgpt.com")
+                time.sleep(2)  # Wait for page to load
+                pyautogui.typewrite(query, interval=0.02)
+                time.sleep(0.3)
+                pyautogui.press("enter")
+                print(f"🌐 Opened ChatGPT and searched: {query}")
+                return {"success": True, "message": f"Opened ChatGPT with query: {query}"}
+            
+            # Special handling for Perplexity - open and type query  
+            if site_lower == "perplexity" and query:
+                webbrowser.open("https://www.perplexity.ai")
+                time.sleep(2)  # Wait for page to load
+                pyautogui.typewrite(query, interval=0.02)
+                time.sleep(0.3)
+                pyautogui.press("enter")
+                print(f"🌐 Opened Perplexity and searched: {query}")
+                return {"success": True, "message": f"Opened Perplexity with query: {query}"}
             
             if site_lower in site_urls:
                 base_url, search_url = site_urls[site_lower]
@@ -1238,14 +1260,32 @@ class JarvisAgent:
         try:
             engine_lower = engine.lower()
             
+            # Special handling for ChatGPT - open and type query
+            if engine_lower == "chatgpt":
+                webbrowser.open("https://chatgpt.com")
+                time.sleep(2)  # Wait for page to load
+                pyautogui.typewrite(query, interval=0.02)
+                time.sleep(0.3)
+                pyautogui.press("enter")
+                print(f"🔎 ChatGPT: {query}")
+                return {"success": True, "message": f"Searching ChatGPT for: {query}"}
+            
+            # Special handling for Perplexity - open and type query
+            if engine_lower == "perplexity":
+                webbrowser.open("https://www.perplexity.ai")
+                time.sleep(2)  # Wait for page to load
+                pyautogui.typewrite(query, interval=0.02)
+                time.sleep(0.3)
+                pyautogui.press("enter")
+                print(f"🔎 Perplexity: {query}")
+                return {"success": True, "message": f"Searching Perplexity for: {query}"}
+            
             search_urls = {
                 "google": f"https://www.google.com/search?q={urllib.parse.quote(query)}",
                 "bing": f"https://www.bing.com/search?q={urllib.parse.quote(query)}",
                 "duckduckgo": f"https://duckduckgo.com/?q={urllib.parse.quote(query)}",
                 "youtube": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}",
                 "wikipedia": f"https://en.wikipedia.org/wiki/Special:Search?search={urllib.parse.quote(query)}",
-                "chatgpt": f"https://chat.openai.com/?q={urllib.parse.quote(query)}",
-                "perplexity": f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}",
             }
             
             url = search_urls.get(engine_lower, search_urls["google"])
@@ -1649,35 +1689,45 @@ class JarvisAgent:
         """Execute a command based on type."""
         payload = payload or {}
         
-        # Handle async commands
+        # Handle async commands - spawn in background thread to avoid blocking
         async_commands = {
-            "start_audio_relay": lambda: asyncio.create_task(
-                self._start_audio_relay(
-                    payload.get("session_id", str(uuid.uuid4())),
-                    payload.get("direction", "phone_to_pc"),
-                    payload.get("use_system_audio", False)
-                )
-            ),
-            "stop_audio_relay": lambda: asyncio.create_task(self._stop_audio_relay()),
-            "start_camera_stream": lambda: asyncio.create_task(
-                self._start_camera_stream(
-                    payload.get("session_id", str(uuid.uuid4())),
-                    payload.get("camera_index", 0),
-                    payload.get("fps", 10),
-                    payload.get("quality", 50)
-                )
-            ),
-            "stop_camera_stream": lambda: asyncio.create_task(self._stop_camera_stream()),
+            "start_audio_relay",
+            "stop_audio_relay",
+            "start_camera_stream",
+            "stop_camera_stream",
         }
         
         if command_type in async_commands:
-            try:
-                # Run async command
-                loop = asyncio.get_event_loop()
-                result = loop.run_until_complete(async_commands[command_type]())
-                return result if result else {"success": True}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
+            def run_async_command():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    if command_type == "start_audio_relay":
+                        loop.run_until_complete(self._start_audio_relay(
+                            payload.get("session_id", str(uuid.uuid4())),
+                            payload.get("direction", "phone_to_pc"),
+                            payload.get("use_system_audio", False)
+                        ))
+                    elif command_type == "stop_audio_relay":
+                        loop.run_until_complete(self._stop_audio_relay())
+                    elif command_type == "start_camera_stream":
+                        loop.run_until_complete(self._start_camera_stream(
+                            payload.get("session_id", str(uuid.uuid4())),
+                            payload.get("camera_index", 0),
+                            payload.get("fps", 10),
+                            payload.get("quality", 50)
+                        ))
+                    elif command_type == "stop_camera_stream":
+                        loop.run_until_complete(self._stop_camera_stream())
+                except Exception as e:
+                    print(f"❌ Async command error: {e}")
+                finally:
+                    loop.close()
+            
+            # Start in background thread
+            thread = threading.Thread(target=run_async_command, daemon=True)
+            thread.start()
+            return {"success": True, "message": f"Started {command_type}"}
         
         command_handlers = {
             # Volume & Brightness

@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Loader2, Terminal, Check, X, Sparkles } from "lucide-react";
+import { Send, Loader2, Terminal, Check, X, Sparkles, Search, Music, Globe, MessageSquare, Zap } from "lucide-react";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -16,15 +16,25 @@ interface CommandResult {
   timestamp: Date;
 }
 
+type ServiceType = "web" | "youtube" | "chatgpt" | "perplexity";
+
+const serviceConfig: Record<ServiceType, { label: string; icon: React.ReactNode; color: string }> = {
+  web: { label: "Web", icon: <Globe className="h-3 w-3" />, color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
+  youtube: { label: "YouTube", icon: <Music className="h-3 w-3" />, color: "bg-red-500/20 text-red-400 border-red-500/30" },
+  chatgpt: { label: "ChatGPT", icon: <MessageSquare className="h-3 w-3" />, color: "bg-green-500/20 text-green-400 border-green-500/30" },
+  perplexity: { label: "Perplexity", icon: <Zap className="h-3 w-3" />, color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
+};
+
 export function CommandCenter() {
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [history, setHistory] = useState<CommandResult[]>([]);
+  const [selectedService, setSelectedService] = useState<ServiceType>("web");
   const { sendCommand } = useDeviceCommands();
   const { toast } = useToast();
 
   const parseAndExecute = useCallback(
-    async (text: string) => {
+    async (text: string, service: ServiceType) => {
       const lower = text.toLowerCase().trim();
 
       // Helper to add result to history
@@ -36,6 +46,26 @@ export function CommandCenter() {
       };
 
       try {
+        // If a service is selected, use it directly
+        if (service !== "web") {
+          if (service === "youtube") {
+            // Play on YouTube
+            const result = await sendCommand("play_music", { query: text, service: "youtube" }, { awaitResult: true, timeoutMs: 10000 });
+            addResult(result.success, result.success ? `Playing "${text}" on YouTube` : result.error || "Failed");
+            return;
+          } else if (service === "chatgpt") {
+            // Search on ChatGPT
+            const result = await sendCommand("search_web", { query: text, engine: "chatgpt" }, { awaitResult: true, timeoutMs: 10000 });
+            addResult(result.success, result.success ? `Asked ChatGPT: "${text}"` : result.error || "Failed");
+            return;
+          } else if (service === "perplexity") {
+            // Search on Perplexity
+            const result = await sendCommand("search_web", { query: text, engine: "perplexity" }, { awaitResult: true, timeoutMs: 10000 });
+            addResult(result.success, result.success ? `Asked Perplexity: "${text}"` : result.error || "Failed");
+            return;
+          }
+        }
+
         // Open app patterns
         const openAppMatch = lower.match(
           /^open\s+(chrome|firefox|edge|notepad|spotify|vscode|vs code|discord|steam|telegram|whatsapp|obs|zoom|teams|slack|brave|calculator|calc|terminal|cmd|powershell|explorer|vlc|settings|paint|word|excel|powerpoint|outlook|photoshop|gimp|blender|git bash|postman|docker|.+)$/i
@@ -47,36 +77,36 @@ export function CommandCenter() {
           return;
         }
 
-        // Play music patterns
+        // Play music patterns - "play X" directly plays on YouTube
         const playMatch = lower.match(/^play\s+(.+?)(?:\s+on\s+(youtube|spotify|soundcloud|apple music))?$/i);
         if (playMatch) {
           const query = playMatch[1];
-          const service = playMatch[2] || "youtube";
-          const result = await sendCommand("play_music", { query, service }, { awaitResult: true, timeoutMs: 6000 });
-          addResult(result.success, result.success ? `Playing ${query} on ${service}` : result.error || "Failed");
+          const svc = playMatch[2] || "youtube";
+          const result = await sendCommand("play_music", { query, service: svc }, { awaitResult: true, timeoutMs: 10000 });
+          addResult(result.success, result.success ? `Playing "${query}" on ${svc}` : result.error || "Failed");
           return;
         }
 
-        // Search patterns
+        // Search patterns with service prefix
         const searchMatch = lower.match(
-          /^search\s+(?:(google|bing|youtube|wikipedia|chatgpt|perplexity|duckduckgo)\s+(?:for\s+)?)?(.+)$/i
+          /^(?:search|ask)\s+(?:(google|bing|youtube|wikipedia|chatgpt|perplexity|duckduckgo)\s+(?:for\s+)?)?(.+)$/i
         );
         if (searchMatch) {
           const engine = searchMatch[1] || "google";
           const query = searchMatch[2];
-          const result = await sendCommand("search_web", { query, engine }, { awaitResult: true, timeoutMs: 6000 });
+          const result = await sendCommand("search_web", { query, engine }, { awaitResult: true, timeoutMs: 10000 });
           addResult(result.success, result.success ? `Searching ${engine} for: ${query}` : result.error || "Failed");
           return;
         }
 
         // Open website patterns
         const websiteMatch = lower.match(
-          /^(?:open|go to)\s+(google|youtube|github|reddit|twitter|facebook|instagram|linkedin|netflix|chatgpt|perplexity|wikipedia|gmail|drive|maps|.+\.(?:com|org|net|io|co|ai))(?:\s+and\s+search\s+(?:for\s+)?(.+))?$/i
+          /^(?:open|go to)\s+(google|youtube|github|reddit|twitter|facebook|instagram|linkedin|netflix|chatgpt|perplexity|wikipedia|gmail|drive|maps|.+\.(?:com|org|net|io|co|ai))(?:\s+and\s+(?:search|ask)\s+(?:for\s+)?(.+))?$/i
         );
         if (websiteMatch) {
           const site = websiteMatch[1];
           const query = websiteMatch[2] || "";
-          const result = await sendCommand("open_website", { site, query }, { awaitResult: true, timeoutMs: 6000 });
+          const result = await sendCommand("open_website", { site, query }, { awaitResult: true, timeoutMs: 10000 });
           addResult(result.success, result.success ? `Opened ${site}` + (query ? ` with query: ${query}` : "") : result.error || "Failed");
           return;
         }
@@ -174,8 +204,15 @@ export function CommandCenter() {
           return;
         }
 
-        // Unknown command - try as app open
-        addResult(false, `Unknown command. Try: "open chrome", "play Bohemian Rhapsody", "search wikipedia black holes"`);
+        // If nothing matched and we have text, do a web search by default
+        if (text.trim()) {
+          const result = await sendCommand("search_web", { query: text, engine: "google" }, { awaitResult: true, timeoutMs: 6000 });
+          addResult(result.success, result.success ? `Searched Google for: ${text}` : result.error || "Failed");
+          return;
+        }
+
+        // Unknown command
+        addResult(false, `Unknown command. Try: "open chrome", "play Bohemian Rhapsody", "ask chatgpt about python"`);
       } catch (error) {
         addResult(false, String(error));
       }
@@ -187,16 +224,14 @@ export function CommandCenter() {
     if (!input.trim() || isProcessing) return;
 
     setIsProcessing(true);
-    await parseAndExecute(input.trim());
+    await parseAndExecute(input.trim(), selectedService);
     setInput("");
     setIsProcessing(false);
   };
 
   const examples = [
+    "play Bohemian Rhapsody",
     "open chrome",
-    "play Ordinary by the Arkells",
-    "search wikipedia black holes",
-    "open chatgpt and search for python tutorials",
     "volume 50",
     "pause",
   ];
@@ -214,21 +249,52 @@ export function CommandCenter() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Service Selector */}
+        <div className="flex flex-wrap gap-2">
+          {(Object.keys(serviceConfig) as ServiceType[]).map((svc) => (
+            <Badge
+              key={svc}
+              variant="outline"
+              className={cn(
+                "cursor-pointer transition-all flex items-center gap-1.5 px-3 py-1",
+                selectedService === svc
+                  ? serviceConfig[svc].color + " border-2"
+                  : "hover:bg-secondary/50"
+              )}
+              onClick={() => setSelectedService(svc)}
+            >
+              {serviceConfig[svc].icon}
+              {serviceConfig[svc].label}
+            </Badge>
+          ))}
+        </div>
+
         {/* Input */}
         <div className="flex gap-2">
-          <Input
-            placeholder="Type a command... (e.g., 'play Bohemian Rhapsody on YouTube')"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit();
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder={
+                selectedService === "youtube"
+                  ? "Search and play on YouTube..."
+                  : selectedService === "chatgpt"
+                  ? "Ask ChatGPT anything..."
+                  : selectedService === "perplexity"
+                  ? "Search with Perplexity AI..."
+                  : "Type a command or search..."
               }
-            }}
-            className="flex-1"
-            disabled={isProcessing}
-          />
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit();
+                }
+              }}
+              className="pl-10"
+              disabled={isProcessing}
+            />
+          </div>
           <Button
             onClick={handleSubmit}
             disabled={!input.trim() || isProcessing}
