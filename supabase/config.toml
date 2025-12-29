@@ -1,13 +1,1 @@
-project_id = "gatcapfurmevdesilwco"
-
-[functions.jarvis-chat]
-verify_jwt = false
-
-[functions.jarvis-command]
-verify_jwt = false
-
-[functions.audio-relay]
-verify_jwt = false
-
-[functions.camera-relay]
-verify_jwt = false
+project_id = "feridtduzdvlylaxozny"
