@@ -143,45 +143,83 @@ export default function MicCamera() {
       const sessionId = crypto.randomUUID();
       setPcCameraSessionId(sessionId);
 
-      // Tell PC to start camera stream
-      await sendCommand("start_camera_stream", {
-        session_id: sessionId,
-        camera_index: selectedPcCamera,
-      });
-
-      // Connect to dedicated camera-relay WebSocket
+      // Connect to dedicated camera-relay WebSocket FIRST
       const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=50`);
       pcCameraWsRef.current = ws;
 
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = async () => {
+        console.log("[PC Camera] WebSocket connected, waiting for PC agent...");
+        setDebugStats(prev => ({ ...prev, cameraWsConnected: true }));
+        
+        // Now tell PC to start camera stream (after phone is connected)
+        await sendCommand("start_camera_stream", {
+          session_id: sessionId,
+          camera_index: selectedPcCamera,
+        });
+        
+        setPcCameraActive(true);
+        toast({ title: "PC Camera Started", description: "Waiting for PC agent to connect..." });
+      };
+
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          if (data.type === "camera_frame" && data.data) {
-            setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
+          if (typeof event.data === "string") {
+            const data = JSON.parse(event.data);
+            console.log("[PC Camera] Message:", data.type);
+            
+            if (data.type === "camera_frame" && data.data) {
+              setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
+              setDebugStats(prev => ({ 
+                ...prev, 
+                lastFrameTime: Date.now(),
+                frameCount: prev.frameCount + 1
+              }));
+            } else if (data.type === "peer_connected") {
+              console.log("[PC Camera] PC agent connected!");
+              setDebugStats(prev => ({ ...prev, cameraPeerConnected: true }));
+              toast({ title: "PC Camera Connected", description: "Streaming from PC" });
+            } else if (data.type === "peer_disconnected") {
+              console.log("[PC Camera] PC agent disconnected");
+              setDebugStats(prev => ({ ...prev, cameraPeerConnected: false }));
+              toast({ title: "PC Camera Disconnected", variant: "destructive" });
+            } else if (data.type === "connected") {
+              console.log("[PC Camera] Session connected, peer:", data.peerConnected);
+              setDebugStats(prev => ({ ...prev, cameraPeerConnected: data.peerConnected }));
+            }
+          } else if (event.data instanceof ArrayBuffer) {
+            // Binary frame data - convert to base64
+            const bytes = new Uint8Array(event.data);
+            const base64 = btoa(String.fromCharCode(...bytes));
+            setPcCameraFrame(`data:image/jpeg;base64,${base64}`);
+            setDebugStats(prev => ({ 
+              ...prev, 
+              lastFrameTime: Date.now(),
+              frameCount: prev.frameCount + 1
+            }));
           }
-        } catch {
-          // Binary data, ignore
+        } catch (err) {
+          console.error("[PC Camera] Parse error:", err);
         }
       };
 
-      ws.onopen = () => {
-        setPcCameraActive(true);
-        toast({ title: "PC Camera Started", description: "PC webcam is streaming to your phone" });
-      };
-
-      ws.onerror = () => {
+      ws.onerror = (err) => {
+        console.error("[PC Camera] WebSocket error:", err);
         toast({ title: "PC Camera Error", variant: "destructive" });
       };
 
       ws.onclose = () => {
+        console.log("[PC Camera] WebSocket closed");
         setPcCameraActive(false);
         setPcCameraFrame(null);
+        setDebugStats(prev => ({ ...prev, cameraWsConnected: false, cameraPeerConnected: false }));
       };
     } catch (error) {
       console.error("PC Camera error:", error);
       toast({ title: "PC Camera Error", variant: "destructive" });
     }
-  }, [sendCommand, selectedPcCamera, WS_URL, toast]);
+  }, [sendCommand, selectedPcCamera, CAMERA_WS_URL, toast]);
 
   const stopPcCamera = useCallback(async () => {
     await sendCommand("stop_camera_stream", {});
@@ -423,23 +461,43 @@ export default function MicCamera() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 <div>
                   <span className="text-muted-foreground">Audio WS:</span>{" "}
-                  <Badge variant={audioWsRef.current ? "default" : "secondary"} className="text-xs">
-                    {audioWsRef.current ? "Connected" : "Disconnected"}
+                  <Badge variant={debugStats.audioWsConnected ? "default" : "secondary"} className="text-xs">
+                    {debugStats.audioWsConnected ? "Connected" : "Disconnected"}
                   </Badge>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Camera WS:</span>{" "}
-                  <Badge variant={pcCameraWsRef.current ? "default" : "secondary"} className="text-xs">
-                    {pcCameraWsRef.current ? "Connected" : "Disconnected"}
+                  <Badge variant={debugStats.cameraWsConnected ? "default" : "secondary"} className="text-xs">
+                    {debugStats.cameraWsConnected ? "Connected" : "Disconnected"}
                   </Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">PC Agent:</span>{" "}
+                  <Badge variant={debugStats.cameraPeerConnected ? "default" : "outline"} className="text-xs">
+                    {debugStats.cameraPeerConnected ? "Connected" : "Waiting..."}
+                  </Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Frames:</span>{" "}
+                  <span className="font-mono">{debugStats.frameCount}</span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Audio Level:</span>{" "}
                   <span className="font-mono">{Math.round(audioLevel * 100)}%</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Session:</span>{" "}
+                  <span className="text-muted-foreground">Last Frame:</span>{" "}
+                  <span className="font-mono">
+                    {debugStats.lastFrameTime ? `${((Date.now() - debugStats.lastFrameTime) / 1000).toFixed(1)}s ago` : "—"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Audio Session:</span>{" "}
                   <span className="font-mono">{audioSessionId?.slice(0, 8) || "—"}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Camera Session:</span>{" "}
+                  <span className="font-mono">{pcCameraSessionId?.slice(0, 8) || "—"}</span>
                 </div>
               </div>
             </Card>
