@@ -1380,6 +1380,103 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def _get_media_state(self) -> Dict[str, Any]:
+        """Get current media playback state (Windows only)."""
+        try:
+            if platform.system() != "Windows":
+                return {"success": False, "error": "Only supported on Windows"}
+            
+            # Use Windows Media Session API via PowerShell
+            ps_script = '''
+            Add-Type -AssemblyName System.Runtime.WindowsRuntime
+            $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime]
+            $async = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
+            $sessions = $null
+            
+            # Wait for async operation
+            $task = $async.AsTask()
+            $task.Wait(2000)
+            
+            if ($task.IsCompleted) {
+                $sessions = $task.Result
+                $current = $sessions.GetCurrentSession()
+                
+                if ($null -ne $current) {
+                    $info = $current.TryGetMediaPropertiesAsync().AsTask()
+                    $info.Wait(1000)
+                    $props = $info.Result
+                    
+                    $playback = $current.GetPlaybackInfo()
+                    $timeline = $current.GetTimelineProperties()
+                    
+                    @{
+                        title = $props.Title
+                        artist = $props.Artist
+                        album = $props.AlbumTitle
+                        is_playing = $playback.PlaybackStatus -eq 'Playing'
+                        position_ms = [int]$timeline.Position.TotalMilliseconds
+                        duration_ms = [int]$timeline.EndTime.TotalMilliseconds
+                    } | ConvertTo-Json
+                } else {
+                    @{ title = ""; artist = ""; is_playing = $false; position_ms = 0; duration_ms = 0 } | ConvertTo-Json
+                }
+            } else {
+                @{ error = "Timeout getting media session" } | ConvertTo-Json
+            }
+            '''
+            
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', ps_script],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout.strip())
+                if "error" in data:
+                    return {"success": False, "error": data["error"]}
+                
+                # Calculate position percentage
+                position_percent = 0
+                if data.get("duration_ms", 0) > 0:
+                    position_percent = (data.get("position_ms", 0) / data["duration_ms"]) * 100
+                
+                return {
+                    "success": True,
+                    "title": data.get("title", ""),
+                    "artist": data.get("artist", ""),
+                    "album": data.get("album", ""),
+                    "is_playing": data.get("is_playing", False),
+                    "position_ms": data.get("position_ms", 0),
+                    "duration_ms": data.get("duration_ms", 0),
+                    "position_percent": round(position_percent, 1),
+                    "volume": self._get_volume(),
+                    "muted": False,  # Would need additional API for mute state
+                }
+            else:
+                return {
+                    "success": True,
+                    "title": "",
+                    "artist": "",
+                    "is_playing": False,
+                    "position_ms": 0,
+                    "duration_ms": 0,
+                    "position_percent": 0,
+                    "volume": self._get_volume(),
+                    "muted": False,
+                }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Media state query timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _media_seek(self, position_percent: float):
+        """Seek to a position in the current media (limited support)."""
+        # Note: Windows doesn't have a universal way to seek media
+        # This would need app-specific implementations
+        return {"success": False, "error": "Seeking not supported on all media players"}
+
     def _media_control(self, action: str):
         """Control media playback using Windows virtual key codes."""
         try:
@@ -1835,6 +1932,8 @@ class JarvisAgent:
                 payload.get("service", "youtube")
             ),
             "media_control": lambda: self._media_control(payload.get("action", "")),
+            "get_media_state": self._get_media_state,
+            "media_seek": lambda: self._media_seek(payload.get("position_percent", 0)),
             
             # System
             "get_system_stats": self._get_system_stats,
