@@ -126,11 +126,36 @@ else:
 
 
 # ============== CONFIGURATION ==============
-SUPABASE_URL = "https://gatcapfurmevdesilwco.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdhdGNhcGZ1cm1ldmRlc2lsd2NvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5NTQ0ODAsImV4cCI6MjA4MjUzMDQ4MH0.ZhGMwqiDgPkmAgc7ij5sxFU4dVHFZbDU-i4A0CUtg0A"
+# Prefer environment variables so remixes don't require code edits.
+# You can set these on the PC before running:
+#   - JARVIS_SUPABASE_URL
+#   - JARVIS_SUPABASE_KEY
+SUPABASE_URL = (
+    os.environ.get("JARVIS_SUPABASE_URL")
+    or os.environ.get("SUPABASE_URL")
+    or "https://feridtduzdvlylaxozny.supabase.co"
+)
+SUPABASE_KEY = (
+    os.environ.get("JARVIS_SUPABASE_KEY")
+    or os.environ.get("SUPABASE_ANON_KEY")
+    or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+    or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlcmlkdGR1emR2bHlsYXhvem55Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcwMDQ5MTAsImV4cCI6MjA4MjU4MDkxMH0.YDr2ZGqufqw32RkRK2ipuH0QaWTfffPjFDA8FM_kS3A"
+)
 
-# WebSocket endpoint for realtime streaming (Edge Functions domain)
-AUDIO_RELAY_WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/audio-relay"
+
+def _project_ref_from_url(url: str) -> str:
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+        return host.split(".")[0] if host else "feridtduzdvlylaxozny"
+    except Exception:
+        return "feridtduzdvlylaxozny"
+
+
+PROJECT_REF = _project_ref_from_url(SUPABASE_URL)
+
+# WebSocket endpoints for realtime streaming (Edge Functions domain)
+AUDIO_RELAY_WS_URL = f"wss://{PROJECT_REF}.functions.supabase.co/functions/v1/audio-relay"
+CAMERA_RELAY_WS_URL = f"wss://{PROJECT_REF}.functions.supabase.co/functions/v1/camera-relay"
 
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
@@ -389,8 +414,7 @@ class AudioStreamer:
         print("🔇 Audio relay stopped")
 
 
-# Camera relay WebSocket URL (dedicated endpoint)
-CAMERA_RELAY_WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/camera-relay"
+# CAMERA_RELAY_WS_URL is derived from SUPABASE_URL in the CONFIGURATION section above.
 
 
 class CameraStreamer:

@@ -80,9 +80,18 @@ export default function MicCamera() {
     frameCount: 0,
   });
 
-  // Use the Edge Function WebSocket domains
-  const WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/audio-relay";
-  const CAMERA_WS_URL = "wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/camera-relay";
+  // Derive the correct Edge Functions WebSocket domain from the configured backend URL (supports remixes)
+  const supabaseHttpUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const projectRef = (() => {
+    try {
+      return supabaseHttpUrl ? new URL(supabaseHttpUrl).host.split(".")[0] : "feridtduzdvlylaxozny";
+    } catch {
+      return "feridtduzdvlylaxozny";
+    }
+  })();
+
+  const WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/audio-relay`;
+  const CAMERA_WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/camera-relay`;
 
   // ==================== PHONE CAMERA ====================
   const startPhoneCamera = useCallback(async () => {
@@ -181,7 +190,7 @@ export default function MicCamera() {
       console.error("PC Camera error:", error);
       toast({ title: "PC Camera Error", variant: "destructive" });
     }
-  }, [sendCommand, selectedPcCamera, WS_URL, toast]);
+  }, [sendCommand, selectedPcCamera, CAMERA_WS_URL, toast]);
 
   const stopPcCamera = useCallback(async () => {
     await sendCommand("stop_camera_stream", {});

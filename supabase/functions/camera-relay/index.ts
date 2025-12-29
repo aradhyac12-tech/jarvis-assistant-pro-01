@@ -241,11 +241,14 @@ serve(async (req) => {
           lastActivity: Date.now(),
         });
 
+        const host = new URL(req.url).host;
+        const ref = host.split(".")[0];
+
         return new Response(
           JSON.stringify({
             success: true,
             sessionId: newSessionId,
-            wsUrl: `wss://gatcapfurmevdesilwco.functions.supabase.co/functions/v1/camera-relay?sessionId=${newSessionId}`
+            wsUrl: `wss://${ref}.functions.supabase.co/functions/v1/camera-relay?sessionId=${newSessionId}`,
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
