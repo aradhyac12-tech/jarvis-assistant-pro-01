@@ -1,1 +1,13 @@
 project_id = "zcpclccisfnjiziqnzds"
+
+[functions.audio-relay]
+verify_jwt = false
+
+[functions.camera-relay]
+verify_jwt = false
+
+[functions.jarvis-chat]
+verify_jwt = false
+
+[functions.jarvis-command]
+verify_jwt = false
