@@ -31,6 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { cn } from "@/lib/utils";
+import { addLog } from "@/components/IssueLog";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
@@ -145,10 +146,15 @@ export default function MicCamera() {
 
   // ==================== PC CAMERA ====================
   const fetchPcCameras = useCallback(async () => {
-    const result = await sendCommand("get_cameras", {}, { awaitResult: true, timeoutMs: 12000 });
-    if (result && "result" in result && result.result?.cameras) {
-      const cameras = result.result.cameras as Array<{ index: number; name: string }>;
-      setPcCameras(cameras);
+    try {
+      const result = await sendCommand("get_cameras", {}, { awaitResult: true, timeoutMs: 12000 });
+      if (result && "result" in result && result.result?.cameras) {
+        const cameras = result.result.cameras as Array<{ index: number; name: string }>;
+        setPcCameras(cameras);
+        addLog("info", "agent", `Found ${cameras.length} PC cameras`);
+      }
+    } catch (err) {
+      addLog("error", "agent", `Failed to fetch PC cameras: ${err}`);
     }
   }, [sendCommand]);
 
@@ -156,6 +162,7 @@ export default function MicCamera() {
     try {
       const sessionId = crypto.randomUUID();
       setPcCameraSessionId(sessionId);
+      addLog("info", "web", `Starting PC camera stream (session: ${sessionId.slice(0, 8)}...)`);
 
       // Tell PC to start camera stream (wait for an explicit OK so we can surface camera-open errors)
       const started = await sendCommand(
@@ -169,10 +176,14 @@ export default function MicCamera() {
 
       if (!started.success) {
         const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
+        // Log the error from the agent to the IssueLog
+        addLog("error", "agent", `Camera open failed: ${msg}`);
         toast({ title: "PC Camera Error", description: msg, variant: "destructive" });
         setPcCameraSessionId(null);
         return;
       }
+
+      addLog("info", "agent", "PC camera opened successfully");
 
       // Connect to dedicated camera-relay WebSocket (phone receives frames)
       const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=60`);
@@ -183,29 +194,42 @@ export default function MicCamera() {
           const data = JSON.parse(event.data);
           if (data.type === "camera_frame" && data.data) {
             setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
+            setDebugStats((prev) => ({
+              ...prev,
+              frameCount: prev.frameCount + 1,
+              lastFrameTime: Date.now(),
+            }));
           }
           if (data.type === "error" && data.message) {
+            addLog("error", "agent", `Camera relay error: ${data.message}`);
             toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
           }
         } catch {
-          // ignore
+          // ignore parse errors for binary data
         }
       };
 
       ws.onopen = () => {
         setPcCameraActive(true);
+        setDebugStats((prev) => ({ ...prev, cameraWsConnected: true }));
+        addLog("info", "web", "Camera WebSocket connected");
         toast({ title: "PC Camera Started", description: "PC webcam is streaming to your phone" });
       };
 
-      ws.onerror = () => {
+      ws.onerror = (err) => {
+        addLog("error", "web", `Camera WebSocket error: ${err}`);
         toast({ title: "PC Camera Error", description: "WebSocket error", variant: "destructive" });
       };
 
       ws.onclose = () => {
         setPcCameraActive(false);
         setPcCameraFrame(null);
+        setDebugStats((prev) => ({ ...prev, cameraWsConnected: false }));
+        addLog("info", "web", "Camera WebSocket closed");
       };
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      addLog("error", "web", `PC Camera error: ${errMsg}`);
       console.error("PC Camera error:", error);
       toast({ title: "PC Camera Error", description: "Unexpected error starting PC camera", variant: "destructive" });
     }
@@ -228,12 +252,22 @@ export default function MicCamera() {
     try {
       const sessionId = crypto.randomUUID();
       setAudioSessionId(sessionId);
+      addLog("info", "web", `Starting audio relay (direction: ${audioDirection})`);
 
       // Tell PC to start audio relay
-      await sendCommand("start_audio_relay", {
+      const started = await sendCommand("start_audio_relay", {
         session_id: sessionId,
         direction: audioDirection,
-      });
+      }, { awaitResult: true, timeoutMs: 10000 });
+
+      if (!started.success) {
+        const msg = typeof started.error === "string" ? started.error : "PC failed to start audio relay";
+        addLog("error", "agent", `Audio relay failed: ${msg}`);
+        toast({ title: "Audio Relay Error", description: msg, variant: "destructive" });
+        return;
+      }
+
+      addLog("info", "agent", "PC audio relay started");
 
       // Connect WebSocket
       const ws = new WebSocket(`${WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}`);
@@ -241,6 +275,8 @@ export default function MicCamera() {
 
       ws.onopen = async () => {
         setAudioRelayActive(true);
+        setDebugStats((prev) => ({ ...prev, audioWsConnected: true }));
+        addLog("info", "web", "Audio WebSocket connected");
 
         // If phone is sending audio (phone_to_pc or bidirectional)
         if (audioDirection === "phone_to_pc" || audioDirection === "bidirectional") {
@@ -251,10 +287,12 @@ export default function MicCamera() {
                 noiseSuppression: true,
                 autoGainControl: true,
                 sampleRate: 44100,
+                channelCount: 1,
               },
             });
 
             setPhoneMicStream(stream);
+            addLog("info", "web", "Phone microphone access granted");
 
             // Create audio context for processing
             const audioContext = new AudioContext({ sampleRate: 44100 });
@@ -266,7 +304,7 @@ export default function MicCamera() {
             analyserRef.current = analyser;
             source.connect(analyser);
 
-            // Create processor to send audio
+            // Create processor to send audio (mono, 44100Hz, Int16)
             const processor = audioContext.createScriptProcessor(4096, 1, 1);
             audioProcessorRef.current = processor;
 
@@ -282,6 +320,10 @@ export default function MicCamera() {
                 }
 
                 ws.send(int16Array.buffer);
+                setDebugStats((prev) => ({
+                  ...prev,
+                  audioBytesSent: prev.audioBytesSent + int16Array.byteLength,
+                }));
               }
 
               // Update audio level visualization
@@ -296,6 +338,8 @@ export default function MicCamera() {
             source.connect(processor);
             processor.connect(audioContext.destination);
           } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            addLog("error", "web", `Mic access error: ${errMsg}`);
             console.error("Mic access error:", err);
           }
         }
@@ -310,20 +354,24 @@ export default function MicCamera() {
       ws.onmessage = (event) => {
         if (audioDirection === "pc_to_phone" || audioDirection === "bidirectional") {
           if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-            // Play received audio
             playReceivedAudio(event.data);
           }
         }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (err) => {
+        addLog("error", "web", `Audio WebSocket error: ${err}`);
         toast({ title: "Audio Relay Error", variant: "destructive" });
       };
 
       ws.onclose = () => {
         setAudioRelayActive(false);
+        setDebugStats((prev) => ({ ...prev, audioWsConnected: false }));
+        addLog("info", "web", "Audio WebSocket closed");
       };
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      addLog("error", "web", `Audio relay error: ${errMsg}`);
       console.error("Audio relay error:", error);
       toast({ title: "Audio Relay Error", variant: "destructive" });
     }
