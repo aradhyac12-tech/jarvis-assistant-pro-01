@@ -828,51 +828,84 @@ class JarvisAgent:
         if pin != UNLOCK_PIN:
             print("❌ Invalid unlock PIN!")
             return {"success": False, "error": "Invalid PIN"}
-        
+
         print("🔓 Smart unlock initiated...")
         self.is_locked = False
-        
+
         if platform.system() == "Windows":
             try:
-                ctypes.windll.user32.SetCursorPos(100, 100)
-                pyautogui.move(1, 1)
-                time.sleep(0.3)
-                pyautogui.press('space')
-                time.sleep(0.5)
-                pyautogui.press('enter')
-                time.sleep(0.3)
+                # Wake the lock screen + focus PIN entry
+                pyautogui.press("space")
+                time.sleep(0.6)
+
+                # Type PIN then confirm
                 pyautogui.typewrite(pin, interval=0.05)
                 time.sleep(0.2)
-                pyautogui.press('enter')
-                
+                pyautogui.press("enter")
+
                 print("🔓 Smart unlock completed!")
                 return {"success": True, "message": "Unlock sequence executed"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         return {"success": True, "message": "PIN verified"}
     
-    def _take_screenshot(self, quality: int = 70, scale: float = 0.5) -> Dict[str, Any]:
+    def _take_screenshot(self, quality: int = 70, scale: float = 0.5, monitor_index: int = 1) -> Dict[str, Any]:
         try:
             if HAS_MSS:
                 with mss.mss() as sct:
-                    monitor = sct.monitors[1]
+                    monitors = sct.monitors
+                    idx = monitor_index if 0 < monitor_index < len(monitors) else 1
+                    monitor = monitors[idx]
                     screenshot = sct.grab(monitor)
                     img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
             else:
                 from PIL import ImageGrab
                 img = ImageGrab.grab()
-            
+
             new_size = (int(img.width * scale), int(img.height * scale))
             img = img.resize(new_size, Image.LANCZOS)
-            
+
             buffer = io.BytesIO()
             img.save(buffer, format="JPEG", quality=quality, optimize=True)
             base64_image = base64.b64encode(buffer.getvalue()).decode()
-            
+
             return {"success": True, "image": base64_image, "width": new_size[0], "height": new_size[1]}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _get_monitors(self) -> Dict[str, Any]:
+        """Returns available monitor indices for capture (1..N)."""
+        try:
+            if not HAS_MSS:
+                return {"success": True, "monitors": [{"index": 1, "name": "Primary"}]}
+
+            with mss.mss() as sct:
+                # mss.monitors[0] is "all"; 1..N are individual monitors
+                mons = []
+                for i in range(1, len(sct.monitors)):
+                    m = sct.monitors[i]
+                    mons.append({"index": i, "name": f"Monitor {i} ({m['width']}x{m['height']})"})
+                return {"success": True, "monitors": mons}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _start_stream(self, fps: int = 5, quality: int = 50, scale: float = 0.6, monitor_index: int = 1) -> Dict[str, Any]:
+        self.screen_streaming = True
+        self.stream_fps = max(1, min(int(fps), 30))
+        self.stream_quality = max(10, min(int(quality), 95))
+        self._stream_scale = max(0.2, min(float(scale), 1.0))
+        self._stream_monitor_index = int(monitor_index)
+        return {"success": True, "fps": self.stream_fps, "quality": self.stream_quality, "scale": self._stream_scale, "monitor_index": self._stream_monitor_index}
+
+    def _get_frame(self) -> Dict[str, Any]:
+        if not self.screen_streaming:
+            return {"success": False, "error": "Stream not started"}
+        return self._take_screenshot(quality=self.stream_quality, scale=self._stream_scale, monitor_index=getattr(self, "_stream_monitor_index", 1))
+
+    def _stop_stream(self) -> Dict[str, Any]:
+        self.screen_streaming = False
+        return {"success": True}
     
     def _type_text(self, text: str):
         try:
@@ -1083,8 +1116,47 @@ class JarvisAgent:
             return {"success": False, "error": f"Process {app_name} not found"}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
-    def _list_files(self, path: str) -> Dict[str, Any]:
+
+    def _get_running_apps(self) -> Dict[str, Any]:
+        """Best-effort list of running apps/processes."""
+        try:
+            apps: List[Dict[str, Any]] = []
+            for proc in psutil.process_iter(['name', 'pid']):
+                try:
+                    name = proc.info.get('name') or ""
+                    if not name:
+                        continue
+                    apps.append({"pid": int(proc.info.get('pid') or 0), "name": name, "memory": 0, "cpu": 0})
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            return {"success": True, "apps": apps[:200]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_installed_apps(self) -> Dict[str, Any]:
+        """Windows: returns Start menu apps (Name + AppID). Other OS: empty list."""
+        try:
+            if platform.system() != "Windows":
+                return {"success": True, "apps": []}
+
+            ps_script = "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json"
+            result = subprocess.run(['powershell', '-Command', ps_script], capture_output=True, text=True, timeout=20)
+
+            apps: List[Dict[str, Any]] = []
+            if result.returncode == 0 and result.stdout.strip():
+                parsed = json.loads(result.stdout.strip())
+                items = parsed if isinstance(parsed, list) else [parsed]
+                for it in items:
+                    name = (it.get('Name') or '').strip()
+                    app_id = (it.get('AppID') or '').strip() or None
+                    if name:
+                        apps.append({"name": name, "app_id": app_id, "source": "startapps"})
+
+            apps.sort(key=lambda a: a["name"].lower())
+            return {"success": True, "apps": apps[:2000]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
         try:
             path = os.path.expanduser(path)
             items = []
@@ -1186,28 +1258,34 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _media_control(self, action: str):
-        """Control media playback (play/pause, next, previous, stop, mute)."""
+        """Control media playback (play/pause, next, previous, stop, mute, volume up/down)."""
         try:
             action_lower = action.lower().strip()
-            
+
             if action_lower in ["play_pause", "playpause", "play", "pause"]:
                 pyautogui.press("playpause")
-                print(f"⏯️ Media play/pause")
+                print("⏯️ Media play/pause")
             elif action_lower in ["next", "nexttrack", "forward"]:
                 pyautogui.press("nexttrack")
-                print(f"⏭️ Media next track")
+                print("⏭️ Media next track")
             elif action_lower in ["previous", "prev", "prevtrack", "back"]:
                 pyautogui.press("prevtrack")
-                print(f"⏮️ Media previous track")
+                print("⏮️ Media previous track")
             elif action_lower == "stop":
                 pyautogui.press("stop")
-                print(f"⏹️ Media stop")
+                print("⏹️ Media stop")
             elif action_lower == "mute":
                 pyautogui.press("volumemute")
-                print(f"🔇 Volume mute toggle")
+                print("🔇 Volume mute toggle")
+            elif action_lower in ["volume_up", "volumeup"]:
+                pyautogui.press("volumeup")
+                print("🔊 Volume up")
+            elif action_lower in ["volume_down", "volumedown"]:
+                pyautogui.press("volumedown")
+                print("🔉 Volume down")
             else:
                 return {"success": False, "error": f"Unknown action: {action}"}
-            
+
             return {"success": True, "action": action}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1379,13 +1457,13 @@ class JarvisAgent:
                 return self._smart_unlock(payload.get("pin", ""))
             elif command_type == "boost":
                 return self._boost_pc()
-            
+
             # Input controls
             elif command_type == "type_text":
                 return self._type_text(payload.get("text", ""))
             elif command_type == "press_key":
                 return self._press_key(payload.get("key", ""))
-            elif command_type == "hotkey":
+            elif command_type in ["hotkey", "key_combo"]:
                 return self._hotkey(payload.get("keys", []))
             elif command_type == "mouse_move":
                 return self._mouse_move(
@@ -1400,13 +1478,13 @@ class JarvisAgent:
                 )
             elif command_type == "mouse_scroll":
                 return self._mouse_scroll(payload.get("amount", 0))
-            
+
             # Clipboard
             elif command_type == "get_clipboard":
                 return self._get_clipboard()
             elif command_type == "set_clipboard":
                 return self._set_clipboard(payload.get("content", ""))
-            
+
             # Apps
             elif command_type == "open_app":
                 return self._open_app(
@@ -1415,17 +1493,21 @@ class JarvisAgent:
                 )
             elif command_type == "close_app":
                 return self._close_app(payload.get("app_name", ""))
-            
+            elif command_type == "get_running_apps":
+                return self._get_running_apps()
+            elif command_type == "get_installed_apps":
+                return self._get_installed_apps()
+
             # Files
             elif command_type == "list_files":
                 return self._list_files(payload.get("path", "~"))
             elif command_type == "open_file":
                 return self._open_file(payload.get("path", ""))
-            
+
             # Web
             elif command_type == "open_url":
                 return self._open_url(payload.get("url", ""))
-            
+
             # Media
             elif command_type == "play_music":
                 return self._play_music(
@@ -1438,27 +1520,41 @@ class JarvisAgent:
                 return self._get_media_state()
             elif command_type == "media_seek":
                 return self._media_seek(payload.get("position_percent", 0))
-            
-            # System info
+
+            # Screen / system info
             elif command_type == "screenshot":
                 return self._take_screenshot(
                     payload.get("quality", 70),
-                    payload.get("scale", 0.5)
+                    payload.get("scale", 0.5),
+                    payload.get("monitor_index", 1)
                 )
+            elif command_type == "start_stream":
+                return self._start_stream(
+                    fps=payload.get("fps", 5),
+                    quality=payload.get("quality", 50),
+                    scale=payload.get("scale", 0.6),
+                    monitor_index=payload.get("monitor_index", 1),
+                )
+            elif command_type == "get_frame":
+                return self._get_frame()
+            elif command_type == "stop_stream":
+                return self._stop_stream()
+            elif command_type == "get_monitors":
+                return self._get_monitors()
             elif command_type == "get_system_stats":
                 return self._get_system_stats()
             elif command_type == "get_cameras":
                 return self._get_cameras()
             elif command_type == "get_issues":
                 return self._get_issues()
-            
-            # Streaming
+
+            # Streaming relays
             elif command_type == "start_audio_relay":
                 session_id = payload.get("session_id", str(uuid.uuid4()))
                 direction = payload.get("direction", "phone_to_pc")
                 use_system_audio = payload.get("use_system_audio", False)
                 self.audio_session_id = session_id
-                
+
                 connected = await self.audio_streamer.connect(session_id, direction, use_system_audio)
                 if connected:
                     if direction in ["phone_to_pc", "bidirectional"]:
@@ -1467,34 +1563,34 @@ class JarvisAgent:
                         asyncio.create_task(self.audio_streamer.start_capture())
                     return {"success": True, "session_id": session_id}
                 return {"success": False, "error": "Failed to connect audio relay"}
-            
+
             elif command_type == "stop_audio_relay":
                 await self.audio_streamer.stop()
                 self.audio_session_id = None
                 return {"success": True}
-            
+
             elif command_type == "start_camera_stream":
                 session_id = payload.get("session_id", str(uuid.uuid4()))
                 camera_index = payload.get("camera_index", 0)
                 fps = payload.get("fps", 10)
                 quality = payload.get("quality", 50)
                 self.camera_session_id = session_id
-                
+
                 connected = await self.camera_streamer.connect(session_id, fps, quality)
                 if connected:
                     asyncio.create_task(self.camera_streamer.start_streaming(camera_index))
                     return {"success": True, "session_id": session_id}
                 return {"success": False, "error": "Failed to connect camera stream"}
-            
+
             elif command_type == "stop_camera_stream":
                 await self.camera_streamer.stop()
                 self.camera_session_id = None
                 return {"success": True}
-            
+
             else:
                 self._log_issue("command", f"Unknown command: {command_type}", "warning")
                 return {"success": False, "error": f"Unknown command: {command_type}"}
-                
+
         except Exception as e:
             self._log_issue("command", f"Error executing {command_type}: {e}", "error")
             return {"success": False, "error": str(e)}

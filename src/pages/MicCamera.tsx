@@ -80,15 +80,8 @@ export default function MicCamera() {
     frameCount: 0,
   });
 
-  // Derive the correct Edge Functions WebSocket domain from the configured backend URL (supports remixes)
-  const supabaseHttpUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-  const projectRef = (() => {
-    try {
-      return supabaseHttpUrl ? new URL(supabaseHttpUrl).host.split(".")[0] : "feridtduzdvlylaxozny";
-    } catch {
-      return "feridtduzdvlylaxozny";
-    }
-  })();
+  // Derive the Edge Functions WebSocket domain from the configured backend project id
+  const projectRef = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined) ?? "";
 
   const WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/audio-relay`;
   const CAMERA_WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/camera-relay`;
