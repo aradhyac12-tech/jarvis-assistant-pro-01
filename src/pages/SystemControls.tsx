@@ -116,24 +116,20 @@ export default function SystemControls() {
 
   const fetchSystemStats = async () => {
     setIsLoadingStats(true);
-    await sendCommand("get_system_stats", {});
-    
-    // Poll for result
-    setTimeout(async () => {
-      const { data } = await supabase
-        .from("commands")
-        .select("result")
-        .eq("command_type", "get_system_stats")
-        .eq("status", "completed")
-        .order("executed_at", { ascending: false })
-        .limit(1);
-      
-      const result = data?.[0]?.result as Record<string, unknown> | null;
-      if (result?.success) {
-        setSystemStats(result as unknown as SystemStats);
-      }
-      setIsLoadingStats(false);
-    }, 1000);
+    const res = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 8000 });
+
+    if (res.success && "result" in res && res.result) {
+      const result = res.result as Record<string, unknown>;
+      if (result.success) setSystemStats(result as unknown as SystemStats);
+    } else {
+      toast({
+        title: "Could not fetch system stats",
+        description: typeof (res as any).error === "string" ? (res as any).error : "Try again.",
+        variant: "destructive",
+      });
+    }
+
+    setIsLoadingStats(false);
   };
 
   // Debounced volume change
@@ -176,18 +172,30 @@ export default function SystemControls() {
     toast({ title: "PC Locked", description: "Your PC has been locked" });
   };
 
-  const handleUnlockAttempt = () => {
-    if (pinInput === UNLOCK_PIN) {
-      setIsLocked(false);
-      setPinInput("");
-      setPinError(false);
-      setShowPinDialog(false);
-      sendCommand("unlock", { pin: UNLOCK_PIN });
-      toast({ title: "Unlocking PC", description: "Smart unlock sequence initiated" });
-    } else {
+  const handleUnlockAttempt = async () => {
+    if (pinInput !== UNLOCK_PIN) {
       setPinError(true);
       setPinInput("");
+      return;
     }
+
+    setPinError(false);
+    setShowPinDialog(false);
+
+    const res = await sendCommand("unlock", { pin: UNLOCK_PIN }, { awaitResult: true, timeoutMs: 10000 });
+
+    if (res.success) {
+      setIsLocked(false);
+      toast({ title: "PC Unlocked", description: "Unlock completed" });
+    } else {
+      toast({
+        title: "Unlock failed",
+        description: typeof (res as any).error === "string" ? (res as any).error : "Check the PC lock screen",
+        variant: "destructive",
+      });
+    }
+
+    setPinInput("");
   };
 
   const handleBoost = async () => {
