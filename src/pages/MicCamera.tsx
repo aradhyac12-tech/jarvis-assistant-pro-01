@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import {
   Camera,
   Mic,
@@ -44,6 +45,18 @@ export default function MicCamera() {
   const phoneCameraRef = useRef<HTMLVideoElement>(null);
   const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
 
+  // Phone -> PC camera share (via relay)
+  const [phoneCamShareActive, setPhoneCamShareActive] = useState(false);
+  const [phoneCamShareSessionId, setPhoneCamShareSessionId] = useState<string>("");
+  const phoneCamShareWsRef = useRef<WebSocket | null>(null);
+  const phoneCamShareTimerRef = useRef<number | null>(null);
+  const shareCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // PC -> (viewer) receive phone camera frames
+  const [phoneCamViewActive, setPhoneCamViewActive] = useState(false);
+  const [phoneCamRemoteFrame, setPhoneCamRemoteFrame] = useState<string | null>(null);
+  const phoneCamViewWsRef = useRef<WebSocket | null>(null);
+
   // ==================== PC CAMERA STATE ====================
   const [pcCameraActive, setPcCameraActive] = useState(false);
   const [pcCameraFrame, setPcCameraFrame] = useState<string | null>(null);
@@ -68,7 +81,6 @@ export default function MicCamera() {
   const pcAudioRef = useRef<HTMLAudioElement | null>(null);
   const [useSystemAudio, setUseSystemAudio] = useState(false);
 
-  // ==================== DEBUG PANEL STATE ====================
   const [showDebug, setShowDebug] = useState(false);
   const [debugStats, setDebugStats] = useState({
     audioWsConnected: false,
@@ -133,7 +145,7 @@ export default function MicCamera() {
 
   // ==================== PC CAMERA ====================
   const fetchPcCameras = useCallback(async () => {
-    const result = await sendCommand("get_cameras", {});
+    const result = await sendCommand("get_cameras", {}, { awaitResult: true, timeoutMs: 12000 });
     if (result && "result" in result && result.result?.cameras) {
       const cameras = result.result.cameras as Array<{ index: number; name: string }>;
       setPcCameras(cameras);
@@ -145,14 +157,25 @@ export default function MicCamera() {
       const sessionId = crypto.randomUUID();
       setPcCameraSessionId(sessionId);
 
-      // Tell PC to start camera stream
-      await sendCommand("start_camera_stream", {
-        session_id: sessionId,
-        camera_index: selectedPcCamera,
-      });
+      // Tell PC to start camera stream (wait for an explicit OK so we can surface camera-open errors)
+      const started = await sendCommand(
+        "start_camera_stream",
+        {
+          session_id: sessionId,
+          camera_index: selectedPcCamera,
+        },
+        { awaitResult: true, timeoutMs: 20000 }
+      );
 
-      // Connect to dedicated camera-relay WebSocket
-      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=50`);
+      if (!started.success) {
+        const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
+        toast({ title: "PC Camera Error", description: msg, variant: "destructive" });
+        setPcCameraSessionId(null);
+        return;
+      }
+
+      // Connect to dedicated camera-relay WebSocket (phone receives frames)
+      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=60`);
       pcCameraWsRef.current = ws;
 
       ws.onmessage = (event) => {
@@ -161,8 +184,11 @@ export default function MicCamera() {
           if (data.type === "camera_frame" && data.data) {
             setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
           }
+          if (data.type === "error" && data.message) {
+            toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
+          }
         } catch {
-          // Binary data, ignore
+          // ignore
         }
       };
 
@@ -172,7 +198,7 @@ export default function MicCamera() {
       };
 
       ws.onerror = () => {
-        toast({ title: "PC Camera Error", variant: "destructive" });
+        toast({ title: "PC Camera Error", description: "WebSocket error", variant: "destructive" });
       };
 
       ws.onclose = () => {
@@ -181,7 +207,7 @@ export default function MicCamera() {
       };
     } catch (error) {
       console.error("PC Camera error:", error);
-      toast({ title: "PC Camera Error", variant: "destructive" });
+      toast({ title: "PC Camera Error", description: "Unexpected error starting PC camera", variant: "destructive" });
     }
   }, [sendCommand, selectedPcCamera, CAMERA_WS_URL, toast]);
 
@@ -381,6 +407,15 @@ export default function MicCamera() {
       }
       if (audioWsRef.current) {
         audioWsRef.current.close();
+      }
+      if (phoneCamShareWsRef.current) {
+        phoneCamShareWsRef.current.close();
+      }
+      if (phoneCamViewWsRef.current) {
+        phoneCamViewWsRef.current.close();
+      }
+      if (phoneCamShareTimerRef.current) {
+        window.clearInterval(phoneCamShareTimerRef.current);
       }
     };
   }, []);
@@ -629,10 +664,10 @@ export default function MicCamera() {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-lg flex items-center gap-2">
                     <Video className="h-5 w-5 text-primary" />
-                    Phone Camera Preview
+                    Phone Camera
                   </CardTitle>
                   <CardDescription>
-                    View your phone camera here (visible on this device)
+                    Preview locally and (optionally) share to your PC via the relay session ID
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -684,16 +719,199 @@ export default function MicCamera() {
                   <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/20">
                     <div className="flex items-center gap-2">
                       <Label>Camera</Label>
-                      <Badge variant="outline">
-                        {facingMode === "user" ? "Front" : "Back"}
-                      </Badge>
+                      <Badge variant="outline">{facingMode === "user" ? "Front" : "Back"}</Badge>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-muted-foreground">Front Camera</span>
-                      <Switch
-                        checked={facingMode === "user"}
-                        onCheckedChange={() => switchPhoneCamera()}
+                      <Switch checked={facingMode === "user"} onCheckedChange={() => switchPhoneCamera()} />
+                    </div>
+                  </div>
+
+                  {/* Share session */}
+                  <div className="grid gap-3 rounded-lg border border-border/50 bg-secondary/10 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">Phone → PC Share</p>
+                        <p className="text-xs text-muted-foreground">
+                          Start on your phone, then paste the same Session ID on your PC to view.
+                        </p>
+                      </div>
+                      <Badge variant="outline">{phoneCamShareActive ? "Sharing" : "Idle"}</Badge>
+                    </div>
+
+                    <div className="grid gap-2 md:grid-cols-[1fr_auto_auto]">
+                      <Input
+                        value={phoneCamShareSessionId}
+                        onChange={(e) => setPhoneCamShareSessionId(e.target.value)}
+                        placeholder="Session ID (leave empty to auto-generate)"
+                        disabled={phoneCamShareActive}
                       />
+                      <Button
+                        variant="secondary"
+                        disabled={!phoneCameraActive || phoneCamShareActive}
+                        onClick={async () => {
+                          if (!phoneCameraActive) {
+                            toast({
+                              title: "Start phone camera first",
+                              description: "You need a live phone camera preview before sharing.",
+                              variant: "destructive",
+                            });
+                            return;
+                          }
+
+                          const sessionId = phoneCamShareSessionId?.trim() || crypto.randomUUID();
+                          setPhoneCamShareSessionId(sessionId);
+
+                          const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=60`);
+                          phoneCamShareWsRef.current = ws;
+
+                          ws.onopen = () => {
+                            setPhoneCamShareActive(true);
+                            toast({ title: "Sharing started", description: `Session: ${sessionId}` });
+
+                            if (!shareCanvasRef.current) {
+                              shareCanvasRef.current = document.createElement("canvas");
+                            }
+
+                            // push ~10 fps
+                            phoneCamShareTimerRef.current = window.setInterval(() => {
+                              const v = phoneCameraRef.current;
+                              if (!v || v.readyState < 2) return;
+
+                              const canvas = shareCanvasRef.current!;
+                              const w = v.videoWidth || 640;
+                              const h = v.videoHeight || 480;
+                              canvas.width = w;
+                              canvas.height = h;
+
+                              const ctx = canvas.getContext("2d");
+                              if (!ctx) return;
+                              ctx.drawImage(v, 0, 0, w, h);
+
+                              const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+                              const b64 = dataUrl.split(",")[1] || "";
+
+                              if (ws.readyState === WebSocket.OPEN) {
+                                ws.send(
+                                  JSON.stringify({
+                                    type: "camera_frame",
+                                    data: b64,
+                                    width: w,
+                                    height: h,
+                                  })
+                                );
+                              }
+                            }, 100);
+                          };
+
+                          ws.onclose = () => {
+                            setPhoneCamShareActive(false);
+                            if (phoneCamShareTimerRef.current) {
+                              window.clearInterval(phoneCamShareTimerRef.current);
+                              phoneCamShareTimerRef.current = null;
+                            }
+                          };
+
+                          ws.onerror = () => {
+                            toast({ title: "Share error", description: "Failed to connect to relay", variant: "destructive" });
+                          };
+                        }}
+                      >
+                        Start Share
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        disabled={!phoneCamShareActive}
+                        onClick={() => {
+                          if (phoneCamShareTimerRef.current) {
+                            window.clearInterval(phoneCamShareTimerRef.current);
+                            phoneCamShareTimerRef.current = null;
+                          }
+                          phoneCamShareWsRef.current?.close();
+                          phoneCamShareWsRef.current = null;
+                          setPhoneCamShareActive(false);
+                        }}
+                      >
+                        Stop Share
+                      </Button>
+                    </div>
+
+                    {/* View remote phone cam (for PC browser) */}
+                    <div className="grid gap-2 pt-2 border-t border-border/40">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-medium">View Phone Camera (PC)</p>
+                        <Badge variant="outline">{phoneCamViewActive ? "Connected" : "Disconnected"}</Badge>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-[1fr_auto_auto]">
+                        <Input
+                          value={phoneCamShareSessionId}
+                          onChange={(e) => setPhoneCamShareSessionId(e.target.value)}
+                          placeholder="Paste Session ID from your phone"
+                        />
+                        <Button
+                          variant="secondary"
+                          disabled={phoneCamViewActive || !phoneCamShareSessionId.trim()}
+                          onClick={() => {
+                            const sessionId = phoneCamShareSessionId.trim();
+                            const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=10&quality=60`);
+                            phoneCamViewWsRef.current = ws;
+
+                            ws.onopen = () => {
+                              setPhoneCamViewActive(true);
+                              toast({ title: "Connected", description: "Waiting for frames…" });
+                            };
+
+                            ws.onmessage = (event) => {
+                              try {
+                                const data = JSON.parse(event.data);
+                                if (data.type === "camera_frame" && data.data) {
+                                  setPhoneCamRemoteFrame(`data:image/jpeg;base64,${data.data}`);
+                                }
+                                if (data.type === "error" && data.message) {
+                                  toast({ title: "Relay error", description: data.message, variant: "destructive" });
+                                }
+                              } catch {
+                                // ignore
+                              }
+                            };
+
+                            ws.onclose = () => {
+                              setPhoneCamViewActive(false);
+                            };
+
+                            ws.onerror = () => {
+                              toast({ title: "Connect error", description: "Failed to connect to relay", variant: "destructive" });
+                            };
+                          }}
+                        >
+                          Connect
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          disabled={!phoneCamViewActive}
+                          onClick={() => {
+                            phoneCamViewWsRef.current?.close();
+                            phoneCamViewWsRef.current = null;
+                            setPhoneCamViewActive(false);
+                            setPhoneCamRemoteFrame(null);
+                          }}
+                        >
+                          Disconnect
+                        </Button>
+                      </div>
+
+                      <div className="relative aspect-video bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
+                        {phoneCamViewActive && phoneCamRemoteFrame ? (
+                          <img src={phoneCamRemoteFrame} alt="Phone camera stream" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
+                            <Smartphone className="h-12 w-12 mb-2 opacity-50" />
+                            <p className="text-sm">No phone stream</p>
+                            <p className="text-xs">Connect from your PC with a Session ID</p>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </CardContent>
