@@ -461,30 +461,64 @@ class CameraStreamer:
         if not HAS_OPENCV:
             print("❌ OpenCV not available for camera")
             return
-            
+
+        def _try_open(idx: int, backend: Optional[int]) -> Optional["cv2.VideoCapture"]:
+            try:
+                cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
+
+                # Request a common, webcam-friendly format
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FPS, max(self.fps, 10))
+
+                # MJPG helps many Windows webcams
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+                    cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+                except Exception:
+                    pass
+
+                if not cap.isOpened():
+                    cap.release()
+                    return None
+
+                # Warm up
+                for _ in range(5):
+                    ret, _ = cap.read()
+                    if ret:
+                        return cap
+                    time.sleep(0.02)
+
+                cap.release()
+                return None
+            except Exception:
+                return None
+
         try:
-            # Try different camera backends on Windows
+            # Windows: CAP_MSMF often succeeds when CAP_DSHOW fails (the DSHOW warning you're seeing).
+            backends: List[Optional[int]] = [None]
             if platform.system() == "Windows":
-                self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-            else:
-                self.camera = cv2.VideoCapture(camera_index)
-                
-            if not self.camera.isOpened():
-                print(f"❌ Could not open camera {camera_index}")
-                # Try alternative camera index
-                for alt_index in [0, 1, 2]:
-                    if alt_index != camera_index:
-                        self.camera = cv2.VideoCapture(alt_index)
-                        if self.camera.isOpened():
-                            print(f"📷 Using alternative camera index {alt_index}")
-                            break
-                            
-            if not self.camera.isOpened():
-                print("❌ No camera available")
+                backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, None]
+
+            candidate_indexes = [camera_index, 0, 1, 2, 3, 4]
+            cap = None
+
+            for backend in backends:
+                for idx in candidate_indexes:
+                    cap = _try_open(idx, backend)
+                    if cap is not None:
+                        camera_index = idx
+                        break
+                if cap is not None:
+                    break
+
+            if cap is None:
+                print("❌ No camera available (failed to open any index/backend)")
                 return
-                
+
+            self.camera = cap
             print(f"📷 Camera {camera_index} streaming started (target {self.fps} FPS, quality {self.quality})")
-            
+
             frame_interval = 1.0 / self.fps
             
             while self.running:
@@ -563,25 +597,46 @@ class CameraStreamer:
     def get_available_cameras(self) -> List[Dict[str, Any]]:
         if not HAS_OPENCV:
             return []
-            
-        cameras = []
-        for i in range(5):
+
+        cameras: List[Dict[str, Any]] = []
+
+        def _cap_open(idx: int) -> Optional["cv2.VideoCapture"]:
+            # Prefer MSMF first on Windows (DSHOW can be available but still fail to open)
+            if platform.system() == "Windows":
+                for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, None]:
+                    try:
+                        cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
+                        if cap.isOpened():
+                            return cap
+                        cap.release()
+                    except Exception:
+                        pass
+                return None
+
             try:
-                if platform.system() == "Windows":
-                    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-                else:
-                    cap = cv2.VideoCapture(i)
-                    
-                if cap.isOpened():
+                cap = cv2.VideoCapture(idx)
+                return cap if cap.isOpened() else None
+            except Exception:
+                return None
+
+        for i in range(5):
+            cap = None
+            try:
+                cap = _cap_open(i)
+                if cap and cap.isOpened():
                     cameras.append({
                         "index": i,
                         "name": f"Camera {i}",
                         "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                        "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                     })
-                    cap.release()
-            except Exception:
-                pass
+            finally:
+                try:
+                    if cap:
+                        cap.release()
+                except Exception:
+                    pass
+
         return cameras
 
 
