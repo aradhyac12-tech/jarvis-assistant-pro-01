@@ -1,7 +1,8 @@
 """
-JARVIS PC Agent - Python Client v2.3
-=====================================
+JARVIS PC Agent - Python Client v2.4 (Combined Agent + UI)
+============================================================
 Runs on your PC to execute commands from the Jarvis web dashboard.
+Includes a local web dashboard at http://localhost:8765 for monitoring.
 
 SETUP INSTRUCTIONS:
 ------------------
@@ -18,6 +19,7 @@ SETUP INSTRUCTIONS:
    python jarvis_agent.py
 
 5. Open the Jarvis web app and you'll see your PC connected!
+   Local dashboard also available at http://localhost:8765
 
 FEATURES:
 ---------
@@ -37,6 +39,7 @@ FEATURES:
 - Audio Relay: Stream audio bidirectionally between phone and PC
 - Camera Streaming: Stream PC camera to phone
 - File Sharing: Wi-Fi file transfer (Bluetooth coming soon)
+- Local Dashboard: Web UI for monitoring agent status and logs
 """
 
 import os
@@ -55,6 +58,7 @@ import io
 import uuid
 import webbrowser
 import urllib.parse
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 # Third-party imports
 try:
@@ -138,22 +142,22 @@ else:
 SUPABASE_URL = (
     os.environ.get("JARVIS_SUPABASE_URL")
     or os.environ.get("SUPABASE_URL")
-    or "https://zcpclccisfnjiziqnzds.supabase.co"  # Updated for remixed project
+    or "https://utoqobuemsikxcfyihpi.supabase.co"
 )
 SUPABASE_KEY = (
     os.environ.get("JARVIS_SUPABASE_KEY")
     or os.environ.get("SUPABASE_ANON_KEY")
     or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
-    or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjcGNsY2Npc2Zuaml6aXFuemRzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcwMjk5NjAsImV4cCI6MjA4MjYwNTk2MH0.2mtHp3K634cD98xWLwArVfRLqAqcvQdSqqRFqAtZEog"  # Updated for remixed project
+    or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV0b3FvYnVlbXNpa3hjZnlpaHBpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyODUyMjMsImV4cCI6MjA4Mjg2MTIyM30.n0ZcBk2d9akm6w6fycOzHkgkWHgGQ8LKIYchbz3eh2o"
 )
 
 
 def _project_ref_from_url(url: str) -> str:
     try:
         host = urllib.parse.urlparse(url).hostname or ""
-        return host.split(".")[0] if host else "zcpclccisfnjiziqnzds"
+        return host.split(".")[0] if host else "utoqobuemsikxcfyihpi"
     except Exception:
-        return "zcpclccisfnjiziqnzds"
+        return "utoqobuemsikxcfyihpi"
 
 
 PROJECT_REF = _project_ref_from_url(SUPABASE_URL)
@@ -166,6 +170,7 @@ DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
 POLL_INTERVAL = 0.5  # Faster polling for less lag
 HEARTBEAT_INTERVAL = 5  # Separate heartbeat
+UI_PORT = 8765
 
 # PyAutoGUI settings for less lag
 pyautogui.PAUSE = 0.01
@@ -176,6 +181,63 @@ print(f"🔗 Connecting to: {SUPABASE_URL}")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+# ============== GLOBAL LOG STORAGE (shared for web UI) ==============
+log_entries: List[Dict[str, Any]] = []
+MAX_LOGS = 100
+
+agent_status: Dict[str, Any] = {
+    "connected": False,
+    "device_name": DEVICE_NAME,
+    "device_id": "",
+    "last_heartbeat": "",
+    "volume": 50,
+    "brightness": 50,
+    "is_locked": False,
+    "cpu_percent": 0,
+    "memory_percent": 0,
+    "audio_streaming": False,
+    "camera_streaming": False,
+}
+
+
+def add_log(level: str, message: str, details: str = "", category: str = "general"):
+    """Add a log entry (shared with web UI)."""
+    global log_entries
+    entry = {
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.now().isoformat(),
+        "level": level,
+        "category": category,
+        "message": message,
+        "details": details
+    }
+    log_entries.insert(0, entry)
+    log_entries = log_entries[:MAX_LOGS]
+    
+    # Also print to console
+    level_emoji = {"error": "❌", "warn": "⚠️", "info": "ℹ️"}.get(level, "📝")
+    print(f"{level_emoji} [{category}] {message}" + (f" | {details}" if details else ""))
+
+
+def get_logs() -> List[Dict[str, Any]]:
+    return log_entries
+
+
+def clear_logs():
+    global log_entries
+    log_entries = []
+
+
+def update_agent_status(updates: Dict[str, Any]):
+    global agent_status
+    agent_status.update(updates)
+
+
+def get_agent_status() -> Dict[str, Any]:
+    return agent_status
+
+
+# ============== AUDIO STREAMER ==============
 class AudioStreamer:
     """Handles bidirectional audio streaming between phone and PC."""
     
@@ -187,8 +249,8 @@ class AudioStreamer:
         self.use_system_audio = False
         
         self.sample_rate = 44100
-        self.channels = 2
-        self.chunk_size = 1024
+        self.channels = 1  # Mono for mic, stereo for system audio
+        self.chunk_size = 4096  # Larger chunks for smoother playback
         self.format = pyaudio.paInt16 if HAS_PYAUDIO else None
         
         self.pa = None
@@ -199,9 +261,13 @@ class AudioStreamer:
         self.bytes_received = 0
         self.last_stats_time = time.time()
         
+        # Audio buffer for smoother playback
+        self.audio_buffer: List[bytes] = []
+        self.buffer_lock = threading.Lock()
+        
     async def connect(self, session_id: str, direction: str = "phone_to_pc", use_system_audio: bool = False):
         if not HAS_WEBSOCKETS:
-            print("❌ WebSockets not available")
+            add_log("error", "WebSockets not available for audio relay", category="audio")
             return False
             
         self.session_id = session_id
@@ -209,7 +275,7 @@ class AudioStreamer:
         self.use_system_audio = use_system_audio
         
         ws_url = f"{AUDIO_RELAY_WS_URL}?sessionId={session_id}&type=pc&direction={direction}"
-        print(f"🔊 Connecting to audio relay: {ws_url}")
+        add_log("info", f"Connecting to audio relay", f"direction={direction}, system_audio={use_system_audio}", category="audio")
         
         try:
             self.ws = await websockets.connect(ws_url)
@@ -217,10 +283,11 @@ class AudioStreamer:
             self.bytes_sent = 0
             self.bytes_received = 0
             self.last_stats_time = time.time()
-            print(f"✅ Audio relay connected (direction: {direction}, system_audio: {use_system_audio})")
+            add_log("info", "Audio relay connected", category="audio")
+            update_agent_status({"audio_streaming": True})
             return True
         except Exception as e:
-            print(f"❌ Audio relay connection failed: {e}")
+            add_log("error", f"Audio relay connection failed: {e}", category="audio")
             return False
     
     def _get_loopback_device_index(self) -> Optional[int]:
@@ -238,7 +305,7 @@ class AudioStreamer:
                     break
             
             if not wasapi_info:
-                print("⚠️ WASAPI not found")
+                add_log("warn", "WASAPI not found for loopback", category="audio")
                 p.terminate()
                 return None
             
@@ -251,63 +318,69 @@ class AudioStreamer:
                 max_input = dev_info.get("maxInputChannels", 0)
                 
                 if max_input > 0 and output_name.split(" (")[0] in dev_name:
-                    print(f"🔊 Found loopback device: {dev_name} (index {i})")
+                    add_log("info", f"Found loopback device: {dev_name} (index {i})", category="audio")
                     p.terminate()
                     return i
             
             p.terminate()
             return None
         except Exception as e:
-            print(f"⚠️ Loopback detection error: {e}")
+            add_log("warn", f"Loopback detection error: {e}", category="audio")
             return None
     
     async def start_playback(self):
+        """Play audio received from phone on PC speakers."""
         if not HAS_PYAUDIO:
-            print("❌ PyAudio not available for playback")
+            add_log("error", "PyAudio not available for playback", category="audio")
             return
             
         try:
             self.pa = pyaudio.PyAudio()
             self.output_stream = self.pa.open(
                 format=self.format,
-                channels=self.channels,
+                channels=1,  # Phone sends mono
                 rate=self.sample_rate,
                 output=True,
                 frames_per_buffer=self.chunk_size
             )
             
-            print("🔊 PC speaker playback started")
+            add_log("info", "PC speaker playback started", category="audio")
             
             while self.running and self.ws:
                 try:
                     message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
                     
                     if isinstance(message, bytes):
+                        # Direct binary audio data
                         self.output_stream.write(message)
                         self.bytes_received += len(message)
                     elif isinstance(message, str):
                         data = json.loads(message)
                         if data.get("type") == "peer_disconnected":
-                            print("📱 Phone disconnected from audio relay")
+                            add_log("info", "Phone disconnected from audio relay", category="audio")
                         elif data.get("type") == "audio":
                             audio_bytes = base64.b64decode(data["data"])
                             self.output_stream.write(audio_bytes)
                             self.bytes_received += len(audio_bytes)
                 except asyncio.TimeoutError:
                     continue
+                except websockets.exceptions.ConnectionClosed:
+                    add_log("warn", "Audio WebSocket closed", category="audio")
+                    break
                 except Exception as e:
                     if self.running:
-                        print(f"⚠️ Playback error: {e}")
+                        add_log("warn", f"Playback error: {e}", category="audio")
                     break
                     
         except Exception as e:
-            print(f"❌ Playback setup error: {e}")
+            add_log("error", f"Playback setup error: {e}", category="audio")
         finally:
             self._cleanup_output()
     
     async def start_capture(self):
+        """Capture PC audio and send to phone."""
         if not HAS_PYAUDIO:
-            print("❌ PyAudio not available for capture")
+            add_log("error", "PyAudio not available for capture", category="audio")
             return
             
         try:
@@ -321,9 +394,9 @@ class AudioStreamer:
                 if loopback_idx is not None:
                     input_device_index = loopback_idx
                     channels = 2
-                    print("🔊 Using system audio (WASAPI loopback)")
+                    add_log("info", "Using system audio (WASAPI loopback)", category="audio")
                 else:
-                    print("⚠️ Loopback not available, falling back to microphone")
+                    add_log("warn", "Loopback not available, falling back to microphone", category="audio")
             
             self.channels = channels
             
@@ -337,20 +410,31 @@ class AudioStreamer:
             )
             
             source = "system audio" if self.use_system_audio and input_device_index else "microphone"
-            print(f"🎤 PC {source} capture started")
+            add_log("info", f"PC {source} capture started", category="audio")
             
             while self.running and self.ws:
                 try:
                     audio_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
+                    
+                    # If stereo, convert to mono for phone
+                    if channels == 2:
+                        import struct
+                        samples = struct.unpack(f"<{len(audio_data)//2}h", audio_data)
+                        mono_samples = [(samples[i] + samples[i+1]) // 2 for i in range(0, len(samples), 2)]
+                        audio_data = struct.pack(f"<{len(mono_samples)}h", *mono_samples)
+                    
                     await self.ws.send(audio_data)
                     self.bytes_sent += len(audio_data)
+                except websockets.exceptions.ConnectionClosed:
+                    add_log("warn", "Audio WebSocket closed during capture", category="audio")
+                    break
                 except Exception as e:
                     if self.running:
-                        print(f"⚠️ Capture error: {e}")
+                        add_log("warn", f"Capture error: {e}", category="audio")
                     break
                     
         except Exception as e:
-            print(f"❌ Capture setup error: {e}")
+            add_log("error", f"Capture setup error: {e}", category="audio")
         finally:
             self._cleanup_input()
     
@@ -368,14 +452,20 @@ class AudioStreamer:
     
     def _cleanup_input(self):
         if self.input_stream:
-            self.input_stream.stop_stream()
-            self.input_stream.close()
+            try:
+                self.input_stream.stop_stream()
+                self.input_stream.close()
+            except:
+                pass
             self.input_stream = None
     
     def _cleanup_output(self):
         if self.output_stream:
-            self.output_stream.stop_stream()
-            self.output_stream.close()
+            try:
+                self.output_stream.stop_stream()
+                self.output_stream.close()
+            except:
+                pass
             self.output_stream = None
     
     async def stop(self):
@@ -384,16 +474,24 @@ class AudioStreamer:
         self._cleanup_output()
         
         if self.pa:
-            self.pa.terminate()
+            try:
+                self.pa.terminate()
+            except:
+                pass
             self.pa = None
             
         if self.ws:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except:
+                pass
             self.ws = None
             
-        print("🔇 Audio relay stopped")
+        update_agent_status({"audio_streaming": False})
+        add_log("info", "Audio relay stopped", category="audio")
 
 
+# ============== CAMERA STREAMER ==============
 class CameraStreamer:
     """Handles PC camera streaming to phone."""
     
@@ -413,17 +511,23 @@ class CameraStreamer:
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 5
         
+        # Store last error for web UI
+        self.last_error: Optional[str] = None
+        
     async def connect(self, session_id: str, fps: int = 10, quality: int = 50):
         if not HAS_WEBSOCKETS or not HAS_OPENCV:
-            print("❌ WebSockets or OpenCV not available")
+            error_msg = "WebSockets or OpenCV not available"
+            self.last_error = error_msg
+            add_log("error", error_msg, category="camera")
             return False
             
         self.session_id = session_id
         self.fps = fps
         self.quality = quality
+        self.last_error = None
         
         ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=pc&fps={fps}&quality={quality}"
-        print(f"📷 Connecting camera stream: {ws_url}")
+        add_log("info", f"Connecting camera stream", f"fps={fps}, quality={quality}", category="camera")
         
         try:
             self.ws = await websockets.connect(ws_url)
@@ -432,37 +536,43 @@ class CameraStreamer:
             self.bytes_sent = 0
             self.last_stats_time = time.time()
             self.reconnect_attempts = 0
-            print("✅ Camera stream connected")
+            add_log("info", "Camera stream connected", category="camera")
+            update_agent_status({"camera_streaming": True})
             return True
         except Exception as e:
-            print(f"❌ Camera stream connection failed: {e}")
+            self.last_error = str(e)
+            add_log("error", f"Camera stream connection failed: {e}", category="camera")
             return False
     
     async def _reconnect(self):
         if self.reconnect_attempts >= self.max_reconnect_attempts:
-            print("❌ Max reconnect attempts reached")
+            self.last_error = "Max reconnect attempts reached"
+            add_log("error", "Max reconnect attempts reached", category="camera")
             return False
             
         self.reconnect_attempts += 1
-        print(f"🔄 Reconnecting camera... (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+        add_log("info", f"Reconnecting camera... (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})", category="camera")
         
         await asyncio.sleep(1)
         
         try:
             ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={self.session_id}&type=pc&fps={self.fps}&quality={self.quality}"
             self.ws = await websockets.connect(ws_url)
-            print("✅ Camera stream reconnected")
+            add_log("info", "Camera stream reconnected", category="camera")
             return True
         except Exception as e:
-            print(f"❌ Reconnect failed: {e}")
+            self.last_error = f"Reconnect failed: {e}"
+            add_log("error", f"Reconnect failed: {e}", category="camera")
             return False
     
     async def start_streaming(self, camera_index: int = 0):
         if not HAS_OPENCV:
-            print("❌ OpenCV not available for camera")
+            self.last_error = "OpenCV not available for camera"
+            add_log("error", self.last_error, category="camera")
             return
 
         def _try_open(idx: int, backend: Optional[int]) -> Optional["cv2.VideoCapture"]:
+            backend_name = {cv2.CAP_MSMF: "MSMF", cv2.CAP_DSHOW: "DSHOW"}.get(backend, "default") if backend else "default"
             try:
                 cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
 
@@ -479,32 +589,39 @@ class CameraStreamer:
                     pass
 
                 if not cap.isOpened():
+                    add_log("warn", f"Camera {idx} failed to open with {backend_name}", category="camera")
                     cap.release()
                     return None
 
-                # Warm up
-                for _ in range(5):
+                # Warm up - try to get a frame
+                for attempt in range(5):
                     ret, _ = cap.read()
                     if ret:
+                        add_log("info", f"Camera {idx} opened successfully with {backend_name}", category="camera")
                         return cap
-                    time.sleep(0.02)
+                    time.sleep(0.05)
 
+                add_log("warn", f"Camera {idx} opened but no frames with {backend_name}", category="camera")
                 cap.release()
                 return None
-            except Exception:
+            except Exception as e:
+                add_log("warn", f"Camera {idx} exception with {backend_name}: {e}", category="camera")
                 return None
 
         try:
-            # Windows: CAP_MSMF often succeeds when CAP_DSHOW fails (the DSHOW warning you're seeing).
+            # Windows: CAP_MSMF often succeeds when CAP_DSHOW fails
             backends: List[Optional[int]] = [None]
             if platform.system() == "Windows":
                 backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, None]
 
             candidate_indexes = [camera_index, 0, 1, 2, 3, 4]
             cap = None
+            tried_combos = []
 
             for backend in backends:
                 for idx in candidate_indexes:
+                    combo = f"idx={idx}, backend={backend}"
+                    tried_combos.append(combo)
                     cap = _try_open(idx, backend)
                     if cap is not None:
                         camera_index = idx
@@ -513,11 +630,12 @@ class CameraStreamer:
                     break
 
             if cap is None:
-                print("❌ No camera available (failed to open any index/backend)")
+                self.last_error = f"No camera available. Tried: {', '.join(tried_combos[:6])}"
+                add_log("error", self.last_error, category="camera")
                 return
 
             self.camera = cap
-            print(f"📷 Camera {camera_index} streaming started (target {self.fps} FPS, quality {self.quality})")
+            add_log("info", f"Camera {camera_index} streaming started (target {self.fps} FPS, quality {self.quality})", category="camera")
 
             frame_interval = 1.0 / self.fps
             
@@ -531,7 +649,8 @@ class CameraStreamer:
                 
                 ret, frame = self.camera.read()
                 if not ret:
-                    await asyncio.sleep(0.01)
+                    add_log("warn", "Failed to read frame from camera", category="camera")
+                    await asyncio.sleep(0.1)
                     continue
                 
                 frame = cv2.resize(frame, (640, 480))
@@ -551,7 +670,7 @@ class CameraStreamer:
                     self.bytes_sent += frame_size
                     self.last_frame_time = time.time()
                 except Exception as e:
-                    print(f"⚠️ Camera send error: {e}")
+                    add_log("warn", f"Camera send error: {e}", category="camera")
                     if not await self._reconnect():
                         break
                     continue
@@ -561,7 +680,8 @@ class CameraStreamer:
                     await asyncio.sleep(frame_interval - elapsed)
                     
         except Exception as e:
-            print(f"❌ Camera streaming error: {e}")
+            self.last_error = str(e)
+            add_log("error", f"Camera streaming error: {e}", category="camera")
         finally:
             self._cleanup()
     
@@ -577,11 +697,15 @@ class CameraStreamer:
             "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
             "running": self.running,
             "connected": self.ws is not None and self.ws.open if self.ws else False,
+            "last_error": self.last_error,
         }
     
     def _cleanup(self):
         if self.camera:
-            self.camera.release()
+            try:
+                self.camera.release()
+            except:
+                pass
             self.camera = None
     
     async def stop(self):
@@ -589,10 +713,14 @@ class CameraStreamer:
         self._cleanup()
         
         if self.ws:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except:
+                pass
             self.ws = None
-            
-        print("📷 Camera stream stopped")
+        
+        update_agent_status({"camera_streaming": False})
+        add_log("info", "Camera stream stopped", category="camera")
     
     def get_available_cameras(self) -> List[Dict[str, Any]]:
         if not HAS_OPENCV:
@@ -601,7 +729,7 @@ class CameraStreamer:
         cameras: List[Dict[str, Any]] = []
 
         def _cap_open(idx: int) -> Optional["cv2.VideoCapture"]:
-            # Prefer MSMF first on Windows (DSHOW can be available but still fail to open)
+            # Prefer MSMF first on Windows
             if platform.system() == "Windows":
                 for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, None]:
                     try:
@@ -640,6 +768,7 @@ class CameraStreamer:
         return cameras
 
 
+# ============== JARVIS AGENT ==============
 class JarvisAgent:
     def __init__(self):
         self.device_id: Optional[str] = None
@@ -659,22 +788,6 @@ class JarvisAgent:
         self._volume_cache = 50
         self._brightness_cache = 50
         self._last_cache_update = 0
-        
-        # Issue log
-        self.issue_log: List[Dict[str, Any]] = []
-        
-    def _log_issue(self, category: str, message: str, level: str = "warning"):
-        """Log an issue for debugging."""
-        issue = {
-            "timestamp": datetime.now().isoformat(),
-            "category": category,
-            "message": message,
-            "level": level
-        }
-        self.issue_log.append(issue)
-        if len(self.issue_log) > 100:
-            self.issue_log = self.issue_log[-100:]
-        print(f"[{level.upper()}] {category}: {message}")
         
     def _generate_device_key(self) -> str:
         import hashlib
@@ -696,7 +809,7 @@ class JarvisAgent:
         }
     
     async def register_device(self):
-        print("📡 Registering device...")
+        add_log("info", "Registering device...", category="system")
         
         try:
             result = supabase.table("devices").select("*").eq("device_key", self.device_key).execute()
@@ -712,7 +825,7 @@ class JarvisAgent:
                     "current_brightness": self._get_brightness(),
                     "is_locked": False,
                 }).eq("id", self.device_id).execute()
-                print(f"✅ Device reconnected: {DEVICE_NAME}")
+                add_log("info", f"Device reconnected: {DEVICE_NAME}", category="system")
             else:
                 result = supabase.table("devices").insert({
                     "user_id": str(uuid.uuid4()),
@@ -724,22 +837,26 @@ class JarvisAgent:
                     "current_brightness": self._get_brightness(),
                 }).execute()
                 self.device_id = result.data[0]["id"]
-                print(f"✅ Device registered: {DEVICE_NAME}")
+                add_log("info", f"Device registered: {DEVICE_NAME}", category="system")
+            
+            update_agent_status({
+                "connected": True,
+                "device_id": self.device_id,
+                "device_name": DEVICE_NAME,
+            })
             
             return self.device_id
         except Exception as e:
-            self._log_issue("registration", f"Failed to register device: {e}", "error")
+            add_log("error", f"Failed to register device: {e}", category="system")
             raise
     
     def _get_volume(self) -> int:
         if platform.system() == "Windows":
             try:
-                # Try nircmd first (faster)
                 nircmd_path = os.path.join(os.path.dirname(__file__), "nircmd.exe")
                 if os.path.exists(nircmd_path):
                     return self._volume_cache
                 
-                # Try PowerShell AudioDeviceCmdlets
                 result = subprocess.run(
                     ['powershell', '-Command', 
                      "(Get-AudioDevice -PlaybackVolume).Volume"],
@@ -747,7 +864,7 @@ class JarvisAgent:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return int(float(result.stdout.strip()))
-            except Exception as e:
+            except Exception:
                 pass
             return self._volume_cache
         elif platform.system() == "Darwin":
@@ -764,41 +881,39 @@ class JarvisAgent:
     def _set_volume(self, level: int):
         level = max(0, min(100, level))
         self._volume_cache = level
+        update_agent_status({"volume": level})
         
         if platform.system() == "Windows":
             try:
-                # Try nircmd first (fastest)
                 nircmd_path = os.path.join(os.path.dirname(__file__), "nircmd.exe")
                 if os.path.exists(nircmd_path):
                     vol_value = int(level * 65535 / 100)
                     subprocess.run([nircmd_path, "setsysvolume", str(vol_value)], 
                                  capture_output=True, timeout=2)
-                    print(f"🔊 Volume set to {level}% (nircmd)")
+                    add_log("info", f"Volume set to {level}% (nircmd)", category="system")
                     return {"success": True, "volume": level}
                 
-                # Try PowerShell AudioDeviceCmdlets
                 subprocess.run([
                     'powershell', '-Command',
                     f'Set-AudioDevice -PlaybackVolume {level}'
                 ], capture_output=True, timeout=3)
-                print(f"🔊 Volume set to {level}%")
+                add_log("info", f"Volume set to {level}%", category="system")
                 return {"success": True, "volume": level}
             except Exception as e:
                 try:
-                    # Fallback: use media keys
                     current = self._volume_cache
                     diff = level - current
                     steps = abs(diff) // 2
                     key = "volumeup" if diff > 0 else "volumedown"
                     for _ in range(steps):
                         pyautogui.press(key)
-                    print(f"🔊 Volume adjusted to ~{level}%")
+                    add_log("info", f"Volume adjusted to ~{level}%", category="system")
                     return {"success": True, "volume": level}
                 except:
                     return {"success": False, "error": str(e)}
         elif platform.system() == "Darwin":
             subprocess.run(["osascript", "-e", f"set volume output volume {level}"])
-            print(f"🔊 Volume set to {level}%")
+            add_log("info", f"Volume set to {level}%", category="system")
             return {"success": True, "volume": level}
         return {"success": False, "error": "Unsupported OS"}
     
@@ -816,11 +931,12 @@ class JarvisAgent:
     def _set_brightness(self, level: int):
         level = max(0, min(100, level))
         self._brightness_cache = level
+        update_agent_status({"brightness": level})
         
         if platform.system() == "Windows" and HAS_BRIGHTNESS:
             try:
                 sbc.set_brightness(level, display=0)
-                print(f"☀️ Brightness set to {level}%")
+                add_log("info", f"Brightness set to {level}%", category="system")
                 return {"success": True, "brightness": level}
             except Exception as e:
                 try:
@@ -828,14 +944,14 @@ class JarvisAgent:
                         'powershell', '-Command',
                         f'(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{level})'
                     ], capture_output=True, timeout=3)
-                    print(f"☀️ Brightness set to {level}%")
+                    add_log("info", f"Brightness set to {level}%", category="system")
                     return {"success": True, "brightness": level}
                 except:
                     return {"success": False, "error": str(e)}
         return {"success": False, "error": "Unsupported OS or no display control"}
     
     def _shutdown(self):
-        print("⚠️ SHUTDOWN command received!")
+        add_log("warn", "SHUTDOWN command received!", category="system")
         if platform.system() == "Windows":
             os.system("shutdown /s /t 5")
         elif platform.system() == "Darwin":
@@ -845,7 +961,7 @@ class JarvisAgent:
         return {"success": True, "message": "Shutdown initiated"}
     
     def _restart(self):
-        print("🔄 RESTART command received!")
+        add_log("warn", "RESTART command received!", category="system")
         if platform.system() == "Windows":
             os.system("shutdown /r /t 5")
         elif platform.system() == "Darwin":
@@ -855,7 +971,7 @@ class JarvisAgent:
         return {"success": True, "message": "Restart initiated"}
     
     def _sleep(self):
-        print("😴 SLEEP command received!")
+        add_log("info", "SLEEP command received!", category="system")
         if platform.system() == "Windows":
             os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
         elif platform.system() == "Darwin":
@@ -863,7 +979,7 @@ class JarvisAgent:
         return {"success": True, "message": "Sleep initiated"}
     
     def _hibernate(self):
-        print("❄️ HIBERNATE command received!")
+        add_log("info", "HIBERNATE command received!", category="system")
         if platform.system() == "Windows":
             os.system("shutdown /h")
         else:
@@ -871,8 +987,9 @@ class JarvisAgent:
         return {"success": True, "message": "Hibernate initiated"}
     
     def _lock_screen(self):
-        print("🔒 LOCK command received!")
+        add_log("info", "LOCK command received!", category="system")
         self.is_locked = True
+        update_agent_status({"is_locked": True})
         if platform.system() == "Windows":
             ctypes.windll.user32.LockWorkStation()
         elif platform.system() == "Darwin":
@@ -881,24 +998,21 @@ class JarvisAgent:
     
     def _smart_unlock(self, pin: str):
         if pin != UNLOCK_PIN:
-            print("❌ Invalid unlock PIN!")
+            add_log("warn", "Invalid unlock PIN!", category="system")
             return {"success": False, "error": "Invalid PIN"}
 
-        print("🔓 Smart unlock initiated...")
+        add_log("info", "Smart unlock initiated...", category="system")
         self.is_locked = False
+        update_agent_status({"is_locked": False})
 
         if platform.system() == "Windows":
             try:
-                # Wake the lock screen + focus PIN entry
                 pyautogui.press("space")
                 time.sleep(0.6)
-
-                # Type PIN then confirm
                 pyautogui.typewrite(pin, interval=0.05)
                 time.sleep(0.2)
                 pyautogui.press("enter")
-
-                print("🔓 Smart unlock completed!")
+                add_log("info", "Smart unlock completed!", category="system")
                 return {"success": True, "message": "Unlock sequence executed"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -930,44 +1044,121 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _get_monitors(self) -> Dict[str, Any]:
-        """Returns available monitor indices for capture (1..N)."""
         try:
             if not HAS_MSS:
                 return {"success": True, "monitors": [{"index": 1, "name": "Primary"}]}
 
             with mss.mss() as sct:
-                # mss.monitors[0] is "all"; 1..N are individual monitors
                 mons = []
                 for i in range(1, len(sct.monitors)):
                     m = sct.monitors[i]
-                    mons.append({"index": i, "name": f"Monitor {i} ({m['width']}x{m['height']})"})
+                    mons.append({
+                        "index": i,
+                        "name": f"Monitor {i}",
+                        "width": m["width"],
+                        "height": m["height"],
+                        "left": m["left"],
+                        "top": m["top"],
+                    })
                 return {"success": True, "monitors": mons}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _start_stream(self, fps: int = 5, quality: int = 50, scale: float = 0.6, monitor_index: int = 1) -> Dict[str, Any]:
+    def _start_stream(self, fps: int = 5, quality: int = 50, scale: float = 0.6, monitor_index: int = 1):
         self.screen_streaming = True
-        self.stream_fps = max(1, min(int(fps), 30))
-        self.stream_quality = max(10, min(int(quality), 95))
-        self._stream_scale = max(0.2, min(float(scale), 1.0))
-        self._stream_monitor_index = int(monitor_index)
-        return {"success": True, "fps": self.stream_fps, "quality": self.stream_quality, "scale": self._stream_scale, "monitor_index": self._stream_monitor_index}
-
-    def _get_frame(self) -> Dict[str, Any]:
+        self.stream_quality = quality
+        self.stream_fps = fps
+        return {"success": True, "message": f"Screen stream started at {fps} FPS"}
+    
+    def _get_frame(self):
         if not self.screen_streaming:
             return {"success": False, "error": "Stream not started"}
-        return self._take_screenshot(quality=self.stream_quality, scale=self._stream_scale, monitor_index=getattr(self, "_stream_monitor_index", 1))
-
-    def _stop_stream(self) -> Dict[str, Any]:
+        return self._take_screenshot(quality=self.stream_quality, scale=0.6)
+    
+    def _stop_stream(self):
         self.screen_streaming = False
-        return {"success": True}
+        return {"success": True, "message": "Stream stopped"}
+
+    def _get_system_stats(self) -> Dict[str, Any]:
+        try:
+            cpu = psutil.cpu_percent(interval=0.1)
+            mem = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            stats = {
+                "success": True,
+                "cpu_percent": cpu,
+                "memory_percent": mem.percent,
+                "memory_used_gb": round(mem.used / (1024**3), 2),
+                "memory_total_gb": round(mem.total / (1024**3), 2),
+                "disk_percent": disk.percent,
+                "disk_used_gb": round(disk.used / (1024**3), 2),
+                "disk_total_gb": round(disk.total / (1024**3), 2),
+            }
+            
+            update_agent_status({
+                "cpu_percent": cpu,
+                "memory_percent": mem.percent,
+            })
+            
+            try:
+                battery = psutil.sensors_battery()
+                if battery:
+                    stats["battery_percent"] = battery.percent
+                    stats["battery_plugged"] = battery.power_plugged
+            except:
+                pass
+            
+            return stats
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_cameras(self) -> Dict[str, Any]:
+        cameras = self.camera_streamer.get_available_cameras()
+        return {"success": True, "cameras": cameras}
+
+    def _get_issues(self) -> Dict[str, Any]:
+        """Return recent issues for the web app to display."""
+        return {
+            "success": True,
+            "issues": log_entries[:50],
+            "camera_error": self.camera_streamer.last_error,
+        }
+
+    def _boost_pc(self):
+        add_log("info", "Boost mode initiated!", category="system")
+        try:
+            if platform.system() == "Windows":
+                subprocess.run("taskkill /f /im explorer.exe", shell=True, capture_output=True)
+                time.sleep(0.5)
+                subprocess.Popen("explorer.exe", shell=True)
+                
+                temp_dirs = [
+                    os.environ.get("TEMP", ""),
+                    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
+                ]
+                for temp_dir in temp_dirs:
+                    if temp_dir and os.path.exists(temp_dir):
+                        try:
+                            for f in os.listdir(temp_dir)[:50]:
+                                try:
+                                    fp = os.path.join(temp_dir, f)
+                                    if os.path.isfile(fp):
+                                        os.remove(fp)
+                                except:
+                                    pass
+                        except:
+                            pass
+                
+                add_log("info", "Boost completed!", category="system")
+                return {"success": True, "message": "Boost completed"}
+            return {"success": False, "error": "Boost only supported on Windows"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def _type_text(self, text: str):
         try:
-            if HAS_KEYBOARD:
-                keyboard.write(text, delay=0.01)
-            else:
-                pyautogui.typewrite(text, interval=0.01)
+            pyautogui.typewrite(text, interval=0.02)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -975,27 +1166,6 @@ class JarvisAgent:
     def _press_key(self, key: str):
         try:
             key_map = {
-                "win": "win", "windows": "win", "super": "win",
-                "ctrl": "ctrl", "control": "ctrl",
-                "alt": "alt",
-                "shift": "shift",
-                "enter": "enter", "return": "enter",
-                "escape": "esc", "esc": "esc",
-                "tab": "tab",
-                "space": "space",
-                "backspace": "backspace", "back": "backspace",
-                "delete": "delete", "del": "delete",
-                "home": "home", "end": "end",
-                "pageup": "pageup", "pagedown": "pagedown",
-                "up": "up", "down": "down", "left": "left", "right": "right",
-                "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
-                "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
-                "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
-                "printscreen": "printscreen", "prtsc": "printscreen",
-                "insert": "insert", "ins": "insert",
-                "capslock": "capslock", "caps": "capslock",
-                "numlock": "numlock", "scrolllock": "scrolllock",
-                "pause": "pause", "break": "pause",
                 "playpause": "playpause",
                 "mediaplaypause": "playpause",
                 "play_pause": "playpause",
@@ -1075,7 +1245,7 @@ class JarvisAgent:
             app_lower = app_name.lower().strip()
             app_id = (app_id or "").strip() or None
 
-            print(f"🚀 Opening: {app_name} | app_id={app_id}")
+            add_log("info", f"Opening: {app_name}", f"app_id={app_id}", category="apps")
 
             if platform.system() == "Windows":
                 if app_id:
@@ -1086,10 +1256,10 @@ class JarvisAgent:
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                         )
-                        print(f"✅ Opened via AppID: {app_id}")
+                        add_log("info", f"Opened via AppID: {app_id}", category="apps")
                         return {"success": True, "message": f"Opened {app_name}"}
                     except Exception as e:
-                        print(f"⚠️ AppID launch failed, falling back to search: {e}")
+                        add_log("warn", f"AppID launch failed, falling back: {e}", category="apps")
 
                 app_paths = {
                     "chrome": "chrome", "google chrome": "chrome",
@@ -1130,13 +1300,13 @@ class JarvisAgent:
                         os.system(f"start {cmd}")
                     else:
                         subprocess.Popen(f"start {cmd}", shell=True)
-                    print(f"✅ Opened via known path: {cmd}")
+                    add_log("info", f"Opened via known path: {cmd}", category="apps")
                     return {"success": True, "message": f"Opened {app_name}"}
 
                 if not app_name:
                     return {"success": False, "error": "Missing app name"}
 
-                print(f"🔍 Searching via Windows Search: {app_name}")
+                add_log("info", f"Searching via Windows Search: {app_name}", category="apps")
                 pyautogui.press("win")
                 time.sleep(0.4)
                 pyautogui.typewrite(app_name, interval=0.02)
@@ -1166,14 +1336,13 @@ class JarvisAgent:
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             if closed:
-                print(f"❌ Closed: {app_name}")
+                add_log("info", f"Closed: {app_name}", category="apps")
                 return {"success": True, "message": f"Closed {app_name}"}
             return {"success": False, "error": f"Process {app_name} not found"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _get_running_apps(self) -> Dict[str, Any]:
-        """Best-effort list of running apps/processes."""
         try:
             apps: List[Dict[str, Any]] = []
             for proc in psutil.process_iter(['name', 'pid']):
@@ -1190,7 +1359,6 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _get_installed_apps(self) -> Dict[str, Any]:
-        """Windows: returns Start menu apps (Name + AppID). Other OS: empty list."""
         try:
             if platform.system() != "Windows":
                 return {"success": True, "apps": []}
@@ -1212,6 +1380,8 @@ class JarvisAgent:
             return {"success": True, "apps": apps[:2000]}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _list_files(self, path: str = "~"):
         try:
             path = os.path.expanduser(path)
             items = []
@@ -1237,7 +1407,7 @@ class JarvisAgent:
     
     def _open_file(self, path: str):
         try:
-            print(f"📁 Opening file: {path}")
+            add_log("info", f"Opening file: {path}", category="files")
             if platform.system() == "Windows":
                 os.startfile(path)
             elif platform.system() == "Darwin":
@@ -1254,7 +1424,7 @@ class JarvisAgent:
                 url = "https://" + url
             
             webbrowser.open(url)
-            print(f"🌐 Opened URL: {url}")
+            add_log("info", f"Opened URL: {url}", category="web")
             return {"success": True, "message": f"Opened {url}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1276,7 +1446,7 @@ class JarvisAgent:
                     req = urllib.request.Request(
                         search_url,
                         headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                         },
                     )
 
@@ -1291,11 +1461,11 @@ class JarvisAgent:
                     else:
                         url = search_url
                 except Exception as scrape_err:
-                    print(f"⚠️ YouTube scrape failed, opening search page instead: {scrape_err}")
+                    add_log("warn", f"YouTube scrape failed: {scrape_err}", category="media")
                     url = search_url
 
                 webbrowser.open(url)
-                print(f"🎵 Playing on YouTube: {query}")
+                add_log("info", f"Playing on YouTube: {query}", category="media")
                 return {"success": True, "message": f"Playing {query} on YouTube"}
 
             service_urls = {
@@ -1307,189 +1477,43 @@ class JarvisAgent:
 
             url = service_urls.get(service_lower) or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
             webbrowser.open(url)
-            print(f"🎵 Playing on {service}: {query}")
+            add_log("info", f"Playing on {service}: {query}", category="media")
             return {"success": True, "message": f"Playing {query} on {service}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _media_control(self, action: str):
-        """Control media playback (play/pause, next, previous, stop, mute, volume up/down)."""
         try:
             action_lower = action.lower().strip()
 
             if action_lower in ["play_pause", "playpause", "play", "pause"]:
                 pyautogui.press("playpause")
-                print("⏯️ Media play/pause")
+                add_log("info", "Media play/pause", category="media")
             elif action_lower in ["next", "nexttrack", "forward"]:
                 pyautogui.press("nexttrack")
-                print("⏭️ Media next track")
+                add_log("info", "Media next track", category="media")
             elif action_lower in ["previous", "prev", "prevtrack", "back"]:
                 pyautogui.press("prevtrack")
-                print("⏮️ Media previous track")
+                add_log("info", "Media previous track", category="media")
             elif action_lower == "stop":
                 pyautogui.press("stop")
-                print("⏹️ Media stop")
+                add_log("info", "Media stop", category="media")
             elif action_lower == "mute":
                 pyautogui.press("volumemute")
-                print("🔇 Volume mute toggle")
+                add_log("info", "Volume mute toggle", category="media")
             elif action_lower in ["volume_up", "volumeup"]:
                 pyautogui.press("volumeup")
-                print("🔊 Volume up")
+                add_log("info", "Volume up", category="media")
             elif action_lower in ["volume_down", "volumedown"]:
                 pyautogui.press("volumedown")
-                print("🔉 Volume down")
+                add_log("info", "Volume down", category="media")
             else:
                 return {"success": False, "error": f"Unknown action: {action}"}
 
             return {"success": True, "action": action}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
-    def _get_media_state(self) -> Dict[str, Any]:
-        """Get current media playback state (Windows only)."""
-        try:
-            if platform.system() != "Windows":
-                return {"success": False, "error": "Only supported on Windows"}
-            
-            # Use PowerShell to query Windows Media Session
-            ps_script = """
-            Add-Type -AssemblyName System.Runtime.WindowsRuntime
-            $async = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime]::RequestAsync()
-            $result = $async.GetAwaiter().GetResult()
-            $session = $result.GetCurrentSession()
-            if ($session) {
-                $info = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult()
-                $timeline = $session.GetTimelineProperties()
-                $playback = $session.GetPlaybackInfo()
-                @{
-                    title = $info.Title
-                    artist = $info.Artist
-                    album = $info.AlbumTitle
-                    is_playing = ($playback.PlaybackStatus -eq 'Playing')
-                    position_ms = [int]$timeline.Position.TotalMilliseconds
-                    duration_ms = [int]$timeline.EndTime.TotalMilliseconds
-                    position_percent = if ($timeline.EndTime.TotalMilliseconds -gt 0) { [math]::Round(($timeline.Position.TotalMilliseconds / $timeline.EndTime.TotalMilliseconds) * 100, 1) } else { 0 }
-                } | ConvertTo-Json
-            } else {
-                @{ title = ''; artist = ''; is_playing = $false; position_ms = 0; duration_ms = 0; position_percent = 0 } | ConvertTo-Json
-            }
-            """
-            
-            result = subprocess.run(
-                ['powershell', '-Command', ps_script],
-                capture_output=True, text=True, timeout=5
-            )
-            
-            if result.returncode == 0 and result.stdout.strip():
-                state = json.loads(result.stdout.strip())
-                state["success"] = True
-                state["volume"] = self._volume_cache
-                state["muted"] = False
-                return state
-            
-            # Fallback: return basic state
-            return {
-                "success": True,
-                "title": "Unknown",
-                "artist": "Unknown",
-                "is_playing": False,
-                "position_ms": 0,
-                "duration_ms": 0,
-                "position_percent": 0,
-                "volume": self._volume_cache,
-                "muted": False
-            }
-        except Exception as e:
-            self._log_issue("media", f"Failed to get media state: {e}", "warning")
-            return {
-                "success": False,
-                "error": str(e),
-                "title": "No media",
-                "artist": "",
-                "is_playing": False
-            }
-    
-    def _media_seek(self, position_percent: float):
-        """Seek to position in current media (limited support)."""
-        try:
-            # This is limited - most apps don't support direct seeking via system
-            print(f"⏩ Media seek to {position_percent}% (limited support)")
-            return {"success": True, "message": "Seek command sent (limited support)"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _get_system_stats(self) -> Dict[str, Any]:
-        """Get comprehensive system statistics."""
-        try:
-            cpu_percent = psutil.cpu_percent(interval=0.5)
-            memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            
-            stats = {
-                "success": True,
-                "cpu_percent": cpu_percent,
-                "memory_percent": memory.percent,
-                "memory_used_gb": round(memory.used / (1024**3), 2),
-                "memory_total_gb": round(memory.total / (1024**3), 2),
-                "disk_percent": disk.percent,
-                "disk_used_gb": round(disk.used / (1024**3), 2),
-                "disk_total_gb": round(disk.total / (1024**3), 2),
-            }
-            
-            # Battery info (if available)
-            try:
-                battery = psutil.sensors_battery()
-                if battery:
-                    stats["battery_percent"] = battery.percent
-                    stats["battery_plugged"] = battery.power_plugged
-            except:
-                stats["battery_percent"] = None
-                stats["battery_plugged"] = None
-            
-            return stats
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _boost_pc(self):
-        """Boost PC performance by clearing temp files and refreshing explorer."""
-        try:
-            results = []
-            
-            if platform.system() == "Windows":
-                # Clear temp files
-                temp_dir = os.environ.get("TEMP", "")
-                if temp_dir and os.path.exists(temp_dir):
-                    deleted = 0
-                    for item in os.listdir(temp_dir):
-                        try:
-                            item_path = os.path.join(temp_dir, item)
-                            if os.path.isfile(item_path):
-                                os.remove(item_path)
-                                deleted += 1
-                        except:
-                            pass
-                    results.append(f"Cleared {deleted} temp files")
-                
-                # Refresh Windows Explorer
-                subprocess.run(["taskkill", "/f", "/im", "explorer.exe"], 
-                             capture_output=True, timeout=5)
-                subprocess.Popen(["explorer.exe"])
-                results.append("Refreshed Windows Explorer")
-                
-            print(f"⚡ Boost completed: {', '.join(results)}")
-            return {"success": True, "message": "; ".join(results)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _get_cameras(self) -> Dict[str, Any]:
-        """Get list of available cameras."""
-        cameras = self.camera_streamer.get_available_cameras()
-        return {"success": True, "cameras": cameras}
-    
-    def _get_issues(self) -> Dict[str, Any]:
-        """Get recent issues from the log."""
-        return {"success": True, "issues": self.issue_log[-50:]}
-    
+
     async def _handle_command(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle a single command."""
         try:
@@ -1571,10 +1595,6 @@ class JarvisAgent:
                 )
             elif command_type == "media_control":
                 return self._media_control(payload.get("action", "play_pause"))
-            elif command_type == "get_media_state":
-                return self._get_media_state()
-            elif command_type == "media_seek":
-                return self._media_seek(payload.get("position_percent", 0))
 
             # Screen / system info
             elif command_type == "screenshot":
@@ -1635,7 +1655,12 @@ class JarvisAgent:
                 if connected:
                     asyncio.create_task(self.camera_streamer.start_streaming(camera_index))
                     return {"success": True, "session_id": session_id}
-                return {"success": False, "error": "Failed to connect camera stream"}
+                
+                # Return the error so web can display it
+                return {
+                    "success": False, 
+                    "error": self.camera_streamer.last_error or "Failed to connect camera stream"
+                }
 
             elif command_type == "stop_camera_stream":
                 await self.camera_streamer.stop()
@@ -1643,11 +1668,11 @@ class JarvisAgent:
                 return {"success": True}
 
             else:
-                self._log_issue("command", f"Unknown command: {command_type}", "warning")
+                add_log("warn", f"Unknown command: {command_type}", category="command")
                 return {"success": False, "error": f"Unknown command: {command_type}"}
 
         except Exception as e:
-            self._log_issue("command", f"Error executing {command_type}: {e}", "error")
+            add_log("error", f"Error executing {command_type}: {e}", category="command")
             return {"success": False, "error": str(e)}
     
     async def poll_commands(self):
@@ -1663,7 +1688,7 @@ class JarvisAgent:
                     payload = cmd.get("payload") or {}
                     cmd_id = cmd["id"]
                     
-                    print(f"📥 Executing: {cmd_type}")
+                    add_log("info", f"Executing: {cmd_type}", category="command")
                     
                     # Execute command
                     result_data = await self._handle_command(cmd_type, payload)
@@ -1676,7 +1701,7 @@ class JarvisAgent:
                     }).eq("id", cmd_id).execute()
                     
             except Exception as e:
-                self._log_issue("polling", f"Poll error: {e}", "warning")
+                add_log("warn", f"Poll error: {e}", category="polling")
             
             await asyncio.sleep(POLL_INTERVAL)
     
@@ -1690,26 +1715,34 @@ class JarvisAgent:
                     "current_volume": self._get_volume(),
                     "current_brightness": self._get_brightness(),
                 }).eq("id", self.device_id).execute()
+                
+                update_agent_status({
+                    "last_heartbeat": datetime.now().isoformat(),
+                    "volume": self._volume_cache,
+                    "brightness": self._brightness_cache,
+                })
             except Exception as e:
-                self._log_issue("heartbeat", f"Heartbeat error: {e}", "warning")
+                add_log("warn", f"Heartbeat error: {e}", category="heartbeat")
             
             await asyncio.sleep(HEARTBEAT_INTERVAL)
     
     async def run(self):
         """Main run loop."""
         print("\n" + "="*50)
-        print("🤖 JARVIS PC Agent v2.3")
+        print("🤖 JARVIS PC Agent v2.4 (with Web UI)")
         print("="*50)
         print(f"📍 Device: {DEVICE_NAME}")
         print(f"🔗 Backend: {SUPABASE_URL}")
         print(f"📷 Camera: {'✅' if HAS_OPENCV else '❌'}")
         print(f"🎤 Audio: {'✅' if HAS_PYAUDIO else '❌'}")
         print(f"🔌 WebSockets: {'✅' if HAS_WEBSOCKETS else '❌'}")
+        print(f"🌐 Local Dashboard: http://localhost:{UI_PORT}")
         print("="*50 + "\n")
         
         await self.register_device()
         
         print("\n✅ Agent running! Open the Jarvis web app to control this PC.")
+        print(f"   Local dashboard: http://localhost:{UI_PORT}")
         print("   Press Ctrl+C to stop.\n")
         
         # Run polling and heartbeat concurrently
@@ -1732,13 +1765,295 @@ class JarvisAgent:
                 "is_online": False,
                 "last_seen": datetime.now(timezone.utc).isoformat()
             }).eq("id", self.device_id).execute()
+            
+            update_agent_status({"connected": False})
         except:
             pass
         
-        print("\n👋 Agent stopped. Goodbye!")
+        add_log("info", "Agent stopped. Goodbye!", category="system")
 
 
+# ============== WEB UI SERVER ==============
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS Agent Dashboard</title>
+    <style>
+        :root {
+            --bg-dark: #0a0e17;
+            --bg-card: #111827;
+            --border: #1f2937;
+            --primary: #3b82f6;
+            --primary-glow: rgba(59, 130, 246, 0.5);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --text: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--primary), #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        .status-badge.online { background: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid var(--success); }
+        .status-badge.offline { background: rgba(239, 68, 68, 0.2); color: var(--error); border: 1px solid var(--error); }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; animation: pulse 2s infinite; }
+        .status-dot.online { background: var(--success); }
+        .status-dot.offline { background: var(--error); }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+        .card-title { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; }
+        .stat { font-size: 28px; font-weight: 600; }
+        .stat-label { font-size: 12px; color: var(--text-muted); }
+        .progress-bar { width: 100%; height: 6px; background: var(--border); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+        .progress-fill.cpu { background: var(--primary); }
+        .progress-fill.memory { background: #8b5cf6; }
+        .progress-fill.volume { background: var(--success); }
+        .log-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+        .log-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+        .log-header h2 { font-size: 14px; }
+        .btn { padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; border: none; transition: all 0.2s; }
+        .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+        .btn-ghost:hover { background: var(--border); color: var(--text); }
+        .log-list { max-height: 300px; overflow-y: auto; }
+        .log-entry { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
+        .log-level { width: 50px; font-weight: 500; text-transform: uppercase; font-size: 10px; }
+        .log-level.error { color: var(--error); }
+        .log-level.warn { color: var(--warning); }
+        .log-level.info { color: var(--primary); }
+        .log-message { flex: 1; word-break: break-word; }
+        .log-time { color: var(--text-muted); font-size: 10px; }
+        .empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 JARVIS Agent Dashboard</h1>
+            <div class="status-badge" id="status-badge">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Checking...</span>
+            </div>
+        </header>
+        <div class="grid">
+            <div class="card">
+                <div class="card-title">Device</div>
+                <div class="stat" id="device-name">-</div>
+                <div class="stat-label" id="device-id">Not connected</div>
+            </div>
+            <div class="card">
+                <div class="card-title">CPU</div>
+                <div class="stat" id="cpu-percent">0%</div>
+                <div class="progress-bar"><div class="progress-fill cpu" id="cpu-bar" style="width: 0%"></div></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Memory</div>
+                <div class="stat" id="memory-percent">0%</div>
+                <div class="progress-bar"><div class="progress-fill memory" id="memory-bar" style="width: 0%"></div></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Volume</div>
+                <div class="stat" id="volume">50%</div>
+                <div class="progress-bar"><div class="progress-fill volume" id="volume-bar" style="width: 50%"></div></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Streaming</div>
+                <div style="display: flex; gap: 16px; margin-top: 4px;">
+                    <div><div class="stat" id="audio-status">OFF</div><div class="stat-label">Audio</div></div>
+                    <div><div class="stat" id="camera-status">OFF</div><div class="stat-label">Camera</div></div>
+                </div>
+            </div>
+        </div>
+        <div class="log-container">
+            <div class="log-header">
+                <h2>📋 Issue Log</h2>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
+                    <button class="btn btn-ghost" onclick="clearLogs()">Clear</button>
+                </div>
+            </div>
+            <div class="log-list" id="log-list"><div class="empty-state">No issues logged</div></div>
+        </div>
+    </div>
+    <script>
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                updateUI(data);
+            } catch (e) { console.error('Status error:', e); }
+        }
+        function updateUI(data) {
+            const badge = document.getElementById('status-badge');
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+            if (data.connected) {
+                badge.className = 'status-badge online';
+                dot.className = 'status-dot online';
+                text.textContent = 'Connected';
+            } else {
+                badge.className = 'status-badge offline';
+                dot.className = 'status-dot offline';
+                text.textContent = 'Disconnected';
+            }
+            document.getElementById('device-name').textContent = data.device_name || '-';
+            document.getElementById('device-id').textContent = data.device_id ? 'ID: ' + data.device_id.slice(0, 8) + '...' : 'Not connected';
+            document.getElementById('cpu-percent').textContent = Math.round(data.cpu_percent || 0) + '%';
+            document.getElementById('cpu-bar').style.width = (data.cpu_percent || 0) + '%';
+            document.getElementById('memory-percent').textContent = Math.round(data.memory_percent || 0) + '%';
+            document.getElementById('memory-bar').style.width = (data.memory_percent || 0) + '%';
+            document.getElementById('volume').textContent = (data.volume || 0) + '%';
+            document.getElementById('volume-bar').style.width = (data.volume || 0) + '%';
+            document.getElementById('audio-status').textContent = data.audio_streaming ? 'ON' : 'OFF';
+            document.getElementById('audio-status').style.color = data.audio_streaming ? '#10b981' : '#9ca3af';
+            document.getElementById('camera-status').textContent = data.camera_streaming ? 'ON' : 'OFF';
+            document.getElementById('camera-status').style.color = data.camera_streaming ? '#10b981' : '#9ca3af';
+        }
+        async function refreshLogs() {
+            try {
+                const res = await fetch('/api/logs');
+                const logs = await res.json();
+                renderLogs(logs);
+            } catch (e) { console.error('Logs error:', e); }
+        }
+        async function clearLogs() {
+            try {
+                await fetch('/api/logs/clear', { method: 'POST' });
+                refreshLogs();
+            } catch (e) { console.error('Clear error:', e); }
+        }
+        function renderLogs(logs) {
+            const container = document.getElementById('log-list');
+            if (!logs || logs.length === 0) {
+                container.innerHTML = '<div class="empty-state">No issues logged</div>';
+                return;
+            }
+            container.innerHTML = logs.map(log => 
+                '<div class="log-entry">' +
+                '<span class="log-level ' + log.level + '">' + log.level + '</span>' +
+                '<span class="log-message">' + escapeHtml(log.message) + (log.details ? '<br><small style="color:#6b7280">' + escapeHtml(log.details) + '</small>' : '') + '</span>' +
+                '<span class="log-time">' + new Date(log.timestamp).toLocaleTimeString() + '</span>' +
+                '</div>'
+            ).join('');
+        }
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        fetchStatus();
+        refreshLogs();
+        setInterval(fetchStatus, 2000);
+        setInterval(refreshLogs, 5000);
+    </script>
+</body>
+</html>
+"""
+
+
+class AgentUIHandler(SimpleHTTPRequestHandler):
+    """HTTP request handler for the agent dashboard."""
+
+    def log_message(self, format, *args):
+        pass  # Suppress default logging
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path == "/" or path == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(HTML_TEMPLATE.encode())
+
+        elif path == "/api/status":
+            self.send_json(get_agent_status())
+
+        elif path == "/api/logs":
+            self.send_json(get_logs())
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/logs/clear":
+            clear_logs()
+            self.send_json({"success": True})
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def send_json(self, data):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+
+def run_ui_server(port: int = UI_PORT):
+    """Start the UI server in a background thread."""
+    try:
+        server = HTTPServer(("127.0.0.1", port), AgentUIHandler)
+        
+        def serve():
+            server.serve_forever()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        add_log("info", f"Agent Dashboard running at http://localhost:{port}", category="system")
+        return server
+    except Exception as e:
+        add_log("warn", f"Could not start web UI: {e}", category="system")
+        return None
+
+
+# ============== MAIN ==============
 async def main():
+    # Start the web UI server
+    run_ui_server()
+    
     agent = JarvisAgent()
     
     try:
@@ -1746,7 +2061,7 @@ async def main():
     except KeyboardInterrupt:
         await agent.shutdown()
     except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
+        add_log("error", f"Fatal error: {e}", category="system")
         await agent.shutdown()
 
 
