@@ -8,7 +8,7 @@ SETUP INSTRUCTIONS:
 ------------------
 1. Install Python 3.8+ from https://python.org
 
-2. Install dependencies (recommended) OR just run the agent once and it will auto-install:
+2. Install dependencies:
    python -m pip install -r requirements.txt
 
 3. Set environment variables (recommended) or pass --url/--key flags:
@@ -63,57 +63,40 @@ import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 
-# ============== BOOTSTRAP (auto-install deps if missing) ==============
+# ============== BOOTSTRAP (dependency check) ==============
 
 def _requirements_path() -> str:
     return os.path.join(os.path.dirname(__file__), "requirements.txt")
 
 
-def _get_python_executable() -> str:
-    """Get the correct python.exe (not pythonw.exe) for pip operations."""
-    exe = sys.executable
-    # pythonw.exe can't run pip properly - switch to python.exe
-    if exe.lower().endswith("pythonw.exe"):
-        exe = exe[:-9] + "python.exe"
-        if not os.path.exists(exe):
-            exe = sys.executable  # fallback
-    return exe
+def _check_dependencies() -> None:
+    """Fail fast with clear instructions if dependencies are missing.
 
-
-def _bootstrap_dependencies() -> None:
-    """Ensure core dependency is installed; if not, install requirements and restart."""
+    Auto-installing Python packages often hangs/fails on Windows (permissions, venv mismatch,
+    unsupported Python versions). We keep startup reliable by requiring an explicit install.
+    """
     try:
         import supabase  # noqa: F401
         return
     except ImportError:
         req_path = _requirements_path()
-        python_exe = _get_python_executable()
-        print("\n📦 Missing Python packages. Attempting auto-install...")
-        print(f"   Running: {python_exe} -m pip install -r {req_path}")
-        try:
-            result = subprocess.run(
-                [python_exe, "-m", "pip", "install", "-r", req_path],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode != 0:
-                raise Exception(f"pip failed:\n{result.stderr or result.stdout}")
-            print("   ✅ Dependencies installed successfully!")
-        except Exception as e:
-            print(f"\n❌ Auto-install failed: {e}")
-            print("\n💡 Try manually in CMD/PowerShell:")
-            print(f"   python -m pip install -r {req_path}")
-            print("\n   Or if using venv, activate it first:")
-            print("   .\\venv\\Scripts\\activate")
-            print(f"   pip install -r {req_path}")
-            sys.exit(1)
+        py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
-        # Restart current script so imports work
-        python_exe = _get_python_executable()
-        os.execv(python_exe, [python_exe] + sys.argv)
+        print("\n❌ Missing Python packages (e.g. 'supabase').")
+        print("\n✅ Fix (recommended):")
+        print(f"   python -m pip install -r {req_path}")
+        print("\n✅ Windows one-click:")
+        print("   Double-click: run_agent_windows.bat")
+
+        if sys.version_info >= (3, 13):
+            print("\n⚠️  Your Python version is", py_ver)
+            print("   Some packages used by the agent may not support Python 3.13+ yet.")
+            print("   Install Python 3.10–3.12, recreate your venv, then reinstall requirements.")
+
+        sys.exit(1)
 
 
-_bootstrap_dependencies()
+_check_dependencies()
 
 
 # Third-party imports

@@ -9,7 +9,9 @@ Download Python 3.8+ from [python.org](https://python.org)
 
 ### 2. Install Dependencies
 
-**Windows:**
+**Windows (recommended):**
+- **One-click:** double-click `run_agent_windows.bat` (installs deps + runs agent)
+- **Manual:**
 ```bash
 pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss pyaudio opencv-python websockets
 ```
@@ -152,8 +154,8 @@ After=network.target
 Type=simple
 User=YOUR_USERNAME
 WorkingDirectory=/path/to/python-agent
-Environment="JARVIS_SUPABASE_URL=https://awklnptbdaxrebisufel.supabase.co"
-Environment="JARVIS_SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
+Environment="JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co"
+Environment="JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
 ExecStart=/usr/bin/python3 jarvis_agent.py
 Restart=always
 
