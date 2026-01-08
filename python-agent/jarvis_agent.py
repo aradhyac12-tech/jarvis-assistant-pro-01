@@ -135,29 +135,42 @@ else:
 
 
 # ============== CONFIGURATION ==============
-# IMPORTANT: For remixed projects, set these environment variables!
+# IMPORTANT: You MUST set these environment variables!
 # export JARVIS_SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
 # export JARVIS_SUPABASE_KEY="YOUR_ANON_KEY"
 
 SUPABASE_URL = (
     os.environ.get("JARVIS_SUPABASE_URL")
     or os.environ.get("SUPABASE_URL")
-    or "https://utoqobuemsikxcfyihpi.supabase.co"
 )
 SUPABASE_KEY = (
     os.environ.get("JARVIS_SUPABASE_KEY")
     or os.environ.get("SUPABASE_ANON_KEY")
     or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
-    or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV0b3FvYnVlbXNpa3hjZnlpaHBpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyODUyMjMsImV4cCI6MjA4Mjg2MTIyM30.n0ZcBk2d9akm6w6fycOzHkgkWHgGQ8LKIYchbz3eh2o"
 )
+
+# Validate required configuration - DO NOT hardcode keys!
+if not SUPABASE_URL:
+    print("❌ ERROR: Missing SUPABASE_URL environment variable!")
+    print("\n📋 Set your environment variables:")
+    print("   export JARVIS_SUPABASE_URL=\"https://YOUR_PROJECT.supabase.co\"")
+    print("   export JARVIS_SUPABASE_KEY=\"YOUR_ANON_KEY\"")
+    sys.exit(1)
+
+if not SUPABASE_KEY:
+    print("❌ ERROR: Missing SUPABASE_KEY environment variable!")
+    print("\n📋 Set your environment variables:")
+    print("   export JARVIS_SUPABASE_URL=\"https://YOUR_PROJECT.supabase.co\"")
+    print("   export JARVIS_SUPABASE_KEY=\"YOUR_ANON_KEY\"")
+    sys.exit(1)
 
 
 def _project_ref_from_url(url: str) -> str:
     try:
         host = urllib.parse.urlparse(url).hostname or ""
-        return host.split(".")[0] if host else "utoqobuemsikxcfyihpi"
+        return host.split(".")[0] if host else ""
     except Exception:
-        return "utoqobuemsikxcfyihpi"
+        return ""
 
 
 PROJECT_REF = _project_ref_from_url(SUPABASE_URL)
@@ -1240,6 +1253,7 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _open_app(self, app_name: str, app_id: Optional[str] = None):
+        import re
         try:
             app_name = (app_name or "").strip()
             app_lower = app_name.lower().strip()
@@ -1249,10 +1263,17 @@ class JarvisAgent:
 
             if platform.system() == "Windows":
                 if app_id:
+                    # Security: Validate app_id to prevent command injection
+                    # Windows App IDs are typically in format: Publisher.AppName_hash!App
+                    # Allow only alphanumeric, dots, underscores, exclamation marks, and hyphens
+                    if not re.match(r'^[a-zA-Z0-9._!-]+$', app_id):
+                        add_log("warn", f"Invalid app_id format rejected: {app_id}", category="apps")
+                        return {"success": False, "error": "Invalid app ID format"}
+                    
                     try:
+                        # Use list form to avoid shell injection
                         subprocess.Popen(
-                            f'explorer shell:AppsFolder\\{app_id}',
-                            shell=True,
+                            ['explorer', f'shell:AppsFolder\\{app_id}'],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                         )
