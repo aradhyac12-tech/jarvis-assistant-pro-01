@@ -8,12 +8,13 @@ SETUP INSTRUCTIONS:
 ------------------
 1. Install Python 3.8+ from https://python.org
 
-2. Install dependencies:
-   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss pyaudio opencv-python websockets
+2. Install dependencies (recommended) OR just run the agent once and it will auto-install:
+   python -m pip install -r requirements.txt
 
-3. Set environment variables (REQUIRED for remixed projects):
-   export JARVIS_SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
-   export JARVIS_SUPABASE_KEY="YOUR_ANON_KEY"
+3. Set environment variables (recommended) or pass --url/--key flags:
+   Windows CMD:
+     set JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co
+     set JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304
 
 4. Run the agent:
    python jarvis_agent.py
@@ -51,6 +52,7 @@ import subprocess
 import platform
 import ctypes
 import threading
+import argparse
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 import base64
@@ -60,17 +62,42 @@ import webbrowser
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
+
+# ============== BOOTSTRAP (auto-install deps if missing) ==============
+
+def _requirements_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "requirements.txt")
+
+
+def _bootstrap_dependencies() -> None:
+    """Ensure core dependency is installed; if not, install requirements and restart."""
+    try:
+        import supabase  # noqa: F401
+        return
+    except ImportError:
+        req_path = _requirements_path()
+        print("\n📦 Missing Python packages. Attempting auto-install...")
+        print(f"   Running: {sys.executable} -m pip install -r {req_path}")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_path])
+        except Exception as e:
+            print(f"\n❌ Auto-install failed: {e}")
+            print("\n💡 Try manually:")
+            print(f"   {sys.executable} -m pip install -r {req_path}")
+            sys.exit(1)
+
+        # Restart current script so imports work
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+_bootstrap_dependencies()
+
+
 # Third-party imports
-try:
-    from supabase import create_client, Client
-    import pyautogui
-    from PIL import Image
-    import psutil
-except ImportError as e:
-    print(f"❌ Missing dependency: {e}")
-    print("\n📦 Install required packages with:")
-    print("   pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss pyaudio opencv-python websockets")
-    sys.exit(1)
+from supabase import create_client, Client
+import pyautogui
+from PIL import Image
+import psutil
 
 # Fast screenshot using mss
 try:
@@ -122,7 +149,7 @@ if platform.system() == "Windows":
     except ImportError:
         HAS_PYCAW = False
         print("⚠️  pycaw not installed properly")
-    
+
     try:
         import screen_brightness_control as sbc
         HAS_BRIGHTNESS = True
@@ -135,33 +162,98 @@ else:
 
 
 # ============== CONFIGURATION ==============
-# IMPORTANT: You MUST set these environment variables!
-# export JARVIS_SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
-# export JARVIS_SUPABASE_KEY="YOUR_ANON_KEY"
+# Recommended (Windows CMD):
+#   set JARVIS_SUPABASE_URL=https://... && set JARVIS_SUPABASE_KEY=... && python jarvis_agent.py
+# Or pass flags:
+#   python jarvis_agent.py --url https://... --key ...
 
-SUPABASE_URL = (
-    os.environ.get("JARVIS_SUPABASE_URL")
-    or os.environ.get("SUPABASE_URL")
+DEFAULT_JARVIS_URL = "https://wxemscrgximbsrynoxzp.supabase.co"
+DEFAULT_JARVIS_KEY = "sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="JARVIS PC Agent")
+    p.add_argument("--url", help="Backend URL (e.g. https://xxxx.supabase.co)")
+    p.add_argument("--key", help="Backend publishable/anon key")
+    p.add_argument("--no-self-test", action="store_true", help="Skip connectivity self-test")
+    p.add_argument("--save-config", action="store_true", help="Save URL/KEY to jarvis_agent_config.json")
+    return p.parse_args()
+
+
+def _config_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "jarvis_agent_config.json")
+
+
+def _load_local_config() -> Dict[str, str]:
+    try:
+        with open(_config_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {k: str(v) for k, v in data.items()}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _save_local_config(url: str, key: str) -> None:
+    try:
+        with open(_config_path(), "w", encoding="utf-8") as f:
+            json.dump({"JARVIS_SUPABASE_URL": url, "JARVIS_SUPABASE_KEY": key}, f, indent=2)
+        print(f"💾 Saved config to: {_config_path()}")
+    except Exception as e:
+        print(f"⚠️  Could not save config: {e}")
+
+
+def _normalize_url(raw: str) -> str:
+    raw = (raw or "").strip().strip('"').strip("'")
+    if not raw:
+        return ""
+    if not raw.startswith("http://") and not raw.startswith("https://"):
+        raw = "https://" + raw
+    return raw
+
+
+ARGS = _parse_args()
+LOCAL_CFG = _load_local_config()
+
+SUPABASE_URL = _normalize_url(
+    ARGS.url
+    or os.environ.get("JARVIS_SUPABASE_URL")
+    or LOCAL_CFG.get("JARVIS_SUPABASE_URL")
+    or DEFAULT_JARVIS_URL
 )
+
 SUPABASE_KEY = (
-    os.environ.get("JARVIS_SUPABASE_KEY")
-    or os.environ.get("SUPABASE_ANON_KEY")
-    or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+    (ARGS.key or "").strip()
+    or os.environ.get("JARVIS_SUPABASE_KEY")
+    or LOCAL_CFG.get("JARVIS_SUPABASE_KEY")
+    or DEFAULT_JARVIS_KEY
 )
 
-# Validate required configuration - DO NOT hardcode keys!
+if ARGS.save_config:
+    _save_local_config(SUPABASE_URL, SUPABASE_KEY)
+
+
+def _mask_key(k: str) -> str:
+    if not k:
+        return "<empty>"
+    if len(k) <= 10:
+        return "*" * len(k)
+    return f"{k[:6]}…{k[-4:]}"
+
+
+print(f"🔧 Using backend URL: {SUPABASE_URL}")
+print(f"🔑 Using key: {_mask_key(SUPABASE_KEY)}")
+
+# Validate required configuration
 if not SUPABASE_URL:
-    print("❌ ERROR: Missing SUPABASE_URL environment variable!")
-    print("\n📋 Set your environment variables:")
-    print("   export JARVIS_SUPABASE_URL=\"https://YOUR_PROJECT.supabase.co\"")
-    print("   export JARVIS_SUPABASE_KEY=\"YOUR_ANON_KEY\"")
+    print("❌ ERROR: Missing JARVIS_SUPABASE_URL")
     sys.exit(1)
 
 if not SUPABASE_KEY:
-    print("❌ ERROR: Missing SUPABASE_KEY environment variable!")
-    print("\n📋 Set your environment variables:")
-    print("   export JARVIS_SUPABASE_URL=\"https://YOUR_PROJECT.supabase.co\"")
-    print("   export JARVIS_SUPABASE_KEY=\"YOUR_ANON_KEY\"")
+    print("❌ ERROR: Missing JARVIS_SUPABASE_KEY")
     sys.exit(1)
 
 
@@ -175,7 +267,7 @@ def _project_ref_from_url(url: str) -> str:
 
 PROJECT_REF = _project_ref_from_url(SUPABASE_URL)
 
-# WebSocket endpoints for realtime streaming (Edge Functions domain)
+# WebSocket endpoints for realtime streaming (Functions domain)
 AUDIO_RELAY_WS_URL = f"wss://{PROJECT_REF}.functions.supabase.co/functions/v1/audio-relay"
 CAMERA_RELAY_WS_URL = f"wss://{PROJECT_REF}.functions.supabase.co/functions/v1/camera-relay"
 
@@ -190,25 +282,40 @@ pyautogui.PAUSE = 0.01
 pyautogui.FAILSAFE = False
 
 
+STARTUP_LOG_PATH = os.path.join(os.path.dirname(__file__), "jarvis_agent_startup.log")
+
+
+def _startup_log(stage: str, message: str) -> None:
+    try:
+        with open(STARTUP_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} | {stage} | {message}\n")
+    except Exception:
+        pass
+
+
 # ============== CONNECTIVITY SELF-TEST ==============
 def run_connectivity_test() -> bool:
     """Run connectivity diagnostics before starting the agent."""
     import socket
     import ssl
-    
+
     print("\n" + "=" * 50)
     print("🔍 CONNECTIVITY SELF-TEST")
     print("=" * 50)
-    
+
     parsed = urllib.parse.urlparse(SUPABASE_URL)
     hostname = parsed.hostname
-    
+
     if not hostname:
-        print(f"❌ Invalid URL format: {SUPABASE_URL}")
+        msg = f"Invalid URL format: {SUPABASE_URL}"
+        _startup_log("url", msg)
+        print(f"❌ {msg}")
+        print("\n💡 Tip: You can run:")
+        print("   python jarvis_agent.py --url https://YOUR_PROJECT.supabase.co --key YOUR_KEY")
         return False
-    
+
     print(f"📍 Target: {hostname}")
-    
+
     # Test 1: DNS Resolution
     print("\n1️⃣  DNS Resolution...")
     try:
@@ -216,14 +323,17 @@ def run_connectivity_test() -> bool:
         ip = ip_addresses[0][4][0]
         print(f"   ✅ Resolved to: {ip}")
     except socket.gaierror as e:
+        _startup_log("dns", f"{hostname} | {e}")
         print(f"   ❌ DNS FAILED: {e}")
         print("\n💡 FIXES:")
         print("   • Check your internet connection")
         print("   • Disable VPN/proxy if active")
-        print("   • Try: ipconfig /flushdns (Windows) or sudo dscacheutil -flushcache (macOS)")
+        print("   • Try: ipconfig /flushdns (Windows)")
         print("   • Change DNS to 8.8.8.8 or 1.1.1.1")
+        print("\n💡 If this keeps failing, double-check your URL is correct:")
+        print(f"   Current URL: {SUPABASE_URL}")
         return False
-    
+
     # Test 2: TCP Connection
     print("\n2️⃣  TCP Connection (port 443)...")
     try:
@@ -231,15 +341,17 @@ def run_connectivity_test() -> bool:
         sock.close()
         print("   ✅ TCP connection successful")
     except socket.timeout:
+        _startup_log("tcp", f"timeout {hostname}:443")
         print("   ❌ Connection timed out")
         print("\n💡 FIXES:")
         print("   • Check firewall settings")
         print("   • Try a different network")
         return False
     except Exception as e:
+        _startup_log("tcp", f"{hostname}:443 | {e}")
         print(f"   ❌ TCP FAILED: {e}")
         return False
-    
+
     # Test 3: HTTPS/TLS Connection
     print("\n3️⃣  HTTPS/TLS Handshake...")
     try:
@@ -248,32 +360,40 @@ def run_connectivity_test() -> bool:
             with context.wrap_socket(sock, server_hostname=hostname) as ssock:
                 print(f"   ✅ TLS {ssock.version()} established")
     except ssl.SSLError as e:
+        _startup_log("tls", str(e))
         print(f"   ❌ SSL/TLS FAILED: {e}")
         return False
     except Exception as e:
+        _startup_log("https", str(e))
         print(f"   ❌ HTTPS FAILED: {e}")
         return False
-    
-    # Test 4: HTTP Request to Supabase REST API
-    print("\n4️⃣  Supabase REST API Health Check...")
+
+    # Test 4: REST API basic check
+    print("\n4️⃣  REST API Health Check...")
     try:
         import http.client
+
         conn = http.client.HTTPSConnection(hostname, timeout=10)
-        conn.request("GET", "/rest/v1/", headers={
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}"
-        })
+        conn.request(
+            "GET",
+            "/rest/v1/",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+            },
+        )
         resp = conn.getresponse()
         status = resp.status
         conn.close()
-        
-        if status in (200, 400):  # 400 is OK - means API is responding
+
+        if status in (200, 400):
             print(f"   ✅ API responding (HTTP {status})")
         else:
             print(f"   ⚠️  Unexpected status: HTTP {status}")
     except Exception as e:
+        _startup_log("api", str(e))
         print(f"   ⚠️  API check failed: {e} (will retry on start)")
-    
+
     print("\n" + "=" * 50)
     print("✅ ALL CONNECTIVITY TESTS PASSED")
     print("=" * 50 + "\n")
@@ -281,9 +401,10 @@ def run_connectivity_test() -> bool:
 
 
 # Run connectivity test before initializing client
-if not run_connectivity_test():
-    print("\n❌ Connectivity test failed. Please fix the issues above and try again.")
-    sys.exit(1)
+if not ARGS.no_self_test:
+    if not run_connectivity_test():
+        print(f"\n❌ Connectivity test failed. Startup log saved to: {STARTUP_LOG_PATH}")
+        sys.exit(1)
 
 # ============== SUPABASE CLIENT ==============
 print(f"🔗 Connecting to: {SUPABASE_URL}")
