@@ -69,6 +69,17 @@ def _requirements_path() -> str:
     return os.path.join(os.path.dirname(__file__), "requirements.txt")
 
 
+def _get_python_executable() -> str:
+    """Get the correct python.exe (not pythonw.exe) for pip operations."""
+    exe = sys.executable
+    # pythonw.exe can't run pip properly - switch to python.exe
+    if exe.lower().endswith("pythonw.exe"):
+        exe = exe[:-9] + "python.exe"
+        if not os.path.exists(exe):
+            exe = sys.executable  # fallback
+    return exe
+
+
 def _bootstrap_dependencies() -> None:
     """Ensure core dependency is installed; if not, install requirements and restart."""
     try:
@@ -76,18 +87,30 @@ def _bootstrap_dependencies() -> None:
         return
     except ImportError:
         req_path = _requirements_path()
+        python_exe = _get_python_executable()
         print("\n📦 Missing Python packages. Attempting auto-install...")
-        print(f"   Running: {sys.executable} -m pip install -r {req_path}")
+        print(f"   Running: {python_exe} -m pip install -r {req_path}")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_path])
+            result = subprocess.run(
+                [python_exe, "-m", "pip", "install", "-r", req_path],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                raise Exception(f"pip failed:\n{result.stderr or result.stdout}")
+            print("   ✅ Dependencies installed successfully!")
         except Exception as e:
             print(f"\n❌ Auto-install failed: {e}")
-            print("\n💡 Try manually:")
-            print(f"   {sys.executable} -m pip install -r {req_path}")
+            print("\n💡 Try manually in CMD/PowerShell:")
+            print(f"   python -m pip install -r {req_path}")
+            print("\n   Or if using venv, activate it first:")
+            print("   .\\venv\\Scripts\\activate")
+            print(f"   pip install -r {req_path}")
             sys.exit(1)
 
         # Restart current script so imports work
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        python_exe = _get_python_executable()
+        os.execv(python_exe, [python_exe] + sys.argv)
 
 
 _bootstrap_dependencies()
