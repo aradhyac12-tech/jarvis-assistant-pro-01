@@ -30,28 +30,28 @@ sudo apt-get install python3-tk python3-dev scrot  # For GUI automation
 
 **Windows (Command Prompt):**
 ```cmd
-set JARVIS_SUPABASE_URL=https://awklnptbdaxrebisufel.supabase.co
-set JARVIS_SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE
+set JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co
+set JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304
 python jarvis_agent.py
 ```
 
 **Windows (PowerShell):**
 ```powershell
-$env:JARVIS_SUPABASE_URL="https://awklnptbdaxrebisufel.supabase.co"
-$env:JARVIS_SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
+$env:JARVIS_SUPABASE_URL="https://wxemscrgximbsrynoxzp.supabase.co"
+$env:JARVIS_SUPABASE_KEY="sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
 python jarvis_agent.py
 ```
 
 **macOS/Linux:**
 ```bash
-export JARVIS_SUPABASE_URL="https://awklnptbdaxrebisufel.supabase.co"
-export JARVIS_SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
+export JARVIS_SUPABASE_URL="https://wxemscrgximbsrynoxzp.supabase.co"
+export JARVIS_SUPABASE_KEY="sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
 python jarvis_agent.py
 ```
 
 **One-liner (Windows CMD):**
 ```cmd
-set JARVIS_SUPABASE_URL=https://awklnptbdaxrebisufel.supabase.co && set JARVIS_SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE && python jarvis_agent.py
+set JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co && set JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304 && python jarvis_agent.py
 ```
 
 ### 4. Open the Dashboard
