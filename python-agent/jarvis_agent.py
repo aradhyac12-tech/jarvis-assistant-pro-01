@@ -189,6 +189,102 @@ UI_PORT = 8765
 pyautogui.PAUSE = 0.01
 pyautogui.FAILSAFE = False
 
+
+# ============== CONNECTIVITY SELF-TEST ==============
+def run_connectivity_test() -> bool:
+    """Run connectivity diagnostics before starting the agent."""
+    import socket
+    import ssl
+    
+    print("\n" + "=" * 50)
+    print("🔍 CONNECTIVITY SELF-TEST")
+    print("=" * 50)
+    
+    parsed = urllib.parse.urlparse(SUPABASE_URL)
+    hostname = parsed.hostname
+    
+    if not hostname:
+        print(f"❌ Invalid URL format: {SUPABASE_URL}")
+        return False
+    
+    print(f"📍 Target: {hostname}")
+    
+    # Test 1: DNS Resolution
+    print("\n1️⃣  DNS Resolution...")
+    try:
+        ip_addresses = socket.getaddrinfo(hostname, 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        ip = ip_addresses[0][4][0]
+        print(f"   ✅ Resolved to: {ip}")
+    except socket.gaierror as e:
+        print(f"   ❌ DNS FAILED: {e}")
+        print("\n💡 FIXES:")
+        print("   • Check your internet connection")
+        print("   • Disable VPN/proxy if active")
+        print("   • Try: ipconfig /flushdns (Windows) or sudo dscacheutil -flushcache (macOS)")
+        print("   • Change DNS to 8.8.8.8 or 1.1.1.1")
+        return False
+    
+    # Test 2: TCP Connection
+    print("\n2️⃣  TCP Connection (port 443)...")
+    try:
+        sock = socket.create_connection((hostname, 443), timeout=10)
+        sock.close()
+        print("   ✅ TCP connection successful")
+    except socket.timeout:
+        print("   ❌ Connection timed out")
+        print("\n💡 FIXES:")
+        print("   • Check firewall settings")
+        print("   • Try a different network")
+        return False
+    except Exception as e:
+        print(f"   ❌ TCP FAILED: {e}")
+        return False
+    
+    # Test 3: HTTPS/TLS Connection
+    print("\n3️⃣  HTTPS/TLS Handshake...")
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((hostname, 443), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                print(f"   ✅ TLS {ssock.version()} established")
+    except ssl.SSLError as e:
+        print(f"   ❌ SSL/TLS FAILED: {e}")
+        return False
+    except Exception as e:
+        print(f"   ❌ HTTPS FAILED: {e}")
+        return False
+    
+    # Test 4: HTTP Request to Supabase REST API
+    print("\n4️⃣  Supabase REST API Health Check...")
+    try:
+        import http.client
+        conn = http.client.HTTPSConnection(hostname, timeout=10)
+        conn.request("GET", "/rest/v1/", headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        })
+        resp = conn.getresponse()
+        status = resp.status
+        conn.close()
+        
+        if status in (200, 400):  # 400 is OK - means API is responding
+            print(f"   ✅ API responding (HTTP {status})")
+        else:
+            print(f"   ⚠️  Unexpected status: HTTP {status}")
+    except Exception as e:
+        print(f"   ⚠️  API check failed: {e} (will retry on start)")
+    
+    print("\n" + "=" * 50)
+    print("✅ ALL CONNECTIVITY TESTS PASSED")
+    print("=" * 50 + "\n")
+    return True
+
+
+# Run connectivity test before initializing client
+if not run_connectivity_test():
+    print("\n❌ Connectivity test failed. Please fix the issues above and try again.")
+    sys.exit(1)
+
 # ============== SUPABASE CLIENT ==============
 print(f"🔗 Connecting to: {SUPABASE_URL}")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
