@@ -234,20 +234,6 @@ ALTER TABLE ONLY public.commands
 
 
 --
--- Name: commands Allow command creation; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "Allow command creation" ON public.commands FOR INSERT WITH CHECK (true);
-
-
---
--- Name: commands Allow command updates; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "Allow command updates" ON public.commands FOR UPDATE USING (true);
-
-
---
 -- Name: devices Allow device deletion; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -266,13 +252,6 @@ CREATE POLICY "Allow device registration" ON public.devices FOR INSERT WITH CHEC
 --
 
 CREATE POLICY "Allow device updates by device_key" ON public.devices FOR UPDATE USING (true);
-
-
---
--- Name: commands Allow viewing commands; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "Allow viewing commands" ON public.commands FOR SELECT USING (true);
 
 
 --
@@ -336,6 +315,34 @@ CREATE POLICY "Users can view their own profile" ON public.profiles FOR SELECT U
 --
 
 CREATE POLICY "Users can view their own settings" ON public.user_settings FOR SELECT USING ((auth.uid() = user_id));
+
+
+--
+-- Name: commands Users create own commands; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users create own commands" ON public.commands FOR INSERT WITH CHECK ((auth.uid() = user_id));
+
+
+--
+-- Name: commands Users delete own commands; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users delete own commands" ON public.commands FOR DELETE USING ((auth.uid() = user_id));
+
+
+--
+-- Name: commands Users update own commands; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users update own commands" ON public.commands FOR UPDATE USING ((auth.uid() = user_id));
+
+
+--
+-- Name: commands Users view own commands; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users view own commands" ON public.commands FOR SELECT USING ((auth.uid() = user_id));
 
 
 --
