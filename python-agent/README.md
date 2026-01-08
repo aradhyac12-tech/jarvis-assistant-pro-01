@@ -11,28 +11,52 @@ Download Python 3.8+ from [python.org](https://python.org)
 
 **Windows:**
 ```bash
-pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip
+pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss pyaudio opencv-python websockets
 ```
 
 **macOS:**
 ```bash
-pip install supabase pyautogui pillow psutil keyboard pyperclip
+pip install supabase pyautogui pillow psutil keyboard pyperclip mss websockets
 brew install brightness  # For brightness control
 ```
 
 **Linux:**
 ```bash
-pip install supabase pyautogui pillow psutil keyboard pyperclip
+pip install supabase pyautogui pillow psutil keyboard pyperclip mss websockets
 sudo apt-get install python3-tk python3-dev scrot  # For GUI automation
 ```
 
-### 3. Run the Agent
+### 3. Set Environment Variables & Run
 
-```bash
+**Windows (Command Prompt):**
+```cmd
+set JARVIS_SUPABASE_URL=https://awklnptbdaxrebisufel.supabase.co
+set JARVIS_SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE
 python jarvis_agent.py
 ```
 
-That's it! Your PC will appear in the Jarvis dashboard within seconds.
+**Windows (PowerShell):**
+```powershell
+$env:JARVIS_SUPABASE_URL="https://awklnptbdaxrebisufel.supabase.co"
+$env:JARVIS_SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
+python jarvis_agent.py
+```
+
+**macOS/Linux:**
+```bash
+export JARVIS_SUPABASE_URL="https://awklnptbdaxrebisufel.supabase.co"
+export JARVIS_SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
+python jarvis_agent.py
+```
+
+**One-liner (Windows CMD):**
+```cmd
+set JARVIS_SUPABASE_URL=https://awklnptbdaxrebisufel.supabase.co && set JARVIS_SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE && python jarvis_agent.py
+```
+
+### 4. Open the Dashboard
+Your PC will appear in the Jarvis web dashboard within seconds!
+Local dashboard also available at http://localhost:8765
 
 ## Features
 
@@ -50,6 +74,8 @@ That's it! Your PC will appear in the Jarvis dashboard within seconds.
 | 📁 **File Browser** | Navigate and open files |
 | 🎵 **Music Control** | Search and play music |
 | 📊 **System Stats** | Monitor CPU, RAM, disk usage |
+| 🎤 **Audio Relay** | Stream audio between phone and PC |
+| 📷 **Camera Stream** | Stream PC camera to phone |
 
 ## Command Reference
 
@@ -79,8 +105,18 @@ Edit these values at the top of `jarvis_agent.py`:
 ```python
 DEVICE_NAME = "My PC"      # Name shown in dashboard
 UNLOCK_PIN = "1212"        # PIN for unlock feature
-POLL_INTERVAL = 2          # Seconds between checks
+POLL_INTERVAL = 0.5        # Seconds between checks
 ```
+
+## Connectivity Self-Test
+
+The agent automatically runs a connectivity self-test on startup that checks:
+1. ✅ DNS resolution of your backend hostname
+2. ✅ TCP connection to port 443
+3. ✅ TLS/SSL handshake
+4. ✅ Supabase REST API health
+
+If any test fails, you'll see specific remediation steps.
 
 ## Run at Startup
 
@@ -116,6 +152,8 @@ After=network.target
 Type=simple
 User=YOUR_USERNAME
 WorkingDirectory=/path/to/python-agent
+Environment="JARVIS_SUPABASE_URL=https://awklnptbdaxrebisufel.supabase.co"
+Environment="JARVIS_SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
 ExecStart=/usr/bin/python3 jarvis_agent.py
 Restart=always
 
@@ -133,8 +171,14 @@ sudo systemctl start jarvis
 ### "Missing dependency" error
 Install all required packages:
 ```bash
-pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip
+pip install supabase pyautogui pillow psutil keyboard pycaw comtypes screen-brightness-control pyperclip mss pyaudio opencv-python websockets
 ```
+
+### DNS Resolution Failed (Error 11001)
+- Check your internet connection
+- Disable VPN/proxy if active
+- Run `ipconfig /flushdns` (Windows) to clear DNS cache
+- Try changing DNS to 8.8.8.8 or 1.1.1.1
 
 ### Volume/brightness not working (Windows)
 Run the agent as Administrator.
@@ -148,7 +192,9 @@ Grant accessibility permissions:
 Grant screen recording permissions in System Preferences.
 
 ### Agent not connecting
-Check your internet connection and firewall settings.
+1. Run the connectivity self-test (automatic on startup)
+2. Check firewall settings
+3. Verify environment variables are set correctly
 
 ## Security Notes
 
