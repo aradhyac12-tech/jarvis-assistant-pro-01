@@ -3,8 +3,6 @@ import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -18,14 +16,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Volume2,
   VolumeX,
@@ -47,7 +37,10 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { supabase } from "@/integrations/supabase/client";
+import { BiometricUnlock } from "@/components/BiometricUnlock";
+import { MonitoringPanel } from "@/components/MonitoringPanel";
 
 const UNLOCK_PIN = "1212";
 
@@ -64,13 +57,12 @@ interface SystemStats {
 }
 
 export default function SystemControls() {
-  const [volume, setVolume] = useState(50);
-  const [brightness, setBrightness] = useState(75);
+  const { selectedDevice } = useDeviceContext();
+  const [volume, setVolume] = useState(selectedDevice?.current_volume ?? 50);
+  const [brightness, setBrightness] = useState(selectedDevice?.current_brightness ?? 75);
   const [isMuted, setIsMuted] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [showPinDialog, setShowPinDialog] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState(false);
   const [systemStats, setSystemStats] = useState<SystemStats>({});
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const { toast } = useToast();
@@ -170,32 +162,6 @@ export default function SystemControls() {
     setIsLocked(true);
     sendCommand("lock", {});
     toast({ title: "PC Locked", description: "Your PC has been locked" });
-  };
-
-  const handleUnlockAttempt = async () => {
-    if (pinInput !== UNLOCK_PIN) {
-      setPinError(true);
-      setPinInput("");
-      return;
-    }
-
-    setPinError(false);
-    setShowPinDialog(false);
-
-    const res = await sendCommand("unlock", { pin: UNLOCK_PIN }, { awaitResult: true, timeoutMs: 10000 });
-
-    if (res.success) {
-      setIsLocked(false);
-      toast({ title: "PC Unlocked", description: "Unlock completed" });
-    } else {
-      toast({
-        title: "Unlock failed",
-        description: typeof (res as any).error === "string" ? (res as any).error : "Check the PC lock screen",
-        variant: "destructive",
-      });
-    }
-
-    setPinInput("");
   };
 
   const handleBoost = async () => {
@@ -489,49 +455,13 @@ export default function SystemControls() {
             </Card>
           </div>
 
-          {/* PIN Dialog */}
-          <Dialog open={showPinDialog} onOpenChange={setShowPinDialog}>
-            <DialogContent className="glass-dark border-border/50 max-w-[90vw] sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  <Unlock className="h-5 w-5 text-primary" />
-                  Smart Unlock
-                </DialogTitle>
-                <DialogDescription>
-                  Enter your PIN to unlock. This will wake the screen and type the PIN.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="pin">PIN Code</Label>
-                  <Input
-                    id="pin"
-                    type="password"
-                    maxLength={4}
-                    placeholder="••••"
-                    value={pinInput}
-                    onChange={(e) => {
-                      setPinInput(e.target.value.replace(/\D/g, ""));
-                      setPinError(false);
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && handleUnlockAttempt()}
-                    className={cn("text-center text-2xl tracking-[0.5em]", pinError && "border-destructive")}
-                  />
-                  {pinError && (
-                    <p className="text-sm text-destructive">Incorrect PIN. Please try again.</p>
-                  )}
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="secondary" onClick={() => setShowPinDialog(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={handleUnlockAttempt} className="gradient-primary">
-                  Unlock
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          {/* Biometric Unlock Dialog */}
+          <BiometricUnlock
+            open={showPinDialog}
+            onOpenChange={setShowPinDialog}
+            onUnlockSuccess={() => setIsLocked(false)}
+            correctPin={UNLOCK_PIN}
+          />
         </div>
       </ScrollArea>
     </DashboardLayout>
