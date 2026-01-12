@@ -3,11 +3,11 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "@/hooks/useAuth";
+import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { Loader2 } from "lucide-react";
 
-import Auth from "./pages/Auth";
+import Pair from "./pages/Pair";
 import Dashboard from "./pages/Dashboard";
 import VoiceAI from "./pages/VoiceAI";
 import SystemControls from "./pages/SystemControls";
@@ -22,9 +22,9 @@ import NotFound from "./pages/NotFound";
 const queryClient = new QueryClient();
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { session, isLoading } = useDeviceSession();
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -32,8 +32,8 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!user) {
-    return <Navigate to="/auth" replace />;
+  if (!session) {
+    return <Navigate to="/pair" replace />;
   }
 
   return <>{children}</>;
@@ -42,7 +42,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/auth" element={<Auth />} />
+      <Route path="/pair" element={<Pair />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route
         path="/dashboard"
@@ -124,7 +124,7 @@ function AppRoutes() {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
-      <AuthProvider>
+      <DeviceSessionProvider>
         <DeviceProvider>
           <Toaster />
           <Sonner />
@@ -132,10 +132,9 @@ const App = () => (
             <AppRoutes />
           </BrowserRouter>
         </DeviceProvider>
-      </AuthProvider>
+      </DeviceSessionProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );
 
 export default App;
-

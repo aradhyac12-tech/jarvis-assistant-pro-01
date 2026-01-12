@@ -99,6 +99,38 @@ export type Database = {
           },
         ]
       }
+      device_sessions: {
+        Row: {
+          created_at: string
+          device_id: string
+          id: string
+          last_active: string
+          session_token: string
+        }
+        Insert: {
+          created_at?: string
+          device_id: string
+          id?: string
+          last_active?: string
+          session_token?: string
+        }
+        Update: {
+          created_at?: string
+          device_id?: string
+          id?: string
+          last_active?: string
+          session_token?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "device_sessions_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "devices"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       devices: {
         Row: {
           created_at: string
@@ -110,6 +142,8 @@ export type Database = {
           is_online: boolean
           last_seen: string | null
           name: string
+          pairing_code: string | null
+          pairing_expires_at: string | null
           system_info: Json | null
           updated_at: string
           user_id: string
@@ -124,6 +158,8 @@ export type Database = {
           is_online?: boolean
           last_seen?: string | null
           name?: string
+          pairing_code?: string | null
+          pairing_expires_at?: string | null
           system_info?: Json | null
           updated_at?: string
           user_id: string
@@ -138,6 +174,8 @@ export type Database = {
           is_online?: boolean
           last_seen?: string | null
           name?: string
+          pairing_code?: string | null
+          pairing_expires_at?: string | null
           system_info?: Json | null
           updated_at?: string
           user_id?: string

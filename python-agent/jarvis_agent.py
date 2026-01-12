@@ -53,7 +53,7 @@ import platform
 import ctypes
 import threading
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 import base64
 import io
@@ -173,8 +173,8 @@ else:
 # Or pass flags:
 #   python jarvis_agent.py --url https://... --key ...
 
-DEFAULT_JARVIS_URL = "https://awklnptbdaxrebisufel.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
+DEFAULT_JARVIS_URL = "https://wsqqfyqjwrnymptntoiu.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndzcXFmeXFqd3JueW1wdG50b2l1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgyNDEyMDIsImV4cCI6MjA4MzgxNzIwMn0.hZN_pZzJSUx_XgvYOsuLkUk6ihlnE3Ggkb_1JumvS-U"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1009,6 +1009,7 @@ class JarvisAgent:
     def __init__(self):
         self.device_id: Optional[str] = None
         self.device_key = self._generate_device_key()
+        self.pairing_code: Optional[str] = None
         self.is_locked = False
         self.running = True
         self.last_heartbeat = 0
@@ -1030,6 +1031,15 @@ class JarvisAgent:
         unique_string = f"{platform.node()}-{platform.machine()}-jarvis"
         return hashlib.sha256(unique_string.encode()).hexdigest()[:32]
     
+    def _generate_pairing_code(self) -> str:
+        """Generate a 6-character alphanumeric pairing code."""
+        import random
+        import string
+        chars = string.ascii_uppercase + string.digits
+        # Exclude confusing characters
+        chars = chars.replace('O', '').replace('0', '').replace('I', '').replace('1', '').replace('L', '')
+        return ''.join(random.choices(chars, k=6))
+    
     def _get_system_info(self) -> Dict[str, Any]:
         return {
             "os": platform.system(),
@@ -1047,6 +1057,10 @@ class JarvisAgent:
     async def register_device(self):
         add_log("info", "Registering device...", category="system")
         
+        # Generate a new pairing code
+        self.pairing_code = self._generate_pairing_code()
+        pairing_expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=30)
+        
         try:
             result = supabase.table("devices").select("*").eq("device_key", self.device_key).execute()
             
@@ -1060,6 +1074,8 @@ class JarvisAgent:
                     "current_volume": self._get_volume(),
                     "current_brightness": self._get_brightness(),
                     "is_locked": False,
+                    "pairing_code": self.pairing_code,
+                    "pairing_expires_at": pairing_expires.isoformat(),
                 }).eq("id", self.device_id).execute()
                 add_log("info", f"Device reconnected: {DEVICE_NAME}", category="system")
             else:
@@ -1071,6 +1087,8 @@ class JarvisAgent:
                     "system_info": self._get_system_info(),
                     "current_volume": self._get_volume(),
                     "current_brightness": self._get_brightness(),
+                    "pairing_code": self.pairing_code,
+                    "pairing_expires_at": pairing_expires.isoformat(),
                 }).execute()
                 self.device_id = result.data[0]["id"]
                 add_log("info", f"Device registered: {DEVICE_NAME}", category="system")
@@ -1079,12 +1097,34 @@ class JarvisAgent:
                 "connected": True,
                 "device_id": self.device_id,
                 "device_name": DEVICE_NAME,
+                "pairing_code": self.pairing_code,
             })
+            
+            # Display pairing code prominently
+            self._display_pairing_code()
             
             return self.device_id
         except Exception as e:
             add_log("error", f"Failed to register device: {e}", category="system")
             raise
+    
+    def _display_pairing_code(self):
+        """Display the pairing code prominently in the terminal."""
+        print("\n" + "=" * 50)
+        print("📱 PAIRING CODE")
+        print("=" * 50)
+        print()
+        print(f"   ╔═══════════════════════════════╗")
+        print(f"   ║                               ║")
+        print(f"   ║       {self.pairing_code}       ║")
+        print(f"   ║                               ║")
+        print(f"   ╚═══════════════════════════════╝")
+        print()
+        print("   Enter this code in the Jarvis web app")
+        print("   to connect to this PC.")
+        print()
+        print("   Code expires in 30 minutes.")
+        print("=" * 50 + "\n")
     
     def _get_volume(self) -> int:
         if platform.system() == "Windows":
