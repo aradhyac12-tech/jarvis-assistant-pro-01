@@ -11,10 +11,10 @@ SETUP INSTRUCTIONS:
 2. Install dependencies:
    python -m pip install -r requirements.txt
 
-3. Set environment variables (recommended) or pass --url/--key flags:
+3. (Optional) Override backend via env vars or flags:
    Windows CMD:
-     set JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co
-     set JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304
+     set JARVIS_SUPABASE_URL=https://YOUR_BACKEND_URL
+     set JARVIS_SUPABASE_KEY=YOUR_PUBLISHABLE_KEY
 
 4. Run the agent:
    python jarvis_agent.py
@@ -173,8 +173,8 @@ else:
 # Or pass flags:
 #   python jarvis_agent.py --url https://... --key ...
 
-DEFAULT_JARVIS_URL = "https://wxemscrgximbsrynoxzp.supabase.co"
-DEFAULT_JARVIS_KEY = "sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
+DEFAULT_JARVIS_URL = "https://awklnptbdaxrebisufel.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a2xucHRiZGF4cmViaXN1ZmVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc5MDM4MjQsImV4cCI6MjA4MzQ3OTgyNH0.972U9aLViprvMcaDHtuclA-RoXM293a_A_evlWv2nqE"
 
 
 def _parse_args() -> argparse.Namespace:

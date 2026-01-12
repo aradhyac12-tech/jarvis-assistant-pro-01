@@ -28,32 +28,28 @@ pip install supabase pyautogui pillow psutil keyboard pyperclip mss websockets
 sudo apt-get install python3-tk python3-dev scrot  # For GUI automation
 ```
 
-### 3. Set Environment Variables & Run
+### 3. Run
 
-**Windows (Command Prompt):**
-```cmd
-set JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co
-set JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304
-python jarvis_agent.py
-```
-
-**Windows (PowerShell):**
-```powershell
-$env:JARVIS_SUPABASE_URL="https://wxemscrgximbsrynoxzp.supabase.co"
-$env:JARVIS_SUPABASE_KEY="sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
-python jarvis_agent.py
-```
-
-**macOS/Linux:**
 ```bash
-export JARVIS_SUPABASE_URL="https://wxemscrgximbsrynoxzp.supabase.co"
-export JARVIS_SUPABASE_KEY="sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
 python jarvis_agent.py
 ```
 
-**One-liner (Windows CMD):**
+> The agent already includes the correct backend connection for this project.
+
+**Optional override (if you need to point the agent somewhere else):**
+
+- **Windows (Command Prompt):**
 ```cmd
-set JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co && set JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304 && python jarvis_agent.py
+set JARVIS_SUPABASE_URL=https://YOUR_BACKEND_URL
+set JARVIS_SUPABASE_KEY=YOUR_PUBLISHABLE_KEY
+python jarvis_agent.py
+```
+
+- **macOS/Linux:**
+```bash
+export JARVIS_SUPABASE_URL="https://YOUR_BACKEND_URL"
+export JARVIS_SUPABASE_KEY="YOUR_PUBLISHABLE_KEY"
+python jarvis_agent.py
 ```
 
 ### 4. Open the Dashboard
@@ -154,8 +150,8 @@ After=network.target
 Type=simple
 User=YOUR_USERNAME
 WorkingDirectory=/path/to/python-agent
-Environment="JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co"
-Environment="JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
+Environment="JARVIS_SUPABASE_URL=https://YOUR_BACKEND_URL"
+Environment="JARVIS_SUPABASE_KEY=YOUR_PUBLISHABLE_KEY"
 ExecStart=/usr/bin/python3 jarvis_agent.py
 Restart=always
 
