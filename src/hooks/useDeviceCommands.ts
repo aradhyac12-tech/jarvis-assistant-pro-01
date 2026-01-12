@@ -70,6 +70,16 @@ export function useDeviceCommands() {
   const sendCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, options?: SendCommandOptions) => {
       try {
+        // Must be logged in to send commands (RLS requires auth.uid() = user_id)
+        if (!user?.id) {
+          toast({
+            title: "Not Logged In",
+            description: "Please log in to control your PC.",
+            variant: "destructive",
+          });
+          return { success: false, error: "Not authenticated" } as const;
+        }
+
         // Use selected device from context, fallback to first online device
         let deviceId = selectedDevice?.id;
 
@@ -94,7 +104,7 @@ export function useDeviceCommands() {
           return { success: false, error: "No device connected" } as const;
         }
 
-        const userId = user?.id ?? crypto.randomUUID();
+        const userId = user.id;
 
         const { data, error } = await supabase
           .from("commands")
