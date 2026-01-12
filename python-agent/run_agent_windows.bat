@@ -13,9 +13,9 @@ echo   JARVIS Agent - Setup + Run
 echo ================================================
 echo.
 
-REM Configure backend connection (edit if needed)
-set "JARVIS_SUPABASE_URL=https://wxemscrgximbsrynoxzp.supabase.co"
-set "JARVIS_SUPABASE_KEY=sb_publishable_oM9g3ms-V7Wm9N3Xziv3wQ_udPmV304"
+REM Backend connection:
+REM - jarvis_agent.py ships with a default backend for this project.
+REM - To override, set JARVIS_SUPABASE_URL and JARVIS_SUPABASE_KEY before running this .bat.
 
 echo Using Python:
 where python
