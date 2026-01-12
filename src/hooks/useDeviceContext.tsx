@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
 
 interface Device {
   id: string;
@@ -22,17 +23,21 @@ interface DeviceContextType {
 const DeviceContext = createContext<DeviceContextType | undefined>(undefined);
 
 export function DeviceProvider({ children }: { children: ReactNode }) {
+  const { session } = useDeviceSession();
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchDevices = useCallback(async () => {
     try {
-      const { data, error } = await supabase
+      // If we have a session, prioritize the paired device
+      let query = supabase
         .from("devices")
         .select("id, name, is_online, last_seen, current_volume, current_brightness, system_info")
         .order("is_online", { ascending: false })
         .order("last_seen", { ascending: false });
+
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -43,17 +48,25 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
 
       setDevices(typedDevices);
 
-      // Auto-select first online device if none selected
-      if (!selectedDeviceId && typedDevices.length > 0) {
+      // Auto-select paired device from session, or first online device
+      if (!selectedDeviceId) {
+        if (session?.device_id) {
+          const pairedDevice = typedDevices.find((d) => d.id === session.device_id);
+          if (pairedDevice) {
+            setSelectedDeviceId(pairedDevice.id);
+            return;
+          }
+        }
+        
         const online = typedDevices.find((d) => d.is_online);
-        setSelectedDeviceId(online?.id ?? typedDevices[0].id);
+        setSelectedDeviceId(online?.id ?? typedDevices[0]?.id ?? null);
       }
     } catch (err) {
       console.error("Failed to fetch devices:", err);
     } finally {
       setIsLoading(false);
     }
-  }, [selectedDeviceId]);
+  }, [selectedDeviceId, session?.device_id]);
 
   useEffect(() => {
     fetchDevices();

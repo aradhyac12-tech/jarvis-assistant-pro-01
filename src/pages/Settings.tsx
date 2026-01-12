@@ -6,17 +6,29 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Settings2, User, Bell, Shield, Palette, Mic, Monitor, Link2, Check } from "lucide-react";
+import { Settings2, Bell, Shield, Mic, Monitor, Check, LogOut, Link2Off } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
+import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { useNavigate } from "react-router-dom";
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState("Hey Jarvis");
   const [unlockPin, setUnlockPin] = useState("1212");
   const [notifications, setNotifications] = useState(true);
   const { toast } = useToast();
+  const { session, unpair } = useDeviceSession();
+  const { selectedDevice } = useDeviceContext();
+  const navigate = useNavigate();
 
   const handleSave = () => {
     toast({ title: "Settings Saved", description: "Your preferences have been updated" });
+  };
+
+  const handleUnpair = () => {
+    unpair();
+    toast({ title: "Device Unpaired", description: "You've been disconnected from your PC" });
+    navigate("/pair", { replace: true });
   };
 
   return (
@@ -58,17 +70,36 @@ export default function Settings() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Monitor className="h-5 w-5 text-primary" />Device Connection</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
               <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/30">
                 <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-neon-green animate-pulse" />
+                  <div className={`w-3 h-3 rounded-full ${selectedDevice?.is_online ? 'bg-neon-green animate-pulse' : 'bg-muted-foreground'}`} />
                   <div>
-                    <p className="font-medium">My PC</p>
-                    <p className="text-sm text-muted-foreground">Connected via Python Agent</p>
+                    <p className="font-medium">{selectedDevice?.name || session?.device_name || "My PC"}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {selectedDevice?.is_online ? "Connected via Python Agent" : "Offline"}
+                    </p>
                   </div>
                 </div>
-                <Badge className="bg-neon-green/10 text-neon-green border-neon-green/30">Online</Badge>
+                <Badge className={selectedDevice?.is_online 
+                  ? "bg-neon-green/10 text-neon-green border-neon-green/30" 
+                  : "bg-muted/10 text-muted-foreground border-muted/30"
+                }>
+                  {selectedDevice?.is_online ? "Online" : "Offline"}
+                </Badge>
               </div>
+              
+              <Button 
+                variant="destructive" 
+                className="w-full" 
+                onClick={handleUnpair}
+              >
+                <Link2Off className="h-4 w-4 mr-2" />
+                Unpair Device
+              </Button>
+              <p className="text-xs text-muted-foreground text-center">
+                This will disconnect your phone from this PC. You'll need to pair again.
+              </p>
             </CardContent>
           </Card>
 

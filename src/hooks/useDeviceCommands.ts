@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth } from "@/hooks/useAuth";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import type { Json } from "@/integrations/supabase/types";
 
@@ -22,7 +22,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function useDeviceCommands() {
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { session } = useDeviceSession();
   const { selectedDevice } = useDeviceContext();
 
   const waitForCommandResult = useCallback(
@@ -70,18 +70,8 @@ export function useDeviceCommands() {
   const sendCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, options?: SendCommandOptions) => {
       try {
-        // Must be logged in to send commands (RLS requires auth.uid() = user_id)
-        if (!user?.id) {
-          toast({
-            title: "Not Logged In",
-            description: "Please log in to control your PC.",
-            variant: "destructive",
-          });
-          return { success: false, error: "Not authenticated" } as const;
-        }
-
-        // Use selected device from context, fallback to first online device
-        let deviceId = selectedDevice?.id;
+        // Use device from session or selected device
+        let deviceId = selectedDevice?.id || session?.device_id;
 
         if (!deviceId) {
           // Fallback: Get the first online device
@@ -98,13 +88,14 @@ export function useDeviceCommands() {
         if (!deviceId) {
           toast({
             title: "No Device Connected",
-            description: "Please run the PC agent first.",
+            description: "Please run the PC agent and pair it first.",
             variant: "destructive",
           });
           return { success: false, error: "No device connected" } as const;
         }
 
-        const userId = user.id;
+        // Generate a placeholder user_id (required by schema but not used for auth)
+        const placeholderUserId = session?.device_id || deviceId;
 
         const { data, error } = await supabase
           .from("commands")
@@ -114,7 +105,7 @@ export function useDeviceCommands() {
               command_type: commandType,
               payload: payload as Json,
               status: "pending",
-              user_id: userId,
+              user_id: placeholderUserId,
             },
           ])
           .select("id")
@@ -141,7 +132,7 @@ export function useDeviceCommands() {
         return { success: false, error } as const;
       }
     },
-    [toast, user?.id, waitForCommandResult, selectedDevice]
+    [toast, session, waitForCommandResult, selectedDevice]
   );
 
   return { sendCommand };
