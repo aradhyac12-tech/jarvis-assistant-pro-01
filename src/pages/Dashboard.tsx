@@ -27,17 +27,20 @@ import {
   Settings2,
   Zap,
   Share2,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "react-router-dom";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceSelector } from "@/components/DeviceSelector";
 import { CommandCenter } from "@/components/CommandCenter";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 
 export default function Dashboard() {
   const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
+  const { deviceInfo, isReconnecting, session } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
   const { toast } = useToast();
   const [systemStats, setSystemStats] = useState<Record<string, unknown> | null>(null);
@@ -102,23 +105,37 @@ export default function Dashboard() {
           {/* Connection Status Bar */}
           <Card className={cn(
             "glass-dark border-2 transition-all",
-            isConnected ? "border-neon-green/50 bg-neon-green/5" : "border-destructive/50 bg-destructive/5"
+            isConnected ? "border-neon-green/50 bg-neon-green/5" : 
+            isReconnecting ? "border-neon-orange/50 bg-neon-orange/5" : 
+            "border-destructive/50 bg-destructive/5"
           )}>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <div className={cn(
                     "w-12 h-12 rounded-xl flex items-center justify-center",
-                    isConnected ? "bg-neon-green/20" : "bg-destructive/20"
+                    isConnected ? "bg-neon-green/20" : 
+                    isReconnecting ? "bg-neon-orange/20" : 
+                    "bg-destructive/20"
                   )}>
-                    {isConnected ? <Wifi className="h-6 w-6 text-neon-green" /> : <WifiOff className="h-6 w-6 text-destructive" />}
+                    {isReconnecting ? (
+                      <Loader2 className="h-6 w-6 text-neon-orange animate-spin" />
+                    ) : isConnected ? (
+                      <Wifi className="h-6 w-6 text-neon-green" />
+                    ) : (
+                      <WifiOff className="h-6 w-6 text-destructive" />
+                    )}
                   </div>
                   <div>
-                    <h3 className="font-semibold">{isConnected ? "PC Connected" : "PC Offline"}</h3>
+                    <h3 className="font-semibold">
+                      {isReconnecting ? "Reconnecting..." : isConnected ? "PC Connected" : "PC Offline"}
+                    </h3>
                     <p className="text-sm text-muted-foreground">
-                      {isConnected 
-                        ? `Last seen: ${selectedDevice?.last_seen ? new Date(selectedDevice.last_seen).toLocaleTimeString() : 'Just now'}`
-                        : "Run the Python agent on your PC"}
+                      {isReconnecting 
+                        ? "Waiting for PC to come back online"
+                        : isConnected 
+                          ? `Last seen: ${selectedDevice?.last_seen ? new Date(selectedDevice.last_seen).toLocaleTimeString() : 'Just now'}`
+                          : "Run the Python agent on your PC"}
                     </p>
                   </div>
                 </div>
@@ -137,11 +154,18 @@ export default function Dashboard() {
                       "gap-2 px-4 py-2",
                       isConnected
                         ? "border-neon-green/50 text-neon-green bg-neon-green/10"
-                        : "border-destructive/50 text-destructive bg-destructive/10"
+                        : isReconnecting
+                          ? "border-neon-orange/50 text-neon-orange bg-neon-orange/10"
+                          : "border-destructive/50 text-destructive bg-destructive/10"
                     )}
                   >
-                    <span className={cn("w-2 h-2 rounded-full", isConnected ? "bg-neon-green animate-pulse" : "bg-destructive")} />
-                    {isConnected ? "Online" : "Offline"}
+                    <span className={cn(
+                      "w-2 h-2 rounded-full", 
+                      isConnected ? "bg-neon-green animate-pulse" : 
+                      isReconnecting ? "bg-neon-orange animate-pulse" : 
+                      "bg-destructive"
+                    )} />
+                    {isReconnecting ? "Reconnecting" : isConnected ? "Online" : "Offline"}
                   </Badge>
                 </div>
               </div>

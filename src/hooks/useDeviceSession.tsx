@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 interface DeviceSession {
@@ -8,22 +8,98 @@ interface DeviceSession {
   device_name?: string;
 }
 
+interface DeviceInfo {
+  id: string;
+  name: string;
+  is_online: boolean;
+  last_seen: string | null;
+}
+
 interface DeviceSessionContextType {
   session: DeviceSession | null;
+  deviceInfo: DeviceInfo | null;
   isLoading: boolean;
+  isReconnecting: boolean;
   error: string | null;
   pairDevice: (pairingCode: string) => Promise<{ success: boolean; error?: string }>;
   unpair: () => void;
+  refreshDeviceInfo: () => Promise<void>;
 }
 
 const DeviceSessionContext = createContext<DeviceSessionContextType | undefined>(undefined);
 
 const SESSION_KEY = "jarvis_device_session";
+const RECONNECT_INTERVAL = 5000; // Check device status every 5 seconds
 
 export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<DeviceSession | null>(null);
+  const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch device info
+  const fetchDeviceInfo = useCallback(async (deviceId: string): Promise<DeviceInfo | null> => {
+    try {
+      const { data, error } = await supabase
+        .from("devices")
+        .select("id, name, is_online, last_seen")
+        .eq("id", deviceId)
+        .maybeSingle();
+
+      if (error || !data) return null;
+      return data as DeviceInfo;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Refresh device info
+  const refreshDeviceInfo = useCallback(async () => {
+    if (!session) return;
+    const info = await fetchDeviceInfo(session.device_id);
+    if (info) {
+      setDeviceInfo(info);
+    }
+  }, [session, fetchDeviceInfo]);
+
+  // Auto-reconnect: periodically check device status
+  useEffect(() => {
+    if (!session) {
+      if (reconnectTimerRef.current) {
+        clearInterval(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      return;
+    }
+
+    const checkConnection = async () => {
+      const info = await fetchDeviceInfo(session.device_id);
+      if (info) {
+        setDeviceInfo(info);
+        setIsReconnecting(!info.is_online);
+      } else {
+        // Device was deleted - clear session
+        localStorage.removeItem(SESSION_KEY);
+        setSession(null);
+        setDeviceInfo(null);
+      }
+    };
+
+    // Initial check
+    checkConnection();
+
+    // Set up periodic checks
+    reconnectTimerRef.current = setInterval(checkConnection, RECONNECT_INTERVAL);
+
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearInterval(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  }, [session, fetchDeviceInfo]);
 
   // Load session from localStorage on mount
   useEffect(() => {
@@ -126,16 +202,22 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         device_name: device.name,
       };
 
-      // Store in localStorage
+      // Store in localStorage (persists across sessions)
       localStorage.setItem(SESSION_KEY, JSON.stringify(newSession));
       setSession(newSession);
+
+      // Fetch initial device info
+      const info = await fetchDeviceInfo(device.id);
+      if (info) {
+        setDeviceInfo(info);
+      }
 
       return { success: true };
     } catch (err) {
       console.error("Pairing error:", err);
       return { success: false, error: "Pairing failed. Please try again." };
     }
-  }, []);
+  }, [fetchDeviceInfo]);
 
   const unpair = useCallback(() => {
     if (session) {
@@ -150,10 +232,22 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     }
     localStorage.removeItem(SESSION_KEY);
     setSession(null);
+    setDeviceInfo(null);
   }, [session]);
 
   return (
-    <DeviceSessionContext.Provider value={{ session, isLoading, error, pairDevice, unpair }}>
+    <DeviceSessionContext.Provider 
+      value={{ 
+        session, 
+        deviceInfo,
+        isLoading, 
+        isReconnecting,
+        error, 
+        pairDevice, 
+        unpair,
+        refreshDeviceInfo 
+      }}
+    >
       {children}
     </DeviceSessionContext.Provider>
   );
