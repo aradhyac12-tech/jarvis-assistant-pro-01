@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { Bot, Loader2, CheckCircle, Smartphone, Monitor, ArrowRight } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Bot, Loader2, CheckCircle, Smartphone, Monitor, ArrowRight, QrCode } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -9,9 +9,11 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 
 export default function Pair() {
+  const [searchParams] = useSearchParams();
   const [pairingCode, setPairingCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [autoPairing, setAutoPairing] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
   const { session, isLoading: sessionLoading, pairDevice } = useDeviceSession();
@@ -26,6 +28,31 @@ export default function Pair() {
       navigate("/dashboard", { replace: true });
     }
   }, [session, sessionLoading, navigate]);
+
+  // Auto-pair if code is in URL (from QR scan)
+  useEffect(() => {
+    const codeFromUrl = searchParams.get("code");
+    if (codeFromUrl && !session && !sessionLoading && !autoPairing) {
+      setAutoPairing(true);
+      setPairingCode(codeFromUrl.toUpperCase());
+      handleAutoPair(codeFromUrl);
+    }
+  }, [searchParams, session, sessionLoading, autoPairing]);
+
+  const handleAutoPair = async (code: string) => {
+    setIsLoading(true);
+    const result = await pairDevice(code);
+    
+    if (result.success) {
+      setSuccess(true);
+      toast({ title: "Device Paired!", description: "Your PC is now connected to JARVIS" });
+      setTimeout(() => navigate("/dashboard", { replace: true }), 1000);
+    } else {
+      toast({ title: "Pairing Failed", description: result.error, variant: "destructive" });
+      setIsLoading(false);
+      setAutoPairing(false);
+    }
+  };
 
   const handlePair = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,6 +96,8 @@ export default function Pair() {
           <div className={`mx-auto w-20 h-20 rounded-2xl gradient-primary flex items-center justify-center transition-all duration-300 ${success ? 'scale-110' : 'pulse-neon'}`}>
             {success ? (
               <CheckCircle className="w-12 h-12 text-primary-foreground animate-scale-in" />
+            ) : autoPairing ? (
+              <Loader2 className="w-12 h-12 text-primary-foreground animate-spin" />
             ) : (
               <Bot className="w-12 h-12 text-primary-foreground" />
             )}
@@ -76,7 +105,7 @@ export default function Pair() {
           <div>
             <CardTitle className="text-4xl font-bold neon-text tracking-wider">JARVIS</CardTitle>
             <CardDescription className="text-muted-foreground mt-2">
-              {success ? "Device paired successfully!" : "Connect to your PC"}
+              {success ? "Device paired successfully!" : autoPairing ? "Connecting to your PC..." : "Connect to your PC"}
             </CardDescription>
           </div>
         </CardHeader>
@@ -98,24 +127,30 @@ export default function Pair() {
             
             <div className="flex items-start gap-3">
               <div className="w-8 h-8 rounded-lg bg-neon-purple/20 flex items-center justify-center shrink-0">
-                <span className="text-neon-purple font-bold text-sm">2</span>
+                <QrCode className="w-4 h-4 text-neon-purple" />
               </div>
               <div>
-                <p className="font-medium text-sm">Find the pairing code</p>
+                <p className="font-medium text-sm">Scan the QR code</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Look for the 6-character code shown in the terminal
+                  Use your phone camera to scan and connect instantly
                 </p>
               </div>
             </div>
             
+            <div className="flex items-center gap-3 px-2">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-xs text-muted-foreground">or</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+            
             <div className="flex items-start gap-3">
               <div className="w-8 h-8 rounded-lg bg-neon-green/20 flex items-center justify-center shrink-0">
-                <span className="text-neon-green font-bold text-sm">3</span>
+                <span className="text-neon-green font-bold text-sm">2</span>
               </div>
               <div>
-                <p className="font-medium text-sm">Enter the code below</p>
+                <p className="font-medium text-sm">Enter the 6-digit code</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  You'll be connected instantly
+                  Type the code shown in the terminal below
                 </p>
               </div>
             </div>
@@ -163,11 +198,11 @@ export default function Pair() {
 
           <div className="text-center space-y-2">
             <p className="text-xs text-muted-foreground">
-              No account needed — your device is your key
+              One-time pairing — stays connected until you unpair
             </p>
             <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground/70">
               <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
-              Secure local pairing
+              Works from any network worldwide
             </div>
           </div>
         </CardContent>

@@ -1109,22 +1109,54 @@ class JarvisAgent:
             raise
     
     def _display_pairing_code(self):
-        """Display the pairing code prominently in the terminal."""
-        print("\n" + "=" * 50)
-        print("📱 PAIRING CODE")
-        print("=" * 50)
+        """Display the pairing code and QR code prominently in the terminal."""
+        # Build the pairing URL
+        pairing_url = f"https://id-preview--5180be14-f8e1-4c76-8ab6-e25e14788931.lovable.app/pair?code={self.pairing_code}"
+        
+        print("\n" + "=" * 60)
+        print("📱 SCAN QR CODE OR ENTER CODE TO PAIR")
+        print("=" * 60)
+        
+        # Try to display QR code in terminal
+        try:
+            import qrcode
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=1,
+                border=1,
+            )
+            qr.add_data(pairing_url)
+            qr.make(fit=True)
+            
+            # Print QR code using Unicode blocks
+            qr_matrix = qr.get_matrix()
+            print()
+            for row in qr_matrix:
+                line = "  "
+                for cell in row:
+                    line += "██" if cell else "  "
+                print(line)
+            print()
+        except ImportError:
+            print("\n⚠️  Install 'qrcode' for QR display: pip install qrcode")
+            print()
+        except Exception as e:
+            print(f"\n⚠️  QR display error: {e}")
+            print()
+        
+        print(f"   ╔═══════════════════════════════════╗")
+        print(f"   ║                                   ║")
+        print(f"   ║   PAIRING CODE:   {self.pairing_code}   ║")
+        print(f"   ║                                   ║")
+        print(f"   ╚═══════════════════════════════════╝")
         print()
-        print(f"   ╔═══════════════════════════════╗")
-        print(f"   ║                               ║")
-        print(f"   ║       {self.pairing_code}       ║")
-        print(f"   ║                               ║")
-        print(f"   ╚═══════════════════════════════╝")
+        print("   📱 Scan the QR code with your phone camera")
+        print("   🔗 Or open this URL:")
+        print(f"      {pairing_url}")
         print()
-        print("   Enter this code in the Jarvis web app")
-        print("   to connect to this PC.")
-        print()
-        print("   Code expires in 30 minutes.")
-        print("=" * 50 + "\n")
+        print("   ⏱️  Code expires in 30 minutes")
+        print("=" * 60 + "\n")
     
     def _get_volume(self) -> int:
         if platform.system() == "Windows":
