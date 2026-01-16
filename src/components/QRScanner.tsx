@@ -12,18 +12,31 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
   const [isStarting, setIsStarting] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
-  const isRunningRef = useRef(false);
   const hasScannedRef = useRef(false);
 
   const stopScanner = useCallback(async () => {
-    if (scannerRef.current && isRunningRef.current) {
-      isRunningRef.current = false;
-      try {
-        await scannerRef.current.stop();
-      } catch (err) {
-        // Ignore errors when stopping - scanner may already be stopped
-        console.debug("Scanner stop:", err);
+    const scanner = scannerRef.current;
+    if (!scanner) return;
+
+    try {
+      // html5-qrcode throws a string when stop is called in an invalid state.
+      // Guard with getState() when available (SCANNING=2, PAUSED=3).
+      const state = typeof (scanner as any).getState === "function" ? (scanner as any).getState() : undefined;
+      const canStop = state === 2 || state === 3 || (scanner as any).isScanning === true;
+
+      if (canStop) {
+        await scanner.stop();
       }
+    } catch (err) {
+      // Swallow stop errors - this is the specific crash users see.
+      console.debug("QR stop ignored:", err);
+    }
+
+    try {
+      // Clear camera element / internal resources when supported.
+      await (scanner as any).clear?.();
+    } catch {
+      // ignore
     }
   }, []);
 
@@ -69,11 +82,10 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
         );
 
         if (mounted) {
-          isRunningRef.current = true;
           setIsStarting(false);
         } else {
-          // Component unmounted during start, stop immediately
-          await scanner.stop().catch(() => {});
+          // Component unmounted during start
+          await stopScanner();
         }
       } catch (err) {
         console.error("Scanner error:", err);
