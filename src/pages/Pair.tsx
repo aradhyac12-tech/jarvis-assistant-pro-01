@@ -1,21 +1,25 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Bot, Loader2, CheckCircle, Smartphone, Monitor, ArrowRight, QrCode, ScanLine } from "lucide-react";
+import { Bot, Loader2, CheckCircle, Smartphone, Monitor, ArrowRight, QrCode, ScanLine, Key } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { QRScanner } from "@/components/QRScanner";
+import { supabase } from "@/integrations/supabase/client";
 
 export default function Pair() {
   const [searchParams] = useSearchParams();
   const [pairingCode, setPairingCode] = useState("");
+  const [devicePin, setDevicePin] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [autoPairing, setAutoPairing] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [pairingMethod, setPairingMethod] = useState<"qr" | "pin">("qr");
   const navigate = useNavigate();
   const { toast } = useToast();
   const { session, isLoading: sessionLoading, pairDevice } = useDeviceSession();
@@ -76,6 +80,60 @@ export default function Pair() {
     }
   };
 
+  // PIN-based pairing - finds device by unique PIN
+  const handlePinPair = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!devicePin.trim() || devicePin.length < 4) {
+      toast({ title: "Invalid PIN", description: "Please enter a valid 4+ digit PIN", variant: "destructive" });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      // Look for device with matching device_key (used as PIN)
+      const { data: devices, error } = await supabase
+        .from("devices")
+        .select("id, name, device_key")
+        .eq("device_key", devicePin)
+        .limit(1);
+
+      if (error) throw error;
+      
+      if (!devices || devices.length === 0) {
+        toast({ title: "Device Not Found", description: "No device found with this PIN. Make sure the agent is running.", variant: "destructive" });
+        setIsLoading(false);
+        return;
+      }
+
+      // Create session for this device
+      const device = devices[0];
+      const { data: sessionData, error: sessionError } = await supabase
+        .from("device_sessions")
+        .insert({ device_id: device.id })
+        .select("session_token")
+        .single();
+
+      if (sessionError) throw sessionError;
+
+      // Store session in localStorage
+      localStorage.setItem("jarvis_session", JSON.stringify({
+        session_token: sessionData.session_token,
+        device_id: device.id,
+        device_name: device.name,
+      }));
+
+      setSuccess(true);
+      toast({ title: "Device Paired!", description: `Connected to ${device.name}` });
+      setTimeout(() => {
+        window.location.href = "/dashboard";
+      }, 1000);
+    } catch (err) {
+      console.error("PIN pairing error:", err);
+      toast({ title: "Pairing Failed", description: "Could not pair with device", variant: "destructive" });
+      setIsLoading(false);
+    }
+  };
+
   const handleScanResult = (code: string) => {
     setShowScanner(false);
     setPairingCode(code);
@@ -129,88 +187,140 @@ export default function Pair() {
           </CardHeader>
 
           <CardContent className="pb-8 space-y-6">
-            {/* Scan QR Button - Primary Action */}
-            <Button 
-              onClick={() => setShowScanner(true)}
-              className="w-full h-14 text-lg gradient-primary gap-3"
-              disabled={isLoading || success}
-            >
-              <ScanLine className="w-6 h-6" />
-              Scan QR Code
-            </Button>
+            <Tabs defaultValue="qr" className="w-full" onValueChange={(v) => setPairingMethod(v as "qr" | "pin")}>
+              <TabsList className="grid w-full grid-cols-2 mb-4">
+                <TabsTrigger value="qr" className="gap-2">
+                  <ScanLine className="w-4 h-4" />
+                  QR / Code
+                </TabsTrigger>
+                <TabsTrigger value="pin" className="gap-2">
+                  <Key className="w-4 h-4" />
+                  Device PIN
+                </TabsTrigger>
+              </TabsList>
 
-            <div className="flex items-center gap-3">
-              <div className="flex-1 h-px bg-border" />
-              <span className="text-xs text-muted-foreground">or enter code manually</span>
-              <div className="flex-1 h-px bg-border" />
-            </div>
-
-            {/* Instructions */}
-            <div className="space-y-3 p-4 rounded-xl bg-secondary/30 border border-border/50">
-              <div className="flex items-start gap-3">
-                <div className="w-7 h-7 rounded-lg bg-neon-blue/20 flex items-center justify-center shrink-0">
-                  <span className="text-neon-blue font-bold text-xs">1</span>
-                </div>
-                <div>
-                  <p className="font-medium text-sm">Run on your PC</p>
-                  <code className="text-xs bg-secondary px-1.5 py-0.5 rounded text-muted-foreground">python jarvis_agent.py</code>
-                </div>
-              </div>
-              
-              <div className="flex items-start gap-3">
-                <div className="w-7 h-7 rounded-lg bg-neon-purple/20 flex items-center justify-center shrink-0">
-                  <QrCode className="w-3.5 h-3.5 text-neon-purple" />
-                </div>
-                <div>
-                  <p className="font-medium text-sm">Scan the QR or copy the code</p>
-                  <p className="text-xs text-muted-foreground">Shown in the terminal window</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Pairing Form */}
-            <form onSubmit={handlePair} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="pairing-code" className="flex items-center gap-2 text-sm">
-                  <Smartphone className="w-3.5 h-3.5" />
-                  <ArrowRight className="w-2.5 h-2.5 text-muted-foreground" />
-                  <Monitor className="w-3.5 h-3.5" />
-                  <span className="ml-1">Pairing Code</span>
-                </Label>
-                <Input
-                  id="pairing-code"
-                  type="text"
-                  placeholder="ABC123"
-                  value={pairingCode}
-                  onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
-                  className="text-center text-2xl font-mono tracking-[0.5em] uppercase h-14"
-                  maxLength={6}
+              <TabsContent value="qr" className="space-y-4 mt-0">
+                {/* Scan QR Button - Primary Action */}
+                <Button 
+                  onClick={() => setShowScanner(true)}
+                  className="w-full h-14 text-lg gradient-primary gap-3"
                   disabled={isLoading || success}
-                  autoComplete="off"
-                />
-              </div>
+                >
+                  <ScanLine className="w-6 h-6" />
+                  Scan QR Code
+                </Button>
 
-              <Button 
-                type="submit" 
-                variant="outline" 
-                className="w-full" 
-                disabled={isLoading || success || pairingCode.length < 4}
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Connecting...
-                  </>
-                ) : success ? (
-                  <>
-                    <CheckCircle className="w-4 h-4 mr-2" />
-                    Connected!
-                  </>
-                ) : (
-                  "Connect"
-                )}
-              </Button>
-            </form>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-px bg-border" />
+                  <span className="text-xs text-muted-foreground">or enter code manually</span>
+                  <div className="flex-1 h-px bg-border" />
+                </div>
+
+                {/* Pairing Form */}
+                <form onSubmit={handlePair} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="pairing-code" className="flex items-center gap-2 text-sm">
+                      <Smartphone className="w-3.5 h-3.5" />
+                      <ArrowRight className="w-2.5 h-2.5 text-muted-foreground" />
+                      <Monitor className="w-3.5 h-3.5" />
+                      <span className="ml-1">Pairing Code</span>
+                    </Label>
+                    <Input
+                      id="pairing-code"
+                      type="text"
+                      placeholder="ABC123"
+                      value={pairingCode}
+                      onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
+                      className="text-center text-2xl font-mono tracking-[0.5em] uppercase h-14"
+                      maxLength={6}
+                      disabled={isLoading || success}
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <Button 
+                    type="submit" 
+                    variant="outline" 
+                    className="w-full" 
+                    disabled={isLoading || success || pairingCode.length < 4}
+                  >
+                    {isLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Connecting...
+                      </>
+                    ) : success ? (
+                      <>
+                        <CheckCircle className="w-4 h-4 mr-2" />
+                        Connected!
+                      </>
+                    ) : (
+                      "Connect"
+                    )}
+                  </Button>
+                </form>
+              </TabsContent>
+
+              <TabsContent value="pin" className="space-y-4 mt-0">
+                <div className="space-y-3 p-4 rounded-xl bg-secondary/30 border border-border/50">
+                  <div className="flex items-start gap-3">
+                    <div className="w-7 h-7 rounded-lg bg-neon-green/20 flex items-center justify-center shrink-0">
+                      <Key className="w-3.5 h-3.5 text-neon-green" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-sm">Your Device PIN</p>
+                      <p className="text-xs text-muted-foreground">Set in the Python agent config or shown in terminal</p>
+                    </div>
+                  </div>
+                </div>
+
+                <form onSubmit={handlePinPair} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="device-pin" className="flex items-center gap-2 text-sm">
+                      <Key className="w-3.5 h-3.5" />
+                      <span className="ml-1">Device PIN</span>
+                    </Label>
+                    <Input
+                      id="device-pin"
+                      type="password"
+                      placeholder="••••••••"
+                      value={devicePin}
+                      onChange={(e) => setDevicePin(e.target.value)}
+                      className="text-center text-2xl font-mono tracking-[0.3em] h-14"
+                      disabled={isLoading || success}
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <Button 
+                    type="submit" 
+                    className="w-full gradient-primary" 
+                    disabled={isLoading || success || devicePin.length < 4}
+                  >
+                    {isLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Connecting...
+                      </>
+                    ) : success ? (
+                      <>
+                        <CheckCircle className="w-4 h-4 mr-2" />
+                        Connected!
+                      </>
+                    ) : (
+                      <>
+                        <Key className="w-4 h-4 mr-2" />
+                        Connect with PIN
+                      </>
+                    )}
+                  </Button>
+                </form>
+
+                <p className="text-xs text-muted-foreground text-center">
+                  PIN pairing remembers your device permanently
+                </p>
+              </TabsContent>
+            </Tabs>
 
             <div className="text-center space-y-2">
               <p className="text-xs text-muted-foreground">

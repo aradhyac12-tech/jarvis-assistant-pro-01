@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { addLog } from "@/components/IssueLog";
 import type { Json } from "@/integrations/supabase/types";
 
 type SendCommandOptions = {
@@ -69,6 +70,8 @@ export function useDeviceCommands() {
 
   const sendCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, options?: SendCommandOptions) => {
+      const startTime = Date.now();
+      
       try {
         // Use device from session or selected device
         let deviceId = selectedDevice?.id || session?.device_id;
@@ -86,16 +89,20 @@ export function useDeviceCommands() {
         }
 
         if (!deviceId) {
+          const errorMsg = "No device connected";
+          addLog("error", "web", `Command "${commandType}" failed: ${errorMsg}`);
           toast({
             title: "No Device Connected",
             description: "Please run the PC agent and pair it first.",
             variant: "destructive",
           });
-          return { success: false, error: "No device connected" } as const;
+          return { success: false, error: errorMsg } as const;
         }
 
         // Generate a placeholder user_id (required by schema but not used for auth)
         const placeholderUserId = session?.device_id || deviceId;
+
+        addLog("info", "web", `Sending command: ${commandType}`, JSON.stringify(payload).slice(0, 100));
 
         const { data, error } = await supabase
           .from("commands")
@@ -117,12 +124,23 @@ export function useDeviceCommands() {
         console.log(`Command sent: ${commandType}`, { payload, commandId, deviceId });
 
         if (!commandId || !options?.awaitResult) {
+          addLog("info", "web", `Command "${commandType}" queued`, `ID: ${commandId}`);
           return { success: true, commandId } as const;
         }
 
         const awaited = await waitForCommandResult(commandId, options);
+        const duration = Date.now() - startTime;
+        
+        if (awaited.success) {
+          addLog("info", "web", `Command "${commandType}" completed in ${duration}ms`);
+        } else {
+          addLog("error", "web", `Command "${commandType}" failed after ${duration}ms`, awaited.error as string);
+        }
+        
         return { ...awaited, commandId } as const;
       } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        addLog("error", "web", `Command "${commandType}" error: ${errorMsg}`);
         console.error("Error sending command:", error);
         toast({
           title: "Command Failed",
