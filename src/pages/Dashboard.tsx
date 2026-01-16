@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -36,7 +36,10 @@ import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceSelector } from "@/components/DeviceSelector";
 import { CommandCenter } from "@/components/CommandCenter";
+import { MonitoringPanel } from "@/components/MonitoringPanel";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { supabase } from "@/integrations/supabase/client";
+import { addLog } from "@/components/IssueLog";
 
 export default function Dashboard() {
   const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
@@ -44,24 +47,57 @@ export default function Dashboard() {
   const { sendCommand } = useDeviceCommands();
   const { toast } = useToast();
   const [systemStats, setSystemStats] = useState<Record<string, unknown> | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const isConnected = selectedDevice?.is_online || false;
   const volume = selectedDevice?.current_volume || 0;
   const brightness = selectedDevice?.current_brightness || 0;
 
-  // Fetch system stats on load
+  // Fetch system stats on load and when device comes online
+  const fetchSystemStats = useCallback(async () => {
+    if (!selectedDevice?.is_online) return;
+    
+    setIsRefreshing(true);
+    const result = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 5000 });
+    if (result && 'result' in result && result.result?.success) {
+      setSystemStats(result.result as Record<string, unknown>);
+      addLog("info", "web", "System stats updated");
+    }
+    setIsRefreshing(false);
+  }, [selectedDevice?.is_online, sendCommand]);
+
   useEffect(() => {
     if (selectedDevice?.is_online) {
       fetchSystemStats();
     }
-  }, [selectedDevice]);
+  }, [selectedDevice?.is_online, fetchSystemStats]);
 
-  const fetchSystemStats = async () => {
-    const result = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 5000 });
-    if (result && 'result' in result && result.result?.success) {
-      setSystemStats(result.result as Record<string, unknown>);
-    }
-  };
+  // Subscribe to realtime device updates for instant status
+  useEffect(() => {
+    if (!selectedDevice?.id) return;
+
+    const channel = supabase
+      .channel(`device-status-${selectedDevice.id}`)
+      .on(
+        "postgres_changes",
+        { 
+          event: "UPDATE", 
+          schema: "public", 
+          table: "devices",
+          filter: `id=eq.${selectedDevice.id}`
+        },
+        (payload) => {
+          const updated = payload.new as any;
+          addLog("info", "web", "Device status updated", 
+            `Volume: ${updated.current_volume}%, Brightness: ${updated.current_brightness}%`);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [selectedDevice?.id]);
 
   const quickActions = [
     { title: "Voice AI", description: "Talk to Jarvis", icon: Mic, href: "/voice", color: "text-neon-green", bgColor: "bg-neon-green/10" },
@@ -91,13 +127,15 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <DeviceSelector />
+              <MonitoringPanel compact className="hidden md:flex" />
               <Button
                 variant="outline"
                 size="icon"
                 onClick={() => { refreshDevices(); fetchSystemStats(); }}
                 className="border-border/50"
+                disabled={isRefreshing}
               >
-                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                <RefreshCw className={cn("h-4 w-4", (loading || isRefreshing) && "animate-spin")} />
               </Button>
             </div>
           </div>
