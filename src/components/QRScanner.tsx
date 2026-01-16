@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Html5Qrcode } from "html5-qrcode";
 import { X, Camera, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,20 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
   const [isStarting, setIsStarting] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const isRunningRef = useRef(false);
+  const hasScannedRef = useRef(false);
+
+  const stopScanner = useCallback(async () => {
+    if (scannerRef.current && isRunningRef.current) {
+      isRunningRef.current = false;
+      try {
+        await scannerRef.current.stop();
+      } catch (err) {
+        // Ignore errors when stopping - scanner may already be stopped
+        console.debug("Scanner stop:", err);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -29,7 +42,11 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
             qrbox: { width: 250, height: 250 },
             aspectRatio: 1,
           },
-          (decodedText) => {
+          async (decodedText) => {
+            // Prevent multiple scans
+            if (hasScannedRef.current) return;
+            hasScannedRef.current = true;
+
             // Extract code from URL or use as-is
             let code = decodedText;
             try {
@@ -43,7 +60,7 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
             }
             
             // Stop scanner before callback
-            scanner.stop().catch(console.error);
+            await stopScanner();
             onScan(code.toUpperCase());
           },
           () => {
@@ -52,7 +69,11 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
         );
 
         if (mounted) {
+          isRunningRef.current = true;
           setIsStarting(false);
+        } else {
+          // Component unmounted during start, stop immediately
+          await scanner.stop().catch(() => {});
         }
       } catch (err) {
         console.error("Scanner error:", err);
@@ -73,11 +94,9 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
 
     return () => {
       mounted = false;
-      if (scannerRef.current) {
-        scannerRef.current.stop().catch(console.error);
-      }
+      stopScanner();
     };
-  }, [onScan]);
+  }, [onScan, stopScanner]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
@@ -94,7 +113,7 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
 
       {/* Scanner */}
       <div className="flex-1 flex items-center justify-center p-4">
-        <div className="relative w-full max-w-sm aspect-square" ref={containerRef}>
+        <div className="relative w-full max-w-sm aspect-square">
           {isStarting && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-secondary/50 rounded-2xl z-10">
               <Loader2 className="w-8 h-8 animate-spin text-primary mb-2" />
@@ -127,8 +146,8 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
                   <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-primary rounded-bl-lg" />
                   <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-primary rounded-br-lg" />
                   
-                  {/* Scanning line animation */}
-                  <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent animate-scan" />
+                  {/* Scanning line */}
+                  <div className="absolute left-0 right-0 h-0.5 bg-primary animate-scan" />
                 </div>
               </div>
             </div>
@@ -137,9 +156,9 @@ export function QRScanner({ onScan, onClose }: QRScannerProps) {
       </div>
 
       {/* Instructions */}
-      <div className="p-4 text-center bg-background/80 backdrop-blur">
+      <div className="p-6 text-center bg-background/80 backdrop-blur">
         <p className="text-sm text-muted-foreground">
-          Point your camera at the QR code shown on your PC
+          Point your camera at the QR code on your PC screen
         </p>
       </div>
     </div>
