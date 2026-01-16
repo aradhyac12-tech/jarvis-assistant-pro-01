@@ -4,7 +4,6 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { addLog } from "@/components/IssueLog";
-import type { Json } from "@/integrations/supabase/types";
 
 type SendCommandOptions = {
   awaitResult?: boolean;
@@ -27,40 +26,40 @@ export function useDeviceCommands() {
   const { selectedDevice } = useDeviceContext();
 
   const waitForCommandResult = useCallback(
-    async (commandId: string, options: SendCommandOptions = {}) => {
+    async (commandId: string, sessionToken: string, options: SendCommandOptions = {}) => {
       const timeoutMs = options.timeoutMs ?? 12000;
       const pollIntervalMs = options.pollIntervalMs ?? 500;
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
-        const { data, error } = await supabase
-          .from("commands")
-          .select("status,result")
-          .eq("id", commandId)
-          .maybeSingle();
+        try {
+          const response = await supabase.functions.invoke("device-commands", {
+            body: { action: "poll", commandId },
+            headers: { "x-session-token": sessionToken },
+          });
 
-        if (error) {
-          return { success: false, error } as const;
-        }
+          if (response.error) {
+            await sleep(pollIntervalMs);
+            continue;
+          }
 
-        if (!data) {
+          const data = response.data;
+          if (!data || data.status === "pending") {
+            await sleep(pollIntervalMs);
+            continue;
+          }
+
+          const result = (data.result ?? {}) as CommandResult;
+          const ok = data.status === "completed" && result.success !== false;
+
+          return {
+            success: ok,
+            result,
+            error: ok ? undefined : (result.error ?? "Command failed"),
+          } as const;
+        } catch {
           await sleep(pollIntervalMs);
-          continue;
         }
-
-        if (data.status === "pending") {
-          await sleep(pollIntervalMs);
-          continue;
-        }
-
-        const result = (data.result ?? {}) as CommandResult;
-        const ok = data.status === "completed" && result.success !== false;
-
-        return {
-          success: ok,
-          result,
-          error: ok ? undefined : (result.error ?? "Command failed"),
-        } as const;
       }
 
       return { success: false, error: "Timed out waiting for PC" } as const;
@@ -73,19 +72,18 @@ export function useDeviceCommands() {
       const startTime = Date.now();
       
       try {
-        // Use device from session or selected device
-        let deviceId = selectedDevice?.id || session?.device_id;
+        const sessionToken = session?.session_token;
+        const deviceId = selectedDevice?.id || session?.device_id;
 
-        if (!deviceId) {
-          // Fallback: Get the first online device
-          const { data: devices, error: deviceError } = await supabase
-            .from("devices")
-            .select("id")
-            .eq("is_online", true)
-            .limit(1);
-
-          if (deviceError) throw deviceError;
-          deviceId = devices?.[0]?.id;
+        if (!sessionToken) {
+          const errorMsg = "No active session";
+          addLog("error", "web", `Command "${commandType}" failed: ${errorMsg}`);
+          toast({
+            title: "Not Paired",
+            description: "Please pair with your PC first.",
+            variant: "destructive",
+          });
+          return { success: false, error: errorMsg } as const;
         }
 
         if (!deviceId) {
@@ -99,28 +97,28 @@ export function useDeviceCommands() {
           return { success: false, error: errorMsg } as const;
         }
 
-        // Generate a placeholder user_id (required by schema but not used for auth)
-        const placeholderUserId = session?.device_id || deviceId;
-
         addLog("info", "web", `Sending command: ${commandType}`, JSON.stringify(payload).slice(0, 100));
 
-        const { data, error } = await supabase
-          .from("commands")
-          .insert([
-            {
-              device_id: deviceId,
-              command_type: commandType,
-              payload: payload as Json,
-              status: "pending",
-              user_id: placeholderUserId,
-            },
-          ])
-          .select("id")
-          .maybeSingle();
+        // Use edge function for secure command insertion
+        const response = await supabase.functions.invoke("device-commands", {
+          body: { 
+            action: "insert", 
+            commandType, 
+            payload 
+          },
+          headers: { "x-session-token": sessionToken },
+        });
 
-        if (error) throw error;
+        if (response.error) {
+          throw new Error(response.error.message || "Failed to send command");
+        }
 
-        const commandId = data?.id;
+        const data = response.data;
+        if (!data?.success) {
+          throw new Error(data?.error || "Failed to send command");
+        }
+
+        const commandId = data.commandId;
         console.log(`Command sent: ${commandType}`, { payload, commandId, deviceId });
 
         if (!commandId || !options?.awaitResult) {
@@ -128,7 +126,7 @@ export function useDeviceCommands() {
           return { success: true, commandId } as const;
         }
 
-        const awaited = await waitForCommandResult(commandId, options);
+        const awaited = await waitForCommandResult(commandId, sessionToken, options);
         const duration = Date.now() - startTime;
         
         if (awaited.success) {
