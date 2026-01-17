@@ -16,6 +16,7 @@ import Apps from "./pages/Apps";
 import Files from "./pages/Files";
 import RemoteControl from "./pages/RemoteControl";
 import MicCamera from "./pages/MicCamera";
+import Samsung from "./pages/Samsung";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -105,6 +106,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <MicCamera />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/samsung"
+        element={
+          <ProtectedRoute>
+            <Samsung />
           </ProtectedRoute>
         }
       />
