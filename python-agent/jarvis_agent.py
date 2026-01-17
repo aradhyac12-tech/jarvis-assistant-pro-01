@@ -1992,14 +1992,40 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     async def poll_commands(self):
-        """Poll for pending commands."""
+        """Poll for pending commands via secure edge function."""
+        import urllib.request
+        import ssl
+        
+        poll_url = f"{SUPABASE_URL}/functions/v1/agent-poll"
+        ssl_ctx = ssl.create_default_context()
+        
         while self.running:
             try:
-                result = supabase.table("commands").select("*").eq(
-                    "device_id", self.device_id
-                ).eq("status", "pending").order("created_at").limit(10).execute()
+                # Call edge function to get pending commands
+                req_data = json.dumps({"action": "poll"}).encode("utf-8")
+                req = urllib.request.Request(
+                    poll_url,
+                    data=req_data,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-device-key": self.device_key,
+                    },
+                    method="POST"
+                )
                 
-                for cmd in result.data:
+                with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                
+                if not result.get("success"):
+                    if "Invalid device key" in str(result.get("error", "")):
+                        add_log("error", "Device key rejected - re-registering", category="auth")
+                        await self.register_device()
+                    await asyncio.sleep(POLL_INTERVAL)
+                    continue
+                
+                commands = result.get("commands", [])
+                
+                for cmd in commands:
                     cmd_type = cmd["command_type"]
                     payload = cmd.get("payload") or {}
                     cmd_id = cmd["id"]
@@ -2009,33 +2035,75 @@ class JarvisAgent:
                     # Execute command
                     result_data = await self._handle_command(cmd_type, payload)
                     
-                    # Update command status
-                    supabase.table("commands").update({
-                        "status": "completed" if result_data.get("success") else "failed",
-                        "result": result_data,
-                        "executed_at": datetime.now(timezone.utc).isoformat()
-                    }).eq("id", cmd_id).execute()
+                    # Report completion via edge function
+                    try:
+                        complete_data = json.dumps({
+                            "action": "complete",
+                            "commandId": cmd_id,
+                            "result": result_data
+                        }).encode("utf-8")
+                        complete_req = urllib.request.Request(
+                            poll_url,
+                            data=complete_data,
+                            headers={
+                                "Content-Type": "application/json",
+                                "x-device-key": self.device_key,
+                            },
+                            method="POST"
+                        )
+                        with urllib.request.urlopen(complete_req, context=ssl_ctx, timeout=10) as _:
+                            pass
+                    except Exception as e:
+                        add_log("warn", f"Failed to report completion: {e}", category="command")
                     
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    add_log("error", "Authentication failed - check device key", category="auth")
+                else:
+                    add_log("warn", f"Poll HTTP error {e.code}: {e.reason}", category="polling")
             except Exception as e:
                 add_log("warn", f"Poll error: {e}", category="polling")
             
             await asyncio.sleep(POLL_INTERVAL)
     
     async def heartbeat(self):
-        """Send periodic heartbeats."""
+        """Send periodic heartbeats via secure edge function."""
+        import urllib.request
+        import ssl
+        
+        poll_url = f"{SUPABASE_URL}/functions/v1/agent-poll"
+        ssl_ctx = ssl.create_default_context()
+        
         while self.running:
             try:
-                supabase.table("devices").update({
-                    "is_online": True,
-                    "last_seen": datetime.now(timezone.utc).isoformat(),
-                    "current_volume": self._get_volume(),
-                    "current_brightness": self._get_brightness(),
-                }).eq("id", self.device_id).execute()
+                volume = self._get_volume()
+                brightness = self._get_brightness()
+                
+                hb_data = json.dumps({
+                    "action": "heartbeat",
+                    "volume": volume,
+                    "brightness": brightness,
+                }).encode("utf-8")
+                
+                req = urllib.request.Request(
+                    poll_url,
+                    data=hb_data,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-device-key": self.device_key,
+                    },
+                    method="POST"
+                )
+                
+                with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as _:
+                    pass
                 
                 update_agent_status({
                     "last_heartbeat": datetime.now().isoformat(),
                     "volume": self._volume_cache,
                     "brightness": self._brightness_cache,
+                    "cpu_percent": psutil.cpu_percent(),
+                    "memory_percent": psutil.virtual_memory().percent,
                 })
             except Exception as e:
                 add_log("warn", f"Heartbeat error: {e}", category="heartbeat")
