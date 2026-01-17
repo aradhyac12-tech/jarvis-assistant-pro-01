@@ -4,11 +4,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { Mic, MicOff, Send, Bot, User, Loader2, Volume2 } from "lucide-react";
+import { Mic, MicOff, Send, Bot, User, Loader2, Volume2, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
+import { addLog } from "@/components/IssueLog";
 
 interface Message {
   id: string;
@@ -16,6 +18,17 @@ interface Message {
   content: string;
   language?: string;
   timestamp: Date;
+  commands?: Array<Record<string, unknown>>;
+}
+
+interface AICommand {
+  action: string;
+  app_name?: string;
+  site?: string;
+  query?: string;
+  engine?: string;
+  level?: number;
+  text?: string;
 }
 
 export default function VoiceAI() {
@@ -23,14 +36,15 @@ export default function VoiceAI() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [inputText, setInputText] = useState("");
+  const [executingCommands, setExecutingCommands] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
+  const { session } = useDeviceSession();
 
   const { isRecording, toggleRecording, isSupported } = useVoiceRecorder({
     onTranscript: (text) => {
       setInputText(text);
-      // Auto-send after voice input
       handleSendMessage(text);
     },
     onError: (error) => {
@@ -48,62 +62,99 @@ export default function VoiceAI() {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const parseAndExecuteCommands = async (response: string) => {
-    const lowerResponse = response.toLowerCase();
+  // Execute commands returned by AI
+  const executeAICommands = async (commands: AICommand[]) => {
+    if (!commands || commands.length === 0) return;
     
-    // Volume commands
-    if (lowerResponse.includes("volume")) {
-      const match = response.match(/(\d+)/);
-      if (match) {
-        await sendCommand("set_volume", { level: parseInt(match[1]) });
-      } else if (lowerResponse.includes("mute")) {
-        await sendCommand("set_volume", { level: 0 });
-      } else if (lowerResponse.includes("max") || lowerResponse.includes("full")) {
-        await sendCommand("set_volume", { level: 100 });
-      }
-    }
-    
-    // Brightness commands
-    if (lowerResponse.includes("brightness")) {
-      const match = response.match(/(\d+)/);
-      if (match) {
-        await sendCommand("set_brightness", { level: parseInt(match[1]) });
-      } else if (lowerResponse.includes("dim")) {
-        await sendCommand("set_brightness", { level: 25 });
-      } else if (lowerResponse.includes("max") || lowerResponse.includes("full")) {
-        await sendCommand("set_brightness", { level: 100 });
-      }
-    }
-    
-    // App commands
-    if (lowerResponse.includes("open") || lowerResponse.includes("launch")) {
-      const apps = ["chrome", "notepad", "spotify", "vscode", "terminal", "calculator"];
-      for (const app of apps) {
-        if (lowerResponse.includes(app)) {
-          await sendCommand("open_app", { app_name: app });
-          break;
+    setExecutingCommands(true);
+    addLog("info", "web", `Executing ${commands.length} AI command(s)`);
+
+    for (const cmd of commands) {
+      try {
+        let commandType = "";
+        let payload: Record<string, unknown> = {};
+
+        switch (cmd.action) {
+          case "open_app":
+            commandType = "open_app";
+            payload = { app_name: cmd.app_name };
+            break;
+
+          case "open_website":
+            commandType = "open_website";
+            payload = { site: cmd.site, query: cmd.query || "" };
+            break;
+
+          case "search_web":
+            commandType = "search_web";
+            payload = { engine: cmd.engine || "google", query: cmd.query };
+            break;
+
+          case "play_music":
+            commandType = "play_music";
+            payload = { query: cmd.query, service: "youtube" };
+            break;
+
+          case "set_volume":
+            commandType = "set_volume";
+            payload = { level: cmd.level };
+            break;
+
+          case "set_brightness":
+            commandType = "set_brightness";
+            payload = { level: cmd.level };
+            break;
+
+          case "media_control":
+            commandType = "media_control";
+            payload = { action: cmd.action };
+            break;
+
+          case "lock":
+            commandType = "lock";
+            break;
+
+          case "sleep":
+            commandType = "sleep";
+            break;
+
+          case "restart":
+            commandType = "restart";
+            break;
+
+          case "shutdown":
+            commandType = "shutdown";
+            break;
+
+          case "type_text":
+            commandType = "type_text";
+            payload = { text: cmd.text };
+            break;
+
+          default:
+            addLog("warn", "web", `Unknown AI command: ${cmd.action}`);
+            continue;
         }
+
+        if (commandType) {
+          addLog("info", "web", `AI executing: ${commandType}`, JSON.stringify(payload).slice(0, 100));
+          const result = await sendCommand(commandType, payload, { awaitResult: true, timeoutMs: 8000 });
+          
+          if (!result.success) {
+            addLog("error", "web", `AI command failed: ${commandType}`, result.error as string);
+          }
+          
+          // Small delay between commands for multi-step operations
+          if (commands.length > 1) {
+            await new Promise(r => setTimeout(r, 1500));
+          }
+        }
+      } catch (error) {
+        addLog("error", "web", `AI command error: ${cmd.action}`, String(error));
       }
     }
-    
-    // Power commands
-    if (lowerResponse.includes("shutdown") || lowerResponse.includes("shut down")) {
-      await sendCommand("shutdown", {});
-    } else if (lowerResponse.includes("restart") || lowerResponse.includes("reboot")) {
-      await sendCommand("restart", {});
-    } else if (lowerResponse.includes("sleep")) {
-      await sendCommand("sleep", {});
-    } else if (lowerResponse.includes("lock")) {
-      await sendCommand("lock", {});
-    }
-    
-    // Music commands
-    if (lowerResponse.includes("play") && (lowerResponse.includes("music") || lowerResponse.includes("song"))) {
-      const query = response.replace(/play|music|song/gi, "").trim();
-      if (query) {
-        await sendCommand("play_music", { query });
-      }
-    }
+
+    setExecutingCommands(false);
   };
 
   const handleSendMessage = async (text?: string) => {
@@ -122,22 +173,29 @@ export default function VoiceAI() {
     setIsProcessing(true);
 
     try {
+      // Build headers - use session token if available
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (session?.session_token) {
+        headers["x-session-token"] = session.session_token;
+      } else {
+        headers["Authorization"] = `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`;
+      }
+
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/jarvis-chat`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({
-            message: messageText,
-          }),
+          headers,
+          body: JSON.stringify({ message: messageText }),
         }
       );
 
       if (!response.ok) {
-        throw new Error("Failed to get response");
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to get response");
       }
 
       const data = await response.json();
@@ -148,20 +206,25 @@ export default function VoiceAI() {
         content: data.response,
         language: data.language,
         timestamp: new Date(),
+        commands: data.commands,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Parse response for commands to execute
-      await parseAndExecuteCommands(data.response);
+      // Execute any commands returned by AI
+      if (data.commands && data.commands.length > 0) {
+        await executeAICommands(data.commands as AICommand[]);
+      }
 
-      // Speak the response using browser TTS or ElevenLabs
+      // Speak the response
       speakResponse(data.response, data.language);
     } catch (error) {
       console.error("Error:", error);
+      const errorMsg = error instanceof Error ? error.message : "Failed to get AI response";
+      addLog("error", "web", "AI chat error", errorMsg);
       toast({
         title: "Error",
-        description: "Failed to get AI response. Please try again.",
+        description: errorMsg,
         variant: "destructive",
       });
     } finally {
@@ -170,17 +233,16 @@ export default function VoiceAI() {
   };
 
   const speakResponse = (text: string, language: string = "en") => {
-    // Use browser's built-in TTS as fallback
     if ("speechSynthesis" in window) {
       setIsSpeaking(true);
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = language === "hi" ? "hi-IN" : "en-US";
       utterance.rate = 1;
       utterance.pitch = 1;
-      
+
       utterance.onend = () => setIsSpeaking(false);
       utterance.onerror = () => setIsSpeaking(false);
-      
+
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -199,11 +261,19 @@ export default function VoiceAI() {
         <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold neon-text">Voice AI</h1>
-            <p className="text-muted-foreground text-sm md:text-base">Talk to Jarvis in Hindi or English</p>
+            <p className="text-muted-foreground text-sm md:text-base">
+              Talk to Jarvis - I can control your PC!
+            </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {executingCommands && (
+              <Badge variant="secondary" className="bg-neon-purple/10 text-neon-purple border-neon-purple/30 text-xs animate-pulse">
+                <Zap className="h-3 w-3 mr-1" />
+                Executing...
+              </Badge>
+            )}
             <Badge variant="secondary" className="bg-neon-green/10 text-neon-green border-neon-green/30 text-xs">
-              Voice Active
+              {session?.session_token ? "Device Paired" : "Voice Active"}
             </Badge>
             <Badge variant="secondary" className="bg-neon-blue/10 text-neon-blue border-neon-blue/30 text-xs hidden md:flex">
               Multi-language
@@ -221,11 +291,15 @@ export default function VoiceAI() {
                 </div>
                 <h2 className="text-xl md:text-2xl font-bold mb-2">Hey, I'm Jarvis!</h2>
                 <p className="text-muted-foreground max-w-md text-sm md:text-base">
-                  Your personal AI assistant. I can control your PC, play music, and much more.
-                  {isSupported ? " Tap the mic or type to start!" : " Type a message to start!"}
+                  Your AI assistant that can control your PC. Try saying:
                 </p>
                 <div className="flex flex-wrap gap-2 mt-4 md:mt-6 justify-center">
-                  {["Set volume 50%", "Open Chrome", "What can you do?"].map((suggestion) => (
+                  {[
+                    "Open YouTube and search for music",
+                    "Set volume to 50%",
+                    "Open Edge and search ChatGPT",
+                    "Play Bohemian Rhapsody",
+                  ].map((suggestion) => (
                     <Button
                       key={suggestion}
                       variant="outline"
@@ -261,14 +335,23 @@ export default function VoiceAI() {
                           : "bg-secondary text-secondary-foreground"
                       )}
                     >
-                      <p className="text-sm md:text-base">{message.content}</p>
-                      <div className="flex items-center gap-2 mt-1">
+                      <p className="text-sm md:text-base whitespace-pre-wrap">{message.content}</p>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <span className="text-xs opacity-70">
-                          {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          {message.timestamp.toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
                         </span>
                         {message.language && (
                           <Badge variant="outline" className="text-xs py-0 px-1.5">
                             {message.language}
+                          </Badge>
+                        )}
+                        {message.commands && message.commands.length > 0 && (
+                          <Badge variant="secondary" className="text-xs py-0 px-1.5 bg-neon-purple/20 text-neon-purple">
+                            <Zap className="h-2.5 w-2.5 mr-0.5" />
+                            {message.commands.length} action{message.commands.length > 1 ? "s" : ""}
                           </Badge>
                         )}
                       </div>
@@ -327,6 +410,7 @@ export default function VoiceAI() {
                     isRecording && "animate-pulse"
                   )}
                   onClick={toggleRecording}
+                  disabled={isProcessing || executingCommands}
                 >
                   {isRecording ? (
                     <MicOff className="h-4 w-4 md:h-5 md:w-5" />
@@ -339,11 +423,18 @@ export default function VoiceAI() {
               <div className="flex-1 relative">
                 <input
                   type="text"
-                  placeholder={isRecording ? "Listening..." : "Type a message or speak..."}
+                  placeholder={
+                    isRecording
+                      ? "Listening..."
+                      : executingCommands
+                      ? "Executing commands..."
+                      : "Type a command or speak..."
+                  }
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                  className="w-full h-10 md:h-12 px-3 md:px-4 rounded-xl bg-secondary border border-border/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors text-sm md:text-base"
+                  disabled={isProcessing || executingCommands}
+                  className="w-full h-10 md:h-12 px-3 md:px-4 rounded-xl bg-secondary border border-border/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors text-sm md:text-base disabled:opacity-50"
                 />
               </div>
 
@@ -351,9 +442,9 @@ export default function VoiceAI() {
                 size="icon"
                 className="h-10 w-10 md:h-12 md:w-12 rounded-xl gradient-primary flex-shrink-0"
                 onClick={() => handleSendMessage()}
-                disabled={!inputText.trim() || isProcessing}
+                disabled={!inputText.trim() || isProcessing || executingCommands}
               >
-                {isProcessing ? (
+                {isProcessing || executingCommands ? (
                   <Loader2 className="h-4 w-4 md:h-5 md:w-5 animate-spin" />
                 ) : (
                   <Send className="h-4 w-4 md:h-5 md:w-5" />
@@ -361,9 +452,9 @@ export default function VoiceAI() {
               </Button>
 
               {isSpeaking && (
-                <Button 
-                  variant="secondary" 
-                  size="icon" 
+                <Button
+                  variant="secondary"
+                  size="icon"
                   className="h-10 w-10 md:h-12 md:w-12 rounded-xl flex-shrink-0"
                   onClick={stopSpeaking}
                 >

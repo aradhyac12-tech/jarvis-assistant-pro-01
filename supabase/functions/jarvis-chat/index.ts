@@ -3,41 +3,78 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token",
 };
 
+/**
+ * Jarvis Chat Edge Function
+ * 
+ * AI-powered chat that can translate natural language into PC commands.
+ * Supports both JWT auth (logged-in users) and session token auth (paired devices).
+ */
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // Verify authentication
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: "Missing authorization header" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Try session token auth first (for paired devices without login)
+    const sessionToken = req.headers.get("x-session-token");
+    let deviceId: string | null = null;
+    let userId: string | null = null;
+
+    if (sessionToken) {
+      // Validate session token
+      const { data: session } = await supabase
+        .from("device_sessions")
+        .select("device_id, last_active")
+        .eq("session_token", sessionToken)
+        .maybeSingle();
+
+      if (session) {
+        // Check if session is still active (within 24 hours)
+        const lastActive = new Date(session.last_active);
+        const hoursSinceActive = (Date.now() - lastActive.getTime()) / (1000 * 60 * 60);
+        
+        if (hoursSinceActive <= 24) {
+          deviceId = session.device_id;
+          // Update last_active
+          await supabase
+            .from("device_sessions")
+            .update({ last_active: new Date().toISOString() })
+            .eq("session_token", sessionToken);
+        }
+      }
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
+    // Fall back to JWT auth if no valid session token
+    if (!deviceId) {
+      const authHeader = req.headers.get("Authorization");
+      if (authHeader) {
+        const supabaseAnon = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
+          global: { headers: { Authorization: authHeader } }
+        });
+        const { data: { user } } = await supabaseAnon.auth.getUser();
+        if (user) {
+          userId = user.id;
+        }
+      }
+    }
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
+    // Require some form of auth
+    if (!deviceId && !userId) {
       return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
+        JSON.stringify({ error: "Unauthorized - please pair your device or login" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const { message } = await req.json();
-    
+
     // Validate input
     if (!message || typeof message !== "string" || message.length > 10000) {
       return new Response(
@@ -57,12 +94,57 @@ serve(async (req) => {
     const isHindi = hindiRegex.test(message);
     const language = isHindi ? "hi" : "en";
 
-    console.log(`Processing message for user: ${user.id} | Language: ${language}`);
+    console.log(`Processing message | Device: ${deviceId || 'N/A'} | User: ${userId || 'N/A'} | Language: ${language}`);
 
-    const systemPrompt = `You are JARVIS, an advanced AI assistant that can control a user's PC. You speak naturally and helpfully.
+    // Enhanced system prompt that instructs AI to return structured commands
+    const systemPrompt = `You are JARVIS, an advanced AI assistant that controls the user's PC. You can execute commands directly.
+
 ${isHindi ? "The user is speaking Hindi. Respond in Hindi using Devanagari script." : "Respond in English."}
-You can help with: system controls (volume, brightness, power), opening apps, playing music, file management, and general questions.
-Keep responses concise and friendly. If asked to perform an action, confirm what you'll do.`;
+
+CAPABILITIES:
+- Open apps: Chrome, Edge, Firefox, Notepad, Spotify, VS Code, Discord, Steam, Calculator, etc.
+- Open websites: YouTube, Google, ChatGPT, Perplexity, Reddit, Twitter, etc.
+- Search: Google, YouTube, ChatGPT, Perplexity, Wikipedia, Bing
+- Play music: Search and play on YouTube (default)
+- System controls: Volume (0-100), Brightness (0-100), Lock, Sleep, Restart, Shutdown
+- Media controls: Play/Pause, Next, Previous, Mute
+- Type text: Type any text on the keyboard
+
+RESPONSE FORMAT:
+When asked to perform an action, respond with a brief confirmation AND include a JSON command block at the end:
+
+\`\`\`command
+{"action": "open_app", "app_name": "chrome"}
+\`\`\`
+
+Available command actions:
+- {"action": "open_app", "app_name": "app name"}
+- {"action": "open_website", "site": "youtube", "query": "optional search"}
+- {"action": "search_web", "engine": "google|youtube|chatgpt|perplexity|wikipedia", "query": "search term"}
+- {"action": "play_music", "query": "song name"}
+- {"action": "set_volume", "level": 50}
+- {"action": "set_brightness", "level": 50}
+- {"action": "media_control", "action": "play_pause|next|previous|mute"}
+- {"action": "lock"}
+- {"action": "sleep"}
+- {"action": "restart"}
+- {"action": "shutdown"}
+- {"action": "type_text", "text": "text to type"}
+
+For multi-step requests like "open Edge and search ChatGPT for Python tutorials":
+1. First open the app/website
+2. Then perform the search
+
+Include multiple command blocks if needed:
+\`\`\`command
+{"action": "open_app", "app_name": "edge"}
+\`\`\`
+\`\`\`command
+{"action": "search_web", "engine": "chatgpt", "query": "Python tutorials"}
+\`\`\`
+
+For general questions without actions, just respond naturally without command blocks.
+Keep responses concise and friendly.`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -71,7 +153,7 @@ Keep responses concise and friendly. If asked to perform an action, confirm what
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3-flash-preview",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: message },
@@ -82,16 +164,51 @@ Keep responses concise and friendly. If asked to perform an action, confirm what
     if (!response.ok) {
       const error = await response.text();
       console.error("AI Gateway error:", error);
+      
+      if (response.status === 429) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Please try again in a moment." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      if (response.status === 402) {
+        return new Response(
+          JSON.stringify({ error: "AI credits depleted. Please add credits to continue." }),
+          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      
       throw new Error("Failed to get AI response");
     }
 
     const data = await response.json();
     const aiResponse = data.choices?.[0]?.message?.content || "I apologize, I could not process that request.";
 
-    console.log(`AI Response generated for user: ${user.id}`);
+    // Extract commands from the response
+    const commandRegex = /```command\s*\n?([\s\S]*?)\n?```/g;
+    const commands: Array<Record<string, unknown>> = [];
+    let match;
+
+    while ((match = commandRegex.exec(aiResponse)) !== null) {
+      try {
+        const cmd = JSON.parse(match[1].trim());
+        commands.push(cmd);
+      } catch {
+        console.warn("Failed to parse command:", match[1]);
+      }
+    }
+
+    // Clean response (remove command blocks for display)
+    const cleanResponse = aiResponse.replace(/```command[\s\S]*?```/g, "").trim();
+
+    console.log(`AI Response generated | Commands: ${commands.length}`);
 
     return new Response(
-      JSON.stringify({ response: aiResponse, language }),
+      JSON.stringify({ 
+        response: cleanResponse, 
+        language,
+        commands // Array of commands to execute
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: unknown) {
