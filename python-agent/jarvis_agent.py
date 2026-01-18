@@ -179,8 +179,8 @@ else:
 # =====================================================================
 # EMBEDDED BACKEND CONFIGURATION - DO NOT CHANGE UNLESS YOU KNOW WHAT YOU'RE DOING
 # =====================================================================
-DEFAULT_JARVIS_URL = "https://fcalyfvsbrgeuofaegpg.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZjYWx5ZnZzYnJnZXVvZmFlZ3BnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2MjIxODksImV4cCI6MjA4NDE5ODE4OX0.rIXcgrVO6Nbo8pNSfeGbvGDOkaGGISTinCM1CPeya5Q"
+DEFAULT_JARVIS_URL = "https://qqiojksuvkhyswdtybim.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxaW9qa3N1dmtoeXN3ZHR5YmltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2ODM0OTgsImV4cCI6MjA4NDI1OTQ5OH0.z4qvDhnvCGlnXYQOmQZgaMEtDyikWfHX0y-yqz37xwM"
 # =====================================================================
 
 
@@ -1116,15 +1116,18 @@ class JarvisAgent:
             raise
     
     def _display_pairing_code(self):
-        """Display pairing info without QR (single-user auto-connect mode)."""
+        """Display pairing code prominently - user must enter this in the web app."""
         print("\n" + "=" * 60)
         print("🤖 JARVIS PC AGENT READY")
         print("=" * 60)
         print(f"   Device: {DEVICE_NAME}")
-        print(f"   Device Key: {self.device_key[:8]}…{self.device_key[-4:]} (used internally)")
         print()
-        print(f"   Pairing Code: {self.pairing_code}")
-        print("   (Optional) Open the web app → it will auto-connect when it sees this PC online.")
+        print("   ╔════════════════════════════════════╗")
+        print(f"   ║   ACCESS CODE:  {self.pairing_code}             ║")
+        print("   ╚════════════════════════════════════╝")
+        print()
+        print("   Enter this code in the web app to connect.")
+        print("   Code expires in 30 minutes.")
         print("=" * 60 + "\n")
     
     def _get_volume(self) -> int:

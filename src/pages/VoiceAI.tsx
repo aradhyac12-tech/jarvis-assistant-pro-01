@@ -4,10 +4,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { Mic, MicOff, Send, Bot, User, Loader2, Volume2, Zap } from "lucide-react";
+import { Send, Bot, User, Loader2, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { addLog } from "@/components/IssueLog";
@@ -34,29 +33,12 @@ interface AICommand {
 export default function VoiceAI() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
   const [inputText, setInputText] = useState("");
   const [executingCommands, setExecutingCommands] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
-
-  const { isRecording, toggleRecording, isSupported } = useVoiceRecorder({
-    onTranscript: (text) => {
-      setInputText(text);
-      handleSendMessage(text);
-    },
-    onError: (error) => {
-      toast({
-        title: "Voice Error",
-        description: error,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const waveformBars = Array.from({ length: 20 }, (_, i) => i);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -215,9 +197,6 @@ export default function VoiceAI() {
       if (data.commands && data.commands.length > 0) {
         await executeAICommands(data.commands as AICommand[]);
       }
-
-      // Speak the response
-      speakResponse(data.response, data.language);
     } catch (error) {
       console.error("Error:", error);
       const errorMsg = error instanceof Error ? error.message : "Failed to get AI response";
@@ -232,37 +211,15 @@ export default function VoiceAI() {
     }
   };
 
-  const speakResponse = (text: string, language: string = "en") => {
-    if ("speechSynthesis" in window) {
-      setIsSpeaking(true);
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = language === "hi" ? "hi-IN" : "en-US";
-      utterance.rate = 1;
-      utterance.pitch = 1;
-
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-
-      window.speechSynthesis.speak(utterance);
-    }
-  };
-
-  const stopSpeaking = () => {
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
-  };
-
   return (
     <DashboardLayout>
       <div className="h-[calc(100vh-6rem)] flex flex-col animate-fade-in">
         {/* Header */}
         <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold neon-text">Voice AI</h1>
+            <h1 className="text-2xl md:text-3xl font-bold neon-text">AI Assistant</h1>
             <p className="text-muted-foreground text-sm md:text-base">
-              Talk to Jarvis - I can control your PC!
+              Chat with Jarvis - I can control your PC!
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -273,10 +230,7 @@ export default function VoiceAI() {
               </Badge>
             )}
             <Badge variant="secondary" className="bg-neon-green/10 text-neon-green border-neon-green/30 text-xs">
-              {session?.session_token ? "Device Paired" : "Voice Active"}
-            </Badge>
-            <Badge variant="secondary" className="bg-neon-blue/10 text-neon-blue border-neon-blue/30 text-xs hidden md:flex">
-              Multi-language
+              {session?.session_token ? "Device Paired" : "Text Mode"}
             </Badge>
           </div>
         </div>
@@ -291,7 +245,7 @@ export default function VoiceAI() {
                 </div>
                 <h2 className="text-xl md:text-2xl font-bold mb-2">Hey, I'm Jarvis!</h2>
                 <p className="text-muted-foreground max-w-md text-sm md:text-base">
-                  Your AI assistant that can control your PC. Try saying:
+                  Your AI assistant that can control your PC. Try asking:
                 </p>
                 <div className="flex flex-wrap gap-2 mt-4 md:mt-6 justify-center">
                   {[
@@ -379,56 +333,16 @@ export default function VoiceAI() {
             )}
           </ScrollArea>
 
-          {/* Waveform Visualization */}
-          {(isRecording || isSpeaking) && (
-            <div className="px-4 py-3 border-t border-border/30 flex items-center justify-center gap-1">
-              {waveformBars.map((_, i) => (
-                <div
-                  key={i}
-                  className={cn(
-                    "w-1 rounded-full waveform-bar",
-                    isRecording ? "bg-neon-green" : "bg-neon-blue"
-                  )}
-                  style={{
-                    height: "24px",
-                    animationDelay: `${i * 0.05}s`,
-                  }}
-                />
-              ))}
-            </div>
-          )}
-
           {/* Input Area */}
           <CardContent className="p-3 md:p-4 border-t border-border/30 flex-shrink-0">
             <div className="flex items-center gap-2 md:gap-3">
-              {isSupported && (
-                <Button
-                  variant={isRecording ? "destructive" : "secondary"}
-                  size="icon"
-                  className={cn(
-                    "h-10 w-10 md:h-12 md:w-12 rounded-xl flex-shrink-0",
-                    isRecording && "animate-pulse"
-                  )}
-                  onClick={toggleRecording}
-                  disabled={isProcessing || executingCommands}
-                >
-                  {isRecording ? (
-                    <MicOff className="h-4 w-4 md:h-5 md:w-5" />
-                  ) : (
-                    <Mic className="h-4 w-4 md:h-5 md:w-5" />
-                  )}
-                </Button>
-              )}
-
               <div className="flex-1 relative">
                 <input
                   type="text"
                   placeholder={
-                    isRecording
-                      ? "Listening..."
-                      : executingCommands
+                    executingCommands
                       ? "Executing commands..."
-                      : "Type a command or speak..."
+                      : "Type a command..."
                   }
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
@@ -450,17 +364,6 @@ export default function VoiceAI() {
                   <Send className="h-4 w-4 md:h-5 md:w-5" />
                 )}
               </Button>
-
-              {isSpeaking && (
-                <Button
-                  variant="secondary"
-                  size="icon"
-                  className="h-10 w-10 md:h-12 md:w-12 rounded-xl flex-shrink-0"
-                  onClick={stopSpeaking}
-                >
-                  <Volume2 className="h-4 w-4 md:h-5 md:w-5 text-neon-blue animate-pulse" />
-                </Button>
-              )}
             </div>
           </CardContent>
         </Card>

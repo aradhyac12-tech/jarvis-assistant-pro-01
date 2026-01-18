@@ -1,16 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
 import {
   Search,
   FolderOpen,
@@ -24,13 +17,12 @@ import {
   Home,
   Loader2,
   RefreshCw,
-  ArrowUp,
   FolderUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
-import { supabase } from "@/integrations/supabase/client";
+import { useDeviceContext } from "@/hooks/useDeviceContext";
 
 interface FileItem {
   name: string;
@@ -104,44 +96,55 @@ export default function Files() {
   const [fullPath, setFullPath] = useState("");
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [hasFetched, setHasFetched] = useState(false);
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
+  const { selectedDevice } = useDeviceContext();
 
-  // Fetch files from PC
-  const fetchFiles = async (path: string = currentPath) => {
+  // Fetch files from PC using awaitResult for reliability
+  const fetchFiles = useCallback(async (path: string = currentPath) => {
+    if (!selectedDevice?.is_online) {
+      toast({ title: "Device Offline", description: "Connect to your PC first.", variant: "destructive" });
+      return;
+    }
+
     setIsLoading(true);
-    await sendCommand("list_files", { path });
-    
-    setTimeout(async () => {
-      const { data } = await supabase
-        .from("commands")
-        .select("result")
-        .eq("command_type", "list_files")
-        .eq("status", "completed")
-        .order("executed_at", { ascending: false })
-        .limit(1);
+    try {
+      const result = await sendCommand("list_files", { path }, { awaitResult: true, timeoutMs: 15000 });
       
-      const result = data?.[0]?.result as Record<string, unknown> | null;
-      if (result?.items) {
-        const items = result.items as FileItem[];
-        // Sort: folders first, then alphabetically
-        items.sort((a, b) => {
-          if (a.is_directory && !b.is_directory) return -1;
-          if (!a.is_directory && b.is_directory) return 1;
-          return a.name.localeCompare(b.name);
-        });
-        setFiles(items);
-        if (result.current_path) {
-          setFullPath(result.current_path as string);
+      if (result.success && "result" in result && result.result) {
+        const data = result.result as Record<string, unknown>;
+        if (data.items) {
+          const items = data.items as FileItem[];
+          // Sort: folders first, then alphabetically
+          items.sort((a, b) => {
+            if (a.is_directory && !b.is_directory) return -1;
+            if (!a.is_directory && b.is_directory) return 1;
+            return a.name.localeCompare(b.name);
+          });
+          setFiles(items);
+          if (data.current_path) {
+            setFullPath(data.current_path as string);
+          }
+          setHasFetched(true);
         }
+      } else {
+        toast({ title: "Failed to load files", description: (result as any).error || "Try again.", variant: "destructive" });
       }
+    } catch (err) {
+      console.error("Failed to fetch files:", err);
+      toast({ title: "Error", description: "Could not fetch files.", variant: "destructive" });
+    } finally {
       setIsLoading(false);
-    }, 1000);
-  };
+    }
+  }, [currentPath, sendCommand, selectedDevice?.is_online, toast]);
 
+  // Only fetch once on mount or when device comes online
   useEffect(() => {
-    fetchFiles();
-  }, []);
+    if (selectedDevice?.is_online && !hasFetched) {
+      fetchFiles();
+    }
+  }, [selectedDevice?.is_online, hasFetched, fetchFiles]);
 
   const handleNavigate = async (item: FileItem) => {
     if (item.is_directory) {
@@ -158,7 +161,6 @@ export default function Files() {
   };
 
   const handleGoUp = async () => {
-    // Go to parent directory
     const parentPath = fullPath.split(/[/\\]/).slice(0, -1).join("/") || "/";
     setCurrentPath(parentPath);
     await fetchFiles(parentPath);
@@ -172,9 +174,6 @@ export default function Files() {
   const filteredFiles = files.filter((file) =>
     file.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
-
-  // Parse path for breadcrumbs
-  const pathParts = fullPath ? fullPath.split(/[/\\]/).filter(Boolean) : ["Home"];
 
   return (
     <DashboardLayout>

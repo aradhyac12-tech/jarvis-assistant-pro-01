@@ -219,7 +219,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     setDeviceInfo(null);
   }, [session]);
 
-  // Load session from localStorage on mount, else auto-connect
+  // Load session from localStorage on mount - NO auto-connect, user must pair manually
   useEffect(() => {
     const run = async () => {
       const stored = localStorage.getItem(SESSION_KEY);
@@ -229,6 +229,8 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
           const valid = await validateSession(parsed.session_token);
           if (valid) {
             setSession(parsed);
+            const info = await fetchDeviceInfo(parsed.device_id);
+            if (info) setDeviceInfo(info);
           } else {
             localStorage.removeItem(SESSION_KEY);
           }
@@ -237,16 +239,11 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // If still no session, try auto-connect (single-user mode)
-      if (!localStorage.getItem(SESSION_KEY)) {
-        await autoPair();
-      }
-
       setIsLoading(false);
     };
 
     run();
-  }, [autoPair, validateSession]);
+  }, [validateSession, fetchDeviceInfo]);
 
   // Auto-reconnect: periodically check device status
   useEffect(() => {
