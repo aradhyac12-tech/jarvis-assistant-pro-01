@@ -72,6 +72,21 @@ serve(async (req) => {
           throw cmdError;
         }
 
+        // Claim commands to avoid collisions (e.g. duplicate agent loops / double polling)
+        if (commands && commands.length > 0) {
+          const ids = commands.map((c) => c.id);
+          const { error: claimError } = await supabase
+            .from("commands")
+            .update({ status: "running" })
+            .in("id", ids)
+            .eq("device_id", deviceId)
+            .eq("status", "pending");
+
+          if (claimError) {
+            console.error("Command claim error:", claimError);
+          }
+        }
+
         return new Response(
           JSON.stringify({ success: true, commands: commands || [] }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }

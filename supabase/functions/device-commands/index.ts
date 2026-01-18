@@ -41,10 +41,10 @@ serve(async (req) => {
       );
     }
 
-    // Check if session is still active (within 24 hours)
+    // Check if session is still active (within 30 days)
     const lastActive = new Date(session.last_active);
-    const hoursSinceActive = (Date.now() - lastActive.getTime()) / (1000 * 60 * 60);
-    if (hoursSinceActive > 24) {
+    const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
+    if (Date.now() - lastActive.getTime() > maxAgeMs) {
       return new Response(
         JSON.stringify({ error: "Session expired" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
