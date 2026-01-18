@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from "react";
+import { createContext, useContext, useEffect, useCallback, useRef, useState, ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 interface DeviceSession {
@@ -22,6 +22,7 @@ interface DeviceSessionContextType {
   isReconnecting: boolean;
   error: string | null;
   pairDevice: (pairingCode: string) => Promise<{ success: boolean; error?: string }>;
+  autoPair: () => Promise<{ success: boolean; error?: string }>;
   unpair: () => void;
   refreshDeviceInfo: () => Promise<void>;
 }
@@ -30,6 +31,7 @@ const DeviceSessionContext = createContext<DeviceSessionContextType | undefined>
 
 const SESSION_KEY = "jarvis_device_session";
 const RECONNECT_INTERVAL = 5000; // Check device status every 5 seconds
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<DeviceSession | null>(null);
@@ -37,9 +39,8 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
 
-  // Fetch device info
   const fetchDeviceInfo = useCallback(async (deviceId: string): Promise<DeviceInfo | null> => {
     try {
       const { data, error } = await supabase
@@ -55,14 +56,197 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Refresh device info
   const refreshDeviceInfo = useCallback(async () => {
     if (!session) return;
     const info = await fetchDeviceInfo(session.device_id);
-    if (info) {
-      setDeviceInfo(info);
-    }
+    if (info) setDeviceInfo(info);
   }, [session, fetchDeviceInfo]);
+
+  const validateSession = useCallback(async (token: string): Promise<boolean> => {
+    try {
+      const { data, error } = await supabase
+        .from("device_sessions")
+        .select("id, device_id, last_active")
+        .eq("session_token", token)
+        .maybeSingle();
+
+      if (error || !data) return false;
+
+      // Mirror backend expiry rules
+      const lastActive = new Date(data.last_active).getTime();
+      if (Number.isFinite(lastActive) && Date.now() - lastActive > SESSION_MAX_AGE_MS) {
+        return false;
+      }
+
+      // Ensure device still exists
+      const { data: device } = await supabase
+        .from("devices")
+        .select("id")
+        .eq("id", data.device_id)
+        .maybeSingle();
+
+      return !!device;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const persistSession = useCallback((s: DeviceSession) => {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    setSession(s);
+  }, []);
+
+  const autoPair = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    setError(null);
+
+    try {
+      const { data: device, error: deviceError } = await supabase
+        .from("devices")
+        .select("id, name, is_online, last_seen")
+        .order("last_seen", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (deviceError) {
+        return { success: false, error: deviceError.message };
+      }
+
+      if (!device) {
+        return { success: false, error: "No PC found. Start the PC agent first." };
+      }
+
+      // Create a fresh session
+      const sessionToken = crypto.randomUUID();
+      const { data: sessionData, error: sessionError } = await supabase
+        .from("device_sessions")
+        .insert({ device_id: device.id, session_token: sessionToken })
+        .select("id")
+        .single();
+
+      if (sessionError || !sessionData) {
+        return { success: false, error: sessionError?.message || "Failed to create session" };
+      }
+
+      const newSession: DeviceSession = {
+        id: sessionData.id,
+        device_id: device.id,
+        session_token: sessionToken,
+        device_name: device.name,
+      };
+
+      persistSession(newSession);
+
+      const info = await fetchDeviceInfo(device.id);
+      if (info) setDeviceInfo(info);
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : "Auto-connect failed" };
+    }
+  }, [fetchDeviceInfo, persistSession]);
+
+  const pairDevice = useCallback(async (pairingCode: string): Promise<{ success: boolean; error?: string }> => {
+    setError(null);
+
+    const code = pairingCode.trim().toUpperCase();
+    if (!code || code.length < 4) {
+      return { success: false, error: "Invalid pairing code" };
+    }
+
+    try {
+      const { data: device, error: deviceError } = await supabase
+        .from("devices")
+        .select("id, name, pairing_code, pairing_expires_at")
+        .eq("pairing_code", code)
+        .maybeSingle();
+
+      if (deviceError || !device) {
+        return { success: false, error: "Device not found. Check the code and try again." };
+      }
+
+      if (device.pairing_expires_at && new Date(device.pairing_expires_at) < new Date()) {
+        return { success: false, error: "Pairing code has expired. Restart the agent to get a new code." };
+      }
+
+      const sessionToken = crypto.randomUUID();
+      const { data: sessionData, error: sessionError } = await supabase
+        .from("device_sessions")
+        .insert({ device_id: device.id, session_token: sessionToken })
+        .select("id")
+        .single();
+
+      if (sessionError || !sessionData) {
+        console.error("Session creation error:", sessionError);
+        return { success: false, error: "Failed to create session" };
+      }
+
+      await supabase
+        .from("devices")
+        .update({ pairing_code: null, pairing_expires_at: null })
+        .eq("id", device.id);
+
+      const newSession: DeviceSession = {
+        id: sessionData.id,
+        device_id: device.id,
+        session_token: sessionToken,
+        device_name: device.name,
+      };
+
+      persistSession(newSession);
+
+      const info = await fetchDeviceInfo(device.id);
+      if (info) setDeviceInfo(info);
+
+      return { success: true };
+    } catch (err) {
+      console.error("Pairing error:", err);
+      return { success: false, error: "Pairing failed. Please try again." };
+    }
+  }, [fetchDeviceInfo, persistSession]);
+
+  const unpair = useCallback(() => {
+    if (session) {
+      supabase
+        .from("device_sessions")
+        .delete()
+        .eq("session_token", session.session_token)
+        .then(() => {
+          // no-op
+        });
+    }
+    localStorage.removeItem(SESSION_KEY);
+    setSession(null);
+    setDeviceInfo(null);
+  }, [session]);
+
+  // Load session from localStorage on mount, else auto-connect
+  useEffect(() => {
+    const run = async () => {
+      const stored = localStorage.getItem(SESSION_KEY);
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored) as DeviceSession;
+          const valid = await validateSession(parsed.session_token);
+          if (valid) {
+            setSession(parsed);
+          } else {
+            localStorage.removeItem(SESSION_KEY);
+          }
+        } catch {
+          localStorage.removeItem(SESSION_KEY);
+        }
+      }
+
+      // If still no session, try auto-connect (single-user mode)
+      if (!localStorage.getItem(SESSION_KEY)) {
+        await autoPair();
+      }
+
+      setIsLoading(false);
+    };
+
+    run();
+  }, [autoPair, validateSession]);
 
   // Auto-reconnect: periodically check device status
   useEffect(() => {
@@ -80,18 +264,14 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         setDeviceInfo(info);
         setIsReconnecting(!info.is_online);
       } else {
-        // Device was deleted - clear session
         localStorage.removeItem(SESSION_KEY);
         setSession(null);
         setDeviceInfo(null);
       }
     };
 
-    // Initial check
     checkConnection();
-
-    // Set up periodic checks
-    reconnectTimerRef.current = setInterval(checkConnection, RECONNECT_INTERVAL);
+    reconnectTimerRef.current = window.setInterval(checkConnection, RECONNECT_INTERVAL);
 
     return () => {
       if (reconnectTimerRef.current) {
@@ -101,151 +281,18 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     };
   }, [session, fetchDeviceInfo]);
 
-  // Load session from localStorage on mount
-  useEffect(() => {
-    const stored = localStorage.getItem(SESSION_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored) as DeviceSession;
-        // Validate session still exists
-        validateSession(parsed.session_token).then((valid) => {
-          if (valid) {
-            setSession(parsed);
-          } else {
-            localStorage.removeItem(SESSION_KEY);
-          }
-          setIsLoading(false);
-        });
-      } catch {
-        localStorage.removeItem(SESSION_KEY);
-        setIsLoading(false);
-      }
-    } else {
-      setIsLoading(false);
-    }
-  }, []);
-
-  const validateSession = async (token: string): Promise<boolean> => {
-    try {
-      const { data, error } = await supabase
-        .from("device_sessions")
-        .select("id, device_id")
-        .eq("session_token", token)
-        .maybeSingle();
-
-      if (error || !data) return false;
-
-      // Check if device still exists and is valid
-      const { data: device } = await supabase
-        .from("devices")
-        .select("id")
-        .eq("id", data.device_id)
-        .maybeSingle();
-
-      return !!device;
-    } catch {
-      return false;
-    }
-  };
-
-  const pairDevice = useCallback(async (pairingCode: string): Promise<{ success: boolean; error?: string }> => {
-    setError(null);
-    
-    const code = pairingCode.trim().toUpperCase();
-    if (!code || code.length < 4) {
-      return { success: false, error: "Invalid pairing code" };
-    }
-
-    try {
-      // Find device with this pairing code
-      const { data: device, error: deviceError } = await supabase
-        .from("devices")
-        .select("id, name, pairing_code, pairing_expires_at")
-        .eq("pairing_code", code)
-        .maybeSingle();
-
-      if (deviceError || !device) {
-        return { success: false, error: "Device not found. Check the code and try again." };
-      }
-
-      // Check if code has expired
-      if (device.pairing_expires_at && new Date(device.pairing_expires_at) < new Date()) {
-        return { success: false, error: "Pairing code has expired. Restart the agent to get a new code." };
-      }
-
-      // Create a session for this device
-      const sessionToken = crypto.randomUUID();
-      const { data: sessionData, error: sessionError } = await supabase
-        .from("device_sessions")
-        .insert({
-          device_id: device.id,
-          session_token: sessionToken,
-        })
-        .select()
-        .single();
-
-      if (sessionError || !sessionData) {
-        console.error("Session creation error:", sessionError);
-        return { success: false, error: "Failed to create session" };
-      }
-
-      // Clear the pairing code (one-time use)
-      await supabase
-        .from("devices")
-        .update({ pairing_code: null, pairing_expires_at: null })
-        .eq("id", device.id);
-
-      const newSession: DeviceSession = {
-        id: sessionData.id,
-        device_id: device.id,
-        session_token: sessionToken,
-        device_name: device.name,
-      };
-
-      // Store in localStorage (persists across sessions)
-      localStorage.setItem(SESSION_KEY, JSON.stringify(newSession));
-      setSession(newSession);
-
-      // Fetch initial device info
-      const info = await fetchDeviceInfo(device.id);
-      if (info) {
-        setDeviceInfo(info);
-      }
-
-      return { success: true };
-    } catch (err) {
-      console.error("Pairing error:", err);
-      return { success: false, error: "Pairing failed. Please try again." };
-    }
-  }, [fetchDeviceInfo]);
-
-  const unpair = useCallback(() => {
-    if (session) {
-      // Delete the session from database
-      supabase
-        .from("device_sessions")
-        .delete()
-        .eq("session_token", session.session_token)
-        .then(() => {
-          console.log("Session deleted from database");
-        });
-    }
-    localStorage.removeItem(SESSION_KEY);
-    setSession(null);
-    setDeviceInfo(null);
-  }, [session]);
-
   return (
-    <DeviceSessionContext.Provider 
-      value={{ 
-        session, 
+    <DeviceSessionContext.Provider
+      value={{
+        session,
         deviceInfo,
-        isLoading, 
+        isLoading,
         isReconnecting,
-        error, 
-        pairDevice, 
+        error,
+        pairDevice,
+        autoPair,
         unpair,
-        refreshDeviceInfo 
+        refreshDeviceInfo,
       }}
     >
       {children}

@@ -852,10 +852,10 @@ class CameraStreamer:
                 return None
 
         try:
-            # Windows: CAP_MSMF often succeeds when CAP_DSHOW fails
+            # Windows: DSHOW is the most reliable for "0 opened but 0 frames" (MSMF grabFrame errors)
             backends: List[Optional[int]] = [None]
             if platform.system() == "Windows":
-                backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, None]
+                backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
 
             candidate_indexes = [camera_index, 0, 1, 2, 3, 4]
             cap = None
@@ -972,9 +972,9 @@ class CameraStreamer:
         cameras: List[Dict[str, Any]] = []
 
         def _cap_open(idx: int) -> Optional["cv2.VideoCapture"]:
-            # Prefer MSMF first on Windows
+            # Prefer DSHOW first on Windows (more stable than MSMF for many webcams)
             if platform.system() == "Windows":
-                for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, None]:
+                for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]:
                     try:
                         cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
                         if cap.isOpened():
@@ -1116,53 +1116,15 @@ class JarvisAgent:
             raise
     
     def _display_pairing_code(self):
-        """Display the pairing code and QR code prominently in the terminal."""
-        # Build the pairing URL
-        pairing_url = f"https://id-preview--5180be14-f8e1-4c76-8ab6-e25e14788931.lovable.app/pair?code={self.pairing_code}"
-        
+        """Display pairing info without QR (single-user auto-connect mode)."""
         print("\n" + "=" * 60)
-        print("📱 SCAN QR CODE OR ENTER CODE TO PAIR")
+        print("🤖 JARVIS PC AGENT READY")
         print("=" * 60)
-        
-        # Try to display QR code in terminal
-        try:
-            import qrcode
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=1,
-                border=1,
-            )
-            qr.add_data(pairing_url)
-            qr.make(fit=True)
-            
-            # Print QR code using Unicode blocks
-            qr_matrix = qr.get_matrix()
-            print()
-            for row in qr_matrix:
-                line = "  "
-                for cell in row:
-                    line += "██" if cell else "  "
-                print(line)
-            print()
-        except ImportError:
-            print("\n⚠️  Install 'qrcode' for QR display: pip install qrcode")
-            print()
-        except Exception as e:
-            print(f"\n⚠️  QR display error: {e}")
-            print()
-        
-        print(f"   ╔═══════════════════════════════════╗")
-        print(f"   ║                                   ║")
-        print(f"   ║   PAIRING CODE:   {self.pairing_code}   ║")
-        print(f"   ║                                   ║")
-        print(f"   ╚═══════════════════════════════════╝")
+        print(f"   Device: {DEVICE_NAME}")
+        print(f"   Device Key: {self.device_key[:8]}…{self.device_key[-4:]} (used internally)")
         print()
-        print("   📱 Scan the QR code with your phone camera")
-        print("   🔗 Or open this URL:")
-        print(f"      {pairing_url}")
-        print()
-        print("   ⏱️  Code expires in 30 minutes")
+        print(f"   Pairing Code: {self.pairing_code}")
+        print("   (Optional) Open the web app → it will auto-connect when it sees this PC online.")
         print("=" * 60 + "\n")
     
     def _get_volume(self) -> int:

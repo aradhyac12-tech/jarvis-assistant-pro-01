@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
@@ -22,8 +22,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function useDeviceCommands() {
   const { toast } = useToast();
-  const { session } = useDeviceSession();
+  const { session, unpair } = useDeviceSession();
   const { selectedDevice } = useDeviceContext();
+
+  // Deduplicate in-flight awaitResult commands (prevents spam + slowdowns)
+  const inFlightRef = useRef(new Map<string, Promise<any>>());
+
+  const isSessionError = (message: string | undefined) => {
+    if (!message) return false;
+    return /Edge function returned 401|Invalid or expired session|Session expired/i.test(message);
+  };
 
   const waitForCommandResult = useCallback(
     async (commandId: string, sessionToken: string, options: SendCommandOptions = {}) => {
@@ -39,12 +47,18 @@ export function useDeviceCommands() {
           });
 
           if (response.error) {
+            if (isSessionError(response.error.message)) {
+              addLog("error", "web", "Session expired. Reconnecting...");
+              unpair();
+              return { success: false, error: "Session expired. Please reconnect." } as const;
+            }
+
             await sleep(pollIntervalMs);
             continue;
           }
 
-          const data = response.data;
-          if (!data || data.status === "pending") {
+          const data = response.data as any;
+          if (!data || data.status === "pending" || data.status === "running") {
             await sleep(pollIntervalMs);
             continue;
           }
@@ -64,92 +78,115 @@ export function useDeviceCommands() {
 
       return { success: false, error: "Timed out waiting for PC" } as const;
     },
-    []
+    [unpair]
   );
 
   const sendCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, options?: SendCommandOptions) => {
-      const startTime = Date.now();
-      
-      try {
-        const sessionToken = session?.session_token;
-        const deviceId = selectedDevice?.id || session?.device_id;
+      const sessionToken = session?.session_token;
+      const deviceId = selectedDevice?.id || session?.device_id;
 
-        if (!sessionToken) {
-          const errorMsg = "No active session";
-          addLog("error", "web", `Command "${commandType}" failed: ${errorMsg}`);
-          toast({
-            title: "Not Paired",
-            description: "Please pair with your PC first.",
-            variant: "destructive",
-          });
-          return { success: false, error: errorMsg } as const;
-        }
-
-        if (!deviceId) {
-          const errorMsg = "No device connected";
-          addLog("error", "web", `Command "${commandType}" failed: ${errorMsg}`);
-          toast({
-            title: "No Device Connected",
-            description: "Please run the PC agent and pair it first.",
-            variant: "destructive",
-          });
-          return { success: false, error: errorMsg } as const;
-        }
-
-        addLog("info", "web", `Sending command: ${commandType}`, JSON.stringify(payload).slice(0, 100));
-
-        // Use edge function for secure command insertion
-        const response = await supabase.functions.invoke("device-commands", {
-          body: { 
-            action: "insert", 
-            commandType, 
-            payload 
-          },
-          headers: { "x-session-token": sessionToken },
-        });
-
-        if (response.error) {
-          throw new Error(response.error.message || "Failed to send command");
-        }
-
-        const data = response.data;
-        if (!data?.success) {
-          throw new Error(data?.error || "Failed to send command");
-        }
-
-        const commandId = data.commandId;
-        console.log(`Command sent: ${commandType}`, { payload, commandId, deviceId });
-
-        if (!commandId || !options?.awaitResult) {
-          addLog("info", "web", `Command "${commandType}" queued`, `ID: ${commandId}`);
-          return { success: true, commandId } as const;
-        }
-
-        const awaited = await waitForCommandResult(commandId, sessionToken, options);
-        const duration = Date.now() - startTime;
-        
-        if (awaited.success) {
-          addLog("info", "web", `Command "${commandType}" completed in ${duration}ms`);
-        } else {
-          addLog("error", "web", `Command "${commandType}" failed after ${duration}ms`, awaited.error as string);
-        }
-        
-        return { ...awaited, commandId } as const;
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        addLog("error", "web", `Command "${commandType}" error: ${errorMsg}`);
-        console.error("Error sending command:", error);
+      if (!sessionToken) {
+        const errorMsg = "No active session";
+        addLog("error", "web", `Command "${commandType}" failed: ${errorMsg}`);
         toast({
-          title: "Command Failed",
-          description: "Failed to send command to PC",
+          title: "Not Paired",
+          description: "Please connect to your PC first.",
           variant: "destructive",
         });
-        return { success: false, error } as const;
+        return { success: false, error: errorMsg } as const;
+      }
+
+      if (!deviceId) {
+        const errorMsg = "No device connected";
+        addLog("error", "web", `Command "${commandType}" failed: ${errorMsg}`);
+        toast({
+          title: "No Device Connected",
+          description: "Please run the PC agent.",
+          variant: "destructive",
+        });
+        return { success: false, error: errorMsg } as const;
+      }
+
+      const startTime = Date.now();
+      const shouldDedupe = !!options?.awaitResult;
+      const dedupeKey = `${deviceId}:${commandType}:${JSON.stringify(payload)}`;
+
+      if (shouldDedupe) {
+        const existing = inFlightRef.current.get(dedupeKey);
+        if (existing) return existing;
+      }
+
+      const execPromise = (async () => {
+        try {
+          addLog("info", "web", `Sending command: ${commandType}`, JSON.stringify(payload).slice(0, 140));
+
+          const response = await supabase.functions.invoke("device-commands", {
+            body: { action: "insert", commandType, payload },
+            headers: { "x-session-token": sessionToken },
+          });
+
+          if (response.error) {
+            if (isSessionError(response.error.message)) {
+              addLog("error", "web", "Session expired. Reconnecting...");
+              unpair();
+              toast({
+                title: "Session Expired",
+                description: "Reconnecting… please try again.",
+                variant: "destructive",
+              });
+              return { success: false, error: "Session expired" } as const;
+            }
+            throw new Error(response.error.message || "Failed to send command");
+          }
+
+          const data = response.data as any;
+          if (!data?.success) {
+            throw new Error(data?.error || "Failed to send command");
+          }
+
+          const commandId = data.commandId as string | undefined;
+
+          if (!commandId || !options?.awaitResult) {
+            addLog("info", "web", `Command "${commandType}" queued`, `ID: ${commandId}`);
+            return { success: true, commandId } as const;
+          }
+
+          const awaited = await waitForCommandResult(commandId, sessionToken, options);
+          const duration = Date.now() - startTime;
+
+          if (awaited.success) {
+            addLog("info", "web", `Command "${commandType}" completed in ${duration}ms`);
+          } else {
+            addLog("error", "web", `Command "${commandType}" failed after ${duration}ms`, awaited.error as string);
+          }
+
+          return { ...awaited, commandId } as const;
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          addLog("error", "web", `Command "${commandType}" error: ${errorMsg}`);
+          console.error("Error sending command:", error);
+          toast({
+            title: "Command Failed",
+            description: errorMsg,
+            variant: "destructive",
+          });
+          return { success: false, error } as const;
+        }
+      })();
+
+      if (shouldDedupe) {
+        inFlightRef.current.set(dedupeKey, execPromise);
+      }
+
+      try {
+        return await execPromise;
+      } finally {
+        if (shouldDedupe) inFlightRef.current.delete(dedupeKey);
       }
     },
-    [toast, session, waitForCommandResult, selectedDevice]
+    [selectedDevice?.id, session?.device_id, session?.session_token, toast, unpair, waitForCommandResult]
   );
 
-  return { sendCommand };
+  return useMemo(() => ({ sendCommand }), [sendCommand]);
 }
