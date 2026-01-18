@@ -36,54 +36,9 @@ export default function RemoteControl() {
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
 
-  // Handle physical keyboard input - KDE Connect style
-  // Special keys (Ctrl, Esc, Enter, etc.) send as key presses
-  // Regular characters send immediately as typed text
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      // Only capture when not in text input
-      if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") return;
-      
-      e.preventDefault();
-      
-      const key = e.key;
-      
-      // Build key combo
-      const modifiers: string[] = [];
-      if (e.ctrlKey) modifiers.push("ctrl");
-      if (e.altKey) modifiers.push("alt");
-      if (e.shiftKey && modifiers.length > 0) modifiers.push("shift");
-      if (e.metaKey) modifiers.push("win");
-      
-      // Handle key combos (Ctrl+C, Alt+Tab, etc.)
-      if (modifiers.length > 0 && !["Control", "Alt", "Shift", "Meta"].includes(key)) {
-        modifiers.push(key.toLowerCase());
-        sendCommand("key_combo", { keys: modifiers });
-        setLastKey(modifiers.join("+"));
-      }
-      // Special keys that should always be sent as key presses
-      else if (
-        rawKeyMode || 
-        key.length > 1 || // Special keys like Enter, Escape, Arrow*, F1-12, etc.
-        ["Enter", "Escape", "Tab", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown"].includes(key) ||
-        key.startsWith("Arrow") || key.startsWith("F") // F1-F12
-      ) {
-        sendCommand("press_key", { key: key.toLowerCase() });
-        setLastKey(key);
-      }
-      // Regular characters - send as typed text (KDE Connect style)
-      else {
-        sendCommand("type_text", { text: key });
-        setLastKey(key);
-      }
-      
-      setTimeout(() => setLastKey(null), 300);
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [sendCommand, rawKeyMode]);
+  // Keyboard capture is now DISABLED by default
+  // User must explicitly use the text area or quick keys
+  // This prevents accidental key presses when browsing the app
 
   const sendKeyboard = async () => {
     if (!textInput.trim()) return;

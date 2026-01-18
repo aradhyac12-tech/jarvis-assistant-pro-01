@@ -82,14 +82,14 @@ export function MonitoringPanel({
     }
   }, [selectedDevice?.is_online, sendCommand]);
 
-  // Auto-refresh system stats
-  useEffect(() => {
-    if (!autoRefresh || !selectedDevice?.is_online) return;
+  // Fetch stats ONCE on mount/connect - no auto-refresh to avoid command spam
+  const [hasFetchedStats, setHasFetchedStats] = useState(false);
 
-    fetchSystemStats();
-    const interval = setInterval(fetchSystemStats, refreshInterval);
-    return () => clearInterval(interval);
-  }, [autoRefresh, refreshInterval, selectedDevice?.is_online, fetchSystemStats]);
+  useEffect(() => {
+    if (!selectedDevice?.is_online || hasFetchedStats) return;
+    
+    fetchSystemStats().then(() => setHasFetchedStats(true));
+  }, [selectedDevice?.is_online, hasFetchedStats, fetchSystemStats]);
 
   const isConnected = selectedDevice?.is_online ?? false;
 
