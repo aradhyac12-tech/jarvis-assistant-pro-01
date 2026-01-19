@@ -9,6 +9,7 @@ import { Loader2 } from "lucide-react";
 
 import Pair from "./pages/Pair";
 import Dashboard from "./pages/Dashboard";
+import ControlHub from "./pages/ControlHub";
 import VoiceAI from "./pages/VoiceAI";
 import SystemControls from "./pages/SystemControls";
 import MusicPlayer from "./pages/MusicPlayer";
@@ -50,6 +51,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <Dashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hub"
+        element={
+          <ProtectedRoute>
+            <ControlHub />
           </ProtectedRoute>
         }
       />

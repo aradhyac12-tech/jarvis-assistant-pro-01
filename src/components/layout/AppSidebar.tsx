@@ -26,6 +26,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 
 const navItems = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
+  { title: "Control Hub", url: "/hub", icon: Monitor },
   { title: "Voice AI", url: "/voice", icon: Mic },
   { title: "System Controls", url: "/controls", icon: Monitor },
   { title: "Music Player", url: "/music", icon: Music },
