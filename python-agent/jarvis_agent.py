@@ -1874,6 +1874,10 @@ class JarvisAgent:
             # Web
             elif command_type == "open_url":
                 return self._open_url(payload.get("url", ""))
+            elif command_type == "open_website":
+                return self._open_website(payload.get("site", ""), payload.get("query", ""))
+            elif command_type == "search_web":
+                return self._search_web(payload.get("engine", "google"), payload.get("query", ""))
 
             # Media
             elif command_type == "play_music":
@@ -1883,6 +1887,10 @@ class JarvisAgent:
                 )
             elif command_type == "media_control":
                 return self._media_control(payload.get("action", "play_pause"))
+            elif command_type == "get_media_state":
+                return self._get_media_state()
+            elif command_type == "media_seek":
+                return self._media_seek(payload.get("position_percent", 0))
 
             # Screen / system info
             elif command_type == "screenshot":

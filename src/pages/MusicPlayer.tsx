@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -66,8 +66,6 @@ export default function MusicPlayer() {
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { selectedDevice } = useDeviceContext();
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
   // Real media state from PC
   const [mediaState, setMediaState] = useState<MediaState>({
     title: "No media playing",
@@ -123,18 +121,12 @@ export default function MusicPlayer() {
     }
   }, [selectedDevice, sendCommand, isFetching]);
 
-  // Poll media state every 3 seconds (reduced from 2 to avoid overwhelming)
+  // Fetch media state once when the device comes online (avoid aggressive polling)
   useEffect(() => {
     if (selectedDevice?.is_online) {
       fetchMediaState();
-      pollIntervalRef.current = setInterval(fetchMediaState, 3000);
     }
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
-    };
-  }, [selectedDevice]);
+  }, [selectedDevice?.is_online, fetchMediaState]);
 
   // Media controls
   const handlePlayPause = async () => {
