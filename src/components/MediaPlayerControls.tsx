@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -51,6 +51,8 @@ export function MediaPlayerControls({
   const [isPlaying, setIsPlaying] = useState(false);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isControlling, setIsControlling] = useState(false);
+  const volumeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load volume from device on connect
   useEffect(() => {
@@ -105,28 +107,43 @@ export function MediaPlayerControls({
     }
   }, [selectedDevice?.is_online, fetchMediaInfo, refreshDevices]);
 
-  // Media controls
+  // Media controls - instant feedback then send command
   const handleMediaControl = async (action: string) => {
-    await sendCommand("media_control", { action });
+    if (isControlling) return;
     
+    // Instant local feedback
     if (action === "play_pause") {
       setIsPlaying(!isPlaying);
     }
     
-    // Refresh media info after action
-    setTimeout(fetchMediaInfo, 500);
+    setIsControlling(true);
+    
+    // Send command without waiting (fire and forget for responsiveness)
+    sendCommand("media_control", { action }).then(() => {
+      // Refresh media info after a short delay
+      setTimeout(fetchMediaInfo, 200);
+    }).finally(() => {
+      setIsControlling(false);
+    });
   };
 
-  // Volume control
+  // Volume control - instant local update
   const handleVolumeChange = (value: number[]) => {
     const newVolume = value[0];
     setVolume(newVolume);
     setIsMuted(newVolume === 0);
   };
 
+  // Debounced volume commit for smoother slider experience
   const handleVolumeCommit = (value: number[]) => {
-    sendCommand("set_volume", { level: value[0] });
-    toast({ title: "Volume", description: `Set to ${value[0]}%` });
+    if (volumeTimeoutRef.current) {
+      clearTimeout(volumeTimeoutRef.current);
+    }
+    
+    volumeTimeoutRef.current = setTimeout(() => {
+      sendCommand("set_volume", { level: value[0] });
+      toast({ title: "Volume", description: `Set to ${value[0]}%` });
+    }, 100);
   };
 
   const handleMuteToggle = () => {
@@ -137,6 +154,15 @@ export function MediaPlayerControls({
     } else {
       sendCommand("set_volume", { level: volume || 50 });
     }
+  };
+
+  // Quick volume adjustment
+  const adjustVolume = (delta: number) => {
+    const newVolume = Math.max(0, Math.min(100, volume + delta));
+    setVolume(newVolume);
+    setIsMuted(newVolume === 0);
+    sendCommand("set_volume", { level: newVolume });
+    toast({ title: "Volume", description: `Set to ${newVolume}%` });
   };
 
   const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
@@ -152,6 +178,7 @@ export function MediaPlayerControls({
           size="icon"
           onClick={() => handleMediaControl("play_pause")}
           className="h-10 w-10"
+          disabled={isControlling}
         >
           {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
         </Button>
@@ -198,16 +225,36 @@ export function MediaPlayerControls({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Now Playing Info */}
-        {mediaInfo && (mediaInfo.title || mediaInfo.artist) && (
-          <div className="p-3 rounded-lg bg-secondary/30">
-            <p className="font-medium text-sm truncate">{mediaInfo.title || "Unknown Track"}</p>
-            <p className="text-xs text-muted-foreground truncate">
-              {mediaInfo.artist || "Unknown Artist"}
-              {mediaInfo.album && ` • ${mediaInfo.album}`}
-            </p>
-          </div>
-        )}
+        {/* Now Playing Info - Always show status */}
+        <div className="p-3 rounded-lg bg-secondary/30">
+          {mediaInfo && (mediaInfo.title || mediaInfo.artist) ? (
+            <>
+              <div className="flex items-center gap-2 mb-1">
+                <Badge variant={isPlaying ? "default" : "secondary"} className={cn(
+                  "text-xs",
+                  isPlaying ? "bg-neon-green/20 text-neon-green animate-pulse" : ""
+                )}>
+                  {isPlaying ? "▶ Playing" : "⏸ Paused"}
+                </Badge>
+              </div>
+              <p className="font-medium text-sm truncate">{mediaInfo.title || "Unknown Track"}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {mediaInfo.artist || "Unknown Artist"}
+                {mediaInfo.album && ` • ${mediaInfo.album}`}
+              </p>
+            </>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium text-sm text-muted-foreground">No media detected</p>
+                <p className="text-xs text-muted-foreground">Play something on your PC</p>
+              </div>
+              <Badge variant="secondary" className="text-xs">
+                {isPlaying ? "▶ Playing" : "⏸ Stopped"}
+              </Badge>
+            </div>
+          )}
+        </div>
 
         {/* Playback Controls */}
         <div className="flex items-center justify-center gap-2">
@@ -219,8 +266,9 @@ export function MediaPlayerControls({
           </Button>
           <Button
             onClick={() => handleMediaControl("play_pause")}
+            disabled={isControlling}
             className={cn(
-              "h-12 w-12 rounded-full",
+              "h-12 w-12 rounded-full transition-all",
               isPlaying ? "bg-primary hover:bg-primary/90" : "gradient-primary"
             )}
           >
@@ -260,7 +308,7 @@ export function MediaPlayerControls({
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => handleMediaControl("volume_down")}
+                onClick={() => adjustVolume(-10)}
               >
                 <Volume1 className="h-3 w-3 mr-1" />
                 -10
@@ -268,7 +316,7 @@ export function MediaPlayerControls({
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => handleMediaControl("volume_up")}
+                onClick={() => adjustVolume(10)}
               >
                 <Volume2 className="h-3 w-3 mr-1" />
                 +10

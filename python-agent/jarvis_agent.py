@@ -1941,7 +1941,7 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _search_web(self, engine: str, query: str):
+    def _search_web(self, engine: str, query: str, press_enter: bool = True):
         """Perform a web search on the specified engine."""
         try:
             engine = (engine or "google").strip().lower()
@@ -1949,6 +1949,23 @@ class JarvisAgent:
 
             if not query:
                 return {"success": False, "error": "Missing query"}
+
+            # For ChatGPT, open and then type the query and press enter
+            if engine in ["chatgpt", "openai"]:
+                webbrowser.open("https://chatgpt.com")
+                time.sleep(2.5)  # Wait for page to load
+                pyautogui.typewrite(query, interval=0.02)
+                if press_enter:
+                    time.sleep(0.3)
+                    pyautogui.press("enter")
+                add_log("info", f"Searched ChatGPT: {query}", category="web")
+                return {"success": True, "message": f"Searched ChatGPT for: {query}"}
+            
+            # For Perplexity, similar approach
+            if engine == "perplexity":
+                webbrowser.open(f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}")
+                add_log("info", f"Searched Perplexity: {query}", category="web")
+                return {"success": True, "message": f"Searched Perplexity for: {query}"}
 
             if engine == "google":
                 url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
@@ -1960,26 +1977,60 @@ class JarvisAgent:
                 url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
             elif engine in ["wikipedia", "wiki"]:
                 url = f"https://en.wikipedia.org/w/index.php?search={urllib.parse.quote(query)}"
-            elif engine == "perplexity":
-                url = f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}"
-            elif engine in ["chatgpt", "openai"]:
-                url = f"https://chatgpt.com/?q={urllib.parse.quote(query)}"
             else:
                 url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
 
-            return self._open_url(url)
+            result = self._open_url(url)
+            add_log("info", f"Searched {engine}: {query}", category="web")
+            return result
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _get_media_state(self):
-        """Best-effort media info (no OS-specific metadata)."""
+        """Get current media state including playing info."""
         try:
             volume = self._get_volume()
+            title = ""
+            artist = ""
+            is_playing = False
+            
+            # Try to get window title for media detection on Windows
+            if platform.system() == "Windows":
+                try:
+                    import ctypes
+                    user32 = ctypes.windll.user32
+                    hwnd = user32.GetForegroundWindow()
+                    length = user32.GetWindowTextLengthW(hwnd) + 1
+                    buffer = ctypes.create_unicode_buffer(length)
+                    user32.GetWindowTextW(hwnd, buffer, length)
+                    window_title = buffer.value
+                    
+                    # Check common media players
+                    media_keywords = ['spotify', 'youtube', 'vlc', 'music', 'media player', 'groove']
+                    for keyword in media_keywords:
+                        if keyword.lower() in window_title.lower():
+                            # Parse title for song info
+                            if ' - ' in window_title:
+                                parts = window_title.split(' - ')
+                                if len(parts) >= 2:
+                                    artist = parts[0].strip()
+                                    title = parts[1].strip()
+                                    # Clean up common suffixes
+                                    for suffix in ['- YouTube', '- Spotify', 'VLC media player']:
+                                        title = title.replace(suffix, '').strip()
+                            else:
+                                title = window_title
+                            is_playing = True
+                            break
+                except Exception as e:
+                    add_log("warn", f"Could not get window title: {e}", category="media")
+            
             return {
                 "success": True,
-                "title": "",
-                "artist": "",
-                "is_playing": False,
+                "title": title,
+                "artist": artist,
+                "is_playing": is_playing,
+                "playing": is_playing,  # Alias for compatibility
                 "position_percent": 0,
                 "position_ms": 0,
                 "duration_ms": 0,
@@ -2153,7 +2204,11 @@ class JarvisAgent:
             elif command_type == "open_website":
                 return self._open_website(payload.get("site", ""), payload.get("query", ""))
             elif command_type == "search_web":
-                return self._search_web(payload.get("engine", "google"), payload.get("query", ""))
+                return self._search_web(
+                    payload.get("engine", "google"), 
+                    payload.get("query", ""),
+                    payload.get("press_enter", True)
+                )
 
             # Media
             elif command_type == "play_music":
@@ -2165,6 +2220,8 @@ class JarvisAgent:
                 return self._media_control(payload.get("action", "play_pause"))
             elif command_type == "get_media_state":
                 return self._get_media_state()
+            elif command_type == "get_media_info":
+                return self._get_media_state()  # Alias
             elif command_type == "media_seek":
                 return self._media_seek(payload.get("position_percent", 0))
 
