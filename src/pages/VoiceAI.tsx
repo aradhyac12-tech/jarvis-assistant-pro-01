@@ -1,10 +1,12 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { Send, Bot, User, Loader2, Zap } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Send, Bot, User, Loader2, Zap, Mic, MicOff, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -30,7 +32,7 @@ interface AICommand {
   engine?: string;
   level?: number;
   text?: string;
-  control?: string; // for media_control
+  control?: string;
 }
 
 export default function VoiceAI() {
@@ -43,9 +45,175 @@ export default function VoiceAI() {
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
 
+  // Voice recognition state
+  const [isListening, setIsListening] = useState(false);
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+  const [isWaitingForWakeWord, setIsWaitingForWakeWord] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const wakeWordRecognitionRef = useRef<any>(null);
+
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Initialize speech recognition
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+      // Main recognition for commands
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = false;
+      recognitionRef.current.lang = 'en-US';
+
+      recognitionRef.current.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setIsListening(false);
+        handleSendMessage(transcript);
+      };
+
+      recognitionRef.current.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        setIsListening(false);
+        if (event.error !== 'no-speech') {
+          toast({
+            title: "Voice Error",
+            description: `Could not recognize speech: ${event.error}`,
+            variant: "destructive",
+          });
+        }
+      };
+
+      recognitionRef.current.onend = () => {
+        setIsListening(false);
+      };
+
+      // Wake word recognition
+      wakeWordRecognitionRef.current = new SpeechRecognition();
+      wakeWordRecognitionRef.current.continuous = true;
+      wakeWordRecognitionRef.current.interimResults = true;
+      wakeWordRecognitionRef.current.lang = 'en-US';
+
+      wakeWordRecognitionRef.current.onresult = (event: any) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript.toLowerCase();
+          
+          // Check for wake word "Jarvis"
+          if (transcript.includes('jarvis') || transcript.includes('jarves') || transcript.includes('jarwis')) {
+            addLog("info", "web", "Wake word 'Jarvis' detected!");
+            
+            // Stop wake word listening temporarily
+            wakeWordRecognitionRef.current.stop();
+            setIsWaitingForWakeWord(false);
+            
+            // Play acknowledgment sound or visual feedback
+            toast({
+              title: "👋 Yes?",
+              description: "I'm listening...",
+            });
+            
+            // Start listening for command
+            setTimeout(() => {
+              startListening();
+            }, 300);
+            
+            break;
+          }
+        }
+      };
+
+      wakeWordRecognitionRef.current.onerror = (event: any) => {
+        if (event.error === 'no-speech') {
+          // Restart wake word listening
+          if (wakeWordEnabled && !isListening) {
+            setTimeout(() => {
+              try {
+                wakeWordRecognitionRef.current.start();
+                setIsWaitingForWakeWord(true);
+              } catch (e) {
+                // Already running
+              }
+            }, 100);
+          }
+        }
+      };
+
+      wakeWordRecognitionRef.current.onend = () => {
+        // Restart wake word listening if enabled
+        if (wakeWordEnabled && !isListening) {
+          setTimeout(() => {
+            try {
+              wakeWordRecognitionRef.current.start();
+              setIsWaitingForWakeWord(true);
+            } catch (e) {
+              // Already running
+            }
+          }, 100);
+        }
+      };
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (e) {}
+      }
+      if (wakeWordRecognitionRef.current) {
+        try { wakeWordRecognitionRef.current.stop(); } catch (e) {}
+      }
+    };
+  }, [toast, wakeWordEnabled]);
+
+  // Handle wake word toggle
+  const handleWakeWordToggle = (enabled: boolean) => {
+    setWakeWordEnabled(enabled);
+    
+    if (enabled && wakeWordRecognitionRef.current) {
+      try {
+        wakeWordRecognitionRef.current.start();
+        setIsWaitingForWakeWord(true);
+        toast({
+          title: "Wake Word Enabled",
+          description: "Say 'Jarvis' to activate voice commands",
+        });
+      } catch (e) {
+        console.error("Failed to start wake word recognition:", e);
+      }
+    } else if (wakeWordRecognitionRef.current) {
+      try {
+        wakeWordRecognitionRef.current.stop();
+        setIsWaitingForWakeWord(false);
+      } catch (e) {}
+    }
+  };
+
+  const startListening = () => {
+    if (!recognitionRef.current) {
+      toast({
+        title: "Not Supported",
+        description: "Voice recognition is not supported in this browser",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      recognitionRef.current.start();
+      setIsListening(true);
+    } catch (e) {
+      console.error("Failed to start recognition:", e);
+      setIsListening(false);
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+    }
+    setIsListening(false);
+  };
 
   // Execute commands returned by AI
   const executeAICommands = async (commands: AICommand[]) => {
@@ -72,7 +240,8 @@ export default function VoiceAI() {
 
           case "search_web":
             commandType = "search_web";
-            payload = { engine: cmd.engine || "google", query: cmd.query };
+            // Add press_enter flag to actually search
+            payload = { engine: cmd.engine || "google", query: cmd.query, press_enter: true };
             break;
 
           case "play_music":
@@ -140,9 +309,19 @@ export default function VoiceAI() {
     }
 
     setExecutingCommands(false);
+    
+    // Restart wake word listening after command execution
+    if (wakeWordEnabled && wakeWordRecognitionRef.current) {
+      setTimeout(() => {
+        try {
+          wakeWordRecognitionRef.current.start();
+          setIsWaitingForWakeWord(true);
+        } catch (e) {}
+      }, 500);
+    }
   };
 
-  const handleSendMessage = async (text?: string) => {
+  const handleSendMessage = useCallback(async (text?: string) => {
     const messageText = text || inputText;
     if (!messageText.trim() || isProcessing) return;
 
@@ -198,7 +377,7 @@ export default function VoiceAI() {
     } finally {
       setIsProcessing(false);
     }
-  };
+  }, [inputText, isProcessing, session?.session_token, toast, sendCommand]);
 
   return (
     <DashboardLayout>
@@ -212,6 +391,21 @@ export default function VoiceAI() {
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Wake Word Toggle */}
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-secondary/30">
+              <Label htmlFor="wake-word" className="text-xs text-muted-foreground">
+                Wake: "Jarvis"
+              </Label>
+              <Switch
+                id="wake-word"
+                checked={wakeWordEnabled}
+                onCheckedChange={handleWakeWordToggle}
+              />
+              {isWaitingForWakeWord && (
+                <span className="w-2 h-2 rounded-full bg-neon-green animate-pulse" />
+              )}
+            </div>
+            
             {executingCommands && (
               <Badge variant="secondary" className="bg-neon-purple/10 text-neon-purple border-neon-purple/30 text-xs animate-pulse">
                 <Zap className="h-3 w-3 mr-1" />
@@ -234,13 +428,13 @@ export default function VoiceAI() {
                 </div>
                 <h2 className="text-xl md:text-2xl font-bold mb-2">Hey, I'm Jarvis!</h2>
                 <p className="text-muted-foreground max-w-md text-sm md:text-base">
-                  Your AI assistant that can control your PC. Try asking:
+                  Your AI assistant that can control your PC. Try saying "Jarvis" or click the mic!
                 </p>
                 <div className="flex flex-wrap gap-2 mt-4 md:mt-6 justify-center">
                   {[
                     "Open YouTube and search for music",
                     "Set volume to 50%",
-                    "Open Edge and search ChatGPT",
+                    "Search for Python tutorials on ChatGPT",
                     "Play Bohemian Rhapsody",
                   ].map((suggestion) => (
                     <Button
@@ -325,18 +519,38 @@ export default function VoiceAI() {
           {/* Input Area */}
           <CardContent className="p-3 md:p-4 border-t border-border/30 flex-shrink-0">
             <div className="flex items-center gap-2 md:gap-3">
+              {/* Voice Button */}
+              <Button
+                size="icon"
+                variant={isListening ? "destructive" : "secondary"}
+                className={cn(
+                  "h-10 w-10 md:h-12 md:w-12 rounded-xl flex-shrink-0",
+                  isListening && "animate-pulse"
+                )}
+                onClick={isListening ? stopListening : startListening}
+                disabled={isProcessing || executingCommands}
+              >
+                {isListening ? (
+                  <MicOff className="h-4 w-4 md:h-5 md:w-5" />
+                ) : (
+                  <Mic className="h-4 w-4 md:h-5 md:w-5" />
+                )}
+              </Button>
+
               <div className="flex-1 relative">
                 <input
                   type="text"
                   placeholder={
-                    executingCommands
+                    isListening
+                      ? "Listening..."
+                      : executingCommands
                       ? "Executing commands..."
-                      : "Type a command..."
+                      : "Type a command or say 'Jarvis'..."
                   }
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                  disabled={isProcessing || executingCommands}
+                  disabled={isProcessing || executingCommands || isListening}
                   className="w-full h-10 md:h-12 px-3 md:px-4 rounded-xl bg-secondary border border-border/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors text-sm md:text-base disabled:opacity-50"
                 />
               </div>
@@ -354,6 +568,14 @@ export default function VoiceAI() {
                 )}
               </Button>
             </div>
+            
+            {/* Voice status indicator */}
+            {(isListening || isWaitingForWakeWord) && (
+              <div className="mt-2 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                <Volume2 className="h-3 w-3 text-primary animate-pulse" />
+                <span>{isListening ? "Speak now..." : "Waiting for 'Jarvis'..."}</span>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

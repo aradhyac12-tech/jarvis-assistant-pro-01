@@ -161,27 +161,36 @@ export default function Apps() {
     const openKey = opts?.openKey ?? appName;
     setIsOpening(openKey);
 
-    const res = await sendCommand(
-      "open_app",
-      { app_name: appName, app_id: opts?.appId ?? null },
-      { awaitResult: true, timeoutMs: 12000 }
-    );
+    try {
+      const res = await sendCommand(
+        "open_app",
+        { app_name: appName, app_id: opts?.appId ?? null },
+        { awaitResult: true, timeoutMs: 15000 }
+      );
 
-    const result = (res as any).result as Record<string, unknown> | undefined;
+      const result = (res as any).result as Record<string, unknown> | undefined;
 
-    if (res.success) {
-      toast({
-        title: "App opened",
-        description: (result?.message as string) ?? `Opened ${appName}`,
-      });
-    } else {
-      toast({
-        title: "App failed to open",
-        description:
-          (typeof (res as any).error === "string" ? (res as any).error : undefined) ??
-          ((result?.error as string) || `Could not open ${appName}`),
-        variant: "destructive",
-      });
+      if (res.success) {
+        toast({
+          title: "App opened",
+          description: (result?.message as string) ?? `Opened ${appName}`,
+        });
+      } else {
+        const errorMsg = typeof (res as any).error === "string" 
+          ? (res as any).error 
+          : (result?.error as string) || `Could not open ${appName}`;
+        
+        // Don't show error for session issues - just retry
+        if (!errorMsg.includes("session")) {
+          toast({
+            title: "App failed to open",
+            description: errorMsg,
+            variant: "destructive",
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Open app error:", err);
     }
 
     setIsOpening(null);
