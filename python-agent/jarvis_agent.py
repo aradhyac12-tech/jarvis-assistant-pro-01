@@ -1011,6 +1011,144 @@ class CameraStreamer:
         return cameras
 
 
+# ============== PHONE WEBCAM RECEIVER ==============
+class PhoneWebcamReceiver:
+    """Receives phone camera frames and displays them in a window (can be captured by OBS as virtual webcam)."""
+    
+    def __init__(self):
+        self.running = False
+        self.ws = None
+        self.session_id = None
+        self.window_name = "Phone Camera (Virtual Webcam)"
+        self.last_frame = None
+        self.frame_count = 0
+        self.last_frame_time = 0
+        self.last_error: Optional[str] = None
+        
+    async def connect(self, session_id: str):
+        if not HAS_WEBSOCKETS or not HAS_OPENCV:
+            self.last_error = "WebSockets or OpenCV not available"
+            add_log("error", self.last_error, category="phone_webcam")
+            return False
+            
+        self.session_id = session_id
+        self.last_error = None
+        
+        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=pc&fps=30&quality=80"
+        add_log("info", f"Connecting to phone webcam relay (session: {session_id[:8]}...)", category="phone_webcam")
+        
+        try:
+            self.ws = await websockets.connect(ws_url)
+            self.running = True
+            self.frame_count = 0
+            add_log("info", "Phone webcam relay connected", category="phone_webcam")
+            return True
+        except Exception as e:
+            self.last_error = str(e)
+            add_log("error", f"Phone webcam connection failed: {e}", category="phone_webcam")
+            return False
+    
+    async def start_receiving(self):
+        """Receive frames from phone and display in an OpenCV window."""
+        if not HAS_OPENCV:
+            self.last_error = "OpenCV not available"
+            add_log("error", self.last_error, category="phone_webcam")
+            return
+            
+        add_log("info", f"Phone webcam window opened: '{self.window_name}'", category="phone_webcam")
+        add_log("info", "Use OBS 'Window Capture' to capture this as a virtual webcam", category="phone_webcam")
+        
+        # Create a named window that can be captured by OBS
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.window_name, 640, 480)
+        
+        # Show a placeholder frame
+        placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.putText(placeholder, "Waiting for phone camera...", (120, 240), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.imshow(self.window_name, placeholder)
+        cv2.waitKey(1)
+        
+        try:
+            while self.running and self.ws:
+                try:
+                    message = await asyncio.wait_for(self.ws.recv(), timeout=0.05)
+                    
+                    if isinstance(message, str):
+                        data = json.loads(message)
+                        
+                        if data.get("type") == "camera_frame" and data.get("data"):
+                            # Decode base64 JPEG frame
+                            frame_bytes = base64.b64decode(data["data"])
+                            nparr = np.frombuffer(frame_bytes, np.uint8)
+                            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                            
+                            if frame is not None:
+                                self.last_frame = frame
+                                self.frame_count += 1
+                                self.last_frame_time = time.time()
+                                
+                                # Display the frame
+                                cv2.imshow(self.window_name, frame)
+                                
+                        elif data.get("type") == "peer_disconnected":
+                            add_log("info", "Phone disconnected from webcam relay", category="phone_webcam")
+                            
+                except asyncio.TimeoutError:
+                    pass
+                except Exception as e:
+                    if self.running:
+                        add_log("warn", f"Phone webcam receive error: {e}", category="phone_webcam")
+                    break
+                
+                # Process OpenCV window events (required for window to stay responsive)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27:  # ESC key to close
+                    add_log("info", "Phone webcam closed by user (ESC)", category="phone_webcam")
+                    break
+                    
+        except Exception as e:
+            self.last_error = str(e)
+            add_log("error", f"Phone webcam error: {e}", category="phone_webcam")
+        finally:
+            cv2.destroyWindow(self.window_name)
+            add_log("info", "Phone webcam window closed", category="phone_webcam")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        now = time.time()
+        return {
+            "frame_count": self.frame_count,
+            "running": self.running,
+            "connected": self.ws is not None,
+            "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
+            "last_error": self.last_error,
+        }
+    
+    async def stop(self):
+        self.running = False
+        
+        if self.ws:
+            try:
+                await self.ws.close()
+            except:
+                pass
+            self.ws = None
+        
+        try:
+            cv2.destroyWindow(self.window_name)
+        except:
+            pass
+            
+        add_log("info", "Phone webcam receiver stopped", category="phone_webcam")
+
+
+# Import numpy for phone webcam if available
+try:
+    import numpy as np
+except ImportError:
+    pass
+
+
 # ============== JARVIS AGENT ==============
 class JarvisAgent:
     def __init__(self):
@@ -1026,8 +1164,10 @@ class JarvisAgent:
         
         self.audio_streamer = AudioStreamer()
         self.camera_streamer = CameraStreamer()
+        self.phone_webcam_receiver = PhoneWebcamReceiver()
         self.audio_session_id = None
         self.camera_session_id = None
+        self.phone_webcam_session_id = None
         
         self._volume_cache = 50
         self._brightness_cache = 50
@@ -2088,6 +2228,30 @@ class JarvisAgent:
                 await self.camera_streamer.stop()
                 self.camera_session_id = None
                 return {"success": True}
+
+            # Phone as Webcam
+            elif command_type == "start_phone_webcam":
+                session_id = payload.get("session_id", str(uuid.uuid4()))
+                self.phone_webcam_session_id = session_id
+                
+                connected = await self.phone_webcam_receiver.connect(session_id)
+                if connected:
+                    asyncio.create_task(self.phone_webcam_receiver.start_receiving())
+                    return {"success": True, "session_id": session_id, "message": "Phone webcam window opened. Use OBS Window Capture to use as virtual webcam."}
+                
+                return {
+                    "success": False, 
+                    "error": self.phone_webcam_receiver.last_error or "Failed to start phone webcam"
+                }
+
+            elif command_type == "stop_phone_webcam":
+                await self.phone_webcam_receiver.stop()
+                self.phone_webcam_session_id = None
+                return {"success": True}
+
+            elif command_type == "get_phone_webcam_status":
+                stats = self.phone_webcam_receiver.get_stats()
+                return {"success": True, **stats}
 
             else:
                 add_log("warn", f"Unknown command: {command_type}", category="command")
