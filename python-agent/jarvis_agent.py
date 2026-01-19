@@ -690,7 +690,7 @@ class AudioStreamer:
             "send_rate_kbps": round((self.bytes_sent * 8) / (elapsed * 1000), 2),
             "recv_rate_kbps": round((self.bytes_received * 8) / (elapsed * 1000), 2),
             "running": self.running,
-            "connected": self.ws is not None and self.ws.open if self.ws else False,
+            "connected": self.ws is not None,
         }
     
     def _cleanup_input(self):
@@ -885,7 +885,7 @@ class CameraStreamer:
             while self.running:
                 start_time = time.time()
                 
-                if not self.ws or not self.ws.open:
+                if not self.ws:
                     if not await self._reconnect():
                         break
                     continue
@@ -939,7 +939,7 @@ class CameraStreamer:
             "quality": self.quality,
             "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
             "running": self.running,
-            "connected": self.ws is not None and self.ws.open if self.ws else False,
+            "connected": self.ws is not None,
             "last_error": self.last_error,
         }
     
