@@ -179,8 +179,8 @@ else:
 # =====================================================================
 # EMBEDDED BACKEND CONFIGURATION - DO NOT CHANGE UNLESS YOU KNOW WHAT YOU'RE DOING
 # =====================================================================
-DEFAULT_JARVIS_URL = "https://qqiojksuvkhyswdtybim.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxaW9qa3N1dmtoeXN3ZHR5YmltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2ODM0OTgsImV4cCI6MjA4NDI1OTQ5OH0.z4qvDhnvCGlnXYQOmQZgaMEtDyikWfHX0y-yqz37xwM"
+DEFAULT_JARVIS_URL = "https://ugvynlowlvrferetovnq.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVndnlubG93bHZyZmVyZXRvdm5xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg3ODgzMTksImV4cCI6MjA4NDM2NDMxOX0.26wXn4zSZt9813W_6thD8ejA5qY2AuHXz-HgroVtzxU"
 # =====================================================================
 
 
@@ -432,6 +432,7 @@ agent_status: Dict[str, Any] = {
     "connected": False,
     "device_name": DEVICE_NAME,
     "device_id": "",
+    "pairing_code": "",
     "last_heartbeat": "",
     "volume": 50,
     "brightness": 50,
@@ -440,6 +441,7 @@ agent_status: Dict[str, Any] = {
     "memory_percent": 0,
     "audio_streaming": False,
     "camera_streaming": False,
+    "screen_streaming": False,
 }
 
 
@@ -2439,132 +2441,271 @@ HTML_TEMPLATE = """
         :root {
             --bg-dark: #0a0e17;
             --bg-card: #111827;
+            --bg-card-elevated: #1a2332;
             --border: #1f2937;
             --primary: #3b82f6;
-            --primary-glow: rgba(59, 130, 246, 0.5);
+            --primary-glow: rgba(59, 130, 246, 0.3);
             --success: #10b981;
             --warning: #f59e0b;
             --error: #ef4444;
             --text: #f3f4f6;
             --text-muted: #9ca3af;
+            --gradient-primary: linear-gradient(135deg, #3b82f6, #8b5cf6);
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Segoe UI', system-ui, sans-serif;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
             background: var(--bg-dark);
             color: var(--text);
             min-height: 100vh;
-            padding: 20px;
+            padding: 24px;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        
+        /* Header */
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 24px;
-            padding-bottom: 16px;
+            padding-bottom: 20px;
             border-bottom: 1px solid var(--border);
         }
-        h1 {
+        .logo { display: flex; align-items: center; gap: 12px; }
+        .logo-icon {
+            width: 48px; height: 48px;
+            background: var(--gradient-primary);
+            border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
             font-size: 24px;
-            font-weight: 600;
-            background: linear-gradient(135deg, var(--primary), #8b5cf6);
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            background: var(--gradient-primary);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
+        .subtitle { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
         .status-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 14px;
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 16px; border-radius: 24px; font-size: 14px; font-weight: 500;
         }
-        .status-badge.online { background: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid var(--success); }
-        .status-badge.offline { background: rgba(239, 68, 68, 0.2); color: var(--error); border: 1px solid var(--error); }
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; animation: pulse 2s infinite; }
-        .status-dot.online { background: var(--success); }
+        .status-badge.online { background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.4); }
+        .status-badge.offline { background: rgba(239, 68, 68, 0.15); color: var(--error); border: 1px solid rgba(239, 68, 68, 0.4); }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; animation: pulse 2s infinite; }
+        .status-dot.online { background: var(--success); box-shadow: 0 0 8px var(--success); }
         .status-dot.offline { background: var(--error); }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 24px; }
-        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-        .card-title { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; }
-        .stat { font-size: 28px; font-weight: 600; }
-        .stat-label { font-size: 12px; color: var(--text-muted); }
-        .progress-bar { width: 100%; height: 6px; background: var(--border); border-radius: 3px; margin-top: 8px; overflow: hidden; }
-        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
-        .progress-fill.cpu { background: var(--primary); }
-        .progress-fill.memory { background: #8b5cf6; }
-        .progress-fill.volume { background: var(--success); }
+        
+        /* Pairing Code Section */
+        .pairing-section {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 16px;
+            padding: 28px;
+            text-align: center;
+            margin-bottom: 24px;
+            position: relative;
+            overflow: hidden;
+        }
+        .pairing-section::before {
+            content: '';
+            position: absolute;
+            top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: radial-gradient(circle, rgba(59, 130, 246, 0.05) 0%, transparent 60%);
+            animation: shimmer 10s linear infinite;
+        }
+        @keyframes shimmer { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .pairing-label { font-size: 14px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; position: relative; }
+        .pairing-code {
+            font-size: 56px; font-weight: 800; letter-spacing: 10px;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-family: 'Consolas', 'Monaco', monospace;
+            position: relative;
+            text-shadow: 0 0 40px var(--primary-glow);
+        }
+        .pairing-hint { font-size: 13px; color: var(--text-muted); margin-top: 16px; position: relative; }
+        .pairing-expires { font-size: 12px; color: var(--warning); margin-top: 8px; position: relative; }
+        
+        /* Stats Grid */
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        .card:hover { border-color: rgba(59, 130, 246, 0.3); transform: translateY(-2px); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .card-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .card-icon { font-size: 18px; opacity: 0.7; }
+        .stat { font-size: 32px; font-weight: 700; }
+        .stat-label { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+        .progress-bar { width: 100%; height: 6px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+        .progress-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+        .progress-fill.cpu { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+        .progress-fill.memory { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
+        .progress-fill.volume { background: linear-gradient(90deg, #10b981, #34d399); }
+        .progress-fill.brightness { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+        
+        /* Streaming Status */
+        .streaming-grid { display: flex; gap: 20px; margin-top: 8px; }
+        .stream-item { display: flex; align-items: center; gap: 8px; }
+        .stream-indicator { width: 8px; height: 8px; border-radius: 50%; }
+        .stream-indicator.on { background: var(--success); box-shadow: 0 0 8px var(--success); animation: pulse 1.5s infinite; }
+        .stream-indicator.off { background: var(--border); }
+        .stream-label { font-size: 13px; color: var(--text-muted); }
+        .stream-status { font-size: 14px; font-weight: 600; }
+        .stream-status.on { color: var(--success); }
+        .stream-status.off { color: var(--text-muted); }
+        
+        /* Log Container */
         .log-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-        .log-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-        .log-header h2 { font-size: 14px; }
-        .btn { padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; border: none; transition: all 0.2s; }
+        .log-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--bg-card-elevated); }
+        .log-header h2 { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .log-count { background: var(--border); color: var(--text-muted); font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+        .btn-group { display: flex; gap: 8px; }
+        .btn { padding: 8px 14px; border-radius: 8px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; }
         .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
         .btn-ghost:hover { background: var(--border); color: var(--text); }
-        .log-list { max-height: 300px; overflow-y: auto; }
-        .log-entry { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
-        .log-level { width: 50px; font-weight: 500; text-transform: uppercase; font-size: 10px; }
-        .log-level.error { color: var(--error); }
-        .log-level.warn { color: var(--warning); }
-        .log-level.info { color: var(--primary); }
-        .log-message { flex: 1; word-break: break-word; }
-        .log-time { color: var(--text-muted); font-size: 10px; }
-        .empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
-        ::-webkit-scrollbar { width: 6px; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .log-list { max-height: 350px; overflow-y: auto; }
+        .log-entry { display: flex; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); transition: background 0.2s; }
+        .log-entry:hover { background: rgba(255, 255, 255, 0.02); }
+        .log-level { min-width: 50px; font-weight: 600; text-transform: uppercase; font-size: 10px; padding: 3px 8px; border-radius: 4px; text-align: center; }
+        .log-level.error { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+        .log-level.warn { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .log-level.info { background: rgba(59, 130, 246, 0.15); color: var(--primary); }
+        .log-content { flex: 1; min-width: 0; }
+        .log-message { font-size: 13px; word-break: break-word; line-height: 1.4; }
+        .log-details { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .log-category { font-size: 10px; color: var(--text-muted); background: var(--border); padding: 2px 6px; border-radius: 4px; margin-right: 8px; }
+        .log-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+        .empty-state { padding: 60px 40px; text-align: center; color: var(--text-muted); }
+        .empty-state-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+        .empty-state-text { font-size: 14px; }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #374151; }
+        
+        /* Footer */
+        footer { margin-top: 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
+        footer a { color: var(--primary); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>🤖 JARVIS Agent Dashboard</h1>
+            <div class="logo">
+                <div class="logo-icon">🤖</div>
+                <div>
+                    <h1>JARVIS Agent</h1>
+                    <div class="subtitle" id="device-name">Initializing...</div>
+                </div>
+            </div>
             <div class="status-badge" id="status-badge">
                 <span class="status-dot" id="status-dot"></span>
-                <span id="status-text">Checking...</span>
+                <span id="status-text">Connecting...</span>
             </div>
         </header>
+        
+        <div class="pairing-section" id="pairing-section">
+            <div class="pairing-label">📱 Enter this code in the mobile app</div>
+            <div class="pairing-code" id="pairing-code">------</div>
+            <div class="pairing-hint">Open the JARVIS app → Tap "Pair" → Enter the code above</div>
+            <div class="pairing-expires">⏱️ Code expires in 30 minutes</div>
+        </div>
+        
         <div class="grid">
             <div class="card">
-                <div class="card-title">Device</div>
-                <div class="stat" id="device-name">-</div>
-                <div class="stat-label" id="device-id">Not connected</div>
-            </div>
-            <div class="card">
-                <div class="card-title">CPU</div>
+                <div class="card-header">
+                    <span class="card-title">CPU Usage</span>
+                    <span class="card-icon">⚡</span>
+                </div>
                 <div class="stat" id="cpu-percent">0%</div>
                 <div class="progress-bar"><div class="progress-fill cpu" id="cpu-bar" style="width: 0%"></div></div>
             </div>
             <div class="card">
-                <div class="card-title">Memory</div>
+                <div class="card-header">
+                    <span class="card-title">Memory</span>
+                    <span class="card-icon">💾</span>
+                </div>
                 <div class="stat" id="memory-percent">0%</div>
                 <div class="progress-bar"><div class="progress-fill memory" id="memory-bar" style="width: 0%"></div></div>
             </div>
             <div class="card">
-                <div class="card-title">Volume</div>
+                <div class="card-header">
+                    <span class="card-title">Volume</span>
+                    <span class="card-icon">🔊</span>
+                </div>
                 <div class="stat" id="volume">50%</div>
                 <div class="progress-bar"><div class="progress-fill volume" id="volume-bar" style="width: 50%"></div></div>
             </div>
             <div class="card">
-                <div class="card-title">Streaming</div>
-                <div style="display: flex; gap: 16px; margin-top: 4px;">
-                    <div><div class="stat" id="audio-status">OFF</div><div class="stat-label">Audio</div></div>
-                    <div><div class="stat" id="camera-status">OFF</div><div class="stat-label">Camera</div></div>
+                <div class="card-header">
+                    <span class="card-title">Brightness</span>
+                    <span class="card-icon">☀️</span>
+                </div>
+                <div class="stat" id="brightness">50%</div>
+                <div class="progress-bar"><div class="progress-fill brightness" id="brightness-bar" style="width: 50%"></div></div>
+            </div>
+        </div>
+        
+        <div class="card" style="margin-bottom: 24px;">
+            <div class="card-header">
+                <span class="card-title">Streaming Status</span>
+                <span class="card-icon">📡</span>
+            </div>
+            <div class="streaming-grid">
+                <div class="stream-item">
+                    <span class="stream-indicator" id="audio-indicator"></span>
+                    <span class="stream-label">Audio Relay:</span>
+                    <span class="stream-status" id="audio-status">OFF</span>
+                </div>
+                <div class="stream-item">
+                    <span class="stream-indicator" id="camera-indicator"></span>
+                    <span class="stream-label">Camera Stream:</span>
+                    <span class="stream-status" id="camera-status">OFF</span>
+                </div>
+                <div class="stream-item">
+                    <span class="stream-indicator" id="screen-indicator"></span>
+                    <span class="stream-label">Screen Mirror:</span>
+                    <span class="stream-status" id="screen-status">OFF</span>
                 </div>
             </div>
         </div>
+        
         <div class="log-container">
             <div class="log-header">
-                <h2>📋 Issue Log</h2>
-                <div style="display: flex; gap: 8px;">
-                    <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
+                <h2>📋 Activity Log <span class="log-count" id="log-count">0</span></h2>
+                <div class="btn-group">
+                    <button class="btn btn-ghost" onclick="refreshLogs()">↻ Refresh</button>
                     <button class="btn btn-ghost" onclick="clearLogs()">Clear</button>
                 </div>
             </div>
-            <div class="log-list" id="log-list"><div class="empty-state">No issues logged</div></div>
+            <div class="log-list" id="log-list">
+                <div class="empty-state">
+                    <div class="empty-state-icon">📋</div>
+                    <div class="empty-state-text">No activity logged yet</div>
+                </div>
+            </div>
         </div>
+        
+        <footer>
+            JARVIS Agent v2.5 • <a href="https://github.com" target="_blank">View on GitHub</a>
+        </footer>
     </div>
+    
     <script>
         async function fetchStatus() {
             try {
@@ -2573,7 +2714,9 @@ HTML_TEMPLATE = """
                 updateUI(data);
             } catch (e) { console.error('Status error:', e); }
         }
+        
         function updateUI(data) {
+            // Status badge
             const badge = document.getElementById('status-badge');
             const dot = document.getElementById('status-dot');
             const text = document.getElementById('status-text');
@@ -2586,19 +2729,38 @@ HTML_TEMPLATE = """
                 dot.className = 'status-dot offline';
                 text.textContent = 'Disconnected';
             }
-            document.getElementById('device-name').textContent = data.device_name || '-';
-            document.getElementById('device-id').textContent = data.device_id ? 'ID: ' + data.device_id.slice(0, 8) + '...' : 'Not connected';
+            
+            // Device name
+            document.getElementById('device-name').textContent = data.device_name || 'Unknown Device';
+            
+            // Pairing code
+            const pairingCode = data.pairing_code || '------';
+            document.getElementById('pairing-code').textContent = pairingCode;
+            
+            // System stats
             document.getElementById('cpu-percent').textContent = Math.round(data.cpu_percent || 0) + '%';
             document.getElementById('cpu-bar').style.width = (data.cpu_percent || 0) + '%';
             document.getElementById('memory-percent').textContent = Math.round(data.memory_percent || 0) + '%';
             document.getElementById('memory-bar').style.width = (data.memory_percent || 0) + '%';
             document.getElementById('volume').textContent = (data.volume || 0) + '%';
             document.getElementById('volume-bar').style.width = (data.volume || 0) + '%';
-            document.getElementById('audio-status').textContent = data.audio_streaming ? 'ON' : 'OFF';
-            document.getElementById('audio-status').style.color = data.audio_streaming ? '#10b981' : '#9ca3af';
-            document.getElementById('camera-status').textContent = data.camera_streaming ? 'ON' : 'OFF';
-            document.getElementById('camera-status').style.color = data.camera_streaming ? '#10b981' : '#9ca3af';
+            document.getElementById('brightness').textContent = (data.brightness || 0) + '%';
+            document.getElementById('brightness-bar').style.width = (data.brightness || 0) + '%';
+            
+            // Streaming status
+            updateStreamStatus('audio', data.audio_streaming);
+            updateStreamStatus('camera', data.camera_streaming);
+            updateStreamStatus('screen', data.screen_streaming);
         }
+        
+        function updateStreamStatus(type, isOn) {
+            const indicator = document.getElementById(type + '-indicator');
+            const status = document.getElementById(type + '-status');
+            indicator.className = 'stream-indicator ' + (isOn ? 'on' : 'off');
+            status.textContent = isOn ? 'ACTIVE' : 'OFF';
+            status.className = 'stream-status ' + (isOn ? 'on' : 'off');
+        }
+        
         async function refreshLogs() {
             try {
                 const res = await fetch('/api/logs');
@@ -2606,33 +2768,52 @@ HTML_TEMPLATE = """
                 renderLogs(logs);
             } catch (e) { console.error('Logs error:', e); }
         }
+        
         async function clearLogs() {
             try {
                 await fetch('/api/logs/clear', { method: 'POST' });
                 refreshLogs();
             } catch (e) { console.error('Clear error:', e); }
         }
+        
         function renderLogs(logs) {
             const container = document.getElementById('log-list');
+            document.getElementById('log-count').textContent = logs ? logs.length : 0;
+            
             if (!logs || logs.length === 0) {
-                container.innerHTML = '<div class="empty-state">No issues logged</div>';
+                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📋</div><div class="empty-state-text">No activity logged yet</div></div>';
                 return;
             }
+            
             container.innerHTML = logs.map(log => 
                 '<div class="log-entry">' +
-                '<span class="log-level ' + log.level + '">' + log.level + '</span>' +
-                '<span class="log-message">' + escapeHtml(log.message) + (log.details ? '<br><small style="color:#6b7280">' + escapeHtml(log.details) + '</small>' : '') + '</span>' +
-                '<span class="log-time">' + new Date(log.timestamp).toLocaleTimeString() + '</span>' +
+                    '<span class="log-level ' + log.level + '">' + log.level + '</span>' +
+                    '<div class="log-content">' +
+                        '<span class="log-category">' + (log.category || 'general') + '</span>' +
+                        '<span class="log-message">' + escapeHtml(log.message) + '</span>' +
+                        (log.details ? '<div class="log-details">' + escapeHtml(log.details) + '</div>' : '') +
+                    '</div>' +
+                    '<span class="log-time">' + formatTime(log.timestamp) + '</span>' +
                 '</div>'
             ).join('');
         }
+        
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+        
         function escapeHtml(text) {
             const div = document.createElement('div');
-            div.textContent = text;
+            div.textContent = text || '';
             return div.innerHTML;
         }
+        
+        // Initial load
         fetchStatus();
         refreshLogs();
+        
+        // Auto-refresh
         setInterval(fetchStatus, 2000);
         setInterval(refreshLogs, 5000);
     </script>
