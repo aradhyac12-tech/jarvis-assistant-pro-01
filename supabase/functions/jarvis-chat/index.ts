@@ -120,11 +120,11 @@ When asked to perform an action, respond with a brief confirmation AND include a
 Available command actions:
 - {"action": "open_app", "app_name": "app name"}
 - {"action": "open_website", "site": "youtube", "query": "optional search"}
-- {"action": "search_web", "engine": "google|youtube|chatgpt|perplexity|wikipedia", "query": "search term"}
+- {"action": "search_web", "engine": "google|youtube|bing|duckduckgo|wikipedia|chatgpt|perplexity", "query": "search term"}
 - {"action": "play_music", "query": "song name"}
 - {"action": "set_volume", "level": 50}
 - {"action": "set_brightness", "level": 50}
-- {"action": "media_control", "action": "play_pause|next|previous|mute"}
+- {"action": "media_control", "control": "play_pause|next|previous|mute|volume_up|volume_down"}
 - {"action": "lock"}
 - {"action": "sleep"}
 - {"action": "restart"}
@@ -138,7 +138,6 @@ For multi-step requests like "open Edge and search ChatGPT for Python tutorials"
 Include multiple command blocks if needed:
 \`\`\`command
 {"action": "open_app", "app_name": "edge"}
-\`\`\`
 \`\`\`command
 {"action": "search_web", "engine": "chatgpt", "query": "Python tutorials"}
 \`\`\`

@@ -10,6 +10,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { addLog } from "@/components/IssueLog";
+import { supabase } from "@/integrations/supabase/client";
+
 
 interface Message {
   id: string;
@@ -28,6 +30,7 @@ interface AICommand {
   engine?: string;
   level?: number;
   text?: string;
+  control?: string; // for media_control
 }
 
 export default function VoiceAI() {
@@ -89,7 +92,7 @@ export default function VoiceAI() {
 
           case "media_control":
             commandType = "media_control";
-            payload = { action: cmd.action };
+            payload = { action: cmd.control || "play_pause" };
             break;
 
           case "lock":
@@ -155,47 +158,33 @@ export default function VoiceAI() {
     setIsProcessing(true);
 
     try {
-      // Build headers - use session token if available
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-
-      if (session?.session_token) {
-        headers["x-session-token"] = session.session_token;
-      } else {
-        headers["Authorization"] = `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`;
+      if (!session?.session_token) {
+        throw new Error("Not paired. Please connect your PC first.");
       }
 
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/jarvis-chat`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ message: messageText }),
-        }
-      );
+      const { data, error } = await supabase.functions.invoke("jarvis-chat", {
+        body: { message: messageText },
+        headers: { "x-session-token": session.session_token },
+      });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to get response");
+      if (error) {
+        throw new Error(error.message || "Failed to get AI response");
       }
-
-      const data = await response.json();
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: data.response,
-        language: data.language,
+        content: (data as any)?.response ?? "",
+        language: (data as any)?.language,
         timestamp: new Date(),
-        commands: data.commands,
+        commands: (data as any)?.commands,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
 
       // Execute any commands returned by AI
-      if (data.commands && data.commands.length > 0) {
-        await executeAICommands(data.commands as AICommand[]);
+      if ((data as any)?.commands && (data as any).commands.length > 0) {
+        await executeAICommands((data as any).commands as AICommand[]);
       }
     } catch (error) {
       console.error("Error:", error);
