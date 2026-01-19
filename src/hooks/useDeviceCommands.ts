@@ -121,18 +121,35 @@ export function useDeviceCommands() {
         try {
           addLog("info", "web", `Sending command: ${commandType}`, JSON.stringify(payload).slice(0, 140));
 
-          const response = await supabase.functions.invoke("device-commands", {
-            body: { action: "insert", commandType, payload },
-            headers: { "x-session-token": sessionToken },
-          });
+          // Retry logic for transient network errors
+          let response;
+          let retries = 3;
+          while (retries > 0) {
+            response = await supabase.functions.invoke("device-commands", {
+              body: { action: "insert", commandType, payload },
+              headers: { "x-session-token": sessionToken },
+            });
 
-          if (response.error) {
+            // If success or definite session error, break
+            if (!response.error || isSessionError(response.error.message)) {
+              break;
+            }
+
+            // Transient error - retry after short delay
+            retries--;
+            if (retries > 0) {
+              addLog("warn", "web", `Retrying command "${commandType}"... (${3 - retries}/3)`);
+              await sleep(500);
+            }
+          }
+
+          if (response?.error) {
             if (isSessionError(response.error.message)) {
-              addLog("error", "web", "Session expired. Reconnecting...");
+              addLog("error", "web", "Session expired. Please reconnect.");
               unpair();
               toast({
                 title: "Session Expired",
-                description: "Reconnecting… please try again.",
+                description: "Please reconnect to your PC.",
                 variant: "destructive",
               });
               return { success: false, error: "Session expired" } as const;
