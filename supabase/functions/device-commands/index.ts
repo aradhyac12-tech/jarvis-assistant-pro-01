@@ -26,15 +26,42 @@ serve(async (req) => {
       );
     }
 
-    // Validate session token and get device_id
-    const { data: session, error: sessionError } = await supabase
-      .from("device_sessions")
-      .select("device_id, last_active")
-      .eq("session_token", sessionToken)
-      .maybeSingle();
+    // Validate session token and get device_id with retry for transient errors
+    let session = null;
+    let sessionError = null;
+    
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const result = await supabase
+        .from("device_sessions")
+        .select("device_id, last_active")
+        .eq("session_token", sessionToken)
+        .maybeSingle();
+      
+      session = result.data;
+      sessionError = result.error;
+      
+      // Success or definite error (not transient)
+      if (!sessionError || !sessionError.message?.includes("connection")) {
+        break;
+      }
+      
+      console.log(`Session query attempt ${attempt} failed with transient error, retrying...`);
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 200 * attempt));
+      }
+    }
 
-    if (sessionError || !session) {
-      console.error("Session validation failed:", sessionError);
+    if (sessionError) {
+      console.error("Session validation failed after retries:", sessionError);
+      // Return 503 for transient errors, 401 for actual auth issues
+      const isTransient = sessionError.message?.includes("connection");
+      return new Response(
+        JSON.stringify({ error: isTransient ? "Temporary server error, please retry" : "Invalid or expired session" }),
+        { status: isTransient ? 503 : 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    
+    if (!session) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
