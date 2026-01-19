@@ -1406,33 +1406,48 @@ class JarvisAgent:
         }
 
     def _boost_pc(self):
+        """Aggressive Windows cleanup: temp files, prefetch, explorer restart."""
         add_log("info", "Boost mode initiated!", category="system")
         try:
-            if platform.system() == "Windows":
-                subprocess.run("taskkill /f /im explorer.exe", shell=True, capture_output=True)
-                time.sleep(0.5)
-                subprocess.Popen("explorer.exe", shell=True)
-                
-                temp_dirs = [
-                    os.environ.get("TEMP", ""),
-                    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
-                ]
-                for temp_dir in temp_dirs:
-                    if temp_dir and os.path.exists(temp_dir):
+            if platform.system() != "Windows":
+                return {"success": False, "error": "Boost only supported on Windows"}
+
+            # Restart explorer to free memory
+            subprocess.run("taskkill /f /im explorer.exe", shell=True, capture_output=True)
+            time.sleep(0.5)
+            subprocess.Popen("explorer.exe", shell=True)
+
+            cleaned = 0
+
+            # Directories to clean
+            dirs_to_clean = [
+                os.environ.get("TEMP", ""),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
+                os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Temp"),
+                os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Prefetch"),
+            ]
+
+            for d in dirs_to_clean:
+                if not d or not os.path.exists(d):
+                    continue
+                try:
+                    for entry in os.listdir(d):
+                        fp = os.path.join(d, entry)
                         try:
-                            for f in os.listdir(temp_dir)[:50]:
-                                try:
-                                    fp = os.path.join(temp_dir, f)
-                                    if os.path.isfile(fp):
-                                        os.remove(fp)
-                                except:
-                                    pass
-                        except:
-                            pass
-                
-                add_log("info", "Boost completed!", category="system")
-                return {"success": True, "message": "Boost completed"}
-            return {"success": False, "error": "Boost only supported on Windows"}
+                            if os.path.isfile(fp):
+                                os.remove(fp)
+                                cleaned += 1
+                            elif os.path.isdir(fp):
+                                import shutil
+                                shutil.rmtree(fp, ignore_errors=True)
+                                cleaned += 1
+                        except Exception:
+                            pass  # skip locked files
+                except Exception:
+                    pass
+
+            add_log("info", f"Boost completed! Cleaned {cleaned} items", category="system")
+            return {"success": True, "message": f"Boost completed – cleaned {cleaned} items"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -1716,6 +1731,117 @@ class JarvisAgent:
             return {"success": True, "message": f"Opened {url}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _open_website(self, site: str, query: str = ""):
+        """Open a well-known website, optionally with a search query."""
+        try:
+            site = (site or "").strip().lower()
+            query = (query or "").strip()
+
+            if not site:
+                return {"success": False, "error": "Missing site"}
+
+            # If user provided a domain, treat it as a URL
+            if "." in site and " " not in site:
+                if query:
+                    return self._open_url(
+                        f"https://www.google.com/search?q={urllib.parse.quote(query + ' site:' + site)}"
+                    )
+                return self._open_url(site)
+
+            base_map = {
+                "google": "https://www.google.com",
+                "youtube": "https://www.youtube.com",
+                "github": "https://github.com",
+                "reddit": "https://www.reddit.com",
+                "twitter": "https://x.com",
+                "x": "https://x.com",
+                "facebook": "https://www.facebook.com",
+                "instagram": "https://www.instagram.com",
+                "linkedin": "https://www.linkedin.com",
+                "netflix": "https://www.netflix.com",
+                "chatgpt": "https://chatgpt.com",
+                "perplexity": "https://www.perplexity.ai",
+                "wikipedia": "https://www.wikipedia.org",
+                "gmail": "https://mail.google.com",
+                "drive": "https://drive.google.com",
+                "maps": "https://maps.google.com",
+            }
+
+            base = base_map.get(site) or f"https://{site}.com"
+
+            if query:
+                if site == "youtube":
+                    return self._open_url(
+                        f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+                    )
+                if site == "perplexity":
+                    return self._open_url(
+                        f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}"
+                    )
+                if site == "chatgpt":
+                    return self._open_url(f"https://chatgpt.com/?q={urllib.parse.quote(query)}")
+                if site == "wikipedia":
+                    return self._open_url(
+                        f"https://en.wikipedia.org/w/index.php?search={urllib.parse.quote(query)}"
+                    )
+                return self._open_url(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
+
+            return self._open_url(base)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _search_web(self, engine: str, query: str):
+        """Perform a web search on the specified engine."""
+        try:
+            engine = (engine or "google").strip().lower()
+            query = (query or "").strip()
+
+            if not query:
+                return {"success": False, "error": "Missing query"}
+
+            if engine == "google":
+                url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+            elif engine == "bing":
+                url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
+            elif engine in ["duckduckgo", "ddg"]:
+                url = f"https://duckduckgo.com/?q={urllib.parse.quote(query)}"
+            elif engine == "youtube":
+                url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+            elif engine in ["wikipedia", "wiki"]:
+                url = f"https://en.wikipedia.org/w/index.php?search={urllib.parse.quote(query)}"
+            elif engine == "perplexity":
+                url = f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}"
+            elif engine in ["chatgpt", "openai"]:
+                url = f"https://chatgpt.com/?q={urllib.parse.quote(query)}"
+            else:
+                url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+
+            return self._open_url(url)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_media_state(self):
+        """Best-effort media info (no OS-specific metadata)."""
+        try:
+            volume = self._get_volume()
+            return {
+                "success": True,
+                "title": "",
+                "artist": "",
+                "is_playing": False,
+                "position_percent": 0,
+                "position_ms": 0,
+                "duration_ms": 0,
+                "volume": volume,
+                "muted": False,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _media_seek(self, position_percent: float):
+        """Not supported reliably; return a clear error."""
+        return {"success": False, "error": "Seeking is not supported yet"}
     
     def _play_music(self, query: str, service: str = "youtube"):
         try:
