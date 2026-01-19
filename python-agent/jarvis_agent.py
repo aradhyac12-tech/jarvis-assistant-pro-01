@@ -60,7 +60,15 @@ import io
 import uuid
 import webbrowser
 import urllib.parse
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+# Native GUI
+try:
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext
+    HAS_TKINTER = True
+except ImportError:
+    HAS_TKINTER = False
+    print("⚠️  tkinter not available - GUI disabled")
 
 
 # ============== BOOTSTRAP (dependency check) ==============
@@ -2429,466 +2437,367 @@ class JarvisAgent:
         add_log("info", "Agent stopped. Goodbye!", category="system")
 
 
-# ============== WEB UI SERVER ==============
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JARVIS Agent Dashboard</title>
-    <style>
-        :root {
-            --bg-dark: #0a0e17;
-            --bg-card: #111827;
-            --bg-card-elevated: #1a2332;
-            --border: #1f2937;
-            --primary: #3b82f6;
-            --primary-glow: rgba(59, 130, 246, 0.3);
-            --success: #10b981;
-            --warning: #f59e0b;
-            --error: #ef4444;
-            --text: #f3f4f6;
-            --text-muted: #9ca3af;
-            --gradient-primary: linear-gradient(135deg, #3b82f6, #8b5cf6);
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: var(--bg-dark);
-            color: var(--text);
-            min-height: 100vh;
-            padding: 24px;
-        }
-        .container { max-width: 1000px; margin: 0 auto; }
-        
-        /* Header */
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--border);
-        }
-        .logo { display: flex; align-items: center; gap: 12px; }
-        .logo-icon {
-            width: 48px; height: 48px;
-            background: var(--gradient-primary);
-            border-radius: 12px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 24px;
-        }
-        h1 {
-            font-size: 28px;
-            font-weight: 700;
-            background: var(--gradient-primary);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .subtitle { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
-        .status-badge {
-            display: flex; align-items: center; gap: 8px;
-            padding: 8px 16px; border-radius: 24px; font-size: 14px; font-weight: 500;
-        }
-        .status-badge.online { background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.4); }
-        .status-badge.offline { background: rgba(239, 68, 68, 0.15); color: var(--error); border: 1px solid rgba(239, 68, 68, 0.4); }
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; animation: pulse 2s infinite; }
-        .status-dot.online { background: var(--success); box-shadow: 0 0 8px var(--success); }
-        .status-dot.offline { background: var(--error); }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        
-        /* Pairing Code Section */
-        .pairing-section {
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            border-radius: 16px;
-            padding: 28px;
-            text-align: center;
-            margin-bottom: 24px;
-            position: relative;
-            overflow: hidden;
-        }
-        .pairing-section::before {
-            content: '';
-            position: absolute;
-            top: -50%; left: -50%;
-            width: 200%; height: 200%;
-            background: radial-gradient(circle, rgba(59, 130, 246, 0.05) 0%, transparent 60%);
-            animation: shimmer 10s linear infinite;
-        }
-        @keyframes shimmer { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .pairing-label { font-size: 14px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; position: relative; }
-        .pairing-code {
-            font-size: 56px; font-weight: 800; letter-spacing: 10px;
-            background: var(--gradient-primary);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            font-family: 'Consolas', 'Monaco', monospace;
-            position: relative;
-            text-shadow: 0 0 40px var(--primary-glow);
-        }
-        .pairing-hint { font-size: 13px; color: var(--text-muted); margin-top: 16px; position: relative; }
-        .pairing-expires { font-size: 12px; color: var(--warning); margin-top: 8px; position: relative; }
-        
-        /* Stats Grid */
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-        .card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            transition: border-color 0.2s, transform 0.2s;
-        }
-        .card:hover { border-color: rgba(59, 130, 246, 0.3); transform: translateY(-2px); }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .card-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-        .card-icon { font-size: 18px; opacity: 0.7; }
-        .stat { font-size: 32px; font-weight: 700; }
-        .stat-label { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-        .progress-bar { width: 100%; height: 6px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
-        .progress-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
-        .progress-fill.cpu { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
-        .progress-fill.memory { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
-        .progress-fill.volume { background: linear-gradient(90deg, #10b981, #34d399); }
-        .progress-fill.brightness { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
-        
-        /* Streaming Status */
-        .streaming-grid { display: flex; gap: 20px; margin-top: 8px; }
-        .stream-item { display: flex; align-items: center; gap: 8px; }
-        .stream-indicator { width: 8px; height: 8px; border-radius: 50%; }
-        .stream-indicator.on { background: var(--success); box-shadow: 0 0 8px var(--success); animation: pulse 1.5s infinite; }
-        .stream-indicator.off { background: var(--border); }
-        .stream-label { font-size: 13px; color: var(--text-muted); }
-        .stream-status { font-size: 14px; font-weight: 600; }
-        .stream-status.on { color: var(--success); }
-        .stream-status.off { color: var(--text-muted); }
-        
-        /* Log Container */
-        .log-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-        .log-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--bg-card-elevated); }
-        .log-header h2 { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-        .log-count { background: var(--border); color: var(--text-muted); font-size: 11px; padding: 2px 8px; border-radius: 10px; }
-        .btn-group { display: flex; gap: 8px; }
-        .btn { padding: 8px 14px; border-radius: 8px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; }
-        .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
-        .btn-ghost:hover { background: var(--border); color: var(--text); }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: #2563eb; }
-        .log-list { max-height: 350px; overflow-y: auto; }
-        .log-entry { display: flex; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); transition: background 0.2s; }
-        .log-entry:hover { background: rgba(255, 255, 255, 0.02); }
-        .log-level { min-width: 50px; font-weight: 600; text-transform: uppercase; font-size: 10px; padding: 3px 8px; border-radius: 4px; text-align: center; }
-        .log-level.error { background: rgba(239, 68, 68, 0.15); color: var(--error); }
-        .log-level.warn { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
-        .log-level.info { background: rgba(59, 130, 246, 0.15); color: var(--primary); }
-        .log-content { flex: 1; min-width: 0; }
-        .log-message { font-size: 13px; word-break: break-word; line-height: 1.4; }
-        .log-details { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
-        .log-category { font-size: 10px; color: var(--text-muted); background: var(--border); padding: 2px 6px; border-radius: 4px; margin-right: 8px; }
-        .log-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-        .empty-state { padding: 60px 40px; text-align: center; color: var(--text-muted); }
-        .empty-state-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
-        .empty-state-text { font-size: 14px; }
-        
-        /* Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #374151; }
-        
-        /* Footer */
-        footer { margin-top: 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
-        footer a { color: var(--primary); text-decoration: none; }
-        footer a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <div class="logo-icon">🤖</div>
-                <div>
-                    <h1>JARVIS Agent</h1>
-                    <div class="subtitle" id="device-name">Initializing...</div>
-                </div>
-            </div>
-            <div class="status-badge" id="status-badge">
-                <span class="status-dot" id="status-dot"></span>
-                <span id="status-text">Connecting...</span>
-            </div>
-        </header>
-        
-        <div class="pairing-section" id="pairing-section">
-            <div class="pairing-label">📱 Enter this code in the mobile app</div>
-            <div class="pairing-code" id="pairing-code">------</div>
-            <div class="pairing-hint">Open the JARVIS app → Tap "Pair" → Enter the code above</div>
-            <div class="pairing-expires">⏱️ Code expires in 30 minutes</div>
-        </div>
-        
-        <div class="grid">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">CPU Usage</span>
-                    <span class="card-icon">⚡</span>
-                </div>
-                <div class="stat" id="cpu-percent">0%</div>
-                <div class="progress-bar"><div class="progress-fill cpu" id="cpu-bar" style="width: 0%"></div></div>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Memory</span>
-                    <span class="card-icon">💾</span>
-                </div>
-                <div class="stat" id="memory-percent">0%</div>
-                <div class="progress-bar"><div class="progress-fill memory" id="memory-bar" style="width: 0%"></div></div>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Volume</span>
-                    <span class="card-icon">🔊</span>
-                </div>
-                <div class="stat" id="volume">50%</div>
-                <div class="progress-bar"><div class="progress-fill volume" id="volume-bar" style="width: 50%"></div></div>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Brightness</span>
-                    <span class="card-icon">☀️</span>
-                </div>
-                <div class="stat" id="brightness">50%</div>
-                <div class="progress-bar"><div class="progress-fill brightness" id="brightness-bar" style="width: 50%"></div></div>
-            </div>
-        </div>
-        
-        <div class="card" style="margin-bottom: 24px;">
-            <div class="card-header">
-                <span class="card-title">Streaming Status</span>
-                <span class="card-icon">📡</span>
-            </div>
-            <div class="streaming-grid">
-                <div class="stream-item">
-                    <span class="stream-indicator" id="audio-indicator"></span>
-                    <span class="stream-label">Audio Relay:</span>
-                    <span class="stream-status" id="audio-status">OFF</span>
-                </div>
-                <div class="stream-item">
-                    <span class="stream-indicator" id="camera-indicator"></span>
-                    <span class="stream-label">Camera Stream:</span>
-                    <span class="stream-status" id="camera-status">OFF</span>
-                </div>
-                <div class="stream-item">
-                    <span class="stream-indicator" id="screen-indicator"></span>
-                    <span class="stream-label">Screen Mirror:</span>
-                    <span class="stream-status" id="screen-status">OFF</span>
-                </div>
-            </div>
-        </div>
-        
-        <div class="log-container">
-            <div class="log-header">
-                <h2>📋 Activity Log <span class="log-count" id="log-count">0</span></h2>
-                <div class="btn-group">
-                    <button class="btn btn-ghost" onclick="refreshLogs()">↻ Refresh</button>
-                    <button class="btn btn-ghost" onclick="clearLogs()">Clear</button>
-                </div>
-            </div>
-            <div class="log-list" id="log-list">
-                <div class="empty-state">
-                    <div class="empty-state-icon">📋</div>
-                    <div class="empty-state-text">No activity logged yet</div>
-                </div>
-            </div>
-        </div>
-        
-        <footer>
-            JARVIS Agent v2.5 • <a href="https://github.com" target="_blank">View on GitHub</a>
-        </footer>
-    </div>
+# ============== NATIVE GUI (TKINTER) ==============
+class JarvisGUI:
+    """Native desktop GUI for the JARVIS Agent using Tkinter."""
     
-    <script>
-        async function fetchStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                updateUI(data);
-            } catch (e) { console.error('Status error:', e); }
-        }
+    def __init__(self):
+        self.root = None
+        self.running = False
+        self.update_interval = 1000  # ms
         
-        function updateUI(data) {
-            // Status badge
-            const badge = document.getElementById('status-badge');
-            const dot = document.getElementById('status-dot');
-            const text = document.getElementById('status-text');
-            if (data.connected) {
-                badge.className = 'status-badge online';
-                dot.className = 'status-dot online';
-                text.textContent = 'Connected';
-            } else {
-                badge.className = 'status-badge offline';
-                dot.className = 'status-dot offline';
-                text.textContent = 'Disconnected';
-            }
+        # References to UI elements
+        self.pairing_label = None
+        self.status_label = None
+        self.device_label = None
+        self.cpu_label = None
+        self.mem_label = None
+        self.vol_label = None
+        self.bright_label = None
+        self.cpu_bar = None
+        self.mem_bar = None
+        self.vol_bar = None
+        self.bright_bar = None
+        self.audio_status = None
+        self.camera_status = None
+        self.screen_status = None
+        self.log_text = None
+        self.last_log_count = 0
+    
+    def start(self):
+        """Start the GUI in the main thread."""
+        if not HAS_TKINTER:
+            print("⚠️  Tkinter not available. Running in headless mode.")
+            return False
+        
+        self.running = True
+        self.root = tk.Tk()
+        self.root.title("JARVIS Agent")
+        self.root.geometry("650x750")
+        self.root.configure(bg="#0a0e17")
+        self.root.resizable(True, True)
+        
+        # Configure styles
+        self._setup_styles()
+        
+        # Build UI
+        self._build_ui()
+        
+        # Start update loop
+        self.root.after(500, self._update_ui)
+        
+        return True
+    
+    def _setup_styles(self):
+        """Configure ttk styles for dark theme."""
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Colors
+        bg_dark = "#0a0e17"
+        bg_card = "#111827"
+        border = "#1f2937"
+        primary = "#3b82f6"
+        success = "#10b981"
+        warning = "#f59e0b"
+        error = "#ef4444"
+        text = "#f3f4f6"
+        text_muted = "#9ca3af"
+        
+        # Configure TFrame
+        style.configure("Card.TFrame", background=bg_card)
+        style.configure("Main.TFrame", background=bg_dark)
+        
+        # Configure TLabel
+        style.configure("Title.TLabel", background=bg_dark, foreground=primary, font=("Segoe UI", 24, "bold"))
+        style.configure("Subtitle.TLabel", background=bg_dark, foreground=text_muted, font=("Segoe UI", 10))
+        style.configure("Pairing.TLabel", background=bg_card, foreground=primary, font=("Consolas", 42, "bold"))
+        style.configure("PairingHint.TLabel", background=bg_card, foreground=text_muted, font=("Segoe UI", 10))
+        style.configure("Status.TLabel", background=bg_dark, foreground=success, font=("Segoe UI", 11, "bold"))
+        style.configure("StatusOff.TLabel", background=bg_dark, foreground=error, font=("Segoe UI", 11, "bold"))
+        style.configure("Card.TLabel", background=bg_card, foreground=text, font=("Segoe UI", 10))
+        style.configure("CardTitle.TLabel", background=bg_card, foreground=text_muted, font=("Segoe UI", 9))
+        style.configure("Stat.TLabel", background=bg_card, foreground=text, font=("Segoe UI", 18, "bold"))
+        style.configure("StreamOn.TLabel", background=bg_card, foreground=success, font=("Segoe UI", 10, "bold"))
+        style.configure("StreamOff.TLabel", background=bg_card, foreground=text_muted, font=("Segoe UI", 10))
+        
+        # Configure TProgressbar
+        style.configure("CPU.Horizontal.TProgressbar", background=primary, troughcolor=border, thickness=8)
+        style.configure("Mem.Horizontal.TProgressbar", background="#8b5cf6", troughcolor=border, thickness=8)
+        style.configure("Vol.Horizontal.TProgressbar", background=success, troughcolor=border, thickness=8)
+        style.configure("Bright.Horizontal.TProgressbar", background=warning, troughcolor=border, thickness=8)
+    
+    def _build_ui(self):
+        """Build the GUI layout."""
+        bg_dark = "#0a0e17"
+        bg_card = "#111827"
+        border = "#1f2937"
+        primary = "#3b82f6"
+        text = "#f3f4f6"
+        text_muted = "#9ca3af"
+        
+        # Main container with scrollbar
+        main_frame = ttk.Frame(self.root, style="Main.TFrame")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Header
+        header_frame = tk.Frame(main_frame, bg=bg_dark)
+        header_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        title_label = ttk.Label(header_frame, text="🤖 JARVIS Agent", style="Title.TLabel")
+        title_label.pack(side=tk.LEFT)
+        
+        self.status_label = ttk.Label(header_frame, text="● Connecting...", style="StatusOff.TLabel")
+        self.status_label.pack(side=tk.RIGHT, padx=5)
+        
+        self.device_label = ttk.Label(header_frame, text="", style="Subtitle.TLabel")
+        self.device_label.pack(side=tk.RIGHT, padx=10)
+        
+        # Pairing Section
+        pairing_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground=primary, highlightthickness=2)
+        pairing_frame.pack(fill=tk.X, pady=(0, 15), ipady=15)
+        
+        pairing_title = ttk.Label(pairing_frame, text="📱 Enter this code in the mobile app", style="PairingHint.TLabel")
+        pairing_title.pack(pady=(15, 5))
+        
+        self.pairing_label = ttk.Label(pairing_frame, text="------", style="Pairing.TLabel")
+        self.pairing_label.pack(pady=10)
+        
+        pairing_hint = ttk.Label(pairing_frame, text="Open JARVIS app → Tap 'Pair' → Enter code", style="PairingHint.TLabel")
+        pairing_hint.pack(pady=(5, 15))
+        
+        # Stats Grid - 2x2 layout
+        stats_frame = tk.Frame(main_frame, bg=bg_dark)
+        stats_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        for i in range(2):
+            stats_frame.columnconfigure(i, weight=1)
+        
+        # Row 1: CPU and Memory
+        cpu_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
+        cpu_card.grid(row=0, column=0, padx=(0, 5), pady=5, sticky="nsew")
+        ttk.Label(cpu_card, text="⚡ CPU", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
+        self.cpu_label = ttk.Label(cpu_card, text="0%", style="Stat.TLabel")
+        self.cpu_label.pack(anchor=tk.W, padx=10)
+        self.cpu_bar = ttk.Progressbar(cpu_card, style="CPU.Horizontal.TProgressbar", length=150, mode='determinate')
+        self.cpu_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        
+        mem_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
+        mem_card.grid(row=0, column=1, padx=(5, 0), pady=5, sticky="nsew")
+        ttk.Label(mem_card, text="💾 Memory", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
+        self.mem_label = ttk.Label(mem_card, text="0%", style="Stat.TLabel")
+        self.mem_label.pack(anchor=tk.W, padx=10)
+        self.mem_bar = ttk.Progressbar(mem_card, style="Mem.Horizontal.TProgressbar", length=150, mode='determinate')
+        self.mem_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        
+        # Row 2: Volume and Brightness
+        vol_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
+        vol_card.grid(row=1, column=0, padx=(0, 5), pady=5, sticky="nsew")
+        ttk.Label(vol_card, text="🔊 Volume", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
+        self.vol_label = ttk.Label(vol_card, text="50%", style="Stat.TLabel")
+        self.vol_label.pack(anchor=tk.W, padx=10)
+        self.vol_bar = ttk.Progressbar(vol_card, style="Vol.Horizontal.TProgressbar", length=150, mode='determinate')
+        self.vol_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        
+        bright_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
+        bright_card.grid(row=1, column=1, padx=(5, 0), pady=5, sticky="nsew")
+        ttk.Label(bright_card, text="☀️ Brightness", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
+        self.bright_label = ttk.Label(bright_card, text="50%", style="Stat.TLabel")
+        self.bright_label.pack(anchor=tk.W, padx=10)
+        self.bright_bar = ttk.Progressbar(bright_card, style="Bright.Horizontal.TProgressbar", length=150, mode='determinate')
+        self.bright_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        
+        # Streaming Status
+        stream_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
+        stream_frame.pack(fill=tk.X, pady=(0, 15), ipady=8)
+        
+        ttk.Label(stream_frame, text="📡 Streaming Status", style="CardTitle.TLabel").pack(anchor=tk.W, padx=15, pady=(10, 8))
+        
+        stream_row = tk.Frame(stream_frame, bg=bg_card)
+        stream_row.pack(fill=tk.X, padx=15, pady=(0, 10))
+        
+        self.audio_status = ttk.Label(stream_row, text="🔇 Audio: OFF", style="StreamOff.TLabel")
+        self.audio_status.pack(side=tk.LEFT, padx=(0, 25))
+        
+        self.camera_status = ttk.Label(stream_row, text="📷 Camera: OFF", style="StreamOff.TLabel")
+        self.camera_status.pack(side=tk.LEFT, padx=(0, 25))
+        
+        self.screen_status = ttk.Label(stream_row, text="🖥️ Screen: OFF", style="StreamOff.TLabel")
+        self.screen_status.pack(side=tk.LEFT)
+        
+        # Activity Log
+        log_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        
+        log_header = tk.Frame(log_frame, bg=bg_card)
+        log_header.pack(fill=tk.X, padx=15, pady=(10, 5))
+        
+        ttk.Label(log_header, text="📋 Activity Log", style="CardTitle.TLabel").pack(side=tk.LEFT)
+        
+        clear_btn = tk.Button(log_header, text="Clear", bg="#1f2937", fg=text_muted, 
+                             activebackground="#374151", activeforeground=text,
+                             bd=0, padx=10, pady=3, cursor="hand2",
+                             command=self._clear_logs)
+        clear_btn.pack(side=tk.RIGHT)
+        
+        # Log text area
+        self.log_text = scrolledtext.ScrolledText(log_frame, bg="#0d1117", fg=text, 
+                                                   font=("Consolas", 9), wrap=tk.WORD,
+                                                   insertbackground=text, bd=0, 
+                                                   highlightthickness=0, height=12)
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.log_text.configure(state=tk.DISABLED)
+        
+        # Configure log text tags
+        self.log_text.tag_configure("error", foreground="#ef4444")
+        self.log_text.tag_configure("warn", foreground="#f59e0b")
+        self.log_text.tag_configure("info", foreground="#3b82f6")
+        self.log_text.tag_configure("time", foreground="#6b7280")
+        self.log_text.tag_configure("category", foreground="#9ca3af")
+    
+    def _update_ui(self):
+        """Update UI with current agent status."""
+        if not self.running or not self.root:
+            return
+        
+        try:
+            status = get_agent_status()
             
-            // Device name
-            document.getElementById('device-name').textContent = data.device_name || 'Unknown Device';
+            # Update status
+            if status.get("connected"):
+                self.status_label.configure(text="● Connected", style="Status.TLabel")
+            else:
+                self.status_label.configure(text="● Disconnected", style="StatusOff.TLabel")
             
-            // Pairing code
-            const pairingCode = data.pairing_code || '------';
-            document.getElementById('pairing-code').textContent = pairingCode;
+            # Update device name
+            self.device_label.configure(text=status.get("device_name", ""))
             
-            // System stats
-            document.getElementById('cpu-percent').textContent = Math.round(data.cpu_percent || 0) + '%';
-            document.getElementById('cpu-bar').style.width = (data.cpu_percent || 0) + '%';
-            document.getElementById('memory-percent').textContent = Math.round(data.memory_percent || 0) + '%';
-            document.getElementById('memory-bar').style.width = (data.memory_percent || 0) + '%';
-            document.getElementById('volume').textContent = (data.volume || 0) + '%';
-            document.getElementById('volume-bar').style.width = (data.volume || 0) + '%';
-            document.getElementById('brightness').textContent = (data.brightness || 0) + '%';
-            document.getElementById('brightness-bar').style.width = (data.brightness || 0) + '%';
+            # Update pairing code
+            pairing_code = status.get("pairing_code", "------")
+            self.pairing_label.configure(text=pairing_code if pairing_code else "------")
             
-            // Streaming status
-            updateStreamStatus('audio', data.audio_streaming);
-            updateStreamStatus('camera', data.camera_streaming);
-            updateStreamStatus('screen', data.screen_streaming);
-        }
-        
-        function updateStreamStatus(type, isOn) {
-            const indicator = document.getElementById(type + '-indicator');
-            const status = document.getElementById(type + '-status');
-            indicator.className = 'stream-indicator ' + (isOn ? 'on' : 'off');
-            status.textContent = isOn ? 'ACTIVE' : 'OFF';
-            status.className = 'stream-status ' + (isOn ? 'on' : 'off');
-        }
-        
-        async function refreshLogs() {
-            try {
-                const res = await fetch('/api/logs');
-                const logs = await res.json();
-                renderLogs(logs);
-            } catch (e) { console.error('Logs error:', e); }
-        }
-        
-        async function clearLogs() {
-            try {
-                await fetch('/api/logs/clear', { method: 'POST' });
-                refreshLogs();
-            } catch (e) { console.error('Clear error:', e); }
-        }
-        
-        function renderLogs(logs) {
-            const container = document.getElementById('log-list');
-            document.getElementById('log-count').textContent = logs ? logs.length : 0;
+            # Update stats
+            cpu = int(status.get("cpu_percent", 0))
+            mem = int(status.get("memory_percent", 0))
+            vol = int(status.get("volume", 50))
+            bright = int(status.get("brightness", 50))
             
-            if (!logs || logs.length === 0) {
-                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📋</div><div class="empty-state-text">No activity logged yet</div></div>';
-                return;
-            }
+            self.cpu_label.configure(text=f"{cpu}%")
+            self.cpu_bar["value"] = cpu
             
-            container.innerHTML = logs.map(log => 
-                '<div class="log-entry">' +
-                    '<span class="log-level ' + log.level + '">' + log.level + '</span>' +
-                    '<div class="log-content">' +
-                        '<span class="log-category">' + (log.category || 'general') + '</span>' +
-                        '<span class="log-message">' + escapeHtml(log.message) + '</span>' +
-                        (log.details ? '<div class="log-details">' + escapeHtml(log.details) + '</div>' : '') +
-                    '</div>' +
-                    '<span class="log-time">' + formatTime(log.timestamp) + '</span>' +
-                '</div>'
-            ).join('');
-        }
+            self.mem_label.configure(text=f"{mem}%")
+            self.mem_bar["value"] = mem
+            
+            self.vol_label.configure(text=f"{vol}%")
+            self.vol_bar["value"] = vol
+            
+            self.bright_label.configure(text=f"{bright}%")
+            self.bright_bar["value"] = bright
+            
+            # Update streaming status
+            if status.get("audio_streaming"):
+                self.audio_status.configure(text="🔊 Audio: ACTIVE", style="StreamOn.TLabel")
+            else:
+                self.audio_status.configure(text="🔇 Audio: OFF", style="StreamOff.TLabel")
+            
+            if status.get("camera_streaming"):
+                self.camera_status.configure(text="📹 Camera: ACTIVE", style="StreamOn.TLabel")
+            else:
+                self.camera_status.configure(text="📷 Camera: OFF", style="StreamOff.TLabel")
+            
+            if status.get("screen_streaming"):
+                self.screen_status.configure(text="🖥️ Screen: ACTIVE", style="StreamOn.TLabel")
+            else:
+                self.screen_status.configure(text="🖥️ Screen: OFF", style="StreamOff.TLabel")
+            
+            # Update logs
+            logs = get_logs()
+            if len(logs) != self.last_log_count:
+                self._render_logs(logs)
+                self.last_log_count = len(logs)
+            
+        except Exception as e:
+            print(f"GUI update error: {e}")
         
-        function formatTime(timestamp) {
-            const date = new Date(timestamp);
-            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        }
+        # Schedule next update
+        if self.running and self.root:
+            self.root.after(self.update_interval, self._update_ui)
+    
+    def _render_logs(self, logs):
+        """Render logs to text widget."""
+        if not self.log_text:
+            return
         
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text || '';
-            return div.innerHTML;
-        }
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.delete(1.0, tk.END)
         
-        // Initial load
-        fetchStatus();
-        refreshLogs();
+        for log in logs[:50]:  # Show last 50 logs
+            timestamp = log.get("timestamp", "")
+            try:
+                time_str = datetime.fromisoformat(timestamp).strftime("%H:%M:%S")
+            except:
+                time_str = timestamp[:8] if len(timestamp) >= 8 else timestamp
+            
+            level = log.get("level", "info")
+            category = log.get("category", "general")
+            message = log.get("message", "")
+            details = log.get("details", "")
+            
+            # Insert timestamp
+            self.log_text.insert(tk.END, f"[{time_str}] ", "time")
+            
+            # Insert level
+            level_text = f"[{level.upper()}] "
+            self.log_text.insert(tk.END, level_text, level)
+            
+            # Insert category
+            self.log_text.insert(tk.END, f"({category}) ", "category")
+            
+            # Insert message
+            self.log_text.insert(tk.END, message)
+            
+            if details:
+                self.log_text.insert(tk.END, f" | {details}", "category")
+            
+            self.log_text.insert(tk.END, "\n")
         
-        // Auto-refresh
-        setInterval(fetchStatus, 2000);
-        setInterval(refreshLogs, 5000);
-    </script>
-</body>
-</html>
-"""
+        self.log_text.configure(state=tk.DISABLED)
+    
+    def _clear_logs(self):
+        """Clear the activity log."""
+        clear_logs()
+        self.last_log_count = 0
+        if self.log_text:
+            self.log_text.configure(state=tk.NORMAL)
+            self.log_text.delete(1.0, tk.END)
+            self.log_text.configure(state=tk.DISABLED)
+    
+    def run_mainloop(self):
+        """Run the tkinter main loop (blocking)."""
+        if self.root:
+            try:
+                self.root.mainloop()
+            except KeyboardInterrupt:
+                self.stop()
+    
+    def stop(self):
+        """Stop the GUI."""
+        self.running = False
+        if self.root:
+            try:
+                self.root.quit()
+                self.root.destroy()
+            except:
+                pass
+            self.root = None
 
 
-class AgentUIHandler(SimpleHTTPRequestHandler):
-    """HTTP request handler for the agent dashboard."""
-
-    def log_message(self, format, *args):
-        pass  # Suppress default logging
-
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-
-        if path == "/" or path == "/index.html":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(HTML_TEMPLATE.encode())
-
-        elif path == "/api/status":
-            self.send_json(get_agent_status())
-
-        elif path == "/api/logs":
-            self.send_json(get_logs())
-
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-
-        if path == "/api/logs/clear":
-            clear_logs()
-            self.send_json({"success": True})
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def send_json(self, data):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
-
-
-def run_ui_server(port: int = UI_PORT):
-    """Start the UI server in a background thread."""
-    try:
-        server = HTTPServer(("127.0.0.1", port), AgentUIHandler)
-        
-        def serve():
-            server.serve_forever()
-
-        thread = threading.Thread(target=serve, daemon=True)
-        thread.start()
-        add_log("info", f"Agent Dashboard running at http://localhost:{port}", category="system")
-        return server
-    except Exception as e:
-        add_log("warn", f"Could not start web UI: {e}", category="system")
-        return None
-
+# Global GUI instance
+jarvis_gui: Optional[JarvisGUI] = None
 
 # ============== MAIN ==============
-async def main():
-    # Start the web UI server
-    run_ui_server()
-    
+async def run_agent():
+    """Run the agent with async operations."""
     agent = JarvisAgent()
     
     try:
@@ -2900,5 +2809,46 @@ async def main():
         await agent.shutdown()
 
 
+def main():
+    """Main entry point - starts GUI and agent."""
+    global jarvis_gui
+    
+    if HAS_TKINTER:
+        # Create and start GUI
+        jarvis_gui = JarvisGUI()
+        
+        if jarvis_gui.start():
+            # Run agent in background thread
+            def run_agent_thread():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(run_agent())
+                except Exception as e:
+                    add_log("error", f"Agent thread error: {e}", category="system")
+                finally:
+                    loop.close()
+            
+            agent_thread = threading.Thread(target=run_agent_thread, daemon=True)
+            agent_thread.start()
+            
+            # Run GUI in main thread (required by tkinter)
+            try:
+                jarvis_gui.run_mainloop()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                jarvis_gui.stop()
+        else:
+            # Fallback to headless mode
+            print("⚠️  GUI failed to start. Running in headless mode.")
+            asyncio.run(run_agent())
+    else:
+        # No tkinter - run headless
+        print("⚠️  Tkinter not available. Running in headless mode.")
+        print("   Install tkinter with: pip install tk (or via system package manager)")
+        asyncio.run(run_agent())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
