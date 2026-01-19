@@ -26,6 +26,7 @@ import {
   ArrowLeftRight,
   Speaker,
   Webcam,
+  Loader2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -81,6 +82,13 @@ export default function MicCamera() {
   const [pcAudioActive, setPcAudioActive] = useState(false);
   const pcAudioRef = useRef<HTMLAudioElement | null>(null);
   const [useSystemAudio, setUseSystemAudio] = useState(false);
+
+  // ==================== PHONE AS WEBCAM STATE ====================
+  const [phoneWebcamActive, setPhoneWebcamActive] = useState(false);
+  const [phoneWebcamSessionId, setPhoneWebcamSessionId] = useState<string>("");
+  const [phoneWebcamStarting, setPhoneWebcamStarting] = useState(false);
+  const phoneWebcamWsRef = useRef<WebSocket | null>(null);
+  const phoneWebcamTimerRef = useRef<number | null>(null);
 
   const [showDebug, setShowDebug] = useState(false);
   const [debugStats, setDebugStats] = useState({
@@ -531,7 +539,7 @@ export default function MicCamera() {
           )}
 
           <Tabs defaultValue="audio" className="w-full">
-            <TabsList className="grid w-full grid-cols-3 mb-4">
+            <TabsList className="grid w-full grid-cols-4 mb-4">
               <TabsTrigger value="audio" className="text-sm">
                 <Volume2 className="h-4 w-4 mr-2" />
                 Audio
@@ -539,6 +547,10 @@ export default function MicCamera() {
               <TabsTrigger value="phone-camera" className="text-sm">
                 <Smartphone className="h-4 w-4 mr-2" />
                 Phone Cam
+              </TabsTrigger>
+              <TabsTrigger value="phone-webcam" className="text-sm">
+                <Camera className="h-4 w-4 mr-2" />
+                As Webcam
               </TabsTrigger>
               <TabsTrigger value="pc-camera" className="text-sm">
                 <Webcam className="h-4 w-4 mr-2" />
@@ -961,6 +973,217 @@ export default function MicCamera() {
                         )}
                       </div>
                     </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ==================== PHONE AS WEBCAM TAB ==================== */}
+            <TabsContent value="phone-webcam">
+              <Card className="glass-dark border-border/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Camera className="h-5 w-5 text-primary" />
+                    Phone as Webcam
+                  </CardTitle>
+                  <CardDescription>
+                    Use your phone camera as a virtual webcam on your PC (great for video calls!)
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* How it works */}
+                  <div className="p-4 rounded-lg bg-primary/5 border border-primary/20">
+                    <h3 className="font-medium mb-2">How it works:</h3>
+                    <ol className="text-sm text-muted-foreground space-y-1.5 list-decimal list-inside">
+                      <li><strong>Start camera</strong> on your phone (below)</li>
+                      <li><strong>Start Phone Webcam</strong> on PC - opens a window with your phone's camera</li>
+                      <li>Use <strong>OBS Virtual Camera</strong> or <strong>Window Capture</strong> in video apps</li>
+                    </ol>
+                  </div>
+
+                  {/* Phone camera preview for webcam */}
+                  <div className="relative aspect-video bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
+                    {phoneCameraActive ? (
+                      <video
+                        ref={phoneCameraRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
+                        <Camera className="h-12 w-12 mb-2 opacity-50" />
+                        <p className="text-sm">Start your phone camera first</p>
+                      </div>
+                    )}
+
+                    {phoneWebcamActive && (
+                      <Badge className="absolute top-3 left-3 bg-neon-green/80 text-background">
+                        <span className="w-2 h-2 rounded-full bg-white animate-pulse mr-2" />
+                        STREAMING TO PC
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Controls */}
+                  <div className="flex flex-col gap-3">
+                    {/* Step 1: Start phone camera */}
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/20">
+                      <div>
+                        <p className="font-medium text-sm">Step 1: Phone Camera</p>
+                        <p className="text-xs text-muted-foreground">Enable your phone camera</p>
+                      </div>
+                      {!phoneCameraActive ? (
+                        <Button onClick={startPhoneCamera} variant="secondary" size="sm">
+                          <Play className="h-4 w-4 mr-2" />
+                          Start Camera
+                        </Button>
+                      ) : (
+                        <Button onClick={stopPhoneCamera} variant="outline" size="sm">
+                          <Square className="h-4 w-4 mr-2" />
+                          Stop
+                        </Button>
+                      )}
+                    </div>
+
+                    {/* Step 2: Stream to PC */}
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/20">
+                      <div>
+                        <p className="font-medium text-sm">Step 2: Stream to PC</p>
+                        <p className="text-xs text-muted-foreground">
+                          {phoneWebcamActive ? "Streaming to PC webcam window" : "Start streaming to open webcam window on PC"}
+                        </p>
+                      </div>
+                      {!phoneWebcamActive ? (
+                        <Button 
+                          onClick={async () => {
+                            if (!phoneCameraActive) {
+                              toast({ title: "Start camera first", description: "Enable your phone camera above", variant: "destructive" });
+                              return;
+                            }
+                            
+                            setPhoneWebcamStarting(true);
+                            const sessionId = crypto.randomUUID();
+                            setPhoneWebcamSessionId(sessionId);
+                            
+                            // Tell PC to start receiving
+                            const result = await sendCommand("start_phone_webcam", { session_id: sessionId }, { awaitResult: true, timeoutMs: 15000 });
+                            
+                            if (!result.success) {
+                              toast({ 
+                                title: "Failed to start", 
+                                description: typeof result.error === 'string' ? result.error : "PC could not start webcam receiver",
+                                variant: "destructive" 
+                              });
+                              setPhoneWebcamStarting(false);
+                              return;
+                            }
+                            
+                            // Connect phone to relay and start sending frames
+                            const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=30&quality=80`);
+                            phoneWebcamWsRef.current = ws;
+                            
+                            ws.onopen = () => {
+                              setPhoneWebcamActive(true);
+                              setPhoneWebcamStarting(false);
+                              toast({ title: "Phone as Webcam active!", description: "A window opened on your PC showing your phone camera" });
+                              
+                              if (!shareCanvasRef.current) {
+                                shareCanvasRef.current = document.createElement("canvas");
+                              }
+                              
+                              // Send frames at ~30fps for smooth webcam experience
+                              phoneWebcamTimerRef.current = window.setInterval(() => {
+                                const v = phoneCameraRef.current;
+                                if (!v || v.readyState < 2) return;
+                                
+                                const canvas = shareCanvasRef.current!;
+                                const w = Math.min(v.videoWidth || 640, 1280);
+                                const h = Math.min(v.videoHeight || 480, 720);
+                                canvas.width = w;
+                                canvas.height = h;
+                                
+                                const ctx = canvas.getContext("2d");
+                                if (!ctx) return;
+                                ctx.drawImage(v, 0, 0, w, h);
+                                
+                                const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+                                const b64 = dataUrl.split(",")[1] || "";
+                                
+                                if (ws.readyState === WebSocket.OPEN) {
+                                  ws.send(JSON.stringify({
+                                    type: "camera_frame",
+                                    data: b64,
+                                    width: w,
+                                    height: h,
+                                  }));
+                                }
+                              }, 33); // ~30fps
+                            };
+                            
+                            ws.onclose = () => {
+                              setPhoneWebcamActive(false);
+                              setPhoneWebcamStarting(false);
+                              if (phoneWebcamTimerRef.current) {
+                                window.clearInterval(phoneWebcamTimerRef.current);
+                                phoneWebcamTimerRef.current = null;
+                              }
+                            };
+                            
+                            ws.onerror = () => {
+                              toast({ title: "Connection error", variant: "destructive" });
+                              setPhoneWebcamStarting(false);
+                            };
+                          }}
+                          className="gradient-primary" 
+                          size="sm"
+                          disabled={!phoneCameraActive || phoneWebcamStarting}
+                        >
+                          {phoneWebcamStarting ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Starting...
+                            </>
+                          ) : (
+                            <>
+                              <Camera className="h-4 w-4 mr-2" />
+                              Start Webcam
+                            </>
+                          )}
+                        </Button>
+                      ) : (
+                        <Button 
+                          onClick={async () => {
+                            if (phoneWebcamTimerRef.current) {
+                              window.clearInterval(phoneWebcamTimerRef.current);
+                              phoneWebcamTimerRef.current = null;
+                            }
+                            phoneWebcamWsRef.current?.close();
+                            phoneWebcamWsRef.current = null;
+                            setPhoneWebcamActive(false);
+                            
+                            await sendCommand("stop_phone_webcam", {});
+                            toast({ title: "Phone webcam stopped" });
+                          }}
+                          variant="destructive" 
+                          size="sm"
+                        >
+                          <Square className="h-4 w-4 mr-2" />
+                          Stop Webcam
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Tips */}
+                  <div className="p-3 rounded-lg bg-secondary/20 text-sm text-muted-foreground">
+                    <p><strong>💡 Tips:</strong></p>
+                    <ul className="list-disc list-inside mt-1 space-y-1">
+                      <li>In Zoom/Teams/etc, select the window capture or virtual camera</li>
+                      <li>Install OBS Studio for best virtual webcam experience</li>
+                      <li>Keep your phone screen on while streaming</li>
+                    </ul>
                   </div>
                 </CardContent>
               </Card>
