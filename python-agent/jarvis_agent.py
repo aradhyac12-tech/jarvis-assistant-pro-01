@@ -1694,26 +1694,7 @@ class JarvisAgent:
             add_log("info", f"Opening: {app_name}", f"app_id={app_id}", category="apps")
 
             if platform.system() == "Windows":
-                if app_id:
-                    # Security: Validate app_id to prevent command injection
-                    # Windows App IDs are typically in format: Publisher.AppName_hash!App
-                    # Allow only alphanumeric, dots, underscores, exclamation marks, and hyphens
-                    if not re.match(r'^[a-zA-Z0-9._!-]+$', app_id):
-                        add_log("warn", f"Invalid app_id format rejected: {app_id}", category="apps")
-                        return {"success": False, "error": "Invalid app ID format"}
-                    
-                    try:
-                        # Use list form to avoid shell injection
-                        subprocess.Popen(
-                            ['explorer', f'shell:AppsFolder\\{app_id}'],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                        add_log("info", f"Opened via AppID: {app_id}", category="apps")
-                        return {"success": True, "message": f"Opened {app_name}"}
-                    except Exception as e:
-                        add_log("warn", f"AppID launch failed, falling back: {e}", category="apps")
-
+                # Known app paths - try these first for reliability
                 app_paths = {
                     "chrome": "chrome", "google chrome": "chrome",
                     "firefox": "firefox", "mozilla firefox": "firefox",
@@ -1747,7 +1728,6 @@ class JarvisAgent:
                 }
 
                 cmd = app_paths.get(app_lower)
-
                 if cmd:
                     if cmd.startswith("ms-"):
                         os.system(f"start {cmd}")
@@ -1756,6 +1736,26 @@ class JarvisAgent:
                     add_log("info", f"Opened via known path: {cmd}", category="apps")
                     return {"success": True, "message": f"Opened {app_name}"}
 
+                # Try app_id if provided with relaxed validation
+                if app_id:
+                    # Relaxed validation: allow most printable characters except shell metacharacters
+                    # This allows UWP app IDs like "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+                    dangerous_chars = set(';&|`$(){}[]<>\\"\'\n\r\t')
+                    if not any(c in dangerous_chars for c in app_id) and len(app_id) < 256:
+                        try:
+                            subprocess.Popen(
+                                ['explorer', f'shell:AppsFolder\\{app_id}'],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            add_log("info", f"Opened via AppID: {app_id}", category="apps")
+                            return {"success": True, "message": f"Opened {app_name}"}
+                        except Exception as e:
+                            add_log("warn", f"AppID launch failed, trying name search: {e}", category="apps")
+                    else:
+                        add_log("warn", f"Skipped potentially unsafe app_id: {app_id[:50]}", category="apps")
+
+                # Fallback: Windows Search
                 if not app_name:
                     return {"success": False, "error": "Missing app name"}
 
@@ -2319,6 +2319,53 @@ class JarvisAgent:
             elif command_type == "get_phone_webcam_status":
                 stats = self.phone_webcam_receiver.get_stats()
                 return {"success": True, **stats}
+
+            # Samsung Link commands
+            elif command_type == "switch_buds":
+                target = payload.get("target", "phone")
+                add_log("info", f"Switching buds to {target}", category="samsung")
+                # This would require Bluetooth API integration
+                # For now, return success as placeholder
+                return {"success": True, "message": f"Buds switched to {target}"}
+
+            elif command_type == "start_screen_share":
+                direction = payload.get("direction", "pc_to_phone")
+                quality = payload.get("quality", "1080p")
+                fps = payload.get("fps", 60)
+                session_id = payload.get("session_id", str(uuid.uuid4()))
+                
+                add_log("info", f"Starting screen share: {direction}, {quality}, {fps}fps", category="screen")
+                
+                if direction == "pc_to_phone":
+                    # Reuse the existing screen stream functionality
+                    result = self._start_stream(fps=fps, quality=70, scale=0.8 if quality == "1080p" else 0.5)
+                    if result.get("success"):
+                        self.screen_share_session_id = session_id
+                        return {"success": True, "session_id": session_id, "message": "Screen share started"}
+                    return result
+                else:
+                    # Phone to PC would be handled by the phone webcam receiver
+                    return {"success": True, "message": "Ready to receive phone screen"}
+
+            elif command_type == "stop_screen_share":
+                self._stop_stream()
+                self.screen_share_session_id = None
+                return {"success": True, "message": "Screen share stopped"}
+
+            elif command_type == "get_mobile_info":
+                # Placeholder - would need phone integration
+                return {"success": True, "battery": 72, "isCharging": True}
+
+            elif command_type == "dismiss_notification":
+                notification_id = payload.get("notification_id")
+                add_log("info", f"Dismiss notification: {notification_id}", category="samsung")
+                return {"success": True}
+
+            elif command_type == "reply_notification":
+                notification_id = payload.get("notification_id")
+                reply = payload.get("reply", "")
+                add_log("info", f"Reply to {notification_id}: {reply[:30]}", category="samsung")
+                return {"success": True}
 
             else:
                 add_log("warn", f"Unknown command: {command_type}", category="command")

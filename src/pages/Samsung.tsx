@@ -135,10 +135,12 @@ export default function Samsung() {
 
   // Screen Share State
   const [screenShareActive, setScreenShareActive] = useState(false);
-  const [screenShareDirection, setScreenShareDirection] = useState<"phone_to_pc" | "pc_to_phone">("phone_to_pc");
+  const [screenShareDirection, setScreenShareDirection] = useState<"phone_to_pc" | "pc_to_phone">("pc_to_phone");
   const [screenShareQuality, setScreenShareQuality] = useState<"720p" | "1080p" | "4k">("1080p");
   const [screenShareFps, setScreenShareFps] = useState(60);
   const [screenFrame, setScreenFrame] = useState<string | null>(null);
+  const screenShareWsRef = useRef<WebSocket | null>(null);
+  const [screenShareSessionId, setScreenShareSessionId] = useState<string | null>(null);
 
   // Phone as Webcam State
   const [phoneWebcamActive, setPhoneWebcamActive] = useState(false);
@@ -146,6 +148,10 @@ export default function Samsung() {
   const [webcamFps, setWebcamFps] = useState(30);
   const phoneWebcamRef = useRef<HTMLVideoElement>(null);
   const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
+  
+  // Derive WS URL
+  const projectRef = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined) ?? "";
+  const CAMERA_WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/camera-relay`;
 
   // Call Handling
   const [activeCall, setActiveCall] = useState<{ number: string; name: string; duration: number } | null>(null);
@@ -245,30 +251,79 @@ export default function Samsung() {
     addLog("info", "web", `Replied to notification: ${id}`);
   }, [sendCommand, toast]);
 
-  // Screen share functions
+  // Screen share functions - now with WebSocket for real streaming
   const startScreenShare = useCallback(async () => {
     addLog("info", "web", `Starting screen share: ${screenShareDirection}, ${screenShareQuality}, ${screenShareFps}fps`);
     
+    const sessionId = crypto.randomUUID();
+    setScreenShareSessionId(sessionId);
+    
+    // Tell PC to start streaming
     const result = await sendCommand("start_screen_share", {
       direction: screenShareDirection,
       quality: screenShareQuality,
       fps: screenShareFps,
+      session_id: sessionId,
     }, { awaitResult: true, timeoutMs: 15000 });
 
     if (result.success) {
-      setScreenShareActive(true);
-      toast({ title: "Screen Share Started" });
-      addLog("info", "agent", "Screen share started");
+      // Connect WebSocket to receive frames
+      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=${screenShareFps}&quality=80&streamType=screen`);
+      screenShareWsRef.current = ws;
+      ws.binaryType = "arraybuffer";
+      
+      ws.onopen = () => {
+        setScreenShareActive(true);
+        toast({ title: "Screen Share Started", description: `Streaming at ${screenShareFps} FPS` });
+        addLog("info", "web", "Screen share WebSocket connected");
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          // Handle binary JPEG frames
+          if (event.data instanceof ArrayBuffer) {
+            const blob = new Blob([event.data], { type: "image/jpeg" });
+            const url = URL.createObjectURL(blob);
+            setScreenFrame((prev) => {
+              if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+              return url;
+            });
+            return;
+          }
+          
+          const data = JSON.parse(event.data);
+          if ((data.type === "screen_frame" || data.type === "camera_frame") && data.data) {
+            setScreenFrame(`data:image/jpeg;base64,${data.data}`);
+          }
+        } catch {
+          // ignore
+        }
+      };
+      
+      ws.onclose = () => {
+        setScreenShareActive(false);
+        setScreenFrame(null);
+        addLog("info", "web", "Screen share WebSocket closed");
+      };
+      
+      ws.onerror = () => {
+        toast({ title: "Screen Share Error", variant: "destructive" });
+      };
     } else {
       toast({ title: "Screen Share Failed", variant: "destructive" });
       addLog("error", "agent", "Failed to start screen share");
     }
-  }, [screenShareDirection, screenShareQuality, screenShareFps, sendCommand, toast]);
+  }, [screenShareDirection, screenShareQuality, screenShareFps, sendCommand, toast, CAMERA_WS_URL]);
 
   const stopScreenShare = useCallback(async () => {
+    if (screenShareWsRef.current) {
+      screenShareWsRef.current.close();
+      screenShareWsRef.current = null;
+    }
     await sendCommand("stop_screen_share", {});
     setScreenShareActive(false);
     setScreenFrame(null);
+    setScreenShareSessionId(null);
     toast({ title: "Screen Share Stopped" });
     addLog("info", "web", "Screen share stopped");
   }, [sendCommand, toast]);
@@ -328,6 +383,9 @@ export default function Samsung() {
     return () => {
       if (webcamStream) {
         webcamStream.getTracks().forEach((track) => track.stop());
+      }
+      if (screenShareWsRef.current) {
+        screenShareWsRef.current.close();
       }
     };
   }, [webcamStream]);

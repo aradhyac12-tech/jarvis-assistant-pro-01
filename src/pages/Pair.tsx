@@ -4,13 +4,15 @@ import { Bot, Loader2, CheckCircle, Key } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 
 export default function Pair() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { session, isLoading: sessionLoading, pairDevice, error } = useDeviceSession();
+  const { session, isLoading: sessionLoading, pairDevice, error, rememberDevice, setRememberDevice } = useDeviceSession();
   const [isConnecting, setIsConnecting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [accessCode, setAccessCode] = useState("");
@@ -99,6 +101,21 @@ export default function Pair() {
               Run the PC agent and enter the displayed code
             </p>
           </div>
+          
+          {/* Remember Device Toggle */}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/20 border border-border/50">
+            <div className="flex flex-col">
+              <Label htmlFor="remember-device" className="text-sm font-medium">Remember this device</Label>
+              <span className="text-xs text-muted-foreground">Stay connected for 90 days</span>
+            </div>
+            <Switch
+              id="remember-device"
+              checked={rememberDevice}
+              onCheckedChange={setRememberDevice}
+              disabled={isConnecting || success}
+            />
+          </div>
+          
           <Button 
             className="w-full" 
             onClick={handleConnect} 
