@@ -6,6 +6,7 @@ interface DeviceSession {
   device_id: string;
   session_token: string;
   device_name?: string;
+  remember?: boolean;
 }
 
 interface DeviceInfo {
@@ -21,6 +22,8 @@ interface DeviceSessionContextType {
   isLoading: boolean;
   isReconnecting: boolean;
   error: string | null;
+  rememberDevice: boolean;
+  setRememberDevice: (v: boolean) => void;
   pairDevice: (pairingCode: string) => Promise<{ success: boolean; error?: string }>;
   autoPair: () => Promise<{ success: boolean; error?: string }>;
   unpair: () => void;
@@ -30,8 +33,10 @@ interface DeviceSessionContextType {
 const DeviceSessionContext = createContext<DeviceSessionContextType | undefined>(undefined);
 
 const SESSION_KEY = "jarvis_device_session";
+const REMEMBER_KEY = "jarvis_remember_device";
 const RECONNECT_INTERVAL = 5000; // Check device status every 5 seconds
-const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days for remembered devices
+const SESSION_SOFT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days refresh threshold
 
 export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<DeviceSession | null>(null);
@@ -39,7 +44,15 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rememberDevice, setRememberDeviceState] = useState(() => {
+    return localStorage.getItem(REMEMBER_KEY) === "true";
+  });
   const reconnectTimerRef = useRef<number | null>(null);
+  
+  const setRememberDevice = useCallback((v: boolean) => {
+    setRememberDeviceState(v);
+    localStorage.setItem(REMEMBER_KEY, v ? "true" : "false");
+  }, []);
 
   const fetchDeviceInfo = useCallback(async (deviceId: string): Promise<DeviceInfo | null> => {
     try {
@@ -62,7 +75,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     if (info) setDeviceInfo(info);
   }, [session, fetchDeviceInfo]);
 
-  const validateSession = useCallback(async (token: string): Promise<boolean> => {
+  const validateSession = useCallback(async (token: string, shouldRefresh = false): Promise<boolean> => {
     try {
       const { data, error } = await supabase
         .from("device_sessions")
@@ -72,9 +85,12 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
 
       if (error || !data) return false;
 
-      // Mirror backend expiry rules
       const lastActive = new Date(data.last_active).getTime();
-      if (Number.isFinite(lastActive) && Date.now() - lastActive > SESSION_MAX_AGE_MS) {
+      const now = Date.now();
+      
+      // Check expiry - use longer TTL for remembered devices
+      const maxAge = rememberDevice ? SESSION_MAX_AGE_MS : 7 * 24 * 60 * 60 * 1000;
+      if (Number.isFinite(lastActive) && now - lastActive > maxAge) {
         return false;
       }
 
@@ -85,11 +101,21 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         .eq("id", data.device_id)
         .maybeSingle();
 
-      return !!device;
+      if (!device) return false;
+      
+      // Refresh session activity if within soft TTL (prevents expiration while active)
+      if (shouldRefresh && now - lastActive > SESSION_SOFT_TTL_MS / 7) {
+        await supabase
+          .from("device_sessions")
+          .update({ last_active: new Date().toISOString() })
+          .eq("session_token", token);
+      }
+
+      return true;
     } catch {
       return false;
     }
-  }, []);
+  }, [rememberDevice]);
 
   const persistSession = useCallback((s: DeviceSession) => {
     localStorage.setItem(SESSION_KEY, JSON.stringify(s));
@@ -286,6 +312,8 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         isLoading,
         isReconnecting,
         error,
+        rememberDevice,
+        setRememberDevice,
         pairDevice,
         autoPair,
         unpair,
