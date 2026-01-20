@@ -145,25 +145,30 @@ serve(async (req) => {
             return;
           }
 
-          if (msg.type === 'camera_frame') {
+          const isFrame = msg.type === 'camera_frame' || msg.type === 'screen_frame';
+
+          if (isFrame) {
             // Frame throttling - check if enough time has passed
             const now = Date.now();
             const minInterval = 1000 / session.targetFps;
-            
+
             if (now - session.lastFrameTime >= minInterval) {
               session.lastFrameTime = now;
               session.frameCount++;
-              
-              // Forward frame to phone
-              if (session.phoneSocket && session.phoneSocket.readyState === WebSocket.OPEN) {
-                session.phoneSocket.send(JSON.stringify({
-                  type: 'camera_frame',
-                  data: msg.data,
-                  width: msg.width,
-                  height: msg.height,
-                  frameNumber: session.frameCount,
-                  timestamp: now,
-                }));
+
+              // Forward frames to the opposite peer (phone <-> pc)
+              const targetSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
+              if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
+                targetSocket.send(
+                  JSON.stringify({
+                    type: msg.type,
+                    data: msg.data,
+                    width: msg.width,
+                    height: msg.height,
+                    frameNumber: session.frameCount,
+                    timestamp: now,
+                  })
+                );
               }
             }
             return;
