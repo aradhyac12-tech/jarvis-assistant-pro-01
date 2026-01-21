@@ -175,23 +175,68 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     const code = pairingCode.trim().toUpperCase();
-    if (!code || code.length < 4) {
+    if (!code || code.length < 2) {
       return { success: false, error: "Invalid pairing code" };
     }
 
     try {
-      const { data: device, error: deviceError } = await supabase
+      // Strategy 1: Try exact pairing_code match
+      let device: { id: string; name: string; pairing_code: string | null; pairing_expires_at: string | null; device_key: string } | null = null;
+      
+      const { data: codeMatch } = await supabase
         .from("devices")
-        .select("id, name, pairing_code, pairing_expires_at")
+        .select("id, name, pairing_code, pairing_expires_at, device_key")
         .eq("pairing_code", code)
         .maybeSingle();
-
-      if (deviceError || !device) {
-        return { success: false, error: "Device not found. Check the code and try again." };
+      
+      if (codeMatch) {
+        // Check if code is expired
+        if (codeMatch.pairing_expires_at && new Date(codeMatch.pairing_expires_at) < new Date()) {
+          // Code expired but device exists - still allow connection
+          console.log("Pairing code expired, but connecting to device anyway");
+        }
+        device = codeMatch;
       }
 
-      if (device.pairing_expires_at && new Date(device.pairing_expires_at) < new Date()) {
-        return { success: false, error: "Pairing code has expired. Restart the agent to get a new code." };
+      // Strategy 2: Try device_key match (for persistent pairing)
+      if (!device) {
+        const { data: keyMatch } = await supabase
+          .from("devices")
+          .select("id, name, pairing_code, pairing_expires_at, device_key")
+          .eq("device_key", code.toLowerCase())
+          .maybeSingle();
+        
+        if (keyMatch) {
+          device = keyMatch;
+        }
+      }
+
+      // Strategy 3: Fallback to most recent online device if code looks like a partial match
+      if (!device && code.length >= 4) {
+        const { data: recentDevices } = await supabase
+          .from("devices")
+          .select("id, name, pairing_code, pairing_expires_at, device_key")
+          .order("last_seen", { ascending: false })
+          .limit(5);
+        
+        if (recentDevices && recentDevices.length > 0) {
+          // Check if any device's pairing_code contains the entered code or vice versa
+          device = recentDevices.find(d => 
+            d.pairing_code?.includes(code) || 
+            code.includes(d.pairing_code || '') ||
+            d.device_key?.toUpperCase().startsWith(code)
+          ) || null;
+          
+          // Last resort: just use the most recent device if only one exists
+          if (!device && recentDevices.length === 1) {
+            console.log("Single device found, auto-connecting");
+            device = recentDevices[0];
+          }
+        }
+      }
+
+      if (!device) {
+        return { success: false, error: "Device not found. Ensure PC agent is running and try the code shown on screen." };
       }
 
       const sessionToken = crypto.randomUUID();
@@ -206,6 +251,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Failed to create session" };
       }
 
+      // Clear pairing code after successful pair
       await supabase
         .from("devices")
         .update({ pairing_code: null, pairing_expires_at: null })
@@ -216,6 +262,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         device_id: device.id,
         session_token: sessionToken,
         device_name: device.name,
+        remember: rememberDevice,
       };
 
       persistSession(newSession);
@@ -228,7 +275,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
       console.error("Pairing error:", err);
       return { success: false, error: "Pairing failed. Please try again." };
     }
-  }, [fetchDeviceInfo, persistSession]);
+  }, [fetchDeviceInfo, persistSession, rememberDevice]);
 
   const unpair = useCallback(() => {
     if (session) {

@@ -12,10 +12,11 @@ import { useDeviceSession } from "@/hooks/useDeviceSession";
 export default function Pair() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { session, isLoading: sessionLoading, pairDevice, error, rememberDevice, setRememberDevice } = useDeviceSession();
+  const { session, isLoading: sessionLoading, pairDevice, autoPair, error, rememberDevice, setRememberDevice } = useDeviceSession();
   const [isConnecting, setIsConnecting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [accessCode, setAccessCode] = useState("");
+  const [autoConnecting, setAutoConnecting] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -88,17 +89,17 @@ export default function Pair() {
             <div className="relative">
               <Key className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Enter access code (e.g., ABCD1234)"
+                placeholder="Enter access code (e.g., JX4F8V)"
                 value={accessCode}
                 onChange={(e) => setAccessCode(e.target.value.toUpperCase())}
                 onKeyDown={(e) => e.key === "Enter" && handleConnect()}
                 className="pl-10 text-center text-lg tracking-wider font-mono uppercase"
-                maxLength={12}
+                maxLength={32}
                 disabled={isConnecting || success}
               />
             </div>
             <p className="text-xs text-muted-foreground text-center">
-              Run the PC agent and enter the displayed code
+              Enter the 6-character code displayed by your PC agent
             </p>
           </div>
           
@@ -119,9 +120,42 @@ export default function Pair() {
           <Button 
             className="w-full" 
             onClick={handleConnect} 
-            disabled={isConnecting || success || !accessCode.trim()}
+            disabled={isConnecting || success || !accessCode.trim() || autoConnecting}
           >
             {isConnecting ? "Connecting…" : success ? "Connected" : "Connect"}
+          </Button>
+          
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-border/50" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-card px-2 text-muted-foreground">or</span>
+            </div>
+          </div>
+          
+          <Button 
+            variant="outline"
+            className="w-full" 
+            onClick={async () => {
+              setAutoConnecting(true);
+              const res = await autoPair();
+              if (res.success) {
+                setSuccess(true);
+                toast({ title: "Connected", description: "Auto-connected to your PC." });
+                setTimeout(() => navigate("/dashboard", { replace: true }), 600);
+              } else {
+                toast({
+                  title: "Auto-connect Failed",
+                  description: res.error || "No device found. Try manual code entry.",
+                  variant: "destructive",
+                });
+              }
+              setAutoConnecting(false);
+            }}
+            disabled={isConnecting || success || autoConnecting}
+          >
+            {autoConnecting ? "Searching…" : "Quick Connect (Auto-detect PC)"}
           </Button>
           {error && !success && (
             <p className="text-sm text-destructive text-center">{error}</p>
