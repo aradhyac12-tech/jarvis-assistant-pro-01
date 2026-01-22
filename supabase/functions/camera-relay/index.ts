@@ -53,9 +53,8 @@ serve(async (req) => {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("sessionId") || crypto.randomUUID();
     const clientType = url.searchParams.get("type") || "phone"; // 'phone' or 'pc'
-    const targetFps = parseInt(url.searchParams.get("fps") || "30", 10);
-    const quality = parseInt(url.searchParams.get("quality") || "70", 10);
-    const streamType = url.searchParams.get("streamType") || "camera"; // 'camera' or 'screen'
+    const targetFps = parseInt(url.searchParams.get("fps") || "10", 10);
+    const quality = parseInt(url.searchParams.get("quality") || "50", 10);
 
     console.log(`[camera-relay] WebSocket upgrade: session=${sessionId}, type=${clientType}, fps=${targetFps}, quality=${quality}`);
 

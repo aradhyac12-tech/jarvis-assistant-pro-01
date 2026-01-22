@@ -194,31 +194,13 @@ export default function MicCamera() {
       addLog("info", "agent", "PC camera opened successfully");
 
       // Connect to dedicated camera-relay WebSocket (phone receives frames)
-      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=30&quality=70`);
+      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=60`);
       pcCameraWsRef.current = ws;
-      ws.binaryType = "arraybuffer";
 
       ws.onmessage = (event) => {
         try {
-          // Handle binary JPEG frames directly
-          if (event.data instanceof ArrayBuffer) {
-            const blob = new Blob([event.data], { type: "image/jpeg" });
-            const url = URL.createObjectURL(blob);
-            setPcCameraFrame((prev) => {
-              if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
-              return url;
-            });
-            setDebugStats((prev) => ({
-              ...prev,
-              frameCount: prev.frameCount + 1,
-              lastFrameTime: Date.now(),
-            }));
-            return;
-          }
-          
-          // Handle JSON messages (base64 frames or control messages)
           const data = JSON.parse(event.data);
-          if ((data.type === "camera_frame" || data.type === "screen_frame") && data.data) {
+          if (data.type === "camera_frame" && data.data) {
             setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
             setDebugStats((prev) => ({
               ...prev,
@@ -231,7 +213,7 @@ export default function MicCamera() {
             toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
           }
         } catch {
-          // ignore parse errors
+          // ignore parse errors for binary data
         }
       };
 
@@ -940,23 +922,10 @@ export default function MicCamera() {
                               toast({ title: "Connected", description: "Waiting for frames…" });
                             };
 
-                            ws.binaryType = "arraybuffer";
-                            
                             ws.onmessage = (event) => {
                               try {
-                                // Handle binary JPEG frames
-                                if (event.data instanceof ArrayBuffer) {
-                                  const blob = new Blob([event.data], { type: "image/jpeg" });
-                                  const url = URL.createObjectURL(blob);
-                                  setPhoneCamRemoteFrame((prev) => {
-                                    if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
-                                    return url;
-                                  });
-                                  return;
-                                }
-                                
                                 const data = JSON.parse(event.data);
-                                if ((data.type === "camera_frame" || data.type === "screen_frame") && data.data) {
+                                if (data.type === "camera_frame" && data.data) {
                                   setPhoneCamRemoteFrame(`data:image/jpeg;base64,${data.data}`);
                                 }
                                 if (data.type === "error" && data.message) {

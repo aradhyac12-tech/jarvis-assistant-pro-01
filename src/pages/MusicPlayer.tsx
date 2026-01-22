@@ -128,53 +128,39 @@ export default function MusicPlayer() {
     }
   }, [selectedDevice?.is_online, fetchMediaState]);
 
-  // Media controls - optimistic updates for instant UI
+  // Media controls
   const handlePlayPause = async () => {
-    // Optimistic update - toggle immediately
-    setMediaState(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
     await sendCommand("media_control", { action: "play_pause" });
-    // Faster refresh cycle
-    setTimeout(fetchMediaState, 150);
+    setTimeout(fetchMediaState, 300);
   };
 
   const handleNext = async () => {
-    // Optimistic - show loading state
-    setMediaState(prev => ({ ...prev, title: "Loading...", artist: "" }));
     await sendCommand("media_control", { action: "next" });
     toast({ title: "Next Track" });
-    setTimeout(fetchMediaState, 300);
+    setTimeout(fetchMediaState, 500);
   };
 
   const handlePrevious = async () => {
-    setMediaState(prev => ({ ...prev, title: "Loading...", artist: "" }));
     await sendCommand("media_control", { action: "previous" });
     toast({ title: "Previous Track" });
-    setTimeout(fetchMediaState, 300);
+    setTimeout(fetchMediaState, 500);
   };
 
   const handleVolumeChange = async (newVolume: number[]) => {
     const vol = newVolume[0];
     setVolume(vol);
-    // Don't await - fire and forget for responsiveness
-    sendCommand("set_volume", { level: vol });
+    await sendCommand("set_volume", { level: vol });
   };
 
   const handleMuteToggle = async () => {
-    // Optimistic update
-    setIsMuted(!isMuted);
     await sendCommand("media_control", { action: "mute" });
+    setIsMuted(!isMuted);
   };
 
   const handleSeek = async (position: number[]) => {
     const percent = position[0];
-    // Optimistic update
-    setMediaState(prev => ({
-      ...prev,
-      position: percent,
-      positionMs: Math.round((percent / 100) * prev.durationMs)
-    }));
     await sendCommand("media_seek", { position_percent: percent });
-    setTimeout(fetchMediaState, 200);
+    setTimeout(fetchMediaState, 300);
   };
 
   // Phone call detection simulation (in real app, this would come from phone notifications)

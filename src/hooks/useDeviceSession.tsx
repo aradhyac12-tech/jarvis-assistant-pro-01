@@ -6,7 +6,6 @@ interface DeviceSession {
   device_id: string;
   session_token: string;
   device_name?: string;
-  remember?: boolean;
 }
 
 interface DeviceInfo {
@@ -22,8 +21,6 @@ interface DeviceSessionContextType {
   isLoading: boolean;
   isReconnecting: boolean;
   error: string | null;
-  rememberDevice: boolean;
-  setRememberDevice: (v: boolean) => void;
   pairDevice: (pairingCode: string) => Promise<{ success: boolean; error?: string }>;
   autoPair: () => Promise<{ success: boolean; error?: string }>;
   unpair: () => void;
@@ -33,10 +30,8 @@ interface DeviceSessionContextType {
 const DeviceSessionContext = createContext<DeviceSessionContextType | undefined>(undefined);
 
 const SESSION_KEY = "jarvis_device_session";
-const REMEMBER_KEY = "jarvis_remember_device";
 const RECONNECT_INTERVAL = 5000; // Check device status every 5 seconds
-const SESSION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days for remembered devices
-const SESSION_SOFT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days refresh threshold
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<DeviceSession | null>(null);
@@ -44,15 +39,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rememberDevice, setRememberDeviceState] = useState(() => {
-    return localStorage.getItem(REMEMBER_KEY) === "true";
-  });
   const reconnectTimerRef = useRef<number | null>(null);
-  
-  const setRememberDevice = useCallback((v: boolean) => {
-    setRememberDeviceState(v);
-    localStorage.setItem(REMEMBER_KEY, v ? "true" : "false");
-  }, []);
 
   const fetchDeviceInfo = useCallback(async (deviceId: string): Promise<DeviceInfo | null> => {
     try {
@@ -75,7 +62,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     if (info) setDeviceInfo(info);
   }, [session, fetchDeviceInfo]);
 
-  const validateSession = useCallback(async (token: string, shouldRefresh = false): Promise<boolean> => {
+  const validateSession = useCallback(async (token: string): Promise<boolean> => {
     try {
       const { data, error } = await supabase
         .from("device_sessions")
@@ -85,12 +72,9 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
 
       if (error || !data) return false;
 
+      // Mirror backend expiry rules
       const lastActive = new Date(data.last_active).getTime();
-      const now = Date.now();
-      
-      // Check expiry - use longer TTL for remembered devices
-      const maxAge = rememberDevice ? SESSION_MAX_AGE_MS : 7 * 24 * 60 * 60 * 1000;
-      if (Number.isFinite(lastActive) && now - lastActive > maxAge) {
+      if (Number.isFinite(lastActive) && Date.now() - lastActive > SESSION_MAX_AGE_MS) {
         return false;
       }
 
@@ -101,21 +85,11 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         .eq("id", data.device_id)
         .maybeSingle();
 
-      if (!device) return false;
-      
-      // Refresh session activity if within soft TTL (prevents expiration while active)
-      if (shouldRefresh && now - lastActive > SESSION_SOFT_TTL_MS / 7) {
-        await supabase
-          .from("device_sessions")
-          .update({ last_active: new Date().toISOString() })
-          .eq("session_token", token);
-      }
-
-      return true;
+      return !!device;
     } catch {
       return false;
     }
-  }, [rememberDevice]);
+  }, []);
 
   const persistSession = useCallback((s: DeviceSession) => {
     localStorage.setItem(SESSION_KEY, JSON.stringify(s));
@@ -175,68 +149,23 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     const code = pairingCode.trim().toUpperCase();
-    if (!code || code.length < 2) {
+    if (!code || code.length < 4) {
       return { success: false, error: "Invalid pairing code" };
     }
 
     try {
-      // Strategy 1: Try exact pairing_code match
-      let device: { id: string; name: string; pairing_code: string | null; pairing_expires_at: string | null; device_key: string } | null = null;
-      
-      const { data: codeMatch } = await supabase
+      const { data: device, error: deviceError } = await supabase
         .from("devices")
-        .select("id, name, pairing_code, pairing_expires_at, device_key")
+        .select("id, name, pairing_code, pairing_expires_at")
         .eq("pairing_code", code)
         .maybeSingle();
-      
-      if (codeMatch) {
-        // Check if code is expired
-        if (codeMatch.pairing_expires_at && new Date(codeMatch.pairing_expires_at) < new Date()) {
-          // Code expired but device exists - still allow connection
-          console.log("Pairing code expired, but connecting to device anyway");
-        }
-        device = codeMatch;
+
+      if (deviceError || !device) {
+        return { success: false, error: "Device not found. Check the code and try again." };
       }
 
-      // Strategy 2: Try device_key match (for persistent pairing)
-      if (!device) {
-        const { data: keyMatch } = await supabase
-          .from("devices")
-          .select("id, name, pairing_code, pairing_expires_at, device_key")
-          .eq("device_key", code.toLowerCase())
-          .maybeSingle();
-        
-        if (keyMatch) {
-          device = keyMatch;
-        }
-      }
-
-      // Strategy 3: Fallback to most recent online device if code looks like a partial match
-      if (!device && code.length >= 4) {
-        const { data: recentDevices } = await supabase
-          .from("devices")
-          .select("id, name, pairing_code, pairing_expires_at, device_key")
-          .order("last_seen", { ascending: false })
-          .limit(5);
-        
-        if (recentDevices && recentDevices.length > 0) {
-          // Check if any device's pairing_code contains the entered code or vice versa
-          device = recentDevices.find(d => 
-            d.pairing_code?.includes(code) || 
-            code.includes(d.pairing_code || '') ||
-            d.device_key?.toUpperCase().startsWith(code)
-          ) || null;
-          
-          // Last resort: just use the most recent device if only one exists
-          if (!device && recentDevices.length === 1) {
-            console.log("Single device found, auto-connecting");
-            device = recentDevices[0];
-          }
-        }
-      }
-
-      if (!device) {
-        return { success: false, error: "Device not found. Ensure PC agent is running and try the code shown on screen." };
+      if (device.pairing_expires_at && new Date(device.pairing_expires_at) < new Date()) {
+        return { success: false, error: "Pairing code has expired. Restart the agent to get a new code." };
       }
 
       const sessionToken = crypto.randomUUID();
@@ -251,7 +180,6 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Failed to create session" };
       }
 
-      // Clear pairing code after successful pair
       await supabase
         .from("devices")
         .update({ pairing_code: null, pairing_expires_at: null })
@@ -262,7 +190,6 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         device_id: device.id,
         session_token: sessionToken,
         device_name: device.name,
-        remember: rememberDevice,
       };
 
       persistSession(newSession);
@@ -275,7 +202,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
       console.error("Pairing error:", err);
       return { success: false, error: "Pairing failed. Please try again." };
     }
-  }, [fetchDeviceInfo, persistSession, rememberDevice]);
+  }, [fetchDeviceInfo, persistSession]);
 
   const unpair = useCallback(() => {
     if (session) {
@@ -359,8 +286,6 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         isLoading,
         isReconnecting,
         error,
-        rememberDevice,
-        setRememberDevice,
         pairDevice,
         autoPair,
         unpair,
