@@ -103,22 +103,28 @@ export type Database = {
         Row: {
           created_at: string
           device_id: string
+          expires_at: string
           id: string
           last_active: string
+          remember_device: boolean
           session_token: string
         }
         Insert: {
           created_at?: string
           device_id: string
+          expires_at?: string
           id?: string
           last_active?: string
+          remember_device?: boolean
           session_token?: string
         }
         Update: {
           created_at?: string
           device_id?: string
+          expires_at?: string
           id?: string
           last_active?: string
+          remember_device?: boolean
           session_token?: string
         }
         Relationships: [
