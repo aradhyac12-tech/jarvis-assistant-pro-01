@@ -13,11 +13,8 @@ const Pair = lazy(() => import("./pages/Pair"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const ControlHub = lazy(() => import("./pages/ControlHub"));
 const VoiceAI = lazy(() => import("./pages/VoiceAI"));
-const SystemControls = lazy(() => import("./pages/SystemControls"));
-const MusicPlayer = lazy(() => import("./pages/MusicPlayer"));
 const Apps = lazy(() => import("./pages/Apps"));
 const Files = lazy(() => import("./pages/Files"));
-const RemoteControl = lazy(() => import("./pages/RemoteControl"));
 const MicCamera = lazy(() => import("./pages/MicCamera"));
 const Samsung = lazy(() => import("./pages/Samsung"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -77,22 +74,10 @@ function AppRoutes() {
             </ProtectedRoute>
           }
         />
-        <Route
-          path="/controls"
-          element={
-            <ProtectedRoute>
-              <SystemControls />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/music"
-          element={
-            <ProtectedRoute>
-              <MusicPlayer />
-            </ProtectedRoute>
-          }
-        />
+        {/* Redirect old routes to Control Hub */}
+        <Route path="/controls" element={<Navigate to="/hub" replace />} />
+        <Route path="/music" element={<Navigate to="/hub" replace />} />
+        <Route path="/remote" element={<Navigate to="/hub" replace />} />
         <Route
           path="/apps"
           element={
@@ -106,14 +91,6 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <Files />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/remote"
-          element={
-            <ProtectedRoute>
-              <RemoteControl />
             </ProtectedRoute>
           }
         />
