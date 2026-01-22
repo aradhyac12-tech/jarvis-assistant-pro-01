@@ -13,6 +13,7 @@ interface CameraSession {
   targetFps: number;
   quality: number;
   lastActivity: number;
+  useBinaryMode: boolean; // New: support binary frame transfers
 }
 
 // Store active camera sessions
@@ -21,6 +22,7 @@ const cameraSessions = new Map<string, CameraSession>();
 // Session cleanup interval (every 30 seconds)
 const CLEANUP_INTERVAL = 30000;
 const SESSION_TIMEOUT = 60000; // 60 seconds of inactivity
+const MAX_FPS = 90; // Support up to 90 FPS for smooth streaming
 
 // Cleanup stale sessions
 setInterval(() => {
@@ -53,10 +55,11 @@ serve(async (req) => {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("sessionId") || crypto.randomUUID();
     const clientType = url.searchParams.get("type") || "phone"; // 'phone' or 'pc'
-    const targetFps = parseInt(url.searchParams.get("fps") || "10", 10);
+    const targetFps = Math.min(parseInt(url.searchParams.get("fps") || "30", 10), MAX_FPS);
     const quality = parseInt(url.searchParams.get("quality") || "50", 10);
+    const useBinary = url.searchParams.get("binary") === "true";
 
-    console.log(`[camera-relay] WebSocket upgrade: session=${sessionId}, type=${clientType}, fps=${targetFps}, quality=${quality}`);
+    console.log(`[camera-relay] WebSocket upgrade: session=${sessionId}, type=${clientType}, fps=${targetFps}, quality=${quality}, binary=${useBinary}`);
 
     const { socket, response } = Deno.upgradeWebSocket(req);
 
@@ -70,6 +73,7 @@ serve(async (req) => {
         targetFps,
         quality,
         lastActivity: Date.now(),
+        useBinaryMode: useBinary,
       });
     }
 
@@ -241,9 +245,10 @@ serve(async (req) => {
           pcSocket: null,
           lastFrameTime: 0,
           frameCount: 0,
-          targetFps: fps || 10,
+          targetFps: Math.min(fps || 30, MAX_FPS),
           quality: quality || 50,
           lastActivity: Date.now(),
+          useBinaryMode: false,
         });
 
         const host = new URL(req.url).host;

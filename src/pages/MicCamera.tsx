@@ -194,11 +194,31 @@ export default function MicCamera() {
       addLog("info", "agent", "PC camera opened successfully");
 
       // Connect to dedicated camera-relay WebSocket (phone receives frames)
-      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=60`);
+      // Use higher FPS and binary mode for smoother streaming
+      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=60&quality=70&binary=true`);
       pcCameraWsRef.current = ws;
+      ws.binaryType = "arraybuffer"; // Enable binary frame reception
 
       ws.onmessage = (event) => {
         try {
+          // Handle binary frames (JPEG bytes)
+          if (event.data instanceof ArrayBuffer) {
+            const blob = new Blob([event.data], { type: "image/jpeg" });
+            const url = URL.createObjectURL(blob);
+            // Clean up previous blob URL to prevent memory leaks
+            if (pcCameraFrame && pcCameraFrame.startsWith("blob:")) {
+              URL.revokeObjectURL(pcCameraFrame);
+            }
+            setPcCameraFrame(url);
+            setDebugStats((prev) => ({
+              ...prev,
+              frameCount: prev.frameCount + 1,
+              lastFrameTime: Date.now(),
+            }));
+            return;
+          }
+          
+          // Handle JSON messages (legacy base64 frames + control messages)
           const data = JSON.parse(event.data);
           if (data.type === "camera_frame" && data.data) {
             setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
@@ -213,7 +233,7 @@ export default function MicCamera() {
             toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
           }
         } catch {
-          // ignore parse errors for binary data
+          // ignore parse errors for unexpected data
         }
       };
 
@@ -822,7 +842,8 @@ export default function MicCamera() {
                           const sessionId = phoneCamShareSessionId?.trim() || crypto.randomUUID();
                           setPhoneCamShareSessionId(sessionId);
 
-                          const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=10&quality=60`);
+                          // Use higher FPS for smoother sharing
+                          const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=30&quality=70`);
                           phoneCamShareWsRef.current = ws;
 
                           ws.onopen = () => {
@@ -833,7 +854,7 @@ export default function MicCamera() {
                               shareCanvasRef.current = document.createElement("canvas");
                             }
 
-                            // push ~10 fps
+                            // push ~30 fps for smoother streaming
                             phoneCamShareTimerRef.current = window.setInterval(() => {
                               const v = phoneCameraRef.current;
                               if (!v || v.readyState < 2) return;
@@ -848,20 +869,15 @@ export default function MicCamera() {
                               if (!ctx) return;
                               ctx.drawImage(v, 0, 0, w, h);
 
-                              const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
-                              const b64 = dataUrl.split(",")[1] || "";
-
-                              if (ws.readyState === WebSocket.OPEN) {
-                                ws.send(
-                                  JSON.stringify({
-                                    type: "camera_frame",
-                                    data: b64,
-                                    width: w,
-                                    height: h,
-                                  })
-                                );
-                              }
-                            }, 100);
+                              // Send as binary for better performance
+                              canvas.toBlob((blob) => {
+                                if (blob && ws.readyState === WebSocket.OPEN) {
+                                  blob.arrayBuffer().then((buffer) => {
+                                    ws.send(buffer);
+                                  });
+                                }
+                              }, "image/jpeg", 0.7);
+                            }, 33); // ~30fps
                           };
 
                           ws.onclose = () => {
@@ -914,7 +930,9 @@ export default function MicCamera() {
                           disabled={phoneCamViewActive || !phoneCamShareSessionId.trim()}
                           onClick={() => {
                             const sessionId = phoneCamShareSessionId.trim();
-                            const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=10&quality=60`);
+                            // Use higher FPS and binary mode for smoother viewing
+                            const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=60&quality=70&binary=true`);
+                            ws.binaryType = "arraybuffer"; // Enable binary reception
                             phoneCamViewWsRef.current = ws;
 
                             ws.onopen = () => {
@@ -924,6 +942,21 @@ export default function MicCamera() {
 
                             ws.onmessage = (event) => {
                               try {
+                                // Handle binary frames (JPEG bytes)
+                                if (event.data instanceof ArrayBuffer) {
+                                  const blob = new Blob([event.data], { type: "image/jpeg" });
+                                  const url = URL.createObjectURL(blob);
+                                  // Clean up previous blob URL
+                                  setPhoneCamRemoteFrame((prev) => {
+                                    if (prev && prev.startsWith("blob:")) {
+                                      URL.revokeObjectURL(prev);
+                                    }
+                                    return url;
+                                  });
+                                  return;
+                                }
+                                
+                                // Handle JSON messages (legacy base64 + control)
                                 const data = JSON.parse(event.data);
                                 if (data.type === "camera_frame" && data.data) {
                                   setPhoneCamRemoteFrame(`data:image/jpeg;base64,${data.data}`);
@@ -932,7 +965,7 @@ export default function MicCamera() {
                                   toast({ title: "Relay error", description: data.message, variant: "destructive" });
                                 }
                               } catch {
-                                // ignore
+                                // ignore parse errors
                               }
                             };
 
