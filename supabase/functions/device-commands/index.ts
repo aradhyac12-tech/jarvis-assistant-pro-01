@@ -33,7 +33,7 @@ serve(async (req) => {
     for (let attempt = 1; attempt <= 3; attempt++) {
       const result = await supabase
         .from("device_sessions")
-        .select("device_id, last_active")
+        .select("device_id, expires_at, remember_device")
         .eq("session_token", sessionToken)
         .maybeSingle();
       
@@ -68,20 +68,28 @@ serve(async (req) => {
       );
     }
 
-    // Check if session is still active (within 30 days)
-    const lastActive = new Date(session.last_active);
-    const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
-    if (Date.now() - lastActive.getTime() > maxAgeMs) {
+    // Check if session has expired using expires_at column
+    const expiresAt = new Date(session.expires_at);
+    if (Date.now() > expiresAt.getTime()) {
+      // Clean up expired session
+      await supabase.from("device_sessions").delete().eq("session_token", sessionToken);
       return new Response(
         JSON.stringify({ error: "Session expired" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Update last_active
+    // Update last_active and extend expires_at based on remember preference
+    const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+    const SESSION_SHORT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+    
+    const newExpiry = session.remember_device
+      ? new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
+      : new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
+    
     await supabase
       .from("device_sessions")
-      .update({ last_active: new Date().toISOString() })
+      .update({ last_active: new Date().toISOString(), expires_at: newExpiry })
       .eq("session_token", sessionToken);
 
     const { action, commandType, payload, commandId } = await req.json();

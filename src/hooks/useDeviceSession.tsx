@@ -6,6 +6,7 @@ interface DeviceSession {
   device_id: string;
   session_token: string;
   device_name?: string;
+  remember_device?: boolean;
 }
 
 interface DeviceInfo {
@@ -21,7 +22,7 @@ interface DeviceSessionContextType {
   isLoading: boolean;
   isReconnecting: boolean;
   error: string | null;
-  pairDevice: (pairingCode: string) => Promise<{ success: boolean; error?: string }>;
+  pairDevice: (pairingCode: string, rememberDevice?: boolean) => Promise<{ success: boolean; error?: string }>;
   autoPair: () => Promise<{ success: boolean; error?: string }>;
   unpair: () => void;
   refreshDeviceInfo: () => Promise<void>;
@@ -30,8 +31,13 @@ interface DeviceSessionContextType {
 const DeviceSessionContext = createContext<DeviceSessionContextType | undefined>(undefined);
 
 const SESSION_KEY = "jarvis_device_session";
-const RECONNECT_INTERVAL = 5000; // Check device status every 5 seconds
+const SESSION_KEY_TEMP = "jarvis_device_session_temp"; // sessionStorage key
+const RECONNECT_INTERVAL = 5000;
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_SHORT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Helper to get storage based on remember preference
+const getStorage = (remember: boolean) => remember ? localStorage : sessionStorage;
 
 export function DeviceSessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<DeviceSession | null>(null);
@@ -62,20 +68,23 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     if (info) setDeviceInfo(info);
   }, [session, fetchDeviceInfo]);
 
-  const validateSession = useCallback(async (token: string): Promise<boolean> => {
+  // Resilient session validation - pings backend and extends TTL if valid
+  const validateSession = useCallback(async (token: string): Promise<{ valid: boolean; remember?: boolean }> => {
     try {
       const { data, error } = await supabase
         .from("device_sessions")
-        .select("id, device_id, last_active")
+        .select("id, device_id, expires_at, remember_device")
         .eq("session_token", token)
         .maybeSingle();
 
-      if (error || !data) return false;
+      if (error || !data) return { valid: false };
 
-      // Mirror backend expiry rules
-      const lastActive = new Date(data.last_active).getTime();
-      if (Number.isFinite(lastActive) && Date.now() - lastActive > SESSION_MAX_AGE_MS) {
-        return false;
+      // Check if session expired
+      const expiresAt = new Date(data.expires_at).getTime();
+      if (Date.now() > expiresAt) {
+        // Session expired - clean up
+        await supabase.from("device_sessions").delete().eq("session_token", token);
+        return { valid: false };
       }
 
       // Ensure device still exists
@@ -85,14 +94,33 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         .eq("id", data.device_id)
         .maybeSingle();
 
-      return !!device;
+      if (!device) return { valid: false };
+
+      // Extend session TTL on validation (keep-alive)
+      const newExpiry = data.remember_device 
+        ? new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
+        : new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
+      
+      await supabase
+        .from("device_sessions")
+        .update({ last_active: new Date().toISOString(), expires_at: newExpiry })
+        .eq("session_token", token);
+
+      return { valid: true, remember: data.remember_device };
     } catch {
-      return false;
+      return { valid: false };
     }
   }, []);
 
-  const persistSession = useCallback((s: DeviceSession) => {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+  const persistSession = useCallback((s: DeviceSession, remember: boolean = true) => {
+    const storage = getStorage(remember);
+    const otherStorage = getStorage(!remember);
+    
+    // Clear from the other storage
+    otherStorage.removeItem(remember ? SESSION_KEY_TEMP : SESSION_KEY);
+    
+    // Save to appropriate storage
+    storage.setItem(remember ? SESSION_KEY : SESSION_KEY_TEMP, JSON.stringify(s));
     setSession(s);
   }, []);
 
@@ -115,11 +143,18 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "No PC found. Start the PC agent first." };
       }
 
-      // Create a fresh session
+      // Create a fresh session with short TTL (24h) for auto-pair
       const sessionToken = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
+      
       const { data: sessionData, error: sessionError } = await supabase
         .from("device_sessions")
-        .insert({ device_id: device.id, session_token: sessionToken })
+        .insert({ 
+          device_id: device.id, 
+          session_token: sessionToken,
+          remember_device: false,
+          expires_at: expiresAt
+        })
         .select("id")
         .single();
 
@@ -132,9 +167,10 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         device_id: device.id,
         session_token: sessionToken,
         device_name: device.name,
+        remember_device: false,
       };
 
-      persistSession(newSession);
+      persistSession(newSession, false);
 
       const info = await fetchDeviceInfo(device.id);
       if (info) setDeviceInfo(info);
@@ -145,7 +181,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     }
   }, [fetchDeviceInfo, persistSession]);
 
-  const pairDevice = useCallback(async (pairingCode: string): Promise<{ success: boolean; error?: string }> => {
+  const pairDevice = useCallback(async (pairingCode: string, rememberDevice: boolean = true): Promise<{ success: boolean; error?: string }> => {
     setError(null);
 
     const code = pairingCode.trim().toUpperCase();
@@ -168,10 +204,20 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Pairing code has expired. Restart the agent to get a new code." };
       }
 
+      // Calculate expiry based on remember preference
+      const expiresAt = rememberDevice
+        ? new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
+        : new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
+
       const sessionToken = crypto.randomUUID();
       const { data: sessionData, error: sessionError } = await supabase
         .from("device_sessions")
-        .insert({ device_id: device.id, session_token: sessionToken })
+        .insert({ 
+          device_id: device.id, 
+          session_token: sessionToken,
+          remember_device: rememberDevice,
+          expires_at: expiresAt
+        })
         .select("id")
         .single();
 
@@ -180,6 +226,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Failed to create session" };
       }
 
+      // Clear pairing code after successful pairing
       await supabase
         .from("devices")
         .update({ pairing_code: null, pairing_expires_at: null })
@@ -190,9 +237,10 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         device_id: device.id,
         session_token: sessionToken,
         device_name: device.name,
+        remember_device: rememberDevice,
       };
 
-      persistSession(newSession);
+      persistSession(newSession, rememberDevice);
 
       const info = await fetchDeviceInfo(device.id);
       if (info) setDeviceInfo(info);
@@ -214,28 +262,50 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
           // no-op
         });
     }
+    // Clear from both storages
     localStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(SESSION_KEY_TEMP);
     setSession(null);
     setDeviceInfo(null);
   }, [session]);
 
-  // Load session from localStorage on mount - NO auto-connect, user must pair manually
+  // Load session from storage on mount (check both localStorage and sessionStorage)
   useEffect(() => {
     const run = async () => {
-      const stored = localStorage.getItem(SESSION_KEY);
+      // Try localStorage first (remembered sessions), then sessionStorage (temporary)
+      let stored = localStorage.getItem(SESSION_KEY);
+      let isRemembered = true;
+      
+      if (!stored) {
+        stored = sessionStorage.getItem(SESSION_KEY_TEMP);
+        isRemembered = false;
+      }
+      
       if (stored) {
         try {
           const parsed = JSON.parse(stored) as DeviceSession;
-          const valid = await validateSession(parsed.session_token);
-          if (valid) {
-            setSession(parsed);
+          const result = await validateSession(parsed.session_token);
+          
+          if (result.valid) {
+            // Update remember preference from backend if different
+            const updatedSession = { ...parsed, remember_device: result.remember };
+            setSession(updatedSession);
+            
+            // Re-persist to correct storage if remember preference changed
+            if (result.remember !== isRemembered) {
+              persistSession(updatedSession, result.remember ?? false);
+            }
+            
             const info = await fetchDeviceInfo(parsed.device_id);
             if (info) setDeviceInfo(info);
           } else {
+            // Session invalid - clear both storages
             localStorage.removeItem(SESSION_KEY);
+            sessionStorage.removeItem(SESSION_KEY_TEMP);
           }
         } catch {
           localStorage.removeItem(SESSION_KEY);
+          sessionStorage.removeItem(SESSION_KEY_TEMP);
         }
       }
 
@@ -243,7 +313,7 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
     };
 
     run();
-  }, [validateSession, fetchDeviceInfo]);
+  }, [validateSession, fetchDeviceInfo, persistSession]);
 
   // Auto-reconnect: periodically check device status
   useEffect(() => {

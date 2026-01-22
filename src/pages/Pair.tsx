@@ -4,6 +4,8 @@ import { Bot, Loader2, CheckCircle, Key } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 
@@ -14,6 +16,7 @@ export default function Pair() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [accessCode, setAccessCode] = useState("");
+  const [rememberDevice, setRememberDevice] = useState(true);
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -36,10 +39,15 @@ export default function Pair() {
     }
 
     setIsConnecting(true);
-    const res = await pairDevice(accessCode.trim());
+    const res = await pairDevice(accessCode.trim(), rememberDevice);
     if (res.success) {
       setSuccess(true);
-      toast({ title: "Connected", description: "PC connected successfully." });
+      toast({ 
+        title: "Connected", 
+        description: rememberDevice 
+          ? "PC connected. You won't need to pair again on this browser." 
+          : "PC connected for this session." 
+      });
       setTimeout(() => navigate("/dashboard", { replace: true }), 600);
     } else {
       toast({
@@ -99,6 +107,27 @@ export default function Pair() {
               Run the PC agent and enter the displayed code
             </p>
           </div>
+          
+          {/* Remember Device Toggle */}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 border border-border/50">
+            <div className="space-y-0.5">
+              <Label htmlFor="remember-device" className="text-sm font-medium cursor-pointer">
+                Remember this device
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {rememberDevice 
+                  ? "Stay connected for 30 days" 
+                  : "Session ends when browser closes"}
+              </p>
+            </div>
+            <Switch
+              id="remember-device"
+              checked={rememberDevice}
+              onCheckedChange={setRememberDevice}
+              disabled={isConnecting || success}
+            />
+          </div>
+          
           <Button 
             className="w-full" 
             onClick={handleConnect} 
