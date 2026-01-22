@@ -45,6 +45,7 @@ import {
   Volume2,
   Play,
   Pause,
+  Square,
   SkipForward,
   Loader2,
   Zap,
@@ -139,6 +140,8 @@ export default function Samsung() {
   const [screenShareQuality, setScreenShareQuality] = useState<"720p" | "1080p" | "4k">("1080p");
   const [screenShareFps, setScreenShareFps] = useState(60);
   const [screenFrame, setScreenFrame] = useState<string | null>(null);
+  const [screenShareSessionId, setScreenShareSessionId] = useState<string>("");
+  const screenShareWsRef = useRef<WebSocket | null>(null);
 
   // Phone as Webcam State
   const [phoneWebcamActive, setPhoneWebcamActive] = useState(false);
@@ -245,33 +248,102 @@ export default function Samsung() {
     addLog("info", "web", `Replied to notification: ${id}`);
   }, [sendCommand, toast]);
 
-  // Screen share functions
+  // Derive the Edge Functions WebSocket domain from the configured backend project id
+  const projectRef = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined) ?? "";
+  const CAMERA_WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/camera-relay`;
+
+  // Screen share functions with WebSocket relay for smooth 60-90fps streaming
   const startScreenShare = useCallback(async () => {
-    addLog("info", "web", `Starting screen share: ${screenShareDirection}, ${screenShareQuality}, ${screenShareFps}fps`);
+    const sessionId = screenShareSessionId.trim() || crypto.randomUUID();
+    setScreenShareSessionId(sessionId);
+    addLog("info", "web", `Starting screen share: ${screenShareDirection}, ${screenShareQuality}, ${screenShareFps}fps, session=${sessionId.slice(0, 8)}`);
     
+    // First, tell the PC agent to start screen sharing with the session ID
     const result = await sendCommand("start_screen_share", {
       direction: screenShareDirection,
       quality: screenShareQuality,
       fps: screenShareFps,
+      session_id: sessionId,
     }, { awaitResult: true, timeoutMs: 15000 });
 
-    if (result.success) {
-      setScreenShareActive(true);
-      toast({ title: "Screen Share Started" });
-      addLog("info", "agent", "Screen share started");
-    } else {
+    if (!result.success) {
       toast({ title: "Screen Share Failed", variant: "destructive" });
       addLog("error", "agent", "Failed to start screen share");
+      return;
     }
-  }, [screenShareDirection, screenShareQuality, screenShareFps, sendCommand, toast]);
+
+    addLog("info", "agent", "PC screen share started, connecting to relay...");
+
+    // Connect to camera-relay WebSocket to receive frames
+    const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=${screenShareFps}&quality=80&binary=true`);
+    ws.binaryType = "arraybuffer";
+    screenShareWsRef.current = ws;
+
+    ws.onopen = () => {
+      setScreenShareActive(true);
+      toast({ title: "Screen Share Started", description: "Receiving PC screen..." });
+      addLog("info", "web", "Screen share WebSocket connected");
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        // Handle binary frames (JPEG bytes) for smooth streaming
+        if (event.data instanceof ArrayBuffer) {
+          const blob = new Blob([event.data], { type: "image/jpeg" });
+          const url = URL.createObjectURL(blob);
+          // Clean up previous blob URL to prevent memory leaks
+          setScreenFrame((prev) => {
+            if (prev && prev.startsWith("blob:")) {
+              URL.revokeObjectURL(prev);
+            }
+            return url;
+          });
+          return;
+        }
+        
+        // Handle JSON messages (legacy base64 + control)
+        const data = JSON.parse(event.data);
+        if ((data.type === "screen_frame" || data.type === "camera_frame") && data.data) {
+          setScreenFrame(`data:image/jpeg;base64,${data.data}`);
+        }
+        if (data.type === "error" && data.message) {
+          addLog("error", "agent", `Screen relay error: ${data.message}`);
+          toast({ title: "Screen Share Error", description: data.message, variant: "destructive" });
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    ws.onclose = () => {
+      addLog("info", "web", "Screen share WebSocket closed");
+    };
+
+    ws.onerror = () => {
+      toast({ title: "Screen Share Error", description: "WebSocket connection failed", variant: "destructive" });
+      addLog("error", "web", "Screen share WebSocket error");
+    };
+  }, [screenShareDirection, screenShareQuality, screenShareFps, screenShareSessionId, sendCommand, toast, CAMERA_WS_URL]);
 
   const stopScreenShare = useCallback(async () => {
+    // Close WebSocket first
+    if (screenShareWsRef.current) {
+      screenShareWsRef.current.close();
+      screenShareWsRef.current = null;
+    }
+    
     await sendCommand("stop_screen_share", {});
     setScreenShareActive(false);
+    
+    // Clean up blob URL
+    if (screenFrame && screenFrame.startsWith("blob:")) {
+      URL.revokeObjectURL(screenFrame);
+    }
     setScreenFrame(null);
+    
     toast({ title: "Screen Share Stopped" });
     addLog("info", "web", "Screen share stopped");
-  }, [sendCommand, toast]);
+  }, [sendCommand, screenFrame, toast]);
 
   // Phone as webcam functions
   const startPhoneWebcam = useCallback(async () => {
@@ -328,6 +400,9 @@ export default function Samsung() {
     return () => {
       if (webcamStream) {
         webcamStream.getTracks().forEach((track) => track.stop());
+      }
+      if (screenShareWsRef.current) {
+        screenShareWsRef.current.close();
       }
     };
   }, [webcamStream]);
@@ -810,10 +885,11 @@ export default function Samsung() {
                     <Button
                       className={cn("w-full", screenShareActive ? "bg-destructive hover:bg-destructive/80" : "gradient-primary")}
                       onClick={screenShareActive ? stopScreenShare : startScreenShare}
+                      disabled={!selectedDevice?.is_online}
                     >
                       {screenShareActive ? (
                         <>
-                          <X className="h-4 w-4 mr-2" />
+                          <Square className="h-4 w-4 mr-2" />
                           Stop Sharing
                         </>
                       ) : (
@@ -824,17 +900,23 @@ export default function Samsung() {
                       )}
                     </Button>
 
-                    {screenShareActive && (
-                      <div className="aspect-video bg-black rounded-lg overflow-hidden">
-                        {screenFrame ? (
-                          <img src={screenFrame} alt="Screen" className="w-full h-full object-contain" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-                            <Loader2 className="h-8 w-8 animate-spin" />
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    {/* Screen Preview */}
+                    <div className="aspect-video bg-black rounded-lg overflow-hidden border border-border/50">
+                      {screenShareActive && screenFrame ? (
+                        <img src={screenFrame} alt="PC Screen" className="w-full h-full object-contain" />
+                      ) : screenShareActive ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center text-muted-foreground gap-2">
+                          <Loader2 className="h-8 w-8 animate-spin" />
+                          <p className="text-sm">Waiting for PC screen frames...</p>
+                        </div>
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center text-muted-foreground gap-2">
+                          <Monitor className="h-12 w-12 opacity-50" />
+                          <p className="text-sm">Screen preview will appear here</p>
+                          <p className="text-xs">Up to {screenShareFps} FPS streaming</p>
+                        </div>
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
 
