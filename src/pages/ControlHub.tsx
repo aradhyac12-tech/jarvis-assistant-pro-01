@@ -68,6 +68,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { useFastCommand } from "@/hooks/useFastCommand";
 import { useOptimisticMedia } from "@/hooks/useOptimisticMedia";
 import { DeviceSelector } from "@/components/DeviceSelector";
 import { MonitoringPanel } from "@/components/MonitoringPanel";
@@ -113,6 +114,7 @@ export default function ControlHub() {
   const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
   const { deviceInfo, isReconnecting, session } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
+  const { fireCommand, fireMouse, fireKey } = useFastCommand();
   const { toast } = useToast();
 
   // Use optimistic media hook
@@ -367,25 +369,20 @@ export default function ControlHub() {
     setTimeout(() => fetchMediaState(), 2000);
   };
 
-  // ==================== REMOTE ====================
+  // ==================== REMOTE (FAST COMMANDS) ====================
   const sendKeyboard = async () => {
     if (!textInput.trim()) return;
     setIsSending(true);
-    await sendCommand("type_text", { text: textInput });
+    fireCommand("type_text", { text: textInput });
     toast({ title: "Text Sent" });
     setTextInput("");
     setIsSending(false);
   };
 
-  const sendKey = async (key: string) => {
+  const sendKey = (key: string) => {
     setLastKey(key);
-    if (key.includes("+")) {
-      const keys = key.toLowerCase().split("+").map(k => k.trim());
-      await sendCommand("key_combo", { keys });
-    } else {
-      await sendCommand("press_key", { key: key.toLowerCase() });
-    }
-    setTimeout(() => setLastKey(null), 200);
+    fireKey(key);
+    setTimeout(() => setLastKey(null), 100);
   };
 
   const handleTrackpadStart = useCallback((e: React.TouchEvent | React.MouseEvent) => {
@@ -399,33 +396,36 @@ export default function ControlHub() {
     }
     
     const point = "touches" in e ? e.touches[0] : e;
-    const deltaX = (point.clientX - lastPosition.current.x) * 2.5;
-    const deltaY = (point.clientY - lastPosition.current.y) * 2.5;
+    // Higher sensitivity multiplier for faster response
+    const sensitivity = 3.5;
+    const deltaX = (point.clientX - lastPosition.current.x) * sensitivity;
+    const deltaY = (point.clientY - lastPosition.current.y) * sensitivity;
     
     lastPosition.current = { x: point.clientX, y: point.clientY };
     
-    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
-      sendCommand("mouse_move", { x: Math.round(deltaX), y: Math.round(deltaY), relative: true });
+    // Lower threshold for more responsive movement
+    if (Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5) {
+      fireMouse(deltaX, deltaY);
     }
-  }, [sendCommand]);
+  }, [fireMouse]);
 
-  const handleMouseClick = async (button: string = "left") => {
-    await sendCommand("mouse_click", { button, clicks: 1 });
+  const handleMouseClick = (button: string = "left") => {
+    fireCommand("mouse_click", { button, clicks: 1 });
   };
 
-  const handleArrowMove = async (direction: "up" | "down" | "left" | "right") => {
+  const handleArrowMove = (direction: "up" | "down" | "left" | "right") => {
     const moves: Record<string, { x: number; y: number }> = {
-      up: { x: 0, y: -30 },
-      down: { x: 0, y: 30 },
-      left: { x: -30, y: 0 },
-      right: { x: 30, y: 0 },
+      up: { x: 0, y: -50 },
+      down: { x: 0, y: 50 },
+      left: { x: -50, y: 0 },
+      right: { x: 50, y: 0 },
     };
-    await sendCommand("mouse_move", { ...moves[direction], relative: true });
+    fireCommand("mouse_move", { ...moves[direction], relative: true });
   };
 
-  const sendClipboardToPC = async () => {
+  const sendClipboardToPC = () => {
     if (!clipboardText.trim()) return;
-    await sendCommand("set_clipboard", { content: clipboardText });
+    fireCommand("set_clipboard", { content: clipboardText });
     toast({ title: "Clipboard Sent" });
   };
 
