@@ -6,6 +6,7 @@ interface Device {
   id: string;
   name: string;
   is_online: boolean;
+  is_locked: boolean | null;
   last_seen: string | null;
   current_volume: number | null;
   current_brightness: number | null;
@@ -33,7 +34,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       // If we have a session, prioritize the paired device
       let query = supabase
         .from("devices")
-        .select("id, name, is_online, last_seen, current_volume, current_brightness, system_info")
+        .select("id, name, is_online, is_locked, last_seen, current_volume, current_brightness, system_info")
         .order("is_online", { ascending: false })
         .order("last_seen", { ascending: false });
 

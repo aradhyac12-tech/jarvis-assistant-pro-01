@@ -10,6 +10,17 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Bot,
   Monitor,
   Music,
@@ -18,7 +29,9 @@ import {
   Wifi,
   WifiOff,
   Volume2,
+  VolumeX,
   Sun,
+  Moon,
   Cpu,
   HardDrive,
   Battery,
@@ -36,7 +49,6 @@ import {
   Pause,
   SkipBack,
   SkipForward,
-  VolumeX,
   Disc3,
   ArrowUp,
   ArrowDown,
@@ -45,12 +57,18 @@ import {
   Mouse,
   Clipboard,
   Copy,
+  Power,
+  RotateCcw,
+  Lock,
+  Unlock,
+  Snowflake,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { useOptimisticMedia } from "@/hooks/useOptimisticMedia";
 import { DeviceSelector } from "@/components/DeviceSelector";
 import { MonitoringPanel } from "@/components/MonitoringPanel";
 import { supabase } from "@/integrations/supabase/client";
@@ -64,15 +82,16 @@ interface CommandResult {
   timestamp: Date;
 }
 
-interface MediaState {
-  title: string;
-  artist: string;
-  isPlaying: boolean;
-  position: number;
-  positionMs: number;
-  durationMs: number;
-  volume: number;
-  muted: boolean;
+interface SystemStats {
+  cpu_percent?: number;
+  memory_percent?: number;
+  memory_used_gb?: number;
+  memory_total_gb?: number;
+  disk_percent?: number;
+  disk_used_gb?: number;
+  disk_total_gb?: number;
+  battery_percent?: number;
+  battery_plugged?: boolean;
 }
 
 type ServiceType = "web" | "youtube" | "chatgpt" | "perplexity";
@@ -84,15 +103,43 @@ const serviceConfig: Record<ServiceType, { label: string; icon: React.ReactNode;
   perplexity: { label: "Perplexity", icon: <Zap className="h-3 w-3" />, color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
 };
 
+const powerActions = [
+  { title: "Sleep", icon: Moon, color: "text-neon-purple", command: "sleep" },
+  { title: "Restart", icon: RotateCcw, color: "text-neon-orange", command: "restart" },
+  { title: "Shutdown", icon: Power, color: "text-destructive", command: "shutdown" },
+];
+
 export default function ControlHub() {
   const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
   const { deviceInfo, isReconnecting, session } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
   const { toast } = useToast();
 
-  // Dashboard state
-  const [systemStats, setSystemStats] = useState<Record<string, unknown> | null>(null);
+  // Use optimistic media hook
+  const {
+    mediaState,
+    isFetching: mediaFetching,
+    pendingAction,
+    formatTime,
+    fetchMediaState,
+    handlePlayPause,
+    handleNext,
+    handlePrevious,
+    handleVolumeChange,
+    handleVolumeCommit,
+    handleMuteToggle,
+    handleSeek,
+  } = useOptimisticMedia();
+
+  // System stats
+  const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  
+  // Volume/Brightness from device
+  const [volume, setVolume] = useState(selectedDevice?.current_volume ?? 50);
+  const [brightness, setBrightness] = useState(selectedDevice?.current_brightness ?? 75);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isLocked, setIsLocked] = useState(selectedDevice?.is_locked ?? false);
   
   // Command Center state
   const [cmdInput, setCmdInput] = useState("");
@@ -100,18 +147,7 @@ export default function ControlHub() {
   const [cmdHistory, setCmdHistory] = useState<CommandResult[]>([]);
   const [selectedService, setSelectedService] = useState<ServiceType>("web");
 
-  // Media state
-  const [mediaState, setMediaState] = useState<MediaState>({
-    title: "No media playing",
-    artist: "Play something on your PC",
-    isPlaying: false,
-    position: 0,
-    positionMs: 0,
-    durationMs: 0,
-    volume: 80,
-    muted: false,
-  });
-  const [isFetching, setIsFetching] = useState(false);
+  // Music search
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
 
@@ -124,8 +160,15 @@ export default function ControlHub() {
   const lastPosition = useRef({ x: 0, y: 0 });
 
   const isConnected = selectedDevice?.is_online || false;
-  const volume = selectedDevice?.current_volume || 0;
-  const brightness = selectedDevice?.current_brightness || 0;
+
+  // Sync volume/brightness from device
+  useEffect(() => {
+    if (selectedDevice) {
+      setVolume(selectedDevice.current_volume ?? 50);
+      setBrightness(selectedDevice.current_brightness ?? 75);
+      setIsLocked(selectedDevice.is_locked ?? false);
+    }
+  }, [selectedDevice]);
 
   // Fetch system stats
   const fetchSystemStats = useCallback(async () => {
@@ -134,53 +177,23 @@ export default function ControlHub() {
     setIsRefreshing(true);
     const result = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 5000 });
     if (result && 'result' in result && result.result?.success) {
-      setSystemStats(result.result as Record<string, unknown>);
+      setSystemStats(result.result as unknown as SystemStats);
     }
     setIsRefreshing(false);
   }, [selectedDevice?.is_online, sendCommand]);
 
-  // Fetch media state
-  const fetchMediaState = useCallback(async () => {
-    if (!selectedDevice?.is_online || isFetching) return;
-    
-    setIsFetching(true);
-    try {
-      const result = await sendCommand("get_media_state", {}, { awaitResult: true, timeoutMs: 4000 });
-      if (result?.success && 'result' in result && result.result) {
-        const state = result.result as Record<string, unknown>;
-        if (state.success) {
-          setMediaState({
-            title: (state.title as string) || "No media playing",
-            artist: (state.artist as string) || "Unknown artist",
-            isPlaying: (state.is_playing as boolean) ?? false,
-            position: (state.position_percent as number) ?? 0,
-            positionMs: (state.position_ms as number) ?? 0,
-            durationMs: (state.duration_ms as number) ?? 0,
-            volume: (state.volume as number) ?? 80,
-            muted: (state.muted as boolean) ?? false,
-          });
-        }
-      }
-    } catch (error) {
-      console.error("Failed to fetch media state:", error);
-    } finally {
-      setIsFetching(false);
-    }
-  }, [selectedDevice, sendCommand, isFetching]);
-
   useEffect(() => {
     if (selectedDevice?.is_online) {
       fetchSystemStats();
-      fetchMediaState();
     }
-  }, [selectedDevice?.is_online, fetchSystemStats, fetchMediaState]);
+  }, [selectedDevice?.is_online, fetchSystemStats]);
 
   // Realtime device updates
   useEffect(() => {
     if (!selectedDevice?.id) return;
 
     const channel = supabase
-      .channel(`device-status-${selectedDevice.id}`)
+      .channel(`device-hub-${selectedDevice.id}`)
       .on(
         "postgres_changes",
         { 
@@ -189,8 +202,11 @@ export default function ControlHub() {
           table: "devices",
           filter: `id=eq.${selectedDevice.id}`
         },
-        () => {
-          addLog("info", "web", "Device status updated");
+        (payload) => {
+          const device = payload.new as { current_volume?: number; current_brightness?: number; is_locked?: boolean };
+          if (device.current_volume !== undefined) setVolume(device.current_volume);
+          if (device.current_brightness !== undefined) setBrightness(device.current_brightness);
+          if (device.is_locked !== undefined) setIsLocked(device.is_locked);
         }
       )
       .subscribe();
@@ -258,33 +274,24 @@ export default function ControlHub() {
           return;
         }
 
-        // Brightness patterns
-        const brightnessMatch = lower.match(/^(?:set\s+)?brightness\s+(?:to\s+)?(\d+)%?$/i);
-        if (brightnessMatch) {
-          const level = parseInt(brightnessMatch[1]);
-          const result = await sendCommand("set_brightness", { level }, { awaitResult: true, timeoutMs: 4000 });
-          addResult(result.success, result.success ? `Brightness set to ${level}%` : result.error || "Failed");
-          return;
-        }
-
         // Media controls
         if (["pause", "play", "play/pause", "playpause"].includes(lower)) {
-          const result = await sendCommand("media_control", { action: "play_pause" }, { awaitResult: true, timeoutMs: 4000 });
-          addResult(result.success, result.success ? "Toggled play/pause" : result.error || "Failed");
+          handlePlayPause();
+          addResult(true, "Toggled play/pause");
           return;
         }
         if (["next", "next track", "skip"].includes(lower)) {
-          const result = await sendCommand("media_control", { action: "next" }, { awaitResult: true, timeoutMs: 4000 });
-          addResult(result.success, result.success ? "Skipped to next track" : result.error || "Failed");
+          handleNext();
+          addResult(true, "Skipped to next track");
           return;
         }
         if (["previous", "prev", "previous track"].includes(lower)) {
-          const result = await sendCommand("media_control", { action: "previous" }, { awaitResult: true, timeoutMs: 4000 });
-          addResult(result.success, result.success ? "Went to previous track" : result.error || "Failed");
+          handlePrevious();
+          addResult(true, "Went to previous track");
           return;
         }
 
-        // System commands
+        // Lock command
         if (["lock", "lock screen", "lock pc"].includes(lower)) {
           const result = await sendCommand("lock", {}, { awaitResult: true, timeoutMs: 4000 });
           addResult(result.success, result.success ? "Screen locked" : result.error || "Failed");
@@ -303,7 +310,7 @@ export default function ControlHub() {
         addResult(false, String(error));
       }
     },
-    [sendCommand]
+    [sendCommand, handlePlayPause, handleNext, handlePrevious]
   );
 
   const handleCmdSubmit = async () => {
@@ -314,39 +321,42 @@ export default function ControlHub() {
     setIsProcessing(false);
   };
 
-  // ==================== MEDIA ====================
-  const formatTime = (ms: number) => {
-    if (!ms || ms <= 0) return "0:00";
-    const totalSeconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  };
+  // ==================== SYSTEM CONTROLS ====================
+  const handleSystemVolumeChange = useCallback((value: number[]) => {
+    setVolume(value[0]);
+  }, []);
 
-  const handlePlayPause = async () => {
-    await sendCommand("media_control", { action: "play_pause" });
-    setTimeout(fetchMediaState, 300);
-  };
+  const handleSystemVolumeCommit = useCallback(async (value: number[]) => {
+    await sendCommand("set_volume", { level: value[0] });
+  }, [sendCommand]);
 
-  const handleNext = async () => {
-    await sendCommand("media_control", { action: "next" });
-    setTimeout(fetchMediaState, 500);
-  };
+  const handleBrightnessChange = useCallback((value: number[]) => {
+    setBrightness(value[0]);
+  }, []);
 
-  const handlePrevious = async () => {
-    await sendCommand("media_control", { action: "previous" });
-    setTimeout(fetchMediaState, 500);
-  };
+  const handleBrightnessCommit = useCallback(async (value: number[]) => {
+    await sendCommand("set_brightness", { level: value[0] });
+  }, [sendCommand]);
 
-  const handleVolumeChange = async (newVolume: number[]) => {
-    const vol = newVolume[0];
-    await sendCommand("set_volume", { level: vol });
-  };
+  const handleMuteSystemToggle = useCallback(async () => {
+    const newMuted = !isMuted;
+    setIsMuted(newMuted);
+    await sendCommand("set_volume", { level: newMuted ? 0 : volume });
+    toast({ title: newMuted ? "Muted" : "Unmuted" });
+  }, [isMuted, volume, sendCommand, toast]);
 
-  const handleMuteToggle = async () => {
-    await sendCommand("media_control", { action: "mute" });
-  };
+  const handleLock = useCallback(async () => {
+    setIsLocked(true);
+    await sendCommand("lock", {});
+    toast({ title: "PC Locked" });
+  }, [sendCommand, toast]);
 
+  const handlePowerAction = useCallback(async (command: string) => {
+    await sendCommand(command, {});
+    toast({ title: `${command.charAt(0).toUpperCase() + command.slice(1)} initiated` });
+  }, [sendCommand, toast]);
+
+  // ==================== MUSIC ====================
   const handlePlaySearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
@@ -354,7 +364,7 @@ export default function ControlHub() {
     toast({ title: "Playing", description: searchQuery });
     setSearchQuery("");
     setIsSearching(false);
-    setTimeout(fetchMediaState, 2000);
+    setTimeout(() => fetchMediaState(), 2000);
   };
 
   // ==================== REMOTE ====================
@@ -362,7 +372,7 @@ export default function ControlHub() {
     if (!textInput.trim()) return;
     setIsSending(true);
     await sendCommand("type_text", { text: textInput });
-    toast({ title: "Text Sent", description: `Typed: ${textInput.slice(0, 30)}...` });
+    toast({ title: "Text Sent" });
     setTextInput("");
     setIsSending(false);
   };
@@ -416,21 +426,21 @@ export default function ControlHub() {
   const sendClipboardToPC = async () => {
     if (!clipboardText.trim()) return;
     await sendCommand("set_clipboard", { content: clipboardText });
-    toast({ title: "Clipboard Sent", description: "Text copied to PC clipboard" });
+    toast({ title: "Clipboard Sent" });
   };
 
   const quickKeys = [
     { label: "Enter", key: "enter" },
     { label: "Esc", key: "escape" },
     { label: "Tab", key: "tab" },
-    { label: "Space", key: "space" },
     { label: "⌫", key: "backspace" },
     { label: "Ctrl+C", key: "ctrl+c" },
     { label: "Ctrl+V", key: "ctrl+v" },
     { label: "Alt+Tab", key: "alt+tab" },
+    { label: "Win", key: "win" },
   ];
 
-  const examples = ["play Bohemian Rhapsody", "open chrome", "volume 50", "pause"];
+  const examples = ["play lofi beats", "open chrome", "volume 50"];
 
   return (
     <DashboardLayout>
@@ -467,247 +477,117 @@ export default function ControlHub() {
 
             {/* Connection Status */}
             <Card className={cn(
-              "glass-dark border-2 transition-all",
-              isConnected ? "border-neon-green/50 bg-neon-green/5" : 
-              isReconnecting ? "border-neon-orange/50 bg-neon-orange/5" : 
-              "border-destructive/50 bg-destructive/5"
+              "glass-dark border-border/50 p-4",
+              isConnected ? "border-neon-green/30" : "border-destructive/30"
             )}>
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className={cn(
-                      "w-12 h-12 rounded-xl flex items-center justify-center",
-                      isConnected ? "bg-neon-green/20" : 
-                      isReconnecting ? "bg-neon-orange/20" : 
-                      "bg-destructive/20"
-                    )}>
-                      {isReconnecting ? (
-                        <Loader2 className="h-6 w-6 text-neon-orange animate-spin" />
-                      ) : isConnected ? (
-                        <Wifi className="h-6 w-6 text-neon-green" />
-                      ) : (
-                        <WifiOff className="h-6 w-6 text-destructive" />
-                      )}
-                    </div>
-                    <div>
-                      <h3 className="font-semibold">
-                        {isReconnecting ? "Reconnecting..." : isConnected ? "PC Connected" : "PC Offline"}
-                      </h3>
-                      <p className="text-sm text-muted-foreground">
-                        {isConnected 
-                          ? `Last seen: ${selectedDevice?.last_seen ? new Date(selectedDevice.last_seen).toLocaleTimeString() : 'Just now'}`
-                          : "Run the Python agent on your PC"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="text-right hidden md:block">
-                      <p className="text-sm text-muted-foreground">Volume</p>
-                      <p className="font-bold text-neon-blue">{volume}%</p>
-                    </div>
-                    <div className="text-right hidden md:block">
-                      <p className="text-sm text-muted-foreground">Brightness</p>
-                      <p className="font-bold text-neon-orange">{brightness}%</p>
-                    </div>
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        "gap-2 px-4 py-2",
-                        isConnected
-                          ? "border-neon-green/50 text-neon-green bg-neon-green/10"
-                          : "border-destructive/50 text-destructive bg-destructive/10"
-                      )}
-                    >
-                      <span className={cn(
-                        "w-2 h-2 rounded-full", 
-                        isConnected ? "bg-neon-green animate-pulse" : "bg-destructive"
-                      )} />
-                      {isConnected ? "Online" : "Offline"}
-                    </Badge>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {isConnected ? (
+                    <Wifi className="h-5 w-5 text-neon-green" />
+                  ) : (
+                    <WifiOff className="h-5 w-5 text-destructive" />
+                  )}
+                  <div>
+                    <p className="font-medium">{selectedDevice?.name || "No Device"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {isConnected ? "Online & Ready" : "Offline"}
+                    </p>
                   </div>
                 </div>
-              </CardContent>
+                <Badge variant={isConnected ? "default" : "destructive"}>
+                  {isConnected ? "Connected" : "Disconnected"}
+                </Badge>
+              </div>
             </Card>
           </div>
 
-          {/* Tabs */}
-          <Tabs defaultValue="commands" className="w-full">
+          {/* Main Tabs */}
+          <Tabs defaultValue="media" className="w-full">
             <TabsList className="grid w-full grid-cols-4 mb-4">
-              <TabsTrigger value="commands" className="text-xs md:text-sm">
-                <Terminal className="h-4 w-4 md:mr-2" />
-                <span className="hidden md:inline">Commands</span>
-              </TabsTrigger>
-              <TabsTrigger value="media" className="text-xs md:text-sm">
-                <Music className="h-4 w-4 md:mr-2" />
+              <TabsTrigger value="media" className="text-xs md:text-sm gap-1">
+                <Music className="h-4 w-4" />
                 <span className="hidden md:inline">Media</span>
               </TabsTrigger>
-              <TabsTrigger value="remote" className="text-xs md:text-sm">
-                <Keyboard className="h-4 w-4 md:mr-2" />
+              <TabsTrigger value="system" className="text-xs md:text-sm gap-1">
+                <Monitor className="h-4 w-4" />
+                <span className="hidden md:inline">System</span>
+              </TabsTrigger>
+              <TabsTrigger value="remote" className="text-xs md:text-sm gap-1">
+                <Keyboard className="h-4 w-4" />
                 <span className="hidden md:inline">Remote</span>
               </TabsTrigger>
-              <TabsTrigger value="system" className="text-xs md:text-sm">
-                <Monitor className="h-4 w-4 md:mr-2" />
-                <span className="hidden md:inline">System</span>
+              <TabsTrigger value="command" className="text-xs md:text-sm gap-1">
+                <Terminal className="h-4 w-4" />
+                <span className="hidden md:inline">Command</span>
               </TabsTrigger>
             </TabsList>
 
-            {/* Commands Tab */}
-            <TabsContent value="commands">
-              <Card className="glass-dark border-border/50">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Terminal className="h-5 w-5 text-primary" />
-                    Command Center
-                    <Badge variant="secondary" className="text-[10px]">
-                      <Sparkles className="h-3 w-3 mr-1" />
-                      Natural Language
-                    </Badge>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Service Selector */}
-                  <div className="flex flex-wrap gap-2">
-                    {(Object.keys(serviceConfig) as ServiceType[]).map((svc) => (
-                      <Badge
-                        key={svc}
-                        variant="outline"
-                        className={cn(
-                          "cursor-pointer transition-all flex items-center gap-1.5 px-3 py-1",
-                          selectedService === svc
-                            ? serviceConfig[svc].color + " border-2"
-                            : "hover:bg-secondary/50"
-                        )}
-                        onClick={() => setSelectedService(svc)}
-                      >
-                        {serviceConfig[svc].icon}
-                        {serviceConfig[svc].label}
-                      </Badge>
-                    ))}
-                  </div>
-
-                  {/* Input */}
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        placeholder={
-                          selectedService === "youtube"
-                            ? "Search and play on YouTube..."
-                            : selectedService === "chatgpt"
-                            ? "Ask ChatGPT anything..."
-                            : "Type a command or search..."
-                        }
-                        value={cmdInput}
-                        onChange={(e) => setCmdInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            handleCmdSubmit();
-                          }
-                        }}
-                        className="pl-10"
-                        disabled={isProcessing}
-                      />
-                    </div>
-                    <Button
-                      onClick={handleCmdSubmit}
-                      disabled={!cmdInput.trim() || isProcessing}
-                      className="gradient-primary"
-                    >
-                      {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                    </Button>
-                  </div>
-
-                  {/* Quick examples */}
-                  <div className="flex flex-wrap gap-2">
-                    {examples.map((ex) => (
-                      <Badge
-                        key={ex}
-                        variant="outline"
-                        className="cursor-pointer hover:bg-primary/10 text-xs"
-                        onClick={() => setCmdInput(ex)}
-                      >
-                        {ex}
-                      </Badge>
-                    ))}
-                  </div>
-
-                  {/* History */}
-                  {cmdHistory.length > 0 && (
-                    <div className="border-t border-border/30 pt-3">
-                      <p className="text-xs text-muted-foreground mb-2">Recent commands</p>
-                      <ScrollArea className="h-[150px]">
-                        <div className="space-y-2">
-                          {cmdHistory.map((item, i) => (
-                            <div
-                              key={i}
-                              className={cn(
-                                "flex items-start gap-2 p-2 rounded-lg text-sm",
-                                item.success ? "bg-neon-green/5" : "bg-destructive/5"
-                              )}
-                            >
-                              {item.success ? (
-                                <Check className="h-4 w-4 text-neon-green shrink-0 mt-0.5" />
-                              ) : (
-                                <X className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
-                              )}
-                              <div className="flex-1 min-w-0">
-                                <p className="font-medium truncate">{item.command}</p>
-                                <p className="text-muted-foreground text-xs">{item.message}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </ScrollArea>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Media Tab */}
-            <TabsContent value="media">
+            {/* ==================== MEDIA TAB ==================== */}
+            <TabsContent value="media" className="space-y-4">
+              {/* Now Playing Card with Optimistic UI */}
               <Card className="glass-dark border-border/50">
                 <CardContent className="p-6">
                   <div className="flex flex-col md:flex-row gap-6">
                     {/* Album Art */}
                     <div className="w-full md:w-48 aspect-square rounded-2xl gradient-primary flex items-center justify-center flex-shrink-0 relative overflow-hidden">
-                      <Disc3 className={cn("w-24 h-24 text-primary-foreground", mediaState.isPlaying && "animate-spin")} style={{ animationDuration: "3s" }} />
-                      <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent" />
+                      <Disc3 
+                        className={cn(
+                          "w-24 h-24 text-primary-foreground transition-all",
+                          mediaState.isPlaying && "animate-spin"
+                        )} 
+                        style={{ animationDuration: "3s" }} 
+                      />
+                      {pendingAction && (
+                        <div className="absolute inset-0 bg-background/50 flex items-center justify-center">
+                          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex-1 flex flex-col justify-between min-w-0">
                       <div>
-                        <h2 className="text-xl font-bold mb-1 truncate">{mediaState.title}</h2>
+                        <h2 className="text-xl font-bold truncate">{mediaState.title}</h2>
                         <p className="text-muted-foreground truncate">{mediaState.artist}</p>
-                        <Badge variant={mediaState.isPlaying ? "default" : "secondary"} className="mt-2">
+                        <Badge 
+                          variant={mediaState.isPlaying ? "default" : "secondary"} 
+                          className={cn("mt-2", pendingAction === "play_pause" && "animate-pulse")}
+                        >
                           {mediaState.isPlaying ? "Playing" : "Paused"}
                         </Badge>
                       </div>
 
                       {/* Progress Bar */}
                       <div className="space-y-2 my-4">
-                        <Slider value={[mediaState.position]} max={100} step={1} className="cursor-pointer" />
-                        <div className="flex justify-between text-sm text-muted-foreground">
+                        <Slider 
+                          value={[mediaState.position]} 
+                          max={100} 
+                          step={1} 
+                          className="cursor-pointer" 
+                          onValueCommit={(v) => handleSeek(v[0])}
+                        />
+                        <div className="flex justify-between text-xs text-muted-foreground">
                           <span>{formatTime(mediaState.positionMs)}</span>
                           <span>{formatTime(mediaState.durationMs)}</span>
                         </div>
                       </div>
 
-                      {/* Controls */}
+                      {/* Controls - Optimistic */}
                       <div className="flex items-center justify-center gap-2">
                         <Button variant="ghost" size="icon" onClick={handlePrevious}>
                           <SkipBack className="h-5 w-5" />
                         </Button>
                         <Button
                           size="icon"
-                          className="h-12 w-12 rounded-full gradient-primary"
+                          className={cn(
+                            "h-14 w-14 rounded-full gradient-primary transition-transform",
+                            pendingAction === "play_pause" && "scale-95"
+                          )}
                           onClick={handlePlayPause}
                         >
                           {mediaState.isPlaying ? (
-                            <Pause className="h-5 w-5 text-primary-foreground" />
+                            <Pause className="h-6 w-6 text-primary-foreground" />
                           ) : (
-                            <Play className="h-5 w-5 text-primary-foreground ml-0.5" />
+                            <Play className="h-6 w-6 text-primary-foreground ml-1" />
                           )}
                         </Button>
                         <Button variant="ghost" size="icon" onClick={handleNext}>
@@ -715,305 +595,432 @@ export default function ControlHub() {
                         </Button>
                       </div>
 
-                      {/* Volume */}
+                      {/* Volume - Optimistic */}
                       <div className="flex items-center gap-3 mt-4">
                         <Button variant="ghost" size="icon" onClick={handleMuteToggle}>
-                          {mediaState.muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+                          {mediaState.muted ? (
+                            <VolumeX className="h-5 w-5 text-muted-foreground" />
+                          ) : (
+                            <Volume2 className="h-5 w-5 text-muted-foreground" />
+                          )}
                         </Button>
                         <Slider
                           value={[mediaState.muted ? 0 : mediaState.volume]}
-                          onValueCommit={handleVolumeChange}
+                          onValueChange={(v) => handleVolumeChange(v[0])}
+                          onValueCommit={(v) => handleVolumeCommit(v[0])}
                           max={100}
                           className="flex-1 cursor-pointer"
                         />
-                        <span className="text-sm text-muted-foreground w-10">{mediaState.volume}%</span>
+                        <span className="text-sm text-muted-foreground w-10 text-right">
+                          {mediaState.muted ? "0" : mediaState.volume}%
+                        </span>
                       </div>
                     </div>
                   </div>
+                </CardContent>
+              </Card>
 
-                  {/* Search */}
-                  <div className="border-t border-border/30 mt-6 pt-4">
-                    <div className="flex gap-2">
-                      <Input
-                        placeholder="Search and play a song..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && handlePlaySearch()}
-                        className="flex-1"
-                      />
-                      <Button onClick={handlePlaySearch} className="gradient-primary" disabled={isSearching}>
-                        {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                      </Button>
-                    </div>
+              {/* Quick Play */}
+              <Card className="glass-dark border-border/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Search className="h-5 w-5 text-primary" />
+                    Quick Play
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Search and play on YouTube..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handlePlaySearch()}
+                      className="flex-1"
+                    />
+                    <Button onClick={handlePlaySearch} className="gradient-primary" disabled={isSearching}>
+                      {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
             </TabsContent>
 
-            {/* Remote Tab */}
-            <TabsContent value="remote">
+            {/* ==================== SYSTEM TAB ==================== */}
+            <TabsContent value="system" className="space-y-4">
+              {/* System Stats */}
+              {systemStats && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <Card className="glass-dark border-border/50">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Cpu className="h-4 w-4 text-neon-blue" />
+                        <span className="text-sm">CPU</span>
+                      </div>
+                      <p className="text-2xl font-bold text-neon-blue">{systemStats.cpu_percent || 0}%</p>
+                      <Progress value={systemStats.cpu_percent || 0} className="mt-2 h-1" />
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="glass-dark border-border/50">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Zap className="h-4 w-4 text-neon-purple" />
+                        <span className="text-sm">RAM</span>
+                      </div>
+                      <p className="text-2xl font-bold text-neon-purple">{systemStats.memory_percent || 0}%</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {systemStats.memory_used_gb || 0} / {systemStats.memory_total_gb || 0} GB
+                      </p>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="glass-dark border-border/50">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <HardDrive className="h-4 w-4 text-neon-orange" />
+                        <span className="text-sm">Disk</span>
+                      </div>
+                      <p className="text-2xl font-bold text-neon-orange">{systemStats.disk_percent || 0}%</p>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="glass-dark border-border/50">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Battery className="h-4 w-4 text-neon-green" />
+                        <span className="text-sm">Battery</span>
+                      </div>
+                      <p className="text-2xl font-bold text-neon-green">
+                        {systemStats.battery_percent !== undefined ? `${systemStats.battery_percent}%` : "N/A"}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
+              {/* Volume & Brightness */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Keyboard */}
                 <Card className="glass-dark border-border/50">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-lg flex items-center gap-2">
-                      <Keyboard className="h-5 w-5 text-primary" />
-                      Keyboard
+                      <Volume2 className="h-5 w-5 text-neon-blue" />
+                      Volume
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="flex gap-2">
-                      <Textarea 
-                        placeholder="Type here to send to PC..." 
-                        value={textInput} 
-                        onChange={(e) => setTextInput(e.target.value)} 
-                        className="min-h-[60px] text-sm"
-                      />
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Level</span>
+                      <span className="text-2xl font-bold text-neon-blue">{isMuted ? 0 : volume}%</span>
                     </div>
-                    <Button 
-                      className="w-full gradient-primary" 
-                      onClick={sendKeyboard} 
-                      disabled={!textInput || isSending}
+                    <Slider
+                      value={[isMuted ? 0 : volume]}
+                      onValueChange={handleSystemVolumeChange}
+                      onValueCommit={handleSystemVolumeCommit}
+                      max={100}
+                      step={5}
+                      className="cursor-pointer"
+                    />
+                    <Button
+                      variant={isMuted ? "destructive" : "secondary"}
+                      className="w-full"
+                      onClick={handleMuteSystemToggle}
                     >
-                      {isSending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}
-                      Send Text
+                      {isMuted ? <VolumeX className="h-4 w-4 mr-2" /> : <Volume2 className="h-4 w-4 mr-2" />}
+                      {isMuted ? "Unmute" : "Mute"}
                     </Button>
-                    
-                    <div className="border-t border-border/30 pt-3">
-                      <p className="text-sm text-muted-foreground mb-2">Quick Keys</p>
-                      <div className="grid grid-cols-4 gap-2">
-                        {quickKeys.map((k) => (
-                          <Button 
-                            key={k.key} 
-                            variant="secondary" 
-                            size="sm" 
-                            className={cn("text-xs", lastKey === k.label && "bg-neon-green/20")}
-                            onClick={() => sendKey(k.key)}
-                          >
-                            {k.label}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
                   </CardContent>
                 </Card>
 
-                {/* Trackpad */}
                 <Card className="glass-dark border-border/50">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-lg flex items-center gap-2">
-                      <Mouse className="h-5 w-5 text-primary" />
-                      Trackpad
+                      <Sun className="h-5 w-5 text-neon-orange" />
+                      Brightness
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div 
-                      ref={trackpadRef}
-                      className="aspect-video bg-secondary/30 rounded-xl border-2 border-dashed border-border cursor-crosshair touch-none select-none flex items-center justify-center min-h-[150px]"
-                      onMouseDown={handleTrackpadStart}
-                      onMouseMove={handleTrackpadMove}
-                      onTouchStart={handleTrackpadStart}
-                      onTouchMove={handleTrackpadMove}
-                    >
-                      <p className="text-muted-foreground text-sm pointer-events-none">
-                        Drag to move mouse
-                      </p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Level</span>
+                      <span className="text-2xl font-bold text-neon-orange">{brightness}%</span>
                     </div>
-                    
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button variant="secondary" onClick={() => handleMouseClick("left")}>
-                        Left Click
+                    <Slider
+                      value={[brightness]}
+                      onValueChange={handleBrightnessChange}
+                      onValueCommit={handleBrightnessCommit}
+                      min={0}
+                      max={100}
+                      step={5}
+                      className="cursor-pointer"
+                    />
+                    <div className="flex gap-2">
+                      <Button variant="secondary" className="flex-1" onClick={() => { setBrightness(0); sendCommand("set_brightness", { level: 0 }); }}>
+                        <Moon className="h-4 w-4 mr-1" /> Off
                       </Button>
-                      <Button variant="secondary" onClick={() => handleMouseClick("right")}>
-                        Right Click
+                      <Button variant="secondary" className="flex-1" onClick={() => { setBrightness(50); sendCommand("set_brightness", { level: 50 }); }}>
+                        50%
+                      </Button>
+                      <Button variant="secondary" className="flex-1" onClick={() => { setBrightness(100); sendCommand("set_brightness", { level: 100 }); }}>
+                        Max
                       </Button>
                     </div>
+                  </CardContent>
+                </Card>
+              </div>
 
-                    <div className="flex justify-center">
-                      <div className="grid grid-cols-3 gap-1">
-                        <div />
-                        <Button variant="secondary" size="sm" onClick={() => handleArrowMove("up")}>
-                          <ArrowUp className="h-4 w-4" />
-                        </Button>
-                        <div />
-                        <Button variant="secondary" size="sm" onClick={() => handleArrowMove("left")}>
-                          <ArrowLeft className="h-4 w-4" />
-                        </Button>
-                        <Button variant="secondary" size="sm" onClick={() => handleMouseClick("left")}>
-                          •
-                        </Button>
-                        <Button variant="secondary" size="sm" onClick={() => handleArrowMove("right")}>
-                          <ArrowRight className="h-4 w-4" />
-                        </Button>
-                        <div />
-                        <Button variant="secondary" size="sm" onClick={() => handleArrowMove("down")}>
-                          <ArrowDown className="h-4 w-4" />
-                        </Button>
-                        <div />
-                      </div>
-                    </div>
+              {/* Lock & Power */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Card className="glass-dark border-border/50">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Lock className="h-5 w-5 text-neon-pink" />
+                      Lock PC
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Button className="w-full" variant="secondary" onClick={handleLock}>
+                      <Lock className="h-4 w-4 mr-2" /> Lock Screen
+                    </Button>
+                  </CardContent>
+                </Card>
 
-                    {/* Clipboard */}
-                    <div className="border-t border-border/30 pt-3">
-                      <p className="text-sm text-muted-foreground mb-2 flex items-center gap-2">
-                        <Clipboard className="h-4 w-4" /> Clipboard
-                      </p>
-                      <div className="flex gap-2">
-                        <Textarea
-                          placeholder="Paste text to send to PC clipboard..."
-                          value={clipboardText}
-                          onChange={(e) => setClipboardText(e.target.value)}
-                          className="min-h-[40px] text-sm"
-                        />
-                        <Button variant="secondary" onClick={sendClipboardToPC} disabled={!clipboardText.trim()}>
-                          <Copy className="h-4 w-4" />
-                        </Button>
-                      </div>
+                <Card className="glass-dark border-border/50">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Power className="h-5 w-5 text-destructive" />
+                      Power
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex gap-2">
+                      {powerActions.map((action) => (
+                        <AlertDialog key={action.command}>
+                          <AlertDialogTrigger asChild>
+                            <Button variant="secondary" className="flex-1">
+                              <action.icon className={cn("h-4 w-4 mr-1", action.color)} />
+                              {action.title}
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent className="glass-dark border-border/50">
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Confirm {action.title}</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                Are you sure you want to {action.title.toLowerCase()} your PC?
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={() => handlePowerAction(action.command)}>
+                                {action.title}
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      ))}
                     </div>
                   </CardContent>
                 </Card>
               </div>
             </TabsContent>
 
-            {/* System Tab */}
-            <TabsContent value="system">
-              <div className="space-y-4">
-                {/* System Stats */}
-                {systemStats && (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <Card className="glass-dark border-border/50">
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Cpu className="h-4 w-4 text-neon-blue" />
-                          <span className="text-sm font-medium">CPU</span>
-                        </div>
-                        <p className="text-2xl font-bold text-neon-blue">{systemStats.cpu_percent as number || 0}%</p>
-                        <Progress value={systemStats.cpu_percent as number || 0} className="mt-2 h-1.5" />
-                      </CardContent>
-                    </Card>
-                    
-                    <Card className="glass-dark border-border/50">
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Zap className="h-4 w-4 text-neon-purple" />
-                          <span className="text-sm font-medium">RAM</span>
-                        </div>
-                        <p className="text-2xl font-bold text-neon-purple">{systemStats.memory_percent as number || 0}%</p>
-                        <p className="text-xs text-muted-foreground">
-                          {systemStats.memory_used_gb as number || 0} / {systemStats.memory_total_gb as number || 0} GB
-                        </p>
-                      </CardContent>
-                    </Card>
-                    
-                    <Card className="glass-dark border-border/50">
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <HardDrive className="h-4 w-4 text-neon-orange" />
-                          <span className="text-sm font-medium">Disk</span>
-                        </div>
-                        <p className="text-2xl font-bold text-neon-orange">{systemStats.disk_percent as number || 0}%</p>
-                        <p className="text-xs text-muted-foreground">
-                          {systemStats.disk_used_gb as number || 0} / {systemStats.disk_total_gb as number || 0} GB
-                        </p>
-                      </CardContent>
-                    </Card>
-                    
-                    <Card className="glass-dark border-border/50">
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Battery className="h-4 w-4 text-neon-green" />
-                          <span className="text-sm font-medium">Battery</span>
-                        </div>
-                        <p className="text-2xl font-bold text-neon-green">
-                          {systemStats.battery_percent !== null ? `${systemStats.battery_percent}%` : "N/A"}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {systemStats.battery_plugged ? "⚡ Charging" : "On battery"}
-                        </p>
-                      </CardContent>
-                    </Card>
+            {/* ==================== REMOTE TAB ==================== */}
+            <TabsContent value="remote" className="space-y-4">
+              {/* Keyboard */}
+              <Card className="glass-dark border-border/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Keyboard className="h-5 w-5 text-primary" />
+                    Keyboard
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex gap-2">
+                    <Textarea 
+                      placeholder="Type here to send to PC..." 
+                      value={textInput} 
+                      onChange={(e) => setTextInput(e.target.value)} 
+                      className="min-h-[80px] text-sm"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && e.ctrlKey) {
+                          e.preventDefault();
+                          sendKeyboard();
+                        }
+                      }}
+                    />
                   </div>
-                )}
+                  <Button 
+                    className="w-full gradient-primary" 
+                    onClick={sendKeyboard} 
+                    disabled={!textInput || isSending}
+                  >
+                    {isSending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}
+                    Send (Ctrl+Enter)
+                  </Button>
+                  
+                  <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+                    {quickKeys.map((k) => (
+                      <Button 
+                        key={k.key} 
+                        variant="secondary" 
+                        size="sm" 
+                        className={cn("text-xs", lastKey === k.label && "bg-neon-green/20 border-neon-green")}
+                        onClick={() => sendKey(k.key)}
+                      >
+                        {k.label}
+                      </Button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
 
-                {/* Device Info */}
-                {selectedDevice?.system_info && (
-                  <Card className="glass-dark border-border/50">
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-lg flex items-center gap-2">
-                        <Monitor className="h-5 w-5 text-primary" />
-                        Device Information
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div className="p-3 rounded-lg bg-secondary/30">
-                          <p className="text-xs text-muted-foreground">OS</p>
-                          <p className="font-medium text-sm">{(selectedDevice.system_info as Record<string, unknown>)?.os as string || "Unknown"}</p>
-                        </div>
-                        <div className="p-3 rounded-lg bg-secondary/30">
-                          <p className="text-xs text-muted-foreground">Hostname</p>
-                          <p className="font-medium text-sm">{(selectedDevice.system_info as Record<string, unknown>)?.hostname as string || selectedDevice.name}</p>
-                        </div>
-                        <div className="p-3 rounded-lg bg-secondary/30">
-                          <p className="text-xs text-muted-foreground">CPU Cores</p>
-                          <p className="font-medium text-sm">{(selectedDevice.system_info as Record<string, unknown>)?.cpu_count as number || "N/A"}</p>
-                        </div>
-                        <div className="p-3 rounded-lg bg-secondary/30">
-                          <p className="text-xs text-muted-foreground">RAM</p>
-                          <p className="font-medium text-sm">{(selectedDevice.system_info as Record<string, unknown>)?.memory_total_gb as number || "N/A"} GB</p>
-                        </div>
+              {/* Trackpad */}
+              <Card className="glass-dark border-border/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Mouse className="h-5 w-5 text-primary" />
+                    Trackpad
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div 
+                    ref={trackpadRef}
+                    className="aspect-video bg-secondary/30 rounded-xl border-2 border-dashed border-border cursor-crosshair touch-none select-none flex items-center justify-center min-h-[150px]"
+                    onMouseDown={handleTrackpadStart}
+                    onMouseMove={handleTrackpadMove}
+                    onTouchStart={handleTrackpadStart}
+                    onTouchMove={handleTrackpadMove}
+                  >
+                    <p className="text-muted-foreground text-sm pointer-events-none">Drag to move mouse</p>
+                  </div>
+                  
+                  <div className="grid grid-cols-5 gap-2">
+                    <div />
+                    <Button variant="secondary" size="sm" onClick={() => handleArrowMove("up")}>
+                      <ArrowUp className="h-4 w-4" />
+                    </Button>
+                    <div />
+                    <Button variant="secondary" size="sm" onClick={() => handleMouseClick("left")}>
+                      Left
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => handleMouseClick("right")}>
+                      Right
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => handleArrowMove("left")}>
+                      <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => handleArrowMove("down")}>
+                      <ArrowDown className="h-4 w-4" />
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => handleArrowMove("right")}>
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Clipboard */}
+              <Card className="glass-dark border-border/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Clipboard className="h-5 w-5 text-primary" />
+                    Clipboard
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Textarea 
+                    placeholder="Paste text here to send to PC clipboard..." 
+                    value={clipboardText} 
+                    onChange={(e) => setClipboardText(e.target.value)} 
+                    className="min-h-[60px] text-sm"
+                  />
+                  <Button className="w-full" variant="secondary" onClick={sendClipboardToPC} disabled={!clipboardText}>
+                    <Copy className="h-4 w-4 mr-2" /> Send to PC Clipboard
+                  </Button>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ==================== COMMAND TAB ==================== */}
+            <TabsContent value="command" className="space-y-4">
+              <Card className="glass-dark border-border/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Terminal className="h-5 w-5 text-primary" />
+                    Command Center
+                  </CardTitle>
+                  <CardDescription>Type commands like "open chrome", "play lofi", "volume 50"</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Service Selector */}
+                  <div className="flex gap-2 flex-wrap">
+                    {(Object.keys(serviceConfig) as ServiceType[]).map((key) => (
+                      <Button
+                        key={key}
+                        variant="outline"
+                        size="sm"
+                        className={cn(
+                          "gap-1 border",
+                          selectedService === key ? serviceConfig[key].color : "border-border/50"
+                        )}
+                        onClick={() => setSelectedService(key)}
+                      >
+                        {serviceConfig[key].icon}
+                        {serviceConfig[key].label}
+                      </Button>
+                    ))}
+                  </div>
+
+                  {/* Command Input */}
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Enter command..."
+                      value={cmdInput}
+                      onChange={(e) => setCmdInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleCmdSubmit()}
+                      className="flex-1"
+                    />
+                    <Button onClick={handleCmdSubmit} className="gradient-primary" disabled={isProcessing}>
+                      {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                    </Button>
+                  </div>
+
+                  {/* Quick Examples */}
+                  <div className="flex gap-2 flex-wrap">
+                    {examples.map((ex) => (
+                      <Badge
+                        key={ex}
+                        variant="secondary"
+                        className="cursor-pointer hover:bg-primary/20"
+                        onClick={() => setCmdInput(ex)}
+                      >
+                        {ex}
+                      </Badge>
+                    ))}
+                  </div>
+
+                  {/* Command History */}
+                  {cmdHistory.length > 0 && (
+                    <ScrollArea className="h-[200px] border rounded-lg p-3">
+                      <div className="space-y-2">
+                        {cmdHistory.map((result, i) => (
+                          <div key={i} className="flex items-start gap-2 text-sm">
+                            {result.success ? (
+                              <Check className="h-4 w-4 text-neon-green mt-0.5" />
+                            ) : (
+                              <X className="h-4 w-4 text-destructive mt-0.5" />
+                            )}
+                            <div>
+                              <p className="font-mono text-xs text-muted-foreground">$ {result.command}</p>
+                              <p className={cn("text-xs", result.success ? "text-neon-green" : "text-destructive")}>
+                                {result.message}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Quick Controls */}
-                <Card className="glass-dark border-border/50">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-lg">Quick Controls</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                      <Button
-                        variant="secondary"
-                        className="h-auto py-4 flex-col gap-2"
-                        onClick={() => sendCommand("lock", {})}
-                      >
-                        <Monitor className="h-6 w-6" />
-                        <span className="text-xs">Lock</span>
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        className="h-auto py-4 flex-col gap-2"
-                        onClick={() => sendCommand("sleep", {})}
-                      >
-                        <Sun className="h-6 w-6" />
-                        <span className="text-xs">Sleep</span>
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        className="h-auto py-4 flex-col gap-2"
-                        onClick={() => sendCommand("restart", {})}
-                      >
-                        <RefreshCw className="h-6 w-6" />
-                        <span className="text-xs">Restart</span>
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        className="h-auto py-4 flex-col gap-2 hover:bg-destructive/20 hover:text-destructive"
-                        onClick={() => {
-                          if (confirm("Are you sure you want to shut down your PC?")) {
-                            sendCommand("shutdown", {});
-                          }
-                        }}
-                      >
-                        <Zap className="h-6 w-6" />
-                        <span className="text-xs">Shutdown</span>
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+                    </ScrollArea>
+                  )}
+                </CardContent>
+              </Card>
             </TabsContent>
           </Tabs>
         </div>
