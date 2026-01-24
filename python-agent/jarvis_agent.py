@@ -1,6 +1,6 @@
 """
-JARVIS PC Agent - Python Client v2.4 (Combined Agent + UI)
-============================================================
+JARVIS PC Agent - Python Client v2.5 (AI Voice Control Edition)
+================================================================
 Runs on your PC to execute commands from the Jarvis web dashboard.
 Includes a local web dashboard at http://localhost:8765 for monitoring.
 
@@ -29,8 +29,8 @@ FEATURES:
 - Remote Input: Virtual keyboard and mouse/trackpad control
 - Screen Streaming: Real-time screen mirror
 - Clipboard Sync: Read and write clipboard content
-- App Control: Open/close applications, search and launch
-- File Browser: Navigate and open files
+- App Control: Open/close applications, list running apps, search and launch
+- File Browser: Navigate, search, and open files/folders
 - Music Player: Play music on YouTube (default) or other platforms
 - Open Websites: Open any URL in default browser
 - AI Search: Search on ChatGPT, Perplexity, Wikipedia, Google
@@ -41,6 +41,15 @@ FEATURES:
 - Camera Streaming: Stream PC camera to phone
 - File Sharing: Wi-Fi file transfer (Bluetooth coming soon)
 - Local Dashboard: Web UI for monitoring agent status and logs
+
+AI VOICE FEATURES (v2.5):
+-------------------------
+- Voice-controlled app opening/closing
+- Voice search for files
+- Voice-triggered media playback
+- Voice volume/brightness control
+- Voice lock/unlock/sleep/restart/shutdown
+- Mobile integration: Make calls, send SMS, WhatsApp, Email via voice
 """
 
 import os
@@ -1860,6 +1869,7 @@ class JarvisAgent:
     
     def _open_file(self, path: str):
         try:
+            path = os.path.expanduser(path)
             add_log("info", f"Opening file: {path}", category="files")
             if platform.system() == "Windows":
                 os.startfile(path)
@@ -1868,6 +1878,178 @@ class JarvisAgent:
             else:
                 subprocess.Popen(["xdg-open", path])
             return {"success": True, "message": f"Opened {path}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _open_folder(self, path: str):
+        """Open a folder in file explorer."""
+        try:
+            path = os.path.expanduser(path)
+            add_log("info", f"Opening folder: {path}", category="files")
+            if platform.system() == "Windows":
+                subprocess.Popen(f'explorer "{path}"', shell=True)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            return {"success": True, "message": f"Opened folder: {path}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _search_files(self, query: str, path: str = "~"):
+        """Search for files matching the query."""
+        try:
+            path = os.path.expanduser(path)
+            add_log("info", f"Searching for files: {query} in {path}", category="files")
+            
+            results = []
+            query_lower = query.lower()
+            
+            # Walk through directory tree (limit depth for performance)
+            max_results = 50
+            max_depth = 4
+            
+            for root, dirs, files in os.walk(path):
+                # Calculate current depth
+                depth = root[len(path):].count(os.sep)
+                if depth >= max_depth:
+                    dirs.clear()  # Don't go deeper
+                    continue
+                
+                # Skip hidden directories
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                
+                for file in files:
+                    if query_lower in file.lower():
+                        full_path = os.path.join(root, file)
+                        try:
+                            size = os.path.getsize(full_path)
+                            modified = os.path.getmtime(full_path)
+                        except:
+                            size = 0
+                            modified = 0
+                        
+                        results.append({
+                            "name": file,
+                            "path": full_path,
+                            "size": size,
+                            "modified": modified,
+                        })
+                        
+                        if len(results) >= max_results:
+                            break
+                
+                if len(results) >= max_results:
+                    break
+            
+            add_log("info", f"Found {len(results)} files matching '{query}'", category="files")
+            return {"success": True, "results": results, "query": query}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _list_apps(self):
+        """Alias for get_running_apps for AI commands."""
+        return self._get_running_apps()
+
+    # ============== MOBILE ACTIONS (via desktop) ==============
+    def _make_call(self, contact: str = "", number: str = ""):
+        """Initiate a phone call - opens tel: URL or phone app."""
+        try:
+            phone = number or contact
+            if not phone:
+                return {"success": False, "error": "No contact or number provided"}
+            
+            # Clean up number
+            phone_clean = ''.join(c for c in phone if c.isdigit() or c == '+')
+            
+            if phone_clean:
+                # Use tel: protocol
+                webbrowser.open(f"tel:{phone_clean}")
+                add_log("info", f"Initiating call to: {phone}", category="mobile")
+                return {"success": True, "message": f"Calling {phone}"}
+            else:
+                # Search for contact in phone app
+                if platform.system() == "Windows":
+                    # Open Your Phone app on Windows
+                    os.system("start ms-people:")
+                    time.sleep(1)
+                    pyautogui.typewrite(contact, interval=0.02)
+                add_log("info", f"Opening contacts for: {contact}", category="mobile")
+                return {"success": True, "message": f"Searching for contact: {contact}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _send_sms(self, contact: str = "", number: str = "", message: str = ""):
+        """Send an SMS message - opens SMS URL or messaging app."""
+        try:
+            phone = number or contact
+            if not phone:
+                return {"success": False, "error": "No contact or number provided"}
+            
+            phone_clean = ''.join(c for c in phone if c.isdigit() or c == '+')
+            
+            if phone_clean:
+                # Use sms: protocol with message
+                sms_url = f"sms:{phone_clean}"
+                if message:
+                    sms_url += f"?body={urllib.parse.quote(message)}"
+                webbrowser.open(sms_url)
+                add_log("info", f"Sending SMS to: {phone}", category="mobile")
+                return {"success": True, "message": f"Opening SMS to {phone}"}
+            else:
+                # Open Your Phone / Messages app on Windows
+                if platform.system() == "Windows":
+                    os.system("start ms-chat:")
+                add_log("info", f"Opening messaging app for: {contact}", category="mobile")
+                return {"success": True, "message": f"Opening messaging app"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _send_whatsapp(self, contact: str = "", message: str = ""):
+        """Send a WhatsApp message - opens WhatsApp Web or app."""
+        try:
+            if not contact:
+                return {"success": False, "error": "No contact provided"}
+            
+            # Clean up number if it looks like a phone number
+            phone_clean = ''.join(c for c in contact if c.isdigit() or c == '+')
+            
+            if phone_clean:
+                # Use WhatsApp API with phone number
+                wa_url = f"https://wa.me/{phone_clean.lstrip('+')}"
+                if message:
+                    wa_url += f"?text={urllib.parse.quote(message)}"
+                webbrowser.open(wa_url)
+                add_log("info", f"Opening WhatsApp for: {contact}", category="mobile")
+                return {"success": True, "message": f"Opening WhatsApp for {contact}"}
+            else:
+                # Try to open WhatsApp desktop app
+                self._open_app("whatsapp")
+                add_log("info", f"Opening WhatsApp app", category="mobile")
+                return {"success": True, "message": "Opening WhatsApp app"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _send_email(self, to: str = "", subject: str = "", body: str = ""):
+        """Compose and send an email - opens mailto: URL."""
+        try:
+            if not to:
+                return {"success": False, "error": "No recipient provided"}
+            
+            # Build mailto URL
+            mailto_url = f"mailto:{to}"
+            params = []
+            if subject:
+                params.append(f"subject={urllib.parse.quote(subject)}")
+            if body:
+                params.append(f"body={urllib.parse.quote(body)}")
+            
+            if params:
+                mailto_url += "?" + "&".join(params)
+            
+            webbrowser.open(mailto_url)
+            add_log("info", f"Composing email to: {to}", category="mobile")
+            return {"success": True, "message": f"Opening email to {to}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -2189,6 +2371,8 @@ class JarvisAgent:
                 return self._close_app(payload.get("app_name", ""))
             elif command_type == "get_running_apps":
                 return self._get_running_apps()
+            elif command_type == "list_apps":
+                return self._list_apps()
             elif command_type == "get_installed_apps":
                 return self._get_installed_apps()
 
@@ -2197,6 +2381,13 @@ class JarvisAgent:
                 return self._list_files(payload.get("path", "~"))
             elif command_type == "open_file":
                 return self._open_file(payload.get("path", ""))
+            elif command_type == "open_folder":
+                return self._open_folder(payload.get("path", ""))
+            elif command_type == "search_files":
+                return self._search_files(
+                    payload.get("query", ""),
+                    payload.get("path", "~")
+                )
 
             # Web
             elif command_type == "open_url":
@@ -2224,6 +2415,30 @@ class JarvisAgent:
                 return self._get_media_state()  # Alias
             elif command_type == "media_seek":
                 return self._media_seek(payload.get("position_percent", 0))
+
+            # Mobile actions (via desktop)
+            elif command_type == "make_call":
+                return self._make_call(
+                    payload.get("contact", ""),
+                    payload.get("number", "")
+                )
+            elif command_type == "send_sms":
+                return self._send_sms(
+                    payload.get("contact", ""),
+                    payload.get("number", ""),
+                    payload.get("message", "")
+                )
+            elif command_type == "send_whatsapp":
+                return self._send_whatsapp(
+                    payload.get("contact", ""),
+                    payload.get("message", "")
+                )
+            elif command_type == "send_email":
+                return self._send_email(
+                    payload.get("to", ""),
+                    payload.get("subject", ""),
+                    payload.get("body", "")
+                )
 
             # Screen / system info
             elif command_type == "screenshot":
