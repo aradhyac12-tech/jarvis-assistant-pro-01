@@ -202,7 +202,7 @@ except ImportError:
 # Windows-specific imports
 if platform.system() == "Windows":
     try:
-        from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+        from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume, IAudioEndpointVolume
         from ctypes import cast, POINTER
         from comtypes import CLSCTX_ALL
         HAS_PYCAW = True
@@ -1846,12 +1846,26 @@ class JarvisAgent:
         return self._volume_cache
     
     def _set_volume(self, level: int):
-        level = max(0, min(100, level))
+        # IMPORTANT: keep previous cache for fallback key-press adjustments.
+        prev_level = int(getattr(self, "_volume_cache", 50) or 50)
+        level = max(0, min(100, int(level)))
         self._volume_cache = level
         update_agent_status({"volume": level})
         
         if platform.system() == "Windows":
             try:
+                # Best-effort: use PyCAW when available (reliable on Windows).
+                if HAS_PYCAW:
+                    try:
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        endpoint = cast(interface, POINTER(IAudioEndpointVolume))
+                        endpoint.SetMasterVolumeLevelScalar(level / 100.0, None)
+                        add_log("info", f"Volume set to {level}% (pycaw)", category="system")
+                        return {"success": True, "volume": level}
+                    except Exception as pycaw_err:
+                        add_log("warn", f"pycaw volume set failed: {pycaw_err}", category="system")
+
                 nircmd_path = os.path.join(os.path.dirname(__file__), "nircmd.exe")
                 if os.path.exists(nircmd_path):
                     vol_value = int(level * 65535 / 100)
@@ -1859,17 +1873,27 @@ class JarvisAgent:
                                  capture_output=True, timeout=2)
                     add_log("info", f"Volume set to {level}% (nircmd)", category="system")
                     return {"success": True, "volume": level}
-                
-                subprocess.run([
-                    'powershell', '-Command',
-                    f'Set-AudioDevice -PlaybackVolume {level}'
-                ], capture_output=True, timeout=3)
-                add_log("info", f"Volume set to {level}%", category="system")
-                return {"success": True, "volume": level}
+
+                # PowerShell route (only works if user has the right module installed).
+                ps = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        f"Set-AudioDevice -PlaybackVolume {level}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if ps.returncode == 0:
+                    add_log("info", f"Volume set to {level}% (powershell)", category="system")
+                    return {"success": True, "volume": level}
+                raise RuntimeError((ps.stderr or ps.stdout or "PowerShell volume set failed").strip())
             except Exception as e:
                 try:
-                    current = self._volume_cache
-                    diff = level - current
+                    # Fallback: approximate using volume keys. Use PREVIOUS volume to compute steps.
+                    diff = level - prev_level
                     steps = abs(diff) // 2
                     key = "volumeup" if diff > 0 else "volumedown"
                     for _ in range(steps):
