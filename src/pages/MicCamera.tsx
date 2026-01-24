@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -647,72 +646,76 @@ export default function MicCamera() {
     : ArrowLeftRight;
 
   return (
-    <DashboardLayout>
-      <ScrollArea className="h-[calc(100vh-2rem)]">
-        <div className="space-y-4 animate-fade-in pr-4 pt-12 md:pt-0">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl md:text-3xl font-bold neon-text">Mic & Camera</h1>
-              <p className="text-muted-foreground text-sm">
-                Bidirectional audio & video streaming between phone and PC
-              </p>
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
+        <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
+              <Camera className="w-5 h-5 text-primary-foreground" />
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowDebug(!showDebug)}
-                className={showDebug ? "bg-primary/20" : ""}
-              >
-                Debug
-              </Button>
-              {selectedDevice && (
-                <Badge variant="secondary" className="bg-primary/10 text-primary">
-                  {selectedDevice.name}
-                </Badge>
-              )}
+            <div>
+              <h1 className="font-semibold text-sm">Mic & Camera</h1>
+              <p className="text-xs text-muted-foreground">Audio & video streaming</p>
             </div>
           </div>
 
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowDebug(!showDebug)}
+              className={showDebug ? "bg-primary/20" : ""}
+            >
+              Debug
+            </Button>
+            {selectedDevice && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "gap-1.5 text-xs",
+                  selectedDevice.is_online ? "border-primary/50 text-primary" : "border-muted"
+                )}
+              >
+                <span className={cn("w-1.5 h-1.5 rounded-full", selectedDevice.is_online ? "bg-primary" : "bg-muted-foreground")} />
+                {selectedDevice.is_online ? "Online" : "Offline"}
+              </Badge>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <ScrollArea className="h-[calc(100vh-3.5rem)]">
+        <main className="max-w-4xl mx-auto p-4 space-y-4">
           {/* Debug Panel */}
           {showDebug && (
-            <Card className="glass-dark border-border/50 p-3">
-              <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-xs">
-                <div>
-                  <span className="text-muted-foreground">Audio WS:</span>{" "}
-                  <Badge variant={audioWsRef.current ? "default" : "secondary"} className="text-xs">
-                    {audioWsRef.current ? "Connected" : "Disconnected"}
-                  </Badge>
+            <Card className="border-border/40">
+              <CardContent className="p-3">
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">Camera FPS:</span>
+                    <span className={cn(
+                      "font-mono font-bold",
+                      cameraFps >= 60 ? "text-primary" : cameraFps >= 30 ? "text-warning" : "text-destructive"
+                    )}>{cameraFps}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">Latency:</span>
+                    <span className={cn(
+                      "font-mono font-bold",
+                      cameraLatency <= 50 ? "text-primary" : cameraLatency <= 100 ? "text-warning" : "text-destructive"
+                    )}>{cameraLatency}ms</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">Frames:</span>
+                    <span className="font-mono">{debugStats.frameCount}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">Audio:</span>
+                    <span className="font-mono">{Math.round(audioLevel * 100)}%</span>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">Camera WS:</span>{" "}
-                  <Badge variant={pcCameraWsRef.current ? "default" : "secondary"} className="text-xs">
-                    {pcCameraWsRef.current ? "Connected" : "Disconnected"}
-                  </Badge>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Audio Level:</span>{" "}
-                  <span className="font-mono">{Math.round(audioLevel * 100)}%</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Camera FPS:</span>{" "}
-                  <span className={cn(
-                    "font-mono font-bold",
-                    cameraFps >= 60 ? "text-neon-green" : cameraFps >= 30 ? "text-neon-orange" : "text-destructive"
-                  )}>{cameraFps}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Latency:</span>{" "}
-                  <span className={cn(
-                    "font-mono font-bold",
-                    cameraLatency <= 50 ? "text-neon-green" : cameraLatency <= 100 ? "text-neon-orange" : "text-destructive"
-                  )}>{cameraLatency}ms</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Frames:</span>{" "}
-                  <span className="font-mono">{debugStats.frameCount}</span>
-                </div>
-              </div>
+              </CardContent>
             </Card>
           )}
 
@@ -1637,8 +1640,8 @@ export default function MicCamera() {
               </Card>
             </TabsContent>
           </Tabs>
-        </div>
+        </main>
       </ScrollArea>
-    </DashboardLayout>
+    </div>
   );
 }

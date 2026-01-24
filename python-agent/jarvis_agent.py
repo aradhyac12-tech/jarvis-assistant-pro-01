@@ -2084,6 +2084,18 @@ class JarvisAgent:
         cameras = self.camera_streamer.get_available_cameras()
         return {"success": True, "cameras": cameras}
 
+    def _get_system_state(self) -> Dict[str, Any]:
+        """Get current volume, brightness, and lock state for frontend sync."""
+        try:
+            return {
+                "success": True,
+                "volume": self._get_volume(),
+                "brightness": self._get_brightness(),
+                "is_locked": self.is_locked,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _get_issues(self) -> Dict[str, Any]:
         """Return recent issues for the web app to display."""
         return {
@@ -2233,14 +2245,11 @@ class JarvisAgent:
             if platform.system() == "Windows":
                 if app_id:
                     # Security: Validate app_id to prevent command injection
-                    # Windows App IDs are typically in format: Publisher.AppName_hash!App
-                    # Allow only alphanumeric, dots, underscores, exclamation marks, and hyphens
                     if not re.match(r'^[a-zA-Z0-9._!-]+$', app_id):
                         add_log("warn", f"Invalid app_id format rejected: {app_id}", category="apps")
                         return {"success": False, "error": "Invalid app ID format"}
                     
                     try:
-                        # Use list form to avoid shell injection
                         subprocess.Popen(
                             ['explorer', f'shell:AppsFolder\\{app_id}'],
                             stdout=subprocess.DEVNULL,
@@ -2251,56 +2260,68 @@ class JarvisAgent:
                     except Exception as e:
                         add_log("warn", f"AppID launch failed, falling back: {e}", category="apps")
 
+                # Extended app mappings for common applications
                 app_paths = {
+                    # Browsers
                     "chrome": "chrome", "google chrome": "chrome",
                     "firefox": "firefox", "mozilla firefox": "firefox",
                     "edge": "msedge", "microsoft edge": "msedge",
-                    "notepad": "notepad",
-                    "calculator": "calc", "calc": "calc",
-                    "spotify": "spotify",
-                    "vscode": "code", "vs code": "code", "visual studio code": "code",
+                    "brave": "brave", "opera": "opera", "vivaldi": "vivaldi",
+                    # System
+                    "notepad": "notepad", "calculator": "calc", "calc": "calc",
                     "terminal": "wt", "cmd": "cmd", "command prompt": "cmd",
                     "powershell": "powershell",
-                    "explorer": "explorer", "file explorer": "explorer",
-                    "vlc": "vlc", "vlc player": "vlc",
+                    "explorer": "explorer", "file explorer": "explorer", "files": "explorer",
                     "task manager": "taskmgr", "taskmgr": "taskmgr",
-                    "settings": "ms-settings:",
-                    "paint": "mspaint",
+                    "settings": "ms-settings:", "control panel": "control",
+                    "paint": "mspaint", "snipping tool": "snippingtool",
+                    # Dev tools
+                    "vscode": "code", "vs code": "code", "visual studio code": "code",
+                    "visual studio": "devenv",
+                    # Office
                     "word": "winword", "microsoft word": "winword",
                     "excel": "excel", "microsoft excel": "excel",
                     "powerpoint": "powerpnt", "microsoft powerpoint": "powerpnt",
                     "outlook": "outlook", "microsoft outlook": "outlook",
-                    "discord": "discord",
-                    "steam": "steam",
-                    "telegram": "telegram",
-                    "whatsapp": "whatsapp",
+                    "onenote": "onenote",
+                    # Media
+                    "spotify": "spotify", "vlc": "vlc", "vlc player": "vlc",
                     "obs": "obs64", "obs studio": "obs64",
-                    "zoom": "zoom",
+                    # Communication
+                    "discord": "discord", "telegram": "telegram",
+                    "whatsapp": "whatsapp", "zoom": "zoom",
                     "teams": "ms-teams", "microsoft teams": "ms-teams",
-                    "slack": "slack",
-                    "brave": "brave",
-                    "opera": "opera",
-                    "vivaldi": "vivaldi",
+                    "slack": "slack", "skype": "skype",
+                    # Gaming
+                    "steam": "steam", "epic games": "epicgameslauncher",
+                    # Utilities
+                    "winrar": "winrar", "7zip": "7zfm",
+                    "everything": "everything",
                 }
 
                 cmd = app_paths.get(app_lower)
 
                 if cmd:
-                    if cmd.startswith("ms-"):
-                        os.system(f"start {cmd}")
-                    else:
-                        subprocess.Popen(f"start {cmd}", shell=True)
-                    add_log("info", f"Opened via known path: {cmd}", category="apps")
-                    return {"success": True, "message": f"Opened {app_name}"}
+                    try:
+                        if cmd.startswith("ms-"):
+                            os.system(f"start {cmd}")
+                        else:
+                            subprocess.Popen(f"start {cmd}", shell=True, 
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        add_log("info", f"Opened via known path: {cmd}", category="apps")
+                        return {"success": True, "message": f"Opened {app_name}"}
+                    except Exception as e:
+                        add_log("warn", f"Direct launch failed: {e}, trying search", category="apps")
 
                 if not app_name:
                     return {"success": False, "error": "Missing app name"}
 
+                # Smart search: check if app is installed first
                 add_log("info", f"Searching via Windows Search: {app_name}", category="apps")
                 pyautogui.press("win")
                 time.sleep(0.4)
                 pyautogui.typewrite(app_name, interval=0.02)
-                time.sleep(0.5)
+                time.sleep(0.6)
                 pyautogui.press("enter")
 
                 return {"success": True, "message": f"Searched and opened: {app_name}"}
@@ -2990,6 +3011,8 @@ class JarvisAgent:
                 return self._get_monitors()
             elif command_type == "get_system_stats":
                 return self._get_system_stats()
+            elif command_type == "get_system_state":
+                return self._get_system_state()
             elif command_type == "get_cameras":
                 return self._get_cameras()
             elif command_type == "get_issues":
