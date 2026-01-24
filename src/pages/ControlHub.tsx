@@ -114,7 +114,7 @@ export default function ControlHub() {
   const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
   const { deviceInfo, isReconnecting, session } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
-  const { fireCommand, fireMouse, fireKey, fireScroll } = useFastCommand();
+  const { fireCommand, fireMouse, fireKey, fireScroll, fireZoom } = useFastCommand();
   const { toast } = useToast();
 
   // Use optimistic media hook
@@ -160,6 +160,7 @@ export default function ControlHub() {
   const [clipboardText, setClipboardText] = useState("");
   const trackpadRef = useRef<HTMLDivElement>(null);
   const lastPosition = useRef({ x: 0, y: 0 });
+  const lastPinchDistance = useRef<number | null>(null);
 
   const isConnected = selectedDevice?.is_online || false;
 
@@ -386,11 +387,38 @@ export default function ControlHub() {
   };
 
   const handleTrackpadStart = useCallback((e: React.TouchEvent | React.MouseEvent) => {
+    if ("touches" in e && e.touches.length === 2) {
+      // Start pinch tracking
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastPinchDistance.current = Math.sqrt(dx * dx + dy * dy);
+      return;
+    }
     const point = "touches" in e ? e.touches[0] : e;
     lastPosition.current = { x: point.clientX, y: point.clientY };
+    lastPinchDistance.current = null;
   }, []);
 
   const handleTrackpadMove = useCallback((e: React.TouchEvent | React.MouseEvent) => {
+    // Handle pinch-to-zoom with two fingers
+    if ("touches" in e && e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const currentDistance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (lastPinchDistance.current !== null) {
+        const delta = (currentDistance - lastPinchDistance.current) / 100;
+        if (Math.abs(delta) > 0.01) {
+          fireZoom(delta);
+        }
+      }
+      lastPinchDistance.current = currentDistance;
+      return;
+    }
+
+    // Reset pinch when not using two fingers
+    lastPinchDistance.current = null;
+
     if (!("buttons" in e) || e.buttons !== 1) {
       if (!("touches" in e)) return;
     }
@@ -407,12 +435,21 @@ export default function ControlHub() {
     if (Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5) {
       fireMouse(deltaX, deltaY);
     }
-  }, [fireMouse]);
+  }, [fireMouse, fireZoom]);
+
+  const handleTrackpadEnd = useCallback(() => {
+    lastPinchDistance.current = null;
+  }, []);
 
   const handleTrackpadWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
+    // Check for pinch gesture (ctrlKey is set for trackpad pinch on desktop)
+    if (e.ctrlKey) {
+      fireZoom(-e.deltaY / 100);
+      return;
+    }
     fireScroll(e.deltaY);
-  }, [fireScroll]);
+  }, [fireScroll, fireZoom]);
 
   const handleMouseClick = (button: string = "left") => {
     fireCommand("mouse_click", { button, clicks: 1 });
@@ -893,9 +930,10 @@ export default function ControlHub() {
                     onMouseMove={handleTrackpadMove}
                     onTouchStart={handleTrackpadStart}
                     onTouchMove={handleTrackpadMove}
+                    onTouchEnd={handleTrackpadEnd}
                     onWheel={handleTrackpadWheel}
                   >
-                    <p className="text-muted-foreground text-sm pointer-events-none">Drag to move • Scroll to scroll</p>
+                    <p className="text-muted-foreground text-sm pointer-events-none">Drag to move • Scroll • Pinch to zoom</p>
                   </div>
                   
                   <div className="grid grid-cols-5 gap-2">

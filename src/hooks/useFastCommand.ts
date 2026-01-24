@@ -97,5 +97,34 @@ export function useFastCommand() {
     [fireCommand]
   );
 
-  return { fireCommand, fireMouse, fireKey, fireScroll };
+  // Pinch-to-zoom - batched for smooth zooming
+  const zoomAccumulator = useRef(0);
+  const zoomTimerRef = useRef<number | null>(null);
+  const ZOOM_BATCH_MS = 16; // ~60fps batching
+
+  const fireZoom = useCallback(
+    (delta: number) => {
+      // delta > 0 = zoom in, delta < 0 = zoom out
+      zoomAccumulator.current += delta;
+
+      if (zoomTimerRef.current !== null) return;
+
+      zoomTimerRef.current = window.setTimeout(() => {
+        const amount = zoomAccumulator.current;
+        if (Math.abs(amount) > 0.01) {
+          // Send zoom command - positive = zoom in (ctrl+plus), negative = zoom out (ctrl+minus)
+          const zoomType = amount > 0 ? "zoom_in" : "zoom_out";
+          const steps = Math.min(Math.abs(Math.round(amount * 5)), 10); // Cap at 10 steps
+          for (let i = 0; i < steps; i++) {
+            fireCommand("key_combo", { keys: ["ctrl", zoomType === "zoom_in" ? "+" : "-"] });
+          }
+        }
+        zoomAccumulator.current = 0;
+        zoomTimerRef.current = null;
+      }, ZOOM_BATCH_MS);
+    },
+    [fireCommand]
+  );
+
+  return { fireCommand, fireMouse, fireKey, fireScroll, fireZoom };
 }
