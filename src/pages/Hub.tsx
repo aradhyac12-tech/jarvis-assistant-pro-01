@@ -242,6 +242,18 @@ export default function Hub() {
     { title: "Settings", icon: Settings, href: "/settings", color: "text-muted-foreground" },
   ];
 
+  // Show loading while device context is initializing
+  if (isLoading && !selectedDevice) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Loading device...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Compact Header */}
