@@ -19,7 +19,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     document.documentElement.classList.add("dark");
   }, []);
 
-  // Close sidebar on mobile when clicking outside
   const handleMainClick = () => {
     if (window.innerWidth < 768 && sidebarOpen) {
       setSidebarOpen(false);
@@ -28,44 +27,41 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen w-full bg-background overflow-hidden">
+      <div className="flex min-h-screen w-full bg-background">
         <AppSidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
         <main 
-          className={cn(
-            "flex-1 overflow-auto h-screen transition-all duration-300",
-            sidebarOpen ? "md:ml-0" : "ml-0"
-          )}
+          className="flex-1 overflow-auto h-screen"
           onClick={handleMainClick}
         >
           <div className="p-4 md:p-6 h-full">{children}</div>
         </main>
 
-        {/* Floating Issue Log Button */}
+        {/* Floating Debug Button */}
         <Button
           variant="outline"
           size="icon"
           className={cn(
-            "fixed bottom-4 right-4 z-50 h-12 w-12 rounded-full shadow-lg border-border/50 bg-background/80 backdrop-blur-sm hover:bg-destructive/10 hover:border-destructive/50 transition-all",
+            "fixed bottom-4 right-4 z-50 h-10 w-10 rounded-full shadow-md border-border/50 bg-card hover:bg-secondary transition-all",
             issueLogOpen && "hidden"
           )}
           onClick={() => setIssueLogOpen(true)}
         >
-          <Bug className="h-5 w-5 text-muted-foreground" />
+          <Bug className="h-4 w-4 text-muted-foreground" />
         </Button>
 
-        {/* Floating Issue Log Panel */}
+        {/* Issue Log Panel */}
         {issueLogOpen && (
-          <div className="fixed bottom-4 right-4 z-50 w-[400px] max-w-[calc(100vw-2rem)] animate-fade-in">
+          <div className="fixed bottom-4 right-4 z-50 w-[360px] max-w-[calc(100vw-2rem)] animate-slide-in">
             <div className="relative">
               <Button
                 variant="ghost"
                 size="icon"
-                className="absolute -top-2 -right-2 z-10 h-8 w-8 rounded-full bg-background border border-border shadow-md"
+                className="absolute -top-2 -right-2 z-10 h-7 w-7 rounded-full bg-card border border-border shadow-sm"
                 onClick={() => setIssueLogOpen(false)}
               >
-                <X className="h-4 w-4" />
+                <X className="h-3 w-3" />
               </Button>
-              <IssueLog className="shadow-2xl" />
+              <IssueLog className="shadow-lg" />
             </div>
           </div>
         )}

@@ -1,12 +1,9 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard,
+  Home,
   Mic,
   Settings2,
-  Monitor,
-  Music,
   FolderOpen,
-  Keyboard,
   AppWindow,
   ChevronLeft,
   ChevronRight,
@@ -15,7 +12,6 @@ import {
   Menu,
   X,
   Camera,
-  Smartphone,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -25,13 +21,11 @@ import { useToast } from "@/hooks/use-toast";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 const navItems = [
-  { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
-  { title: "Control Hub", url: "/hub", icon: Monitor },
+  { title: "Hub", url: "/hub", icon: Home },
   { title: "Voice AI", url: "/voice", icon: Mic },
   { title: "Apps", url: "/apps", icon: AppWindow },
   { title: "Files", url: "/files", icon: FolderOpen },
-  { title: "Mic & Camera", url: "/miccamera", icon: Camera },
-  { title: "Samsung Link", url: "/samsung", icon: Smartphone },
+  { title: "Camera", url: "/miccamera", icon: Camera },
   { title: "Settings", url: "/settings", icon: Settings2 },
 ];
 
@@ -46,11 +40,10 @@ export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
-    toast({ title: "Signed out successfully" });
+    toast({ title: "Signed out" });
   };
 
   const handleNavClick = () => {
-    // Auto-close sidebar on mobile after navigation
     if (window.innerWidth < 768 && onToggle) {
       onToggle();
     }
@@ -63,7 +56,7 @@ export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
         variant="ghost"
         size="icon"
         onClick={onToggle}
-        className="fixed top-4 left-4 z-50 md:hidden bg-sidebar/80 backdrop-blur-sm"
+        className="fixed top-3 left-3 z-50 md:hidden bg-background/80 backdrop-blur-sm"
       >
         {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
       </Button>
@@ -78,37 +71,33 @@ export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
 
       <aside
         className={cn(
-          "fixed md:sticky top-0 left-0 h-screen flex flex-col bg-sidebar border-r border-sidebar-border transition-all duration-300 ease-in-out z-40",
-          isOpen ? "w-64 translate-x-0" : "w-16 -translate-x-full md:translate-x-0"
+          "fixed md:sticky top-0 left-0 h-screen flex flex-col bg-card border-r border-border/50 transition-all duration-200 ease-out z-40",
+          isOpen ? "w-56 translate-x-0" : "w-14 -translate-x-full md:translate-x-0"
         )}
       >
         {/* Logo Header */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border shrink-0">
+        <div className="h-14 flex items-center justify-between px-3 border-b border-border/50 shrink-0">
           {isOpen && (
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center pulse-neon">
-                <Bot className="w-5 h-5 text-primary-foreground" />
+              <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
+                <Bot className="w-4 h-4 text-primary-foreground" />
               </div>
-              <span className="font-bold text-lg neon-text">JARVIS</span>
+              <span className="font-semibold">JARVIS</span>
             </div>
           )}
           <Button
             variant="ghost"
             size="icon"
             onClick={onToggle}
-            className={cn("hover:bg-sidebar-accent hidden md:flex", !isOpen && "mx-auto")}
+            className={cn("hover:bg-secondary/50 hidden md:flex h-8 w-8", !isOpen && "mx-auto")}
           >
-            {isOpen ? (
-              <ChevronLeft className="h-4 w-4" />
-            ) : (
-              <ChevronRight className="h-4 w-4" />
-            )}
+            {isOpen ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           </Button>
         </div>
 
-        {/* Navigation - fixed, not scrolling with page */}
+        {/* Navigation */}
         <ScrollArea className="flex-1">
-          <nav className="p-2 space-y-1">
+          <nav className="p-2 space-y-0.5">
             {navItems.map((item) => {
               const isActive = location.pathname === item.url;
               const linkContent = (
@@ -116,23 +105,14 @@ export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
                   to={item.url}
                   onClick={handleNavClick}
                   className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
-                    "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                    isActive && "bg-primary/10 text-primary neon-glow",
+                    "flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-sm",
+                    "hover:bg-secondary/50",
+                    isActive && "bg-primary/10 text-primary font-medium",
                     !isOpen && "justify-center px-2"
                   )}
                 >
-                  <item.icon
-                    className={cn(
-                      "h-5 w-5 flex-shrink-0",
-                      isActive && "text-primary"
-                    )}
-                  />
-                  {isOpen && (
-                    <span className={cn("font-medium", isActive && "text-primary")}>
-                      {item.title}
-                    </span>
-                  )}
+                  <item.icon className={cn("h-4 w-4 flex-shrink-0", isActive && "text-primary")} />
+                  {isOpen && <span>{item.title}</span>}
                 </NavLink>
               );
 
@@ -140,9 +120,7 @@ export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
                 return (
                   <Tooltip key={item.url} delayDuration={0}>
                     <TooltipTrigger asChild>{linkContent}</TooltipTrigger>
-                    <TooltipContent side="right" className="font-medium">
-                      {item.title}
-                    </TooltipContent>
+                    <TooltipContent side="right" className="text-xs">{item.title}</TooltipContent>
                   </Tooltip>
                 );
               }
@@ -152,8 +130,8 @@ export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
           </nav>
         </ScrollArea>
 
-        {/* User Section */}
-        <div className="p-2 border-t border-sidebar-border shrink-0">
+        {/* Sign Out */}
+        <div className="p-2 border-t border-border/50 shrink-0">
           {!isOpen ? (
             <Tooltip delayDuration={0}>
               <TooltipTrigger asChild>
@@ -161,20 +139,20 @@ export function AppSidebar({ isOpen = true, onToggle }: AppSidebarProps) {
                   variant="ghost"
                   size="icon"
                   onClick={handleSignOut}
-                  className="w-full hover:bg-destructive/10 hover:text-destructive"
+                  className="w-full h-8 hover:bg-destructive/10 hover:text-destructive"
                 >
-                  <LogOut className="h-5 w-5" />
+                  <LogOut className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right">Sign Out</TooltipContent>
+              <TooltipContent side="right" className="text-xs">Sign Out</TooltipContent>
             </Tooltip>
           ) : (
             <Button
               variant="ghost"
               onClick={handleSignOut}
-              className="w-full justify-start gap-3 hover:bg-destructive/10 hover:text-destructive"
+              className="w-full justify-start gap-3 text-sm h-9 hover:bg-destructive/10 hover:text-destructive"
             >
-              <LogOut className="h-5 w-5" />
+              <LogOut className="h-4 w-4" />
               Sign Out
             </Button>
           )}
