@@ -6,11 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Settings2, Bell, Shield, Mic, Monitor, Check, LogOut, Link2Off } from "lucide-react";
+import { Settings2, Bell, Shield, Mic, Monitor, Check, LogOut, Link2Off, Activity } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useNavigate } from "react-router-dom";
+import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState("Hey Jarvis");
@@ -40,6 +41,9 @@ export default function Settings() {
         </div>
 
         <div className="grid gap-6">
+          {/* Streaming Diagnostics Panel */}
+          <StreamingDiagnostics />
+
           <Card className="glass-dark border-border/50">
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Mic className="h-5 w-5 text-primary" />Voice Settings</CardTitle>
@@ -73,7 +77,7 @@ export default function Settings() {
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/30">
                 <div className="flex items-center gap-3">
-                  <div className={`w-3 h-3 rounded-full ${selectedDevice?.is_online ? 'bg-neon-green animate-pulse' : 'bg-muted-foreground'}`} />
+                  <div className={`w-3 h-3 rounded-full ${selectedDevice?.is_online ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground'}`} />
                   <div>
                     <p className="font-medium">{selectedDevice?.name || session?.device_name || "My PC"}</p>
                     <p className="text-sm text-muted-foreground">
@@ -81,8 +85,8 @@ export default function Settings() {
                     </p>
                   </div>
                 </div>
-                <Badge className={selectedDevice?.is_online 
-                  ? "bg-neon-green/10 text-neon-green border-neon-green/30" 
+                <Badge variant="outline" className={selectedDevice?.is_online 
+                  ? "bg-green-500/10 text-green-500 border-green-500/30" 
                   : "bg-muted/10 text-muted-foreground border-muted/30"
                 }>
                   {selectedDevice?.is_online ? "Online" : "Offline"}
