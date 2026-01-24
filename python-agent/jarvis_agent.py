@@ -972,6 +972,10 @@ def get_agent_status() -> Dict[str, Any]:
 class AudioStreamer:
     """Handles bidirectional audio streaming between phone and PC."""
     
+    # STANDARDIZED SAMPLE RATE: 16kHz for better browser compatibility
+    # Web AudioContext on mobile often defaults to 16kHz or has issues with 44.1kHz
+    STANDARD_SAMPLE_RATE = 16000
+    
     def __init__(self):
         self.running = False
         self.ws = None
@@ -979,9 +983,9 @@ class AudioStreamer:
         self.direction = "phone_to_pc"
         self.use_system_audio = False
         
-        self.sample_rate = 44100
+        self.sample_rate = self.STANDARD_SAMPLE_RATE  # Use standardized 16kHz
         self.channels = 1  # Mono for mic, stereo for system audio
-        self.chunk_size = 4096  # Larger chunks for smoother playback
+        self.chunk_size = 2048  # Smaller chunks for lower latency at 16kHz
         self.format = pyaudio.paInt16 if HAS_PYAUDIO else None
         
         self.pa = None
@@ -2128,6 +2132,36 @@ class JarvisAgent:
             "camera_error": self.camera_streamer.last_error,
         }
 
+    def _get_streaming_stats(self) -> Dict[str, Any]:
+        """Return comprehensive streaming diagnostics for the web panel."""
+        try:
+            camera_stats = self.camera_streamer.get_stats()
+            audio_stats = self.audio_streamer.get_stats()
+            
+            return {
+                "success": True,
+                "camera": {
+                    "frame_count": camera_stats.get("frame_count", 0),
+                    "bytes_sent": camera_stats.get("bytes_sent", 0),
+                    "fps": camera_stats.get("fps", 0),
+                    "last_error": self.camera_streamer.last_error,
+                    "running": self.camera_streamer.running,
+                    "quality": self.camera_streamer.quality,
+                    "target_fps": self.camera_streamer.fps,
+                },
+                "audio": {
+                    "bytes_sent": audio_stats.get("bytes_sent", 0),
+                    "bytes_received": audio_stats.get("bytes_received", 0),
+                    "running": audio_stats.get("running", False),
+                    "send_rate_kbps": audio_stats.get("send_rate_kbps", 0),
+                    "recv_rate_kbps": audio_stats.get("recv_rate_kbps", 0),
+                    "sample_rate": self.audio_streamer.sample_rate,
+                },
+                "phone_webcam": self.phone_webcam_receiver.get_stats() if hasattr(self, 'phone_webcam_receiver') else None,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _boost_pc(self):
         """Aggressive Windows cleanup: temp files, prefetch, explorer restart."""
         add_log("info", "Boost mode initiated!", category="system")
@@ -3117,6 +3151,10 @@ class JarvisAgent:
             elif command_type == "get_phone_webcam_status":
                 stats = self.phone_webcam_receiver.get_stats()
                 return {"success": True, **stats}
+
+            # Streaming diagnostics
+            elif command_type == "get_streaming_stats":
+                return self._get_streaming_stats()
 
             else:
                 add_log("warn", f"Unknown command: {command_type}", category="command")

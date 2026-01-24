@@ -390,21 +390,24 @@ export default function MicCamera() {
         // If phone is sending audio (phone_to_pc or bidirectional)
         if (audioDirection === "phone_to_pc" || audioDirection === "bidirectional") {
           try {
+            // STANDARDIZED: 16kHz sample rate for better cross-platform compatibility
+            const STANDARD_SAMPLE_RATE = 16000;
+            
             const stream = await navigator.mediaDevices.getUserMedia({
               audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
-                sampleRate: 44100,
+                sampleRate: STANDARD_SAMPLE_RATE,
                 channelCount: 1,
               },
             });
 
             setPhoneMicStream(stream);
-            addLog("info", "web", "Phone microphone access granted");
+            addLog("info", "web", `Phone microphone access granted (${STANDARD_SAMPLE_RATE}Hz)`);
 
-            // Create audio context for processing
-            const audioContext = new AudioContext({ sampleRate: 44100 });
+            // Create audio context at standardized sample rate
+            const audioContext = new AudioContext({ sampleRate: STANDARD_SAMPLE_RATE });
             audioContextRef.current = audioContext;
             
             // Resume audio context if suspended (browser autoplay policy)
@@ -419,8 +422,8 @@ export default function MicCamera() {
             analyserRef.current = analyser;
             source.connect(analyser);
 
-            // Create processor to send audio (mono, 44100Hz, Int16)
-            const processor = audioContext.createScriptProcessor(4096, 1, 1);
+            // Create processor to send audio (mono, 16kHz, Int16)
+            const processor = audioContext.createScriptProcessor(2048, 1, 1);
             audioProcessorRef.current = processor;
 
             processor.onaudioprocess = (e) => {
@@ -530,8 +533,11 @@ export default function MicCamera() {
 
   const playReceivedAudio = async (data: ArrayBuffer | Blob) => {
     try {
+      // STANDARDIZED: 16kHz sample rate to match Python agent
+      const STANDARD_SAMPLE_RATE = 16000;
+      
       if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 44100 });
+        audioContextRef.current = new AudioContext({ sampleRate: STANDARD_SAMPLE_RATE });
       }
 
       // Resume context if suspended
@@ -551,7 +557,9 @@ export default function MicCamera() {
         float32Array[i] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7fff);
       }
 
-      const audioBuffer = audioContextRef.current.createBuffer(1, float32Array.length, 44100);
+      // Use the context's actual sample rate (may differ from requested)
+      const contextSampleRate = audioContextRef.current.sampleRate;
+      const audioBuffer = audioContextRef.current.createBuffer(1, float32Array.length, contextSampleRate);
       audioBuffer.copyToChannel(float32Array, 0);
 
       const source = audioContextRef.current.createBufferSource();
@@ -1567,6 +1575,22 @@ export default function MicCamera() {
                         alt="PC Camera"
                         className="w-full h-full object-cover"
                       />
+                    ) : pcCameraActive && !pcCameraFrame ? (
+                      // Active but no frames - show diagnostic info
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
+                        <Webcam className="h-12 w-12 mb-2 text-destructive/50" />
+                        <p className="text-sm font-medium text-destructive">No frames received</p>
+                        <p className="text-xs mt-1">Frames received: {debugStats.frameCount}</p>
+                        <div className="mt-3 p-3 bg-background/80 rounded-lg text-xs max-w-[280px]">
+                          <p className="font-semibold mb-1">Troubleshooting:</p>
+                          <ul className="list-disc list-inside space-y-0.5 text-muted-foreground">
+                            <li>Check PC agent logs for camera errors</li>
+                            <li>Try a different camera in the selector</li>
+                            <li>Ensure no other app is using the camera</li>
+                            <li>Go to Settings → Run Diagnostics</li>
+                          </ul>
+                        </div>
+                      </div>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
                         <Webcam className="h-12 w-12 mb-2 opacity-50" />
@@ -1577,8 +1601,8 @@ export default function MicCamera() {
 
                     {pcCameraActive && (
                       <>
-                        <Badge className="absolute top-3 left-3 bg-neon-cyan/80 text-background">
-                          <span className="w-2 h-2 rounded-full bg-white animate-pulse mr-2" />
+                        <Badge variant="outline" className="absolute top-3 left-3 bg-primary/80 text-primary-foreground border-primary">
+                          <span className="w-2 h-2 rounded-full bg-primary-foreground animate-pulse mr-2" />
                           PC → PHONE
                         </Badge>
                         {/* Real-time FPS and Latency Display */}
@@ -1589,23 +1613,25 @@ export default function MicCamera() {
                           <Badge variant="outline" className={cn(
                             "bg-background/80 backdrop-blur font-mono text-xs",
                             cameraLatency > 100 ? "border-destructive text-destructive" : 
-                            cameraLatency > 50 ? "border-neon-orange text-neon-orange" : 
-                            "border-neon-green text-neon-green"
+                            cameraLatency > 50 ? "border-yellow-500 text-yellow-500" : 
+                            "border-green-500 text-green-500"
                           )}>
                             {cameraLatency}ms
                           </Badge>
                         </div>
-                        <div className="absolute bottom-3 left-3 right-3 bg-background/80 backdrop-blur rounded-lg p-2">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-muted-foreground">Frames: {debugStats.frameCount}</span>
-                            <span className={cn(
-                              cameraFps >= 60 ? "text-neon-green" : 
-                              cameraFps >= 30 ? "text-neon-orange" : "text-destructive"
-                            )}>
-                              {cameraFps >= 60 ? "Excellent" : cameraFps >= 30 ? "Good" : "Low"}
-                            </span>
+                        {pcCameraFrame && (
+                          <div className="absolute bottom-3 left-3 right-3 bg-background/80 backdrop-blur rounded-lg p-2">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-muted-foreground">Frames: {debugStats.frameCount}</span>
+                              <span className={cn(
+                                cameraFps >= 60 ? "text-green-500" : 
+                                cameraFps >= 30 ? "text-yellow-500" : "text-destructive"
+                              )}>
+                                {cameraFps >= 60 ? "Excellent" : cameraFps >= 30 ? "Good" : "Low"}
+                              </span>
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </>
                     )}
                   </div>
