@@ -114,7 +114,7 @@ export default function ControlHub() {
   const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
   const { deviceInfo, isReconnecting, session } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
-  const { fireCommand, fireMouse, fireKey } = useFastCommand();
+  const { fireCommand, fireMouse, fireKey, fireScroll } = useFastCommand();
   const { toast } = useToast();
 
   // Use optimistic media hook
@@ -408,6 +408,11 @@ export default function ControlHub() {
       fireMouse(deltaX, deltaY);
     }
   }, [fireMouse]);
+
+  const handleTrackpadWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    fireScroll(e.deltaY);
+  }, [fireScroll]);
 
   const handleMouseClick = (button: string = "left") => {
     fireCommand("mouse_click", { button, clicks: 1 });
@@ -888,8 +893,9 @@ export default function ControlHub() {
                     onMouseMove={handleTrackpadMove}
                     onTouchStart={handleTrackpadStart}
                     onTouchMove={handleTrackpadMove}
+                    onWheel={handleTrackpadWheel}
                   >
-                    <p className="text-muted-foreground text-sm pointer-events-none">Drag to move mouse</p>
+                    <p className="text-muted-foreground text-sm pointer-events-none">Drag to move • Scroll to scroll</p>
                   </div>
                   
                   <div className="grid grid-cols-5 gap-2">
