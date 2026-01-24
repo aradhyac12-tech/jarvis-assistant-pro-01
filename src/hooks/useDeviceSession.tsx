@@ -33,8 +33,9 @@ const DeviceSessionContext = createContext<DeviceSessionContextType | undefined>
 const SESSION_KEY = "jarvis_device_session";
 const SESSION_KEY_TEMP = "jarvis_device_session_temp"; // sessionStorage key
 const RECONNECT_INTERVAL = 5000;
-const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const SESSION_SHORT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+// LIFETIME PAIRING: Extended to 365 days for remembered devices
+const SESSION_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 365 days (lifetime)
+const SESSION_SHORT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days for temp sessions
 
 // Helper to get storage based on remember preference
 const getStorage = (remember: boolean) => remember ? localStorage : sessionStorage;
