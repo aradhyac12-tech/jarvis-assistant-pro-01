@@ -187,8 +187,8 @@ else:
 # =====================================================================
 # EMBEDDED BACKEND CONFIGURATION - DO NOT CHANGE UNLESS YOU KNOW WHAT YOU'RE DOING
 # =====================================================================
-DEFAULT_JARVIS_URL = "https://ugvynlowlvrferetovnq.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVndnlubG93bHZyZmVyZXRvdm5xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg3ODgzMTksImV4cCI6MjA4NDM2NDMxOX0.26wXn4zSZt9813W_6thD8ejA5qY2AuHXz-HgroVtzxU"
+DEFAULT_JARVIS_URL = "https://giihgligzrokdzonyzjo.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdpaWhnbGlnenJva2R6b255empvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwNDM0MzEsImV4cCI6MjA4NDYxOTQzMX0.u1-OYznEnWr-i0PIJIDolcxxVh79HNBolfBpWa6ffAU"
 # =====================================================================
 
 
@@ -2870,41 +2870,56 @@ def main():
     """Main entry point - starts GUI and agent."""
     global jarvis_gui
     
-    if HAS_TKINTER:
-        # Create and start GUI
-        jarvis_gui = JarvisGUI()
-        
-        if jarvis_gui.start():
-            # Run agent in background thread
-            def run_agent_thread():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+    try:
+        if HAS_TKINTER:
+            # Create and start GUI
+            jarvis_gui = JarvisGUI()
+            
+            if jarvis_gui.start():
+                # Run agent in background thread
+                def run_agent_thread():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(run_agent())
+                    except Exception as e:
+                        add_log("error", f"Agent thread error: {e}", category="system")
+                    finally:
+                        loop.close()
+                
+                agent_thread = threading.Thread(target=run_agent_thread, daemon=True)
+                agent_thread.start()
+                
+                # Run GUI in main thread (required by tkinter)
                 try:
-                    loop.run_until_complete(run_agent())
-                except Exception as e:
-                    add_log("error", f"Agent thread error: {e}", category="system")
+                    jarvis_gui.run_mainloop()
+                except KeyboardInterrupt:
+                    pass
                 finally:
-                    loop.close()
-            
-            agent_thread = threading.Thread(target=run_agent_thread, daemon=True)
-            agent_thread.start()
-            
-            # Run GUI in main thread (required by tkinter)
-            try:
-                jarvis_gui.run_mainloop()
-            except KeyboardInterrupt:
-                pass
-            finally:
-                jarvis_gui.stop()
+                    jarvis_gui.stop()
+            else:
+                # Fallback to headless mode
+                print("⚠️  GUI failed to start. Running in headless mode.")
+                asyncio.run(run_agent())
         else:
-            # Fallback to headless mode
-            print("⚠️  GUI failed to start. Running in headless mode.")
+            # No tkinter - run headless
+            print("⚠️  Tkinter not available. Running in headless mode.")
+            print("   Install tkinter with: pip install tk (or via system package manager)")
             asyncio.run(run_agent())
-    else:
-        # No tkinter - run headless
-        print("⚠️  Tkinter not available. Running in headless mode.")
-        print("   Install tkinter with: pip install tk (or via system package manager)")
-        asyncio.run(run_agent())
+    except Exception as e:
+        print("\n" + "=" * 60)
+        print("❌ FATAL ERROR - Agent crashed")
+        print("=" * 60)
+        print(f"\nError: {e}")
+        print("\nPossible fixes:")
+        print("  1. Run: python -m pip install -r requirements.txt")
+        print("  2. Make sure you have Python 3.10-3.12")
+        print("  3. Check your internet connection")
+        print("\nPress Enter to exit...")
+        try:
+            input()
+        except:
+            time.sleep(10)
 
 
 if __name__ == "__main__":

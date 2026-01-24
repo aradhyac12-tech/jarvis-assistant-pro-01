@@ -73,5 +73,29 @@ export function useFastCommand() {
     [fireCommand]
   );
 
-  return { fireCommand, fireMouse, fireKey };
+  // Mouse scroll - batched like mouse move for smooth scrolling
+  const scrollAccumulator = useRef(0);
+  const scrollTimerRef = useRef<number | null>(null);
+  const SCROLL_BATCH_MS = 16; // ~60fps batching
+
+  const fireScroll = useCallback(
+    (deltaY: number) => {
+      // Invert and scale for natural scrolling feel
+      scrollAccumulator.current += deltaY * -0.5;
+
+      if (scrollTimerRef.current !== null) return;
+
+      scrollTimerRef.current = window.setTimeout(() => {
+        const amount = Math.round(scrollAccumulator.current);
+        if (Math.abs(amount) > 0) {
+          fireCommand("mouse_scroll", { amount });
+        }
+        scrollAccumulator.current = 0;
+        scrollTimerRef.current = null;
+      }, SCROLL_BATCH_MS);
+    },
+    [fireCommand]
+  );
+
+  return { fireCommand, fireMouse, fireKey, fireScroll };
 }
