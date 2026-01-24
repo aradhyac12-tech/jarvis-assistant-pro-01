@@ -101,7 +101,7 @@ export default function Hub() {
 
   const isConnected = selectedDevice?.is_online || false;
 
-  // FIXED: Sync volume/brightness from device when it becomes available
+  // Sync volume/brightness from device when it becomes available
   useEffect(() => {
     if (selectedDevice) {
       const deviceVol = selectedDevice.current_volume;
@@ -115,7 +115,29 @@ export default function Hub() {
       }
       setIsLocked(selectedDevice.is_locked ?? false);
     }
-  }, [selectedDevice?.current_volume, selectedDevice?.current_brightness, selectedDevice?.is_locked]);
+  }, [selectedDevice?.id, selectedDevice?.current_volume, selectedDevice?.current_brightness, selectedDevice?.is_locked]);
+
+  // Fetch real volume/brightness from PC on connect
+  const syncSystemState = useCallback(async () => {
+    if (!selectedDevice?.is_online) return;
+    try {
+      const result = await sendCommand("get_system_state", {}, { awaitResult: true, timeoutMs: 5000 });
+      if (result?.success && 'result' in result && result.result) {
+        const state = result.result as { volume?: number; brightness?: number; is_locked?: boolean };
+        if (typeof state.volume === 'number') setVolume(state.volume);
+        if (typeof state.brightness === 'number') setBrightness(state.brightness);
+        if (typeof state.is_locked === 'boolean') setIsLocked(state.is_locked);
+      }
+    } catch (e) {
+      console.debug("System state sync:", e);
+    }
+  }, [selectedDevice?.is_online, sendCommand]);
+
+  useEffect(() => {
+    if (selectedDevice?.is_online) {
+      syncSystemState();
+    }
+  }, [selectedDevice?.is_online, syncSystemState]);
 
   // Fetch system stats and media state
   const fetchStats = useCallback(async () => {
@@ -177,7 +199,7 @@ export default function Hub() {
     return () => { supabase.removeChannel(channel); };
   }, [selectedDevice?.id]);
 
-  // Volume handler with debounced commit
+  // Volume handler with debounced commit and DB update
   const handleVolumeSlider = useCallback((v: number[]) => {
     setVolume(v[0]);
   }, []);
@@ -187,12 +209,20 @@ export default function Hub() {
       clearTimeout(volumeCommitRef.current);
     }
     volumeCommitRef.current = window.setTimeout(async () => {
-      await sendCommand("set_volume", { level: v[0] });
+      try {
+        const result = await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 3000 });
+        if (result?.success && selectedDevice?.id) {
+          // Update device in DB for persistence
+          await supabase.from("devices").update({ current_volume: v[0] }).eq("id", selectedDevice.id);
+        }
+      } catch (e) {
+        console.error("Volume update failed:", e);
+      }
       volumeCommitRef.current = null;
     }, 100);
-  }, [sendCommand]);
+  }, [sendCommand, selectedDevice?.id]);
 
-  // Brightness handler with debounced commit
+  // Brightness handler with debounced commit and DB update
   const handleBrightnessSlider = useCallback((v: number[]) => {
     setBrightness(v[0]);
   }, []);
@@ -202,10 +232,17 @@ export default function Hub() {
       clearTimeout(brightnessCommitRef.current);
     }
     brightnessCommitRef.current = window.setTimeout(async () => {
-      await sendCommand("set_brightness", { level: v[0] });
+      try {
+        const result = await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 3000 });
+        if (result?.success && selectedDevice?.id) {
+          await supabase.from("devices").update({ current_brightness: v[0] }).eq("id", selectedDevice.id);
+        }
+      } catch (e) {
+        console.error("Brightness update failed:", e);
+      }
       brightnessCommitRef.current = null;
     }, 100);
-  }, [sendCommand]);
+  }, [sendCommand, selectedDevice?.id]);
 
   const handleLock = useCallback(async () => {
     setIsLocked(true);
