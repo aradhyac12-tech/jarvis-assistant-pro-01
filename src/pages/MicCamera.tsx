@@ -101,6 +101,12 @@ export default function MicCamera() {
     frameCount: 0,
   });
 
+  // Real-time FPS and latency tracking
+  const [cameraFps, setCameraFps] = useState(0);
+  const [cameraLatency, setCameraLatency] = useState(0);
+  const fpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
+  const frameTimesRef = useRef<number[]>([]);
+
   // Derive the Edge Functions WebSocket domain from the configured backend project id
   const projectRef = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined) ?? "";
 
@@ -194,8 +200,8 @@ export default function MicCamera() {
       addLog("info", "agent", "PC camera opened successfully");
 
       // Connect to dedicated camera-relay WebSocket (phone receives frames)
-      // Use higher FPS and binary mode for smoother streaming
-      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=60&quality=70&binary=true`);
+      // Use 90 FPS and high quality for smooth streaming
+      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=90&quality=100&binary=true`);
       pcCameraWsRef.current = ws;
       ws.binaryType = "arraybuffer"; // Enable binary frame reception
 
@@ -203,6 +209,8 @@ export default function MicCamera() {
       let currentBlobUrl: string | null = null;
 
       ws.onmessage = (event) => {
+        const now = Date.now();
+        
         try {
           // Handle binary frames (JPEG bytes) - preferred for performance
           if (event.data instanceof ArrayBuffer) {
@@ -216,10 +224,36 @@ export default function MicCamera() {
             currentBlobUrl = newUrl;
             
             setPcCameraFrame(newUrl);
+            
+            // Track frame times for latency calculation
+            frameTimesRef.current.push(now);
+            if (frameTimesRef.current.length > 10) {
+              frameTimesRef.current.shift();
+            }
+            
+            // Calculate latency from inter-frame gaps
+            if (frameTimesRef.current.length >= 2) {
+              const gaps = [];
+              for (let i = 1; i < frameTimesRef.current.length; i++) {
+                gaps.push(frameTimesRef.current[i] - frameTimesRef.current[i - 1]);
+              }
+              const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+              setCameraLatency(Math.round(avgGap));
+            }
+            
+            // Update FPS counter
+            fpsCounterRef.current.frames++;
+            const elapsed = now - fpsCounterRef.current.lastCheck;
+            if (elapsed >= 1000) {
+              const fps = Math.round((fpsCounterRef.current.frames * 1000) / elapsed);
+              setCameraFps(fps);
+              fpsCounterRef.current = { frames: 0, lastCheck: now };
+            }
+            
             setDebugStats((prev) => ({
               ...prev,
               frameCount: prev.frameCount + 1,
-              lastFrameTime: Date.now(),
+              lastFrameTime: now,
             }));
             return;
           }
@@ -291,6 +325,12 @@ export default function MicCamera() {
     setPcCameraActive(false);
     setPcCameraFrame(null);
     setPcCameraSessionId(null);
+    // Reset FPS and latency stats
+    setCameraFps(0);
+    setCameraLatency(0);
+    fpsCounterRef.current = { frames: 0, lastCheck: Date.now() };
+    frameTimesRef.current = [];
+    setDebugStats((prev) => ({ ...prev, frameCount: 0, lastFrameTime: 0 }));
     toast({ title: "PC Camera Stopped" });
   }, [sendCommand, toast]);
 
@@ -614,7 +654,7 @@ export default function MicCamera() {
           {/* Debug Panel */}
           {showDebug && (
             <Card className="glass-dark border-border/50 p-3">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-xs">
                 <div>
                   <span className="text-muted-foreground">Audio WS:</span>{" "}
                   <Badge variant={audioWsRef.current ? "default" : "secondary"} className="text-xs">
@@ -632,8 +672,22 @@ export default function MicCamera() {
                   <span className="font-mono">{Math.round(audioLevel * 100)}%</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Session:</span>{" "}
-                  <span className="font-mono">{audioSessionId?.slice(0, 8) || "—"}</span>
+                  <span className="text-muted-foreground">Camera FPS:</span>{" "}
+                  <span className={cn(
+                    "font-mono font-bold",
+                    cameraFps >= 60 ? "text-neon-green" : cameraFps >= 30 ? "text-neon-orange" : "text-destructive"
+                  )}>{cameraFps}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Latency:</span>{" "}
+                  <span className={cn(
+                    "font-mono font-bold",
+                    cameraLatency <= 50 ? "text-neon-green" : cameraLatency <= 100 ? "text-neon-orange" : "text-destructive"
+                  )}>{cameraLatency}ms</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Frames:</span>{" "}
+                  <span className="font-mono">{debugStats.frameCount}</span>
                 </div>
               </div>
             </Card>
@@ -1358,10 +1412,37 @@ export default function MicCamera() {
                     )}
 
                     {pcCameraActive && (
-                      <Badge className="absolute top-3 left-3 bg-neon-cyan/80 text-background">
-                        <span className="w-2 h-2 rounded-full bg-white animate-pulse mr-2" />
-                        PC → PHONE
-                      </Badge>
+                      <>
+                        <Badge className="absolute top-3 left-3 bg-neon-cyan/80 text-background">
+                          <span className="w-2 h-2 rounded-full bg-white animate-pulse mr-2" />
+                          PC → PHONE
+                        </Badge>
+                        {/* Real-time FPS and Latency Display */}
+                        <div className="absolute top-3 right-3 flex gap-2">
+                          <Badge variant="outline" className="bg-background/80 backdrop-blur font-mono text-xs">
+                            {cameraFps} FPS
+                          </Badge>
+                          <Badge variant="outline" className={cn(
+                            "bg-background/80 backdrop-blur font-mono text-xs",
+                            cameraLatency > 100 ? "border-destructive text-destructive" : 
+                            cameraLatency > 50 ? "border-neon-orange text-neon-orange" : 
+                            "border-neon-green text-neon-green"
+                          )}>
+                            {cameraLatency}ms
+                          </Badge>
+                        </div>
+                        <div className="absolute bottom-3 left-3 right-3 bg-background/80 backdrop-blur rounded-lg p-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">Frames: {debugStats.frameCount}</span>
+                            <span className={cn(
+                              cameraFps >= 60 ? "text-neon-green" : 
+                              cameraFps >= 30 ? "text-neon-orange" : "text-destructive"
+                            )}>
+                              {cameraFps >= 60 ? "Excellent" : cameraFps >= 30 ? "Good" : "Low"}
+                            </span>
+                          </div>
+                        </div>
+                      </>
                     )}
                   </div>
 
