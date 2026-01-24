@@ -1067,41 +1067,72 @@ class AudioStreamer:
             
         try:
             self.pa = pyaudio.PyAudio()
+            
+            # Find a valid output device
+            output_device_index = None
+            try:
+                default_output = self.pa.get_default_output_device_info()
+                output_device_index = default_output.get("index")
+                add_log("info", f"Using audio output: {default_output.get('name', 'default')}", category="audio")
+            except Exception as e:
+                add_log("warn", f"Could not get default output device: {e}", category="audio")
+            
             self.output_stream = self.pa.open(
                 format=self.format,
                 channels=1,  # Phone sends mono
                 rate=self.sample_rate,
                 output=True,
+                output_device_index=output_device_index,
                 frames_per_buffer=self.chunk_size
             )
             
             add_log("info", "PC speaker playback started", category="audio")
             
+            # Pre-fill buffer to reduce latency issues
+            silence = b'\x00' * (self.chunk_size * 2)
+            self.output_stream.write(silence)
+            
+            consecutive_errors = 0
+            max_consecutive_errors = 10
+            
             while self.running and self.ws:
                 try:
                     message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
+                    consecutive_errors = 0  # Reset on successful receive
                     
                     if isinstance(message, bytes):
-                        # Direct binary audio data
-                        self.output_stream.write(message)
-                        self.bytes_received += len(message)
+                        # Direct binary audio data (Int16 PCM)
+                        try:
+                            self.output_stream.write(message)
+                            self.bytes_received += len(message)
+                        except Exception as write_err:
+                            add_log("warn", f"Audio write error: {write_err}", category="audio")
                     elif isinstance(message, str):
-                        data = json.loads(message)
-                        if data.get("type") == "peer_disconnected":
-                            add_log("info", "Phone disconnected from audio relay", category="audio")
-                        elif data.get("type") == "audio":
-                            audio_bytes = base64.b64decode(data["data"])
-                            self.output_stream.write(audio_bytes)
-                            self.bytes_received += len(audio_bytes)
+                        try:
+                            data = json.loads(message)
+                            if data.get("type") == "peer_disconnected":
+                                add_log("info", "Phone disconnected from audio relay", category="audio")
+                            elif data.get("type") == "peer_connected":
+                                add_log("info", "Phone connected to audio relay", category="audio")
+                            elif data.get("type") == "audio" and data.get("data"):
+                                audio_bytes = base64.b64decode(data["data"])
+                                self.output_stream.write(audio_bytes)
+                                self.bytes_received += len(audio_bytes)
+                        except json.JSONDecodeError:
+                            pass
                 except asyncio.TimeoutError:
                     continue
                 except websockets.exceptions.ConnectionClosed:
                     add_log("warn", "Audio WebSocket closed", category="audio")
                     break
                 except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        add_log("error", f"Too many playback errors, stopping: {e}", category="audio")
+                        break
                     if self.running:
-                        add_log("warn", f"Playback error: {e}", category="audio")
-                    break
+                        add_log("warn", f"Playback error ({consecutive_errors}): {e}", category="audio")
+                    await asyncio.sleep(0.05)
                     
         except Exception as e:
             add_log("error", f"Playback setup error: {e}", category="audio")
@@ -1381,22 +1412,31 @@ class CameraStreamer:
                 ret, frame = self.camera.read()
                 if not ret:
                     add_log("warn", "Failed to read frame from camera", category="camera")
+                    # Try to reopen camera
+                    try:
+                        self.camera.release()
+                        await asyncio.sleep(0.5)
+                        self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY)
+                        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        self.camera.set(cv2.CAP_PROP_FPS, max(self.fps, 10))
+                        add_log("info", f"Camera {camera_index} reopened after frame failure", category="camera")
+                    except Exception as reopen_err:
+                        add_log("error", f"Camera reopen failed: {reopen_err}", category="camera")
                     await asyncio.sleep(0.1)
                     continue
                 
+                # Resize frame for streaming
                 frame = cv2.resize(frame, (640, 480))
                 
+                # Encode frame as JPEG binary (NOT base64 - send raw bytes for performance)
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
-                frame_base64 = base64.b64encode(buffer).decode('utf-8')
-                frame_size = len(buffer)
+                frame_bytes = buffer.tobytes()
+                frame_size = len(frame_bytes)
                 
                 try:
-                    await self.ws.send(json.dumps({
-                        "type": "camera_frame",
-                        "data": frame_base64,
-                        "width": 640,
-                        "height": 480
-                    }))
+                    # Send raw binary JPEG data directly (much faster than base64 JSON)
+                    await self.ws.send(frame_bytes)
                     self.frame_count += 1
                     self.bytes_sent += frame_size
                     self.last_frame_time = time.time()
