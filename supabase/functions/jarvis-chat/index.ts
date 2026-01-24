@@ -33,6 +33,7 @@ serve(async (req) => {
 
     // Try session token auth first (for paired devices without login)
     const sessionToken = req.headers.get("x-session-token");
+    const deviceKey = req.headers.get("x-device-key");
     let deviceId: string | null = null;
     let userId: string | null = null;
 
@@ -57,6 +58,20 @@ serve(async (req) => {
       }
     }
 
+    // Try device key auth (for Python agent making direct calls)
+    if (!deviceId && deviceKey) {
+      const { data: device } = await supabase
+        .from("devices")
+        .select("id")
+        .eq("device_key", deviceKey)
+        .maybeSingle();
+      
+      if (device) {
+        deviceId = device.id;
+        console.log(`Auth via device_key for device: ${deviceId}`);
+      }
+    }
+
     // Fall back to JWT auth if no valid session token
     if (!deviceId) {
       const authHeader = req.headers.get("Authorization");
@@ -71,8 +86,12 @@ serve(async (req) => {
       }
     }
 
-    // Require some form of auth
-    if (!deviceId && !userId) {
+    // Allow requests with API key (for Python agent without session)
+    const apiKey = req.headers.get("apikey");
+    const isDirectApiCall = apiKey === Deno.env.get("SUPABASE_ANON_KEY");
+    
+    // Require some form of auth (device, user, or API key)
+    if (!deviceId && !userId && !isDirectApiCall) {
       return new Response(
         JSON.stringify({ error: "Unauthorized - please pair your device or login" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }

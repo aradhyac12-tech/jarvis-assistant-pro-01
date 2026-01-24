@@ -6,7 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { Loader2 } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, forwardRef } from "react";
 
 // Lazy load pages to avoid ref warnings with React Router
 const Pair = lazy(() => import("./pages/Pair"));
@@ -22,13 +22,14 @@ const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient();
 
-function LoadingFallback() {
+// ForwardRef wrapper to avoid React Router ref warning
+const LoadingFallback = forwardRef<HTMLDivElement>(function LoadingFallback(_, ref) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
+    <div ref={ref} className="min-h-screen flex items-center justify-center bg-background">
       <Loader2 className="w-8 h-8 animate-spin text-primary" />
     </div>
   );
-}
+});
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, isLoading } = useDeviceSession();
