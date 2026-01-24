@@ -1262,8 +1262,8 @@ class CameraStreamer:
         self.ws = None
         self.session_id = None
         self.camera = None
-        self.quality = 50
-        self.fps = 10
+        self.quality = 100  # Max quality for best image
+        self.fps = 90       # High FPS for smooth streaming
         
         self.frame_count = 0
         self.bytes_sent = 0
