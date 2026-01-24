@@ -344,6 +344,12 @@ export default function MicCamera() {
             // Create audio context for processing
             const audioContext = new AudioContext({ sampleRate: 44100 });
             audioContextRef.current = audioContext;
+            
+            // Resume audio context if suspended (browser autoplay policy)
+            if (audioContext.state === 'suspended') {
+              await audioContext.resume();
+              addLog("info", "web", "Audio context resumed");
+            }
 
             const source = audioContext.createMediaStreamSource(stream);
             const analyser = audioContext.createAnalyser();
@@ -359,6 +365,15 @@ export default function MicCamera() {
               if (ws.readyState === WebSocket.OPEN) {
                 const inputData = e.inputBuffer.getChannelData(0);
                 
+                // Check if there's actual audio data (not just silence)
+                let hasAudio = false;
+                for (let i = 0; i < inputData.length; i += 100) {
+                  if (Math.abs(inputData[i]) > 0.001) {
+                    hasAudio = true;
+                    break;
+                  }
+                }
+                
                 // Convert Float32 to Int16
                 const int16Array = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) {
@@ -366,11 +381,15 @@ export default function MicCamera() {
                   int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
                 }
 
-                ws.send(int16Array.buffer);
-                setDebugStats((prev) => ({
-                  ...prev,
-                  audioBytesSent: prev.audioBytesSent + int16Array.byteLength,
-                }));
+                try {
+                  ws.send(int16Array.buffer);
+                  setDebugStats((prev) => ({
+                    ...prev,
+                    audioBytesSent: prev.audioBytesSent + int16Array.byteLength,
+                  }));
+                } catch (sendErr) {
+                  console.debug("Audio send error:", sendErr);
+                }
               }
 
               // Update audio level visualization
@@ -384,6 +403,7 @@ export default function MicCamera() {
 
             source.connect(processor);
             processor.connect(audioContext.destination);
+            addLog("info", "web", "Audio processor initialized");
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             addLog("error", "web", `Mic access error: ${errMsg}`);
@@ -399,10 +419,28 @@ export default function MicCamera() {
 
       // If phone is receiving audio (pc_to_phone or bidirectional)
       ws.onmessage = (event) => {
-        if (audioDirection === "pc_to_phone" || audioDirection === "bidirectional") {
-          if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-            playReceivedAudio(event.data);
+        try {
+          // Handle control messages (JSON)
+          if (typeof event.data === 'string') {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'peer_connected') {
+              addLog("info", "web", "Audio peer connected");
+              setDebugStats((prev) => ({ ...prev, audioPeerConnected: true }));
+            } else if (msg.type === 'peer_disconnected') {
+              addLog("warn", "web", "Audio peer disconnected");
+              setDebugStats((prev) => ({ ...prev, audioPeerConnected: false }));
+            }
+            return;
           }
+          
+          // Handle audio data for playback
+          if (audioDirection === "pc_to_phone" || audioDirection === "bidirectional") {
+            if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+              playReceivedAudio(event.data);
+            }
+          }
+        } catch (e) {
+          // Ignore parse errors for binary data
         }
       };
 
@@ -424,13 +462,25 @@ export default function MicCamera() {
     }
   }, [sendCommand, audioDirection, WS_URL, toast]);
 
+  // Audio playback queue to prevent overlapping
+  const audioPlaybackQueue = useRef<AudioBufferSourceNode[]>([]);
+  const lastPlaybackTime = useRef<number>(0);
+
   const playReceivedAudio = async (data: ArrayBuffer | Blob) => {
     try {
       if (!audioContextRef.current) {
         audioContextRef.current = new AudioContext({ sampleRate: 44100 });
       }
 
+      // Resume context if suspended
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+
       const arrayBuffer = data instanceof Blob ? await data.arrayBuffer() : data;
+      
+      // Validate data size
+      if (arrayBuffer.byteLength < 2) return;
       
       // Convert Int16 to Float32
       const int16Array = new Int16Array(arrayBuffer);
@@ -445,9 +495,21 @@ export default function MicCamera() {
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioContextRef.current.destination);
-      source.start();
+      
+      // Schedule playback to prevent overlapping/gaps
+      const currentTime = audioContextRef.current.currentTime;
+      const startTime = Math.max(currentTime, lastPlaybackTime.current);
+      source.start(startTime);
+      lastPlaybackTime.current = startTime + audioBuffer.duration;
+      
+      // Clean up on end
+      source.onended = () => {
+        const idx = audioPlaybackQueue.current.indexOf(source);
+        if (idx > -1) audioPlaybackQueue.current.splice(idx, 1);
+      };
+      audioPlaybackQueue.current.push(source);
     } catch (err) {
-      console.error("Audio playback error:", err);
+      console.debug("Audio playback error:", err);
     }
   };
 
