@@ -199,17 +199,23 @@ export default function MicCamera() {
       pcCameraWsRef.current = ws;
       ws.binaryType = "arraybuffer"; // Enable binary frame reception
 
+      // Track current blob URL for cleanup
+      let currentBlobUrl: string | null = null;
+
       ws.onmessage = (event) => {
         try {
-          // Handle binary frames (JPEG bytes)
+          // Handle binary frames (JPEG bytes) - preferred for performance
           if (event.data instanceof ArrayBuffer) {
             const blob = new Blob([event.data], { type: "image/jpeg" });
-            const url = URL.createObjectURL(blob);
+            const newUrl = URL.createObjectURL(blob);
+            
             // Clean up previous blob URL to prevent memory leaks
-            if (pcCameraFrame && pcCameraFrame.startsWith("blob:")) {
-              URL.revokeObjectURL(pcCameraFrame);
+            if (currentBlobUrl) {
+              URL.revokeObjectURL(currentBlobUrl);
             }
-            setPcCameraFrame(url);
+            currentBlobUrl = newUrl;
+            
+            setPcCameraFrame(newUrl);
             setDebugStats((prev) => ({
               ...prev,
               frameCount: prev.frameCount + 1,
@@ -221,19 +227,27 @@ export default function MicCamera() {
           // Handle JSON messages (legacy base64 frames + control messages)
           const data = JSON.parse(event.data);
           if (data.type === "camera_frame" && data.data) {
-            setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
-            setDebugStats((prev) => ({
-              ...prev,
-              frameCount: prev.frameCount + 1,
-              lastFrameTime: Date.now(),
-            }));
+            // Validate base64 data before setting
+            if (typeof data.data === 'string' && data.data.length > 0) {
+              setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
+              setDebugStats((prev) => ({
+                ...prev,
+                frameCount: prev.frameCount + 1,
+                lastFrameTime: Date.now(),
+              }));
+            }
+          } else if (data.type === "peer_connected") {
+            addLog("info", "agent", "PC camera peer connected");
+          } else if (data.type === "peer_disconnected") {
+            addLog("warn", "agent", "PC camera peer disconnected");
           }
           if (data.type === "error" && data.message) {
             addLog("error", "agent", `Camera relay error: ${data.message}`);
             toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
           }
-        } catch {
-          // ignore parse errors for unexpected data
+        } catch (e) {
+          // Log parse errors for debugging
+          console.debug("Camera frame parse issue:", e);
         }
       };
 
@@ -251,6 +265,11 @@ export default function MicCamera() {
 
       ws.onclose = () => {
         setPcCameraActive(false);
+        // Clean up blob URL on close
+        if (currentBlobUrl) {
+          URL.revokeObjectURL(currentBlobUrl);
+          currentBlobUrl = null;
+        }
         setPcCameraFrame(null);
         setDebugStats((prev) => ({ ...prev, cameraWsConnected: false }));
         addLog("info", "web", "Camera WebSocket closed");

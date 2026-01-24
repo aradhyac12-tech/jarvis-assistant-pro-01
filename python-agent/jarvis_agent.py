@@ -675,7 +675,7 @@ class VoiceListener:
             update_agent_status({"voice_listening": False})
     
     def _process_command(self, command: str):
-        """Process a voice command."""
+        """Process a voice command - calls AI backend and executes commands locally."""
         self.last_command = command
         update_agent_status({"last_voice_command": command})
         
@@ -685,7 +685,30 @@ class VoiceListener:
         # Acknowledge
         self.speak(f"Processing: {command}")
         
-        # Call the command callback if set
+        # Try to call AI backend for intelligent command parsing
+        try:
+            ai_result = self._call_ai_backend(command)
+            if ai_result:
+                response_text = ai_result.get("response", "")
+                commands = ai_result.get("commands", [])
+                
+                # Speak the AI response
+                if response_text:
+                    self.speak(response_text)
+                
+                # Execute commands locally
+                if commands:
+                    self._execute_commands_async(commands)
+                return
+        except Exception as e:
+            add_log("warn", f"AI backend unavailable, using local parsing: {e}", category="voice")
+        
+        # Fallback to local command parsing if AI is unavailable
+        result = self._parse_and_execute_locally(command)
+        if result:
+            self.speak(result)
+        
+        # Also call the command callback if set
         if self.on_command:
             try:
                 result = self.on_command(command)
@@ -694,6 +717,214 @@ class VoiceListener:
             except Exception as e:
                 add_log("error", f"Command execution error: {e}", category="voice")
                 self.speak("I encountered an error, sir.")
+    
+    def _call_ai_backend(self, message: str) -> Optional[Dict[str, Any]]:
+        """Call the jarvis-chat edge function to get AI-parsed commands."""
+        import urllib.request
+        import ssl
+        
+        chat_url = f"{SUPABASE_URL}/functions/v1/jarvis-chat"
+        ssl_ctx = ssl.create_default_context()
+        
+        try:
+            req_data = json.dumps({"message": message}).encode("utf-8")
+            req = urllib.request.Request(
+                chat_url,
+                data=req_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                },
+                method="POST"
+            )
+            
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=15) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            
+            if "error" in result:
+                add_log("warn", f"AI backend error: {result.get('error')}", category="voice")
+                return None
+            
+            add_log("info", f"AI response received with {len(result.get('commands', []))} commands", category="voice")
+            return result
+            
+        except Exception as e:
+            add_log("warn", f"AI backend call failed: {e}", category="voice")
+            return None
+    
+    def _execute_commands_async(self, commands: List[Dict[str, Any]]):
+        """Execute AI-returned commands in a background thread."""
+        def execute():
+            for cmd in commands:
+                try:
+                    action = cmd.get("action", "")
+                    result = self._execute_single_command(action, cmd)
+                    add_log("info", f"Executed: {action}", f"Result: {result.get('success', False)}", category="voice")
+                    time.sleep(0.5)  # Small delay between commands
+                except Exception as e:
+                    add_log("error", f"Command execution error: {e}", category="voice")
+        
+        threading.Thread(target=execute, daemon=True).start()
+    
+    def _execute_single_command(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a single command locally based on AI output."""
+        global jarvis_agent_instance
+        
+        if not jarvis_agent_instance:
+            # Try local execution without full agent
+            return self._execute_simple_command(action, params)
+        
+        # Map AI actions to agent command types
+        command_map = {
+            "open_app": ("open_app", {"app_name": params.get("app_name", "")}),
+            "close_app": ("close_app", {"app_name": params.get("app_name", "")}),
+            "list_apps": ("list_apps", {}),
+            "play_music": ("play_music", {"query": params.get("query", ""), "service": "youtube"}),
+            "media_control": ("media_control", {"action": params.get("control", "play_pause")}),
+            "set_volume": ("set_volume", {"level": params.get("level", 50)}),
+            "set_brightness": ("set_brightness", {"level": params.get("level", 50)}),
+            "lock": ("lock", {}),
+            "sleep": ("sleep", {}),
+            "restart": ("restart", {}),
+            "shutdown": ("shutdown", {}),
+            "screenshot": ("screenshot", {}),
+            "search_files": ("search_files", {"query": params.get("query", "")}),
+            "open_file": ("open_file", {"path": params.get("path", "")}),
+            "open_folder": ("open_folder", {"path": params.get("path", "")}),
+            "open_website": ("open_website", {"site": params.get("site", ""), "query": params.get("query", "")}),
+            "search_web": ("search_web", {"engine": params.get("engine", "google"), "query": params.get("query", "")}),
+            "open_url": ("open_url", {"url": params.get("url", "")}),
+            "type_text": ("type_text", {"text": params.get("text", "")}),
+            "key_combo": ("hotkey", {"keys": params.get("keys", "")}),
+            "make_call": ("make_call", {"contact": params.get("contact", ""), "number": params.get("number", "")}),
+            "send_sms": ("send_sms", {"contact": params.get("contact", ""), "number": params.get("number", ""), "message": params.get("message", "")}),
+            "send_whatsapp": ("send_whatsapp", {"contact": params.get("contact", ""), "message": params.get("message", "")}),
+            "send_email": ("send_email", {"to": params.get("to", ""), "subject": params.get("subject", ""), "body": params.get("body", "")}),
+        }
+        
+        if action in command_map:
+            cmd_type, payload = command_map[action]
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(jarvis_agent_instance._handle_command(cmd_type, payload))
+                return result
+            finally:
+                loop.close()
+        
+        return {"success": False, "error": f"Unknown action: {action}"}
+    
+    def _execute_simple_command(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute simple commands without full agent (fallback)."""
+        try:
+            if action == "open_app":
+                app_name = params.get("app_name", "")
+                if app_name:
+                    subprocess.Popen(f'start {app_name}', shell=True)
+                    return {"success": True}
+            elif action == "play_music":
+                query = params.get("query", "")
+                if query:
+                    webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
+                    return {"success": True}
+            elif action == "open_url":
+                url = params.get("url", "")
+                if url:
+                    webbrowser.open(url)
+                    return {"success": True}
+            elif action == "lock":
+                if platform.system() == "Windows":
+                    ctypes.windll.user32.LockWorkStation()
+                    return {"success": True}
+            elif action == "media_control":
+                control = params.get("action", "play_pause")
+                key_map = {"play_pause": "playpause", "next": "nexttrack", "previous": "prevtrack", "mute": "volumemute"}
+                key = key_map.get(control, "playpause")
+                pyautogui.press(key)
+                return {"success": True}
+            elif action == "set_volume":
+                level = params.get("level", 50)
+                # Simple volume adjustment via key presses
+                current = 50
+                diff = level - current
+                steps = abs(diff) // 2
+                key = "volumeup" if diff > 0 else "volumedown"
+                for _ in range(steps):
+                    pyautogui.press(key)
+                return {"success": True, "volume": level}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        
+        return {"success": False, "error": f"Cannot execute {action} without agent"}
+    
+    def _parse_and_execute_locally(self, command: str) -> Optional[str]:
+        """Parse and execute common commands locally without AI backend."""
+        command_lower = command.lower().strip()
+        
+        # Volume control
+        if "volume" in command_lower:
+            if "up" in command_lower or "increase" in command_lower:
+                pyautogui.press("volumeup")
+                pyautogui.press("volumeup")
+                pyautogui.press("volumeup")
+                return "Volume increased, sir."
+            elif "down" in command_lower or "decrease" in command_lower:
+                pyautogui.press("volumedown")
+                pyautogui.press("volumedown")
+                pyautogui.press("volumedown")
+                return "Volume decreased, sir."
+            elif "mute" in command_lower:
+                pyautogui.press("volumemute")
+                return "Volume muted, sir."
+            # Try to extract number
+            import re
+            numbers = re.findall(r'\d+', command_lower)
+            if numbers:
+                level = int(numbers[0])
+                if 0 <= level <= 100:
+                    return f"Setting volume to {level}%, sir."
+        
+        # Media control
+        if "pause" in command_lower or "stop" in command_lower:
+            pyautogui.press("playpause")
+            return "Media paused, sir."
+        if "play" in command_lower and "music" not in command_lower:
+            pyautogui.press("playpause")
+            return "Playing, sir."
+        if "next" in command_lower and ("track" in command_lower or "song" in command_lower):
+            pyautogui.press("nexttrack")
+            return "Next track, sir."
+        if "previous" in command_lower and ("track" in command_lower or "song" in command_lower):
+            pyautogui.press("prevtrack")
+            return "Previous track, sir."
+        
+        # System control
+        if "lock" in command_lower and ("screen" in command_lower or "pc" in command_lower or "computer" in command_lower):
+            if platform.system() == "Windows":
+                ctypes.windll.user32.LockWorkStation()
+            return "Locking the computer, sir."
+        
+        # App opening
+        if command_lower.startswith("open "):
+            app_name = command_lower.replace("open ", "").strip()
+            webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(app_name)}")
+            return f"Opening {app_name}, sir."
+        
+        # Web search
+        if "search" in command_lower or "google" in command_lower:
+            query = command_lower.replace("search for", "").replace("search", "").replace("google", "").strip()
+            if query:
+                webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
+                return f"Searching for {query}, sir."
+        
+        # Play music
+        if "play" in command_lower and ("music" in command_lower or "song" in command_lower):
+            query = command_lower.replace("play music", "").replace("play song", "").replace("play", "").strip()
+            if query:
+                webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
+                return f"Playing {query}, sir."
+        
+        return None
 
 
 # Global voice listener instance
@@ -3534,10 +3765,16 @@ class JarvisGUI:
 # Global GUI instance
 jarvis_gui: Optional[JarvisGUI] = None
 
+# Global agent instance (for voice commands)
+jarvis_agent_instance: Optional["JarvisAgent"] = None
+
 # ============== MAIN ==============
 async def run_agent():
     """Run the agent with async operations."""
+    global jarvis_agent_instance
+    
     agent = JarvisAgent()
+    jarvis_agent_instance = agent  # Store global reference for voice commands
     
     try:
         await agent.run()
@@ -3546,6 +3783,8 @@ async def run_agent():
     except Exception as e:
         add_log("error", f"Fatal error: {e}", category="system")
         await agent.shutdown()
+    finally:
+        jarvis_agent_instance = None
 
 
 def main():

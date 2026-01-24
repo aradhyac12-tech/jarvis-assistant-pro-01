@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, forwardRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bot, Loader2, CheckCircle, Key } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 
-export default function Pair() {
+const Pair = forwardRef<HTMLDivElement>(function Pair(_, ref) {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { session, isLoading: sessionLoading, pairDevice, error } = useDeviceSession();
@@ -61,14 +61,14 @@ export default function Pair() {
 
   if (sessionLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div ref={ref} className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div ref={ref} className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md border-border/50">
         <CardHeader className="text-center space-y-3">
           <div className="mx-auto w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center">
@@ -142,4 +142,6 @@ export default function Pair() {
       </Card>
     </div>
   );
-}
+});
+
+export default Pair;
