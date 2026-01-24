@@ -1276,7 +1276,7 @@ class CameraStreamer:
         # Store last error for web UI
         self.last_error: Optional[str] = None
         
-    async def connect(self, session_id: str, fps: int = 10, quality: int = 50):
+    async def connect(self, session_id: str, fps: int = 30, quality: int = 70):
         if not HAS_WEBSOCKETS or not HAS_OPENCV:
             error_msg = "WebSockets or OpenCV not available"
             self.last_error = error_msg
@@ -1288,8 +1288,11 @@ class CameraStreamer:
         self.quality = quality
         self.last_error = None
         
-        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=pc&fps={fps}&quality={quality}"
-        add_log("info", f"Connecting camera stream", f"fps={fps}, quality={quality}", category="camera")
+        # CRITICAL: Connect as 'phone' type - this is the SENDER
+        # The web frontend connects as 'pc' type - this is the RECEIVER
+        # The relay forwards from phone->pc, so we must be 'phone' to send frames
+        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
+        add_log("info", f"Connecting camera stream as sender (phone)", f"fps={fps}, quality={quality}", category="camera")
         
         try:
             self.ws = await websockets.connect(ws_url)
@@ -1298,7 +1301,7 @@ class CameraStreamer:
             self.bytes_sent = 0
             self.last_stats_time = time.time()
             self.reconnect_attempts = 0
-            add_log("info", "Camera stream connected", category="camera")
+            add_log("info", "Camera stream connected as sender", category="camera")
             update_agent_status({"camera_streaming": True})
             return True
         except Exception as e:
@@ -1318,7 +1321,8 @@ class CameraStreamer:
         await asyncio.sleep(1)
         
         try:
-            ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={self.session_id}&type=pc&fps={self.fps}&quality={self.quality}"
+            # CRITICAL: Reconnect as 'phone' type (sender)
+            ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={self.session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
             self.ws = await websockets.connect(ws_url)
             add_log("info", "Camera stream reconnected", category="camera")
             return True
@@ -1470,6 +1474,21 @@ class CameraStreamer:
             "connected": self.ws is not None,
             "last_error": self.last_error,
         }
+    
+    def update_settings(self, fps: Optional[int] = None, quality: Optional[int] = None) -> bool:
+        """Update streaming settings in real-time without restarting."""
+        if not self.running:
+            return False
+        
+        if fps is not None:
+            self.fps = max(1, min(90, fps))  # Clamp to 1-90
+            add_log("info", f"Camera FPS updated to {self.fps}", category="camera")
+        
+        if quality is not None:
+            self.quality = max(10, min(100, quality))  # Clamp to 10-100
+            add_log("info", f"Camera quality updated to {self.quality}", category="camera")
+        
+        return True
     
     def _cleanup(self):
         if self.camera:
@@ -3019,6 +3038,14 @@ class JarvisAgent:
                 await self.camera_streamer.stop()
                 self.camera_session_id = None
                 return {"success": True}
+
+            elif command_type == "update_camera_settings":
+                fps = payload.get("fps")
+                quality = payload.get("quality")
+                updated = self.camera_streamer.update_settings(fps, quality)
+                if updated:
+                    return {"success": True, "fps": self.camera_streamer.fps, "quality": self.camera_streamer.quality}
+                return {"success": False, "error": "Camera not streaming"}
 
             # Phone as Webcam
             elif command_type == "start_phone_webcam":

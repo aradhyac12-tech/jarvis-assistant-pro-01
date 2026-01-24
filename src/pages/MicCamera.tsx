@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 import {
   Camera,
   Mic,
@@ -27,6 +28,9 @@ import {
   Speaker,
   Webcam,
   Loader2,
+  Settings,
+  Gauge,
+  Zap,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -66,6 +70,11 @@ export default function MicCamera() {
   const [selectedPcCamera, setSelectedPcCamera] = useState(0);
   const pcCameraWsRef = useRef<WebSocket | null>(null);
   const [pcCameraSessionId, setPcCameraSessionId] = useState<string | null>(null);
+
+  // ==================== CAMERA SETTINGS (real-time adjustable) ====================
+  const [cameraFpsSetting, setCameraFpsSetting] = useState(30);
+  const [cameraQualitySetting, setCameraQualitySetting] = useState(70);
+  const [showCameraSettings, setShowCameraSettings] = useState(false);
 
   // ==================== AUDIO RELAY STATE ====================
   const [audioDirection, setAudioDirection] = useState<StreamDirection>("phone_to_pc");
@@ -112,6 +121,18 @@ export default function MicCamera() {
 
   const WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/audio-relay`;
   const CAMERA_WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/camera-relay`;
+
+  // Send FPS/Quality settings to agent in real-time
+  const updateCameraSettings = useCallback(async (fps: number, quality: number) => {
+    if (pcCameraActive && pcCameraSessionId) {
+      try {
+        await sendCommand("update_camera_settings", { fps, quality });
+        addLog("info", "web", `Updated camera settings: FPS=${fps}, Quality=${quality}`);
+      } catch (err) {
+        addLog("warn", "web", `Failed to update camera settings: ${err}`);
+      }
+    }
+  }, [pcCameraActive, pcCameraSessionId, sendCommand]);
 
   // ==================== PHONE CAMERA ====================
   const startPhoneCamera = useCallback(async () => {
@@ -178,19 +199,20 @@ export default function MicCamera() {
       setPcCameraSessionId(sessionId);
       addLog("info", "web", `Starting PC camera stream (session: ${sessionId.slice(0, 8)}...)`);
 
-      // Tell PC to start camera stream (wait for an explicit OK so we can surface camera-open errors)
+      // Tell PC to start camera stream with current settings
       const started = await sendCommand(
         "start_camera_stream",
         {
           session_id: sessionId,
           camera_index: selectedPcCamera,
+          fps: cameraFpsSetting,
+          quality: cameraQualitySetting,
         },
         { awaitResult: true, timeoutMs: 20000 }
       );
 
       if (!started.success) {
         const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
-        // Log the error from the agent to the IssueLog
         addLog("error", "agent", `Camera open failed: ${msg}`);
         toast({ title: "PC Camera Error", description: msg, variant: "destructive" });
         setPcCameraSessionId(null);
@@ -199,9 +221,10 @@ export default function MicCamera() {
 
       addLog("info", "agent", "PC camera opened successfully");
 
-      // Connect to dedicated camera-relay WebSocket (phone receives frames)
-      // Use 90 FPS and high quality for smooth streaming
-      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=90&quality=100&binary=true`);
+      // CRITICAL FIX: Connect as 'pc' type - this is the RECEIVER
+      // The Python agent connects as 'phone' type - this is the SENDER
+      // The relay forwards from phone->pc, so we receive on 'pc' socket
+      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true`);
       pcCameraWsRef.current = ws;
       ws.binaryType = "arraybuffer"; // Enable binary frame reception
 
@@ -1393,6 +1416,144 @@ export default function MicCamera() {
                         )}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  {/* Real-time Settings Panel */}
+                  <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
+                    <button
+                      onClick={() => setShowCameraSettings(!showCameraSettings)}
+                      className="w-full flex items-center justify-between p-3 hover:bg-secondary/20 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Settings className="h-4 w-4 text-primary" />
+                        <span className="font-medium text-sm">Stream Settings</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-xs">
+                          {cameraFpsSetting} FPS
+                        </Badge>
+                        <Badge variant="outline" className="text-xs">
+                          {cameraQualitySetting}% Quality
+                        </Badge>
+                        <Zap className={cn(
+                          "h-4 w-4 transition-transform",
+                          showCameraSettings ? "rotate-180" : ""
+                        )} />
+                      </div>
+                    </button>
+                    
+                    {showCameraSettings && (
+                      <div className="p-4 pt-0 space-y-4 border-t border-border/30">
+                        {/* FPS Slider */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-sm flex items-center gap-2">
+                              <Gauge className="h-4 w-4" />
+                              Target FPS
+                            </Label>
+                            <span className="font-mono text-sm font-bold text-primary">{cameraFpsSetting}</span>
+                          </div>
+                          <Slider
+                            value={[cameraFpsSetting]}
+                            onValueChange={([v]) => setCameraFpsSetting(v)}
+                            onValueCommit={([v]) => {
+                              setCameraFpsSetting(v);
+                              updateCameraSettings(v, cameraQualitySetting);
+                            }}
+                            min={5}
+                            max={90}
+                            step={5}
+                            className="w-full"
+                          />
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>5 FPS (Low)</span>
+                            <span>30 (Smooth)</span>
+                            <span>90 (Ultra)</span>
+                          </div>
+                        </div>
+
+                        {/* Quality Slider */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-sm flex items-center gap-2">
+                              <Video className="h-4 w-4" />
+                              JPEG Quality
+                            </Label>
+                            <span className="font-mono text-sm font-bold text-primary">{cameraQualitySetting}%</span>
+                          </div>
+                          <Slider
+                            value={[cameraQualitySetting]}
+                            onValueChange={([v]) => setCameraQualitySetting(v)}
+                            onValueCommit={([v]) => {
+                              setCameraQualitySetting(v);
+                              updateCameraSettings(cameraFpsSetting, v);
+                            }}
+                            min={10}
+                            max={100}
+                            step={5}
+                            className="w-full"
+                          />
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>10% (Fast)</span>
+                            <span>50% (Balanced)</span>
+                            <span>100% (Best)</span>
+                          </div>
+                        </div>
+
+                        {/* Presets */}
+                        <div className="flex flex-wrap gap-2 pt-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setCameraFpsSetting(15);
+                              setCameraQualitySetting(50);
+                              updateCameraSettings(15, 50);
+                            }}
+                          >
+                            🐢 Low Bandwidth
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setCameraFpsSetting(30);
+                              setCameraQualitySetting(70);
+                              updateCameraSettings(30, 70);
+                            }}
+                          >
+                            ⚖️ Balanced
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setCameraFpsSetting(60);
+                              setCameraQualitySetting(85);
+                              updateCameraSettings(60, 85);
+                            }}
+                          >
+                            🚀 High Quality
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setCameraFpsSetting(90);
+                              setCameraQualitySetting(100);
+                              updateCameraSettings(90, 100);
+                            }}
+                          >
+                            ⚡ Ultra
+                          </Button>
+                        </div>
+
+                        <p className="text-xs text-muted-foreground pt-1">
+                          <strong>Tip:</strong> Changes apply instantly without restarting the stream.
+                          Higher FPS = smoother but more bandwidth. Higher quality = sharper but larger frames.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {/* PC Camera preview */}
