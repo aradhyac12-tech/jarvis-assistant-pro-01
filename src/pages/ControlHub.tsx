@@ -62,6 +62,9 @@ import {
   Lock,
   Unlock,
   Snowflake,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -114,7 +117,7 @@ export default function ControlHub() {
   const { devices, selectedDevice, isLoading: loading, refreshDevices } = useDeviceContext();
   const { deviceInfo, isReconnecting, session } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
-  const { fireCommand, fireMouse, fireKey, fireScroll, fireZoom } = useFastCommand();
+  const { fireCommand, fireMouse, fireKey, fireScroll, fireZoom, fireZoomReset } = useFastCommand();
   const { toast } = useToast();
 
   // Use optimistic media hook
@@ -956,6 +959,34 @@ export default function ControlHub() {
                     </Button>
                     <Button variant="secondary" size="sm" onClick={() => handleArrowMove("right")}>
                       <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  {/* Zoom Controls */}
+                  <div className="flex gap-2 pt-2 border-t border-border/30">
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="flex-1" 
+                      onClick={() => fireZoom(-0.5)}
+                    >
+                      <ZoomOut className="h-4 w-4 mr-1" /> Zoom -
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={fireZoomReset}
+                      title="Reset Zoom (Ctrl+0)"
+                    >
+                      <Maximize2 className="h-4 w-4" />
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="flex-1" 
+                      onClick={() => fireZoom(0.5)}
+                    >
+                      <ZoomIn className="h-4 w-4 mr-1" /> Zoom +
                     </Button>
                   </div>
                 </CardContent>

@@ -126,5 +126,10 @@ export function useFastCommand() {
     [fireCommand]
   );
 
-  return { fireCommand, fireMouse, fireKey, fireScroll, fireZoom };
+  // Zoom reset (Ctrl+0)
+  const fireZoomReset = useCallback(() => {
+    fireCommand("key_combo", { keys: ["ctrl", "0"] });
+  }, [fireCommand]);
+
+  return { fireCommand, fireMouse, fireKey, fireScroll, fireZoom, fireZoomReset };
 }

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useConversation } from "@elevenlabs/react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,14 +7,30 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Send, Bot, User, Loader2, Zap, Mic, MicOff, Volume2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { 
+  Send, 
+  Bot, 
+  User, 
+  Loader2, 
+  Zap, 
+  Mic, 
+  MicOff, 
+  Volume2, 
+  VolumeX,
+  Phone,
+  PhoneOff,
+  Waves,
+  Settings,
+  AlertCircle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
+import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
 import { addLog } from "@/components/IssueLog";
 import { supabase } from "@/integrations/supabase/client";
-
 
 interface Message {
   id: string;
@@ -45,175 +62,111 @@ export default function VoiceAI() {
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
 
-  // Voice recognition state
-  const [isListening, setIsListening] = useState(false);
-  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
-  const [isWaitingForWakeWord, setIsWaitingForWakeWord] = useState(false);
-  const recognitionRef = useRef<any>(null);
-  const wakeWordRecognitionRef = useRef<any>(null);
+  // ElevenLabs TTS for AI responses
+  const { speak, stopSpeaking, isSpeaking, isLoading: ttsLoading } = useElevenLabsTTS();
+
+  // Voice conversation state
+  const [agentId, setAgentId] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+
+  // ElevenLabs Conversation Hook for real-time voice
+  const conversation = useConversation({
+    onConnect: () => {
+      console.log("Connected to ElevenLabs agent");
+      addLog("info", "web", "Connected to JARVIS voice agent");
+      toast({ title: "Connected", description: "Voice conversation active" });
+    },
+    onDisconnect: () => {
+      console.log("Disconnected from ElevenLabs agent");
+      addLog("info", "web", "Disconnected from voice agent");
+    },
+    onMessage: (message: unknown) => {
+      console.log("Agent message:", message);
+      const msg = message as Record<string, unknown>;
+      
+      // Handle different message types
+      if (msg?.type === "user_transcript") {
+        const event = msg as { user_transcription_event?: { user_transcript?: string } };
+        const userText = event.user_transcription_event?.user_transcript;
+        if (userText) {
+          const userMessage: Message = {
+            id: Date.now().toString(),
+            role: "user",
+            content: userText,
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, userMessage]);
+        }
+      } else if (msg?.type === "agent_response") {
+        const event = msg as { agent_response_event?: { agent_response?: string } };
+        const agentText = event.agent_response_event?.agent_response;
+        if (agentText) {
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: agentText,
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, assistantMessage]);
+        }
+      }
+    },
+    onError: (error) => {
+      console.error("Conversation error:", error);
+      addLog("error", "web", "Voice conversation error", String(error));
+      toast({
+        variant: "destructive",
+        title: "Voice Error",
+        description: "Connection lost. Please try again.",
+      });
+    },
+  });
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Initialize speech recognition
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    
-    if (SpeechRecognition) {
-      // Main recognition for commands
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = false;
-      recognitionRef.current.lang = 'en-US';
-
-      recognitionRef.current.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        setIsListening(false);
-        handleSendMessage(transcript);
-      };
-
-      recognitionRef.current.onerror = (event: any) => {
-        console.error("Speech recognition error:", event.error);
-        setIsListening(false);
-        if (event.error !== 'no-speech') {
-          toast({
-            title: "Voice Error",
-            description: `Could not recognize speech: ${event.error}`,
-            variant: "destructive",
-          });
-        }
-      };
-
-      recognitionRef.current.onend = () => {
-        setIsListening(false);
-      };
-
-      // Wake word recognition
-      wakeWordRecognitionRef.current = new SpeechRecognition();
-      wakeWordRecognitionRef.current.continuous = true;
-      wakeWordRecognitionRef.current.interimResults = true;
-      wakeWordRecognitionRef.current.lang = 'en-US';
-
-      wakeWordRecognitionRef.current.onresult = (event: any) => {
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript.toLowerCase();
-          
-          // Check for wake word "Jarvis"
-          if (transcript.includes('jarvis') || transcript.includes('jarves') || transcript.includes('jarwis')) {
-            addLog("info", "web", "Wake word 'Jarvis' detected!");
-            
-            // Stop wake word listening temporarily
-            wakeWordRecognitionRef.current.stop();
-            setIsWaitingForWakeWord(false);
-            
-            // Play acknowledgment sound or visual feedback
-            toast({
-              title: "👋 Yes?",
-              description: "I'm listening...",
-            });
-            
-            // Start listening for command
-            setTimeout(() => {
-              startListening();
-            }, 300);
-            
-            break;
-          }
-        }
-      };
-
-      wakeWordRecognitionRef.current.onerror = (event: any) => {
-        if (event.error === 'no-speech') {
-          // Restart wake word listening
-          if (wakeWordEnabled && !isListening) {
-            setTimeout(() => {
-              try {
-                wakeWordRecognitionRef.current.start();
-                setIsWaitingForWakeWord(true);
-              } catch (e) {
-                // Already running
-              }
-            }, 100);
-          }
-        }
-      };
-
-      wakeWordRecognitionRef.current.onend = () => {
-        // Restart wake word listening if enabled
-        if (wakeWordEnabled && !isListening) {
-          setTimeout(() => {
-            try {
-              wakeWordRecognitionRef.current.start();
-              setIsWaitingForWakeWord(true);
-            } catch (e) {
-              // Already running
-            }
-          }, 100);
-        }
-      };
-    }
-
-    return () => {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
-      }
-      if (wakeWordRecognitionRef.current) {
-        try { wakeWordRecognitionRef.current.stop(); } catch (e) {}
-      }
-    };
-  }, [toast, wakeWordEnabled]);
-
-  // Handle wake word toggle
-  const handleWakeWordToggle = (enabled: boolean) => {
-    setWakeWordEnabled(enabled);
-    
-    if (enabled && wakeWordRecognitionRef.current) {
-      try {
-        wakeWordRecognitionRef.current.start();
-        setIsWaitingForWakeWord(true);
-        toast({
-          title: "Wake Word Enabled",
-          description: "Say 'Jarvis' to activate voice commands",
-        });
-      } catch (e) {
-        console.error("Failed to start wake word recognition:", e);
-      }
-    } else if (wakeWordRecognitionRef.current) {
-      try {
-        wakeWordRecognitionRef.current.stop();
-        setIsWaitingForWakeWord(false);
-      } catch (e) {}
-    }
-  };
-
-  const startListening = () => {
-    if (!recognitionRef.current) {
+  // Start real-time voice conversation
+  const startVoiceConversation = useCallback(async () => {
+    if (!agentId.trim()) {
       toast({
-        title: "Not Supported",
-        description: "Voice recognition is not supported in this browser",
         variant: "destructive",
+        title: "Agent ID Required",
+        description: "Enter your ElevenLabs Agent ID in settings",
       });
+      setShowSettings(true);
       return;
     }
 
+    setIsConnecting(true);
     try {
-      recognitionRef.current.start();
-      setIsListening(true);
-    } catch (e) {
-      console.error("Failed to start recognition:", e);
-      setIsListening(false);
-    }
-  };
+      // Request microphone permission
+      await navigator.mediaDevices.getUserMedia({ audio: true });
 
-  const stopListening = () => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {}
+      // Start with agent ID directly (public agent)
+      await conversation.startSession({
+        agentId: agentId.trim(),
+        connectionType: "webrtc",
+      });
+    } catch (error) {
+      console.error("Failed to start conversation:", error);
+      addLog("error", "web", "Failed to start voice conversation", String(error));
+      toast({
+        variant: "destructive",
+        title: "Connection Failed",
+        description: error instanceof Error ? error.message : "Could not connect to voice agent",
+      });
+    } finally {
+      setIsConnecting(false);
     }
-    setIsListening(false);
-  };
+  }, [agentId, conversation, toast]);
+
+  const stopVoiceConversation = useCallback(async () => {
+    await conversation.endSession();
+    addLog("info", "web", "Ended voice conversation");
+  }, [conversation]);
 
   // Execute commands returned by AI
   const executeAICommands = async (commands: AICommand[]) => {
@@ -232,59 +185,46 @@ export default function VoiceAI() {
             commandType = "open_app";
             payload = { app_name: cmd.app_name };
             break;
-
           case "open_website":
             commandType = "open_website";
             payload = { site: cmd.site, query: cmd.query || "" };
             break;
-
           case "search_web":
             commandType = "search_web";
-            // Add press_enter flag to actually search
             payload = { engine: cmd.engine || "google", query: cmd.query, press_enter: true };
             break;
-
           case "play_music":
             commandType = "play_music";
             payload = { query: cmd.query, service: "youtube" };
             break;
-
           case "set_volume":
             commandType = "set_volume";
             payload = { level: cmd.level };
             break;
-
           case "set_brightness":
             commandType = "set_brightness";
             payload = { level: cmd.level };
             break;
-
           case "media_control":
             commandType = "media_control";
             payload = { action: cmd.control || "play_pause" };
             break;
-
           case "lock":
             commandType = "lock";
             break;
-
           case "sleep":
             commandType = "sleep";
             break;
-
           case "restart":
             commandType = "restart";
             break;
-
           case "shutdown":
             commandType = "shutdown";
             break;
-
           case "type_text":
             commandType = "type_text";
             payload = { text: cmd.text };
             break;
-
           default:
             addLog("warn", "web", `Unknown AI command: ${cmd.action}`);
             continue;
@@ -298,7 +238,6 @@ export default function VoiceAI() {
             addLog("error", "web", `AI command failed: ${commandType}`, result.error as string);
           }
           
-          // Small delay between commands for multi-step operations
           if (commands.length > 1) {
             await new Promise(r => setTimeout(r, 1500));
           }
@@ -309,18 +248,9 @@ export default function VoiceAI() {
     }
 
     setExecutingCommands(false);
-    
-    // Restart wake word listening after command execution
-    if (wakeWordEnabled && wakeWordRecognitionRef.current) {
-      setTimeout(() => {
-        try {
-          wakeWordRecognitionRef.current.start();
-          setIsWaitingForWakeWord(true);
-        } catch (e) {}
-      }, 500);
-    }
   };
 
+  // Text chat with TTS response
   const handleSendMessage = useCallback(async (text?: string) => {
     const messageText = text || inputText;
     if (!messageText.trim() || isProcessing) return;
@@ -350,10 +280,11 @@ export default function VoiceAI() {
         throw new Error(error.message || "Failed to get AI response");
       }
 
+      const responseText = (data as any)?.response ?? "";
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: (data as any)?.response ?? "",
+        content: responseText,
         language: (data as any)?.language,
         timestamp: new Date(),
         commands: (data as any)?.commands,
@@ -361,7 +292,12 @@ export default function VoiceAI() {
 
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Execute any commands returned by AI
+      // Speak the response if voice is enabled
+      if (voiceEnabled && responseText) {
+        speak(responseText);
+      }
+
+      // Execute any commands
       if ((data as any)?.commands && (data as any).commands.length > 0) {
         await executeAICommands((data as any).commands as AICommand[]);
       }
@@ -377,7 +313,9 @@ export default function VoiceAI() {
     } finally {
       setIsProcessing(false);
     }
-  }, [inputText, isProcessing, session?.session_token, toast, sendCommand]);
+  }, [inputText, isProcessing, session?.session_token, toast, sendCommand, voiceEnabled, speak]);
+
+  const isConnected = conversation.status === "connected";
 
   return (
     <DashboardLayout>
@@ -385,38 +323,102 @@ export default function VoiceAI() {
         {/* Header */}
         <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold neon-text">AI Assistant</h1>
+            <h1 className="text-2xl md:text-3xl font-bold neon-text">JARVIS AI</h1>
             <p className="text-muted-foreground text-sm md:text-base">
-              Chat with Jarvis - I can control your PC!
+              {isConnected ? "Voice conversation active" : "Your AI assistant with voice"}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            {/* Wake Word Toggle */}
-            <div className="flex items-center gap-2 p-2 rounded-lg bg-secondary/30">
-              <Label htmlFor="wake-word" className="text-xs text-muted-foreground">
-                Wake: "Jarvis"
-              </Label>
-              <Switch
-                id="wake-word"
-                checked={wakeWordEnabled}
-                onCheckedChange={handleWakeWordToggle}
-              />
-              {isWaitingForWakeWord && (
-                <span className="w-2 h-2 rounded-full bg-neon-green animate-pulse" />
-              )}
-            </div>
-            
+            {/* Voice Status */}
+            {isConnected && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-neon-green/10 border border-neon-green/30">
+                <Waves className="h-4 w-4 text-neon-green animate-pulse" />
+                <span className="text-sm text-neon-green">
+                  {conversation.isSpeaking ? "Speaking..." : "Listening..."}
+                </span>
+              </div>
+            )}
+
+            {/* TTS Status */}
+            {isSpeaking && (
+              <Badge variant="secondary" className="bg-neon-blue/10 text-neon-blue border-neon-blue/30">
+                <Volume2 className="h-3 w-3 mr-1 animate-pulse" />
+                Speaking
+              </Badge>
+            )}
+
             {executingCommands && (
               <Badge variant="secondary" className="bg-neon-purple/10 text-neon-purple border-neon-purple/30 text-xs animate-pulse">
                 <Zap className="h-3 w-3 mr-1" />
                 Executing...
               </Badge>
             )}
+
+            {/* Voice Toggle */}
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-secondary/30">
+              <Label htmlFor="voice-tts" className="text-xs text-muted-foreground">
+                TTS
+              </Label>
+              <Switch
+                id="voice-tts"
+                checked={voiceEnabled}
+                onCheckedChange={(checked) => {
+                  setVoiceEnabled(checked);
+                  if (!checked) stopSpeaking();
+                }}
+              />
+            </div>
+
+            {/* Settings */}
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setShowSettings(!showSettings)}
+              className={cn(showSettings && "border-primary")}
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+
             <Badge variant="secondary" className="bg-neon-green/10 text-neon-green border-neon-green/30 text-xs">
               {session?.session_token ? "Device Paired" : "Text Mode"}
             </Badge>
           </div>
         </div>
+
+        {/* Settings Panel */}
+        {showSettings && (
+          <Card className="glass-dark border-border/50 mb-4 p-4">
+            <div className="space-y-4">
+              <div>
+                <Label className="text-sm text-muted-foreground mb-2 block">
+                  ElevenLabs Agent ID (for real-time voice)
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Enter your agent ID from ElevenLabs dashboard"
+                    value={agentId}
+                    onChange={(e) => setAgentId(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Button variant="outline" size="sm" onClick={() => setShowSettings(false)}>
+                    Done
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Create a voice agent at{" "}
+                  <a 
+                    href="https://elevenlabs.io/conversational-ai" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline"
+                  >
+                    elevenlabs.io/conversational-ai
+                  </a>
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
 
         {/* Chat Area */}
         <Card className="flex-1 glass-dark border-border/50 overflow-hidden flex flex-col min-h-0">
@@ -426,15 +428,56 @@ export default function VoiceAI() {
                 <div className="w-20 h-20 md:w-24 md:h-24 rounded-3xl gradient-primary flex items-center justify-center pulse-neon mb-4 md:mb-6">
                   <Bot className="w-12 h-12 md:w-14 md:h-14 text-primary-foreground" />
                 </div>
-                <h2 className="text-xl md:text-2xl font-bold mb-2">Hey, I'm Jarvis!</h2>
-                <p className="text-muted-foreground max-w-md text-sm md:text-base">
-                  Your AI assistant that can control your PC. Try saying "Jarvis" or click the mic!
+                <h2 className="text-xl md:text-2xl font-bold mb-2">Hey, I'm JARVIS!</h2>
+                <p className="text-muted-foreground max-w-md text-sm md:text-base mb-4">
+                  Your AI assistant with voice. Type a message or start a voice conversation.
                 </p>
-                <div className="flex flex-wrap gap-2 mt-4 md:mt-6 justify-center">
+
+                {/* Voice Conversation Button */}
+                <div className="flex flex-col items-center gap-4 mt-4">
+                  {!isConnected ? (
+                    <Button
+                      size="lg"
+                      className="gap-2 gradient-primary hover:opacity-90"
+                      onClick={startVoiceConversation}
+                      disabled={isConnecting}
+                    >
+                      {isConnecting ? (
+                        <>
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                          Connecting...
+                        </>
+                      ) : (
+                        <>
+                          <Phone className="h-5 w-5" />
+                          Start Voice Conversation
+                        </>
+                      )}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="lg"
+                      variant="destructive"
+                      className="gap-2"
+                      onClick={stopVoiceConversation}
+                    >
+                      <PhoneOff className="h-5 w-5" />
+                      End Conversation
+                    </Button>
+                  )}
+
+                  {!agentId && (
+                    <p className="text-xs text-muted-foreground flex items-center gap-1">
+                      <AlertCircle className="h-3 w-3" />
+                      Configure Agent ID in settings first
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2 mt-6 justify-center">
                   {[
                     "Open YouTube and search for music",
                     "Set volume to 50%",
-                    "Search for Python tutorials on ChatGPT",
                     "Play Bohemian Rhapsody",
                   ].map((suggestion) => (
                     <Button
@@ -480,11 +523,6 @@ export default function VoiceAI() {
                             minute: "2-digit",
                           })}
                         </span>
-                        {message.language && (
-                          <Badge variant="outline" className="text-xs py-0 px-1.5">
-                            {message.language}
-                          </Badge>
-                        )}
                         {message.commands && message.commands.length > 0 && (
                           <Badge variant="secondary" className="text-xs py-0 px-1.5 bg-neon-purple/20 text-neon-purple">
                             <Zap className="h-2.5 w-2.5 mr-0.5" />
@@ -495,19 +533,18 @@ export default function VoiceAI() {
                     </div>
                     {message.role === "user" && (
                       <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
-                        <User className="w-5 h-5 md:w-6 md:h-6" />
+                        <User className="w-5 h-5 md:w-6 md:h-6 text-secondary-foreground" />
                       </div>
                     )}
                   </div>
                 ))}
                 {isProcessing && (
-                  <div className="flex gap-2 md:gap-3">
+                  <div className="flex gap-3 justify-start">
                     <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl gradient-primary flex items-center justify-center">
                       <Bot className="w-5 h-5 md:w-6 md:h-6 text-primary-foreground" />
                     </div>
-                    <div className="bg-secondary rounded-2xl px-3 py-2 md:px-4 md:py-3 flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span className="text-sm">Thinking...</span>
+                    <div className="bg-secondary rounded-2xl px-4 py-3">
+                      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                     </div>
                   </div>
                 )}
@@ -517,65 +554,52 @@ export default function VoiceAI() {
           </ScrollArea>
 
           {/* Input Area */}
-          <CardContent className="p-3 md:p-4 border-t border-border/30 flex-shrink-0">
-            <div className="flex items-center gap-2 md:gap-3">
-              {/* Voice Button */}
-              <Button
-                size="icon"
-                variant={isListening ? "destructive" : "secondary"}
-                className={cn(
-                  "h-10 w-10 md:h-12 md:w-12 rounded-xl flex-shrink-0",
-                  isListening && "animate-pulse"
-                )}
-                onClick={isListening ? stopListening : startListening}
-                disabled={isProcessing || executingCommands}
-              >
-                {isListening ? (
-                  <MicOff className="h-4 w-4 md:h-5 md:w-5" />
-                ) : (
-                  <Mic className="h-4 w-4 md:h-5 md:w-5" />
-                )}
-              </Button>
+          <CardContent className="border-t border-border/50 pt-4 flex-shrink-0">
+            <div className="flex gap-2">
+              {/* Voice Controls for Active Conversation */}
+              {isConnected && (
+                <Button
+                  variant="destructive"
+                  size="icon"
+                  onClick={stopVoiceConversation}
+                  title="End voice conversation"
+                >
+                  <PhoneOff className="h-5 w-5" />
+                </Button>
+              )}
 
-              <div className="flex-1 relative">
-                <input
-                  type="text"
-                  placeholder={
-                    isListening
-                      ? "Listening..."
-                      : executingCommands
-                      ? "Executing commands..."
-                      : "Type a command or say 'Jarvis'..."
-                  }
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                  disabled={isProcessing || executingCommands || isListening}
-                  className="w-full h-10 md:h-12 px-3 md:px-4 rounded-xl bg-secondary border border-border/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors text-sm md:text-base disabled:opacity-50"
-                />
-              </div>
+              {/* Stop TTS */}
+              {isSpeaking && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={stopSpeaking}
+                  title="Stop speaking"
+                >
+                  <VolumeX className="h-5 w-5" />
+                </Button>
+              )}
 
+              <Input
+                placeholder={isConnected ? "Voice mode active - speak to me!" : "Type your message..."}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendMessage()}
+                disabled={isProcessing}
+                className="flex-1"
+              />
               <Button
-                size="icon"
-                className="h-10 w-10 md:h-12 md:w-12 rounded-xl gradient-primary flex-shrink-0"
                 onClick={() => handleSendMessage()}
-                disabled={!inputText.trim() || isProcessing || executingCommands}
+                disabled={isProcessing || !inputText.trim()}
+                className="gradient-primary"
               >
-                {isProcessing || executingCommands ? (
-                  <Loader2 className="h-4 w-4 md:h-5 md:w-5 animate-spin" />
+                {isProcessing ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
                 ) : (
-                  <Send className="h-4 w-4 md:h-5 md:w-5" />
+                  <Send className="h-5 w-5" />
                 )}
               </Button>
             </div>
-            
-            {/* Voice status indicator */}
-            {(isListening || isWaitingForWakeWord) && (
-              <div className="mt-2 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-                <Volume2 className="h-3 w-3 text-primary animate-pulse" />
-                <span>{isListening ? "Speak now..." : "Waiting for 'Jarvis'..."}</span>
-              </div>
-            )}
           </CardContent>
         </Card>
       </div>

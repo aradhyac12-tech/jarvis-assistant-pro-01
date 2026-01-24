@@ -3,8 +3,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertTriangle, Bug, Info, X, Trash2, ChevronDown, ChevronUp } from "lucide-react";
+import { AlertTriangle, Bug, Info, X, Trash2, Share2, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -39,6 +40,8 @@ export const clearLogs = () => {
   logListeners.forEach((listener) => listener([]));
 };
 
+export const getLogs = () => [...logEntries];
+
 export const useLogs = () => {
   const [logs, setLogs] = useState<LogEntry[]>(logEntries);
 
@@ -51,6 +54,32 @@ export const useLogs = () => {
   }, []);
 
   return logs;
+};
+
+// Format logs for sharing
+export const formatLogsForSharing = (logs: LogEntry[], filter?: LogLevel): string => {
+  const filteredLogs = filter ? logs.filter(l => l.level === filter) : logs;
+  
+  const header = `=== JARVIS Issue Log ===
+Generated: ${new Date().toISOString()}
+Total Entries: ${filteredLogs.length}
+${filter ? `Filter: ${filter.toUpperCase()} only` : "Filter: All"}
+========================
+
+`;
+
+  const logText = filteredLogs.map(log => {
+    const time = log.timestamp.toISOString();
+    const level = log.level.toUpperCase().padEnd(5);
+    const source = log.source.toUpperCase().padEnd(5);
+    let entry = `[${time}] [${level}] [${source}] ${log.message}`;
+    if (log.details) {
+      entry += `\n    Details: ${log.details}`;
+    }
+    return entry;
+  }).join("\n\n");
+
+  return header + logText;
 };
 
 // Initialize console overrides to capture errors
@@ -87,6 +116,8 @@ export function IssueLog({ className, compact = false }: IssueLogProps) {
   const logs = useLogs();
   const [isExpanded, setIsExpanded] = useState(!compact);
   const [filter, setFilter] = useState<LogLevel | "all">("all");
+  const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
 
   const filteredLogs = filter === "all" ? logs : logs.filter((l) => l.level === filter);
 
@@ -112,6 +143,35 @@ export function IssueLog({ className, compact = false }: IssueLogProps) {
         return "text-yellow-500";
       default:
         return "text-muted-foreground";
+    }
+  };
+
+  const handleCopyLogs = async () => {
+    const text = formatLogsForSharing(logs, filter === "all" ? undefined : filter);
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    toast({
+      title: "Logs Copied!",
+      description: "Share these logs to help debug issues",
+    });
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleShareLogs = async () => {
+    const text = formatLogsForSharing(logs, filter === "all" ? undefined : filter);
+    
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "JARVIS Issue Log",
+          text: text,
+        });
+      } catch (err) {
+        // User cancelled or share failed, fall back to copy
+        handleCopyLogs();
+      }
+    } else {
+      handleCopyLogs();
     }
   };
 
@@ -179,6 +239,24 @@ export function IssueLog({ className, compact = false }: IssueLogProps) {
                 Warnings
               </Button>
             </div>
+            <Button 
+              variant="outline" 
+              size="icon" 
+              className="h-7 w-7" 
+              onClick={handleShareLogs}
+              title="Share logs"
+            >
+              {copied ? <Check className="h-4 w-4 text-neon-green" /> : <Share2 className="h-4 w-4" />}
+            </Button>
+            <Button 
+              variant="outline" 
+              size="icon" 
+              className="h-7 w-7" 
+              onClick={handleCopyLogs}
+              title="Copy logs"
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={clearLogs}>
               <Trash2 className="h-4 w-4" />
             </Button>
