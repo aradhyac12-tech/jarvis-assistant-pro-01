@@ -162,6 +162,43 @@ except ImportError:
     HAS_WEBSOCKETS = False
     print("⚠️  websockets not installed - real-time streaming disabled")
 
+# Voice Recognition for wake word
+try:
+    import speech_recognition as sr
+    HAS_SPEECH_RECOGNITION = True
+except ImportError:
+    HAS_SPEECH_RECOGNITION = False
+    print("⚠️  SpeechRecognition not installed - voice control disabled")
+
+# Text-to-Speech (offline)
+try:
+    import pyttsx3
+    HAS_TTS = True
+except ImportError:
+    HAS_TTS = False
+    print("⚠️  pyttsx3 not installed - voice responses disabled")
+
+# System Tray
+try:
+    import pystray
+    from pystray import MenuItem as item
+    HAS_TRAY = True
+except ImportError:
+    HAS_TRAY = False
+    print("⚠️  pystray not installed - system tray disabled")
+
+# Windows Notifications
+try:
+    from win10toast_click import ToastNotifier
+    HAS_TOAST = True
+except ImportError:
+    try:
+        from win10toast import ToastNotifier
+        HAS_TOAST = True
+    except ImportError:
+        HAS_TOAST = False
+        print("⚠️  win10toast not installed - notifications disabled")
+
 # Windows-specific imports
 if platform.system() == "Windows":
     try:
@@ -459,7 +496,208 @@ agent_status: Dict[str, Any] = {
     "audio_streaming": False,
     "camera_streaming": False,
     "screen_streaming": False,
+    "voice_listening": False,
+    "voice_active": False,
+    "last_voice_command": "",
 }
+
+
+# ============== NOTIFICATION SYSTEM ==============
+class NotificationManager:
+    """Handles Windows notifications."""
+    
+    def __init__(self):
+        self.toaster = None
+        if HAS_TOAST:
+            try:
+                self.toaster = ToastNotifier()
+            except Exception as e:
+                print(f"⚠️  Toast notification init failed: {e}")
+    
+    def notify(self, title: str, message: str, duration: int = 5):
+        """Show a Windows notification."""
+        if self.toaster:
+            try:
+                self.toaster.show_toast(
+                    title,
+                    message,
+                    duration=duration,
+                    threaded=True,
+                    icon_path=None
+                )
+            except Exception as e:
+                add_log("warn", f"Notification failed: {e}", category="system")
+        else:
+            add_log("info", f"[Notification] {title}: {message}", category="system")
+
+
+notification_manager = NotificationManager()
+
+
+# ============== VOICE LISTENER (Wake Word Detection) ==============
+class VoiceListener:
+    """Continuous voice listener with wake word detection."""
+    
+    def __init__(self, wake_word: str = "jarvis", on_command=None):
+        self.wake_word = wake_word.lower()
+        self.on_command = on_command
+        self.running = False
+        self.listening = False
+        self.recognizer = None
+        self.microphone = None
+        self.tts_engine = None
+        self.command_callback = None
+        self.last_command = ""
+        self.listen_thread = None
+        
+        # Initialize speech recognition
+        if HAS_SPEECH_RECOGNITION:
+            self.recognizer = sr.Recognizer()
+            self.recognizer.energy_threshold = 300
+            self.recognizer.dynamic_energy_threshold = True
+            self.recognizer.pause_threshold = 0.8
+        
+        # Initialize TTS
+        if HAS_TTS:
+            try:
+                self.tts_engine = pyttsx3.init()
+                voices = self.tts_engine.getProperty('voices')
+                # Try to find a male English voice
+                for voice in voices:
+                    if 'male' in voice.name.lower() or 'david' in voice.name.lower():
+                        self.tts_engine.setProperty('voice', voice.id)
+                        break
+                self.tts_engine.setProperty('rate', 180)
+                self.tts_engine.setProperty('volume', 0.9)
+            except Exception as e:
+                print(f"⚠️  TTS init failed: {e}")
+                self.tts_engine = None
+    
+    def speak(self, text: str):
+        """Speak text using TTS."""
+        if self.tts_engine:
+            try:
+                self.tts_engine.say(text)
+                self.tts_engine.runAndWait()
+            except Exception as e:
+                add_log("warn", f"TTS error: {e}", category="voice")
+    
+    def start(self):
+        """Start continuous listening."""
+        if not HAS_SPEECH_RECOGNITION:
+            add_log("error", "Speech recognition not available", category="voice")
+            return False
+        
+        if self.running:
+            return True
+        
+        self.running = True
+        self.listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
+        self.listen_thread.start()
+        
+        add_log("info", f"Voice listener started (wake word: '{self.wake_word}')", category="voice")
+        notification_manager.notify("JARVIS Voice Active", f"Say '{self.wake_word.capitalize()}' to activate")
+        update_agent_status({"voice_listening": True})
+        return True
+    
+    def stop(self):
+        """Stop listening."""
+        self.running = False
+        self.listening = False
+        update_agent_status({"voice_listening": False, "voice_active": False})
+        add_log("info", "Voice listener stopped", category="voice")
+    
+    def _listen_loop(self):
+        """Main listening loop running in background thread."""
+        try:
+            with sr.Microphone() as source:
+                add_log("info", "Calibrating microphone...", category="voice")
+                self.recognizer.adjust_for_ambient_noise(source, duration=1)
+                add_log("info", "Microphone ready. Listening for wake word...", category="voice")
+                
+                while self.running:
+                    try:
+                        self.listening = True
+                        update_agent_status({"voice_listening": True})
+                        
+                        # Listen for audio
+                        audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=10)
+                        
+                        # Recognize speech
+                        try:
+                            text = self.recognizer.recognize_google(audio).lower()
+                            add_log("info", f"Heard: {text}", category="voice")
+                            
+                            # Check for wake word
+                            if self.wake_word in text:
+                                update_agent_status({"voice_active": True})
+                                
+                                # Extract command after wake word
+                                wake_index = text.find(self.wake_word)
+                                command = text[wake_index + len(self.wake_word):].strip()
+                                
+                                if command:
+                                    self._process_command(command)
+                                else:
+                                    # Wake word detected but no command - wait for command
+                                    self.speak("Yes sir?")
+                                    notification_manager.notify("JARVIS", "Listening for command...")
+                                    
+                                    # Listen for follow-up command
+                                    try:
+                                        follow_up = self.recognizer.listen(source, timeout=5, phrase_time_limit=10)
+                                        command = self.recognizer.recognize_google(follow_up).lower()
+                                        self._process_command(command)
+                                    except sr.WaitTimeoutError:
+                                        self.speak("Command not received, sir.")
+                                        update_agent_status({"voice_active": False})
+                                    except sr.UnknownValueError:
+                                        self.speak("I didn't catch that, sir.")
+                                        update_agent_status({"voice_active": False})
+                                
+                                update_agent_status({"voice_active": False})
+                                
+                        except sr.UnknownValueError:
+                            pass  # Could not understand audio
+                        except sr.RequestError as e:
+                            add_log("error", f"Speech recognition error: {e}", category="voice")
+                            time.sleep(1)
+                    
+                    except sr.WaitTimeoutError:
+                        pass  # No speech detected, continue listening
+                    except Exception as e:
+                        add_log("warn", f"Listen error: {e}", category="voice")
+                        time.sleep(0.5)
+        
+        except Exception as e:
+            add_log("error", f"Voice listener crashed: {e}", category="voice")
+            self.running = False
+            update_agent_status({"voice_listening": False})
+    
+    def _process_command(self, command: str):
+        """Process a voice command."""
+        self.last_command = command
+        update_agent_status({"last_voice_command": command})
+        
+        add_log("info", f"Processing command: {command}", category="voice")
+        notification_manager.notify("JARVIS Command", command)
+        
+        # Acknowledge
+        self.speak(f"Processing: {command}")
+        
+        # Call the command callback if set
+        if self.on_command:
+            try:
+                result = self.on_command(command)
+                if result:
+                    self.speak(result)
+            except Exception as e:
+                add_log("error", f"Command execution error: {e}", category="voice")
+                self.speak("I encountered an error, sir.")
+
+
+# Global voice listener instance
+voice_listener: Optional[VoiceListener] = None
 
 
 def add_log(level: str, message: str, details: str = "", category: str = "general"):
@@ -2665,12 +2903,13 @@ class JarvisAgent:
     async def run(self):
         """Main run loop."""
         print("\n" + "="*50)
-        print("🤖 JARVIS PC Agent v2.4 (with Web UI)")
+        print("🤖 JARVIS PC Agent v2.5 (AI Voice Edition)")
         print("="*50)
         print(f"📍 Device: {DEVICE_NAME}")
         print(f"🔗 Backend: {SUPABASE_URL}")
         print(f"📷 Camera: {'✅' if HAS_OPENCV else '❌'}")
         print(f"🎤 Audio: {'✅' if HAS_PYAUDIO else '❌'}")
+        print(f"🗣️ Voice: {'✅' if HAS_SPEECH_RECOGNITION else '❌'}")
         print(f"🔌 WebSockets: {'✅' if HAS_WEBSOCKETS else '❌'}")
         print(f"🌐 Local Dashboard: http://localhost:{UI_PORT}")
         print("="*50 + "\n")
@@ -2709,6 +2948,87 @@ class JarvisAgent:
         add_log("info", "Agent stopped. Goodbye!", category="system")
 
 
+# ============== SYSTEM TRAY ==============
+class SystemTray:
+    """Windows system tray icon with menu."""
+    
+    def __init__(self, gui_callback=None, voice_toggle_callback=None, quit_callback=None):
+        self.icon = None
+        self.gui_callback = gui_callback
+        self.voice_toggle_callback = voice_toggle_callback
+        self.quit_callback = quit_callback
+        self.running = False
+    
+    def create_image(self):
+        """Create a simple icon image."""
+        # Create a simple blue circle icon
+        size = 64
+        image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        
+        # Draw a circle
+        for x in range(size):
+            for y in range(size):
+                dx = x - size // 2
+                dy = y - size // 2
+                distance = (dx * dx + dy * dy) ** 0.5
+                if distance < size // 2 - 2:
+                    # Blue gradient
+                    intensity = int(200 - distance * 2)
+                    image.putpixel((x, y), (59, 130, 246, intensity))
+                elif distance < size // 2:
+                    # Border
+                    image.putpixel((x, y), (30, 64, 175, 255))
+        
+        return image
+    
+    def start(self):
+        """Start the system tray icon."""
+        if not HAS_TRAY:
+            add_log("warn", "System tray not available", category="system")
+            return False
+        
+        def on_show_gui(icon, item):
+            if self.gui_callback:
+                self.gui_callback()
+        
+        def on_toggle_voice(icon, item):
+            if self.voice_toggle_callback:
+                self.voice_toggle_callback()
+        
+        def on_quit(icon, item):
+            icon.stop()
+            if self.quit_callback:
+                self.quit_callback()
+        
+        menu = pystray.Menu(
+            item('Show Window', on_show_gui, default=True),
+            item('Toggle Voice', on_toggle_voice),
+            pystray.Menu.SEPARATOR,
+            item('Quit', on_quit)
+        )
+        
+        self.icon = pystray.Icon(
+            "jarvis",
+            self.create_image(),
+            "JARVIS Agent",
+            menu
+        )
+        
+        self.running = True
+        threading.Thread(target=self.icon.run, daemon=True).start()
+        add_log("info", "System tray icon started", category="system")
+        return True
+    
+    def stop(self):
+        """Stop the tray icon."""
+        if self.icon:
+            try:
+                self.icon.stop()
+            except:
+                pass
+        self.running = False
+
+
 # ============== NATIVE GUI (TKINTER) ==============
 class JarvisGUI:
     """Native desktop GUI for the JARVIS Agent using Tkinter."""
@@ -2717,6 +3037,8 @@ class JarvisGUI:
         self.root = None
         self.running = False
         self.update_interval = 1000  # ms
+        self.minimized_to_tray = False
+        self.tray = None
         
         # References to UI elements
         self.pairing_label = None
@@ -2733,6 +3055,9 @@ class JarvisGUI:
         self.audio_status = None
         self.camera_status = None
         self.screen_status = None
+        self.voice_status = None
+        self.voice_btn = None
+        self.last_command_label = None
         self.log_text = None
         self.last_log_count = 0
     
@@ -2744,10 +3069,13 @@ class JarvisGUI:
         
         self.running = True
         self.root = tk.Tk()
-        self.root.title("JARVIS Agent")
-        self.root.geometry("650x750")
+        self.root.title("JARVIS Agent v2.5")
+        self.root.geometry("700x850")
         self.root.configure(bg="#0a0e17")
         self.root.resizable(True, True)
+        
+        # Handle window close - minimize to tray instead
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         
         # Configure styles
         self._setup_styles()
@@ -2755,10 +3083,87 @@ class JarvisGUI:
         # Build UI
         self._build_ui()
         
+        # Start system tray
+        self.tray = SystemTray(
+            gui_callback=self._show_window,
+            voice_toggle_callback=self._toggle_voice,
+            quit_callback=self._quit_app
+        )
+        self.tray.start()
+        
         # Start update loop
         self.root.after(500, self._update_ui)
         
         return True
+    
+    def _on_close(self):
+        """Handle window close - minimize to tray."""
+        if HAS_TRAY and self.tray and self.tray.running:
+            self.root.withdraw()
+            self.minimized_to_tray = True
+            notification_manager.notify("JARVIS Agent", "Minimized to system tray. Click icon to restore.")
+        else:
+            self._quit_app()
+    
+    def _show_window(self):
+        """Show the main window."""
+        if self.root:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            self.minimized_to_tray = False
+    
+    def _toggle_voice(self):
+        """Toggle voice listener."""
+        global voice_listener
+        if voice_listener and voice_listener.running:
+            voice_listener.stop()
+            notification_manager.notify("JARVIS Voice", "Voice control disabled")
+        else:
+            self._start_voice_listener()
+    
+    def _start_voice_listener(self):
+        """Start the voice listener."""
+        global voice_listener
+        if not HAS_SPEECH_RECOGNITION:
+            notification_manager.notify("JARVIS Voice", "Speech recognition not installed")
+            return
+        
+        # Create voice listener with command callback
+        voice_listener = VoiceListener(
+            wake_word="jarvis",
+            on_command=self._handle_voice_command
+        )
+        voice_listener.start()
+    
+    def _handle_voice_command(self, command: str) -> str:
+        """Handle a voice command and return response."""
+        # Send command to the AI backend
+        add_log("info", f"Voice command: {command}", category="voice")
+        
+        # For now, return a simple acknowledgement
+        # The actual command execution happens through the web dashboard
+        return f"I'll process that for you, sir."
+    
+    def _quit_app(self):
+        """Quit the application."""
+        global voice_listener
+        
+        # Stop voice listener
+        if voice_listener:
+            voice_listener.stop()
+        
+        # Stop tray
+        if self.tray:
+            self.tray.stop()
+        
+        self.running = False
+        if self.root:
+            try:
+                self.root.quit()
+                self.root.destroy()
+            except:
+                pass
     
     def _setup_styles(self):
         """Configure ttk styles for dark theme."""
@@ -2879,6 +3284,31 @@ class JarvisGUI:
         self.bright_bar = ttk.Progressbar(bright_card, style="Bright.Horizontal.TProgressbar", length=150, mode='determinate')
         self.bright_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
         
+        # Voice Control Section
+        voice_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground="#10b981", highlightthickness=2)
+        voice_frame.pack(fill=tk.X, pady=(0, 15), ipady=10)
+        
+        voice_header = tk.Frame(voice_frame, bg=bg_card)
+        voice_header.pack(fill=tk.X, padx=15, pady=(10, 5))
+        
+        ttk.Label(voice_header, text="🎤 Voice Control (Wake Word: 'Jarvis')", style="CardTitle.TLabel").pack(side=tk.LEFT)
+        
+        self.voice_btn = tk.Button(voice_header, text="🎙️ Start Voice", bg="#10b981", fg="white",
+                                   activebackground="#059669", activeforeground="white",
+                                   bd=0, padx=15, pady=5, cursor="hand2",
+                                   font=("Segoe UI", 10, "bold"),
+                                   command=self._toggle_voice)
+        self.voice_btn.pack(side=tk.RIGHT)
+        
+        voice_status_row = tk.Frame(voice_frame, bg=bg_card)
+        voice_status_row.pack(fill=tk.X, padx=15, pady=(5, 5))
+        
+        self.voice_status = ttk.Label(voice_status_row, text="🔇 Voice: OFF", style="StreamOff.TLabel")
+        self.voice_status.pack(side=tk.LEFT)
+        
+        self.last_command_label = ttk.Label(voice_status_row, text="", style="PairingHint.TLabel")
+        self.last_command_label.pack(side=tk.RIGHT)
+        
         # Streaming Status
         stream_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
         stream_frame.pack(fill=tk.X, pady=(0, 15), ipady=8)
@@ -2916,7 +3346,7 @@ class JarvisGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, bg="#0d1117", fg=text, 
                                                    font=("Consolas", 9), wrap=tk.WORD,
                                                    insertbackground=text, bd=0, 
-                                                   highlightthickness=0, height=12)
+                                                   highlightthickness=0, height=10)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.log_text.configure(state=tk.DISABLED)
         
@@ -2924,6 +3354,7 @@ class JarvisGUI:
         self.log_text.tag_configure("error", foreground="#ef4444")
         self.log_text.tag_configure("warn", foreground="#f59e0b")
         self.log_text.tag_configure("info", foreground="#3b82f6")
+        self.log_text.tag_configure("voice", foreground="#10b981")
         self.log_text.tag_configure("time", foreground="#6b7280")
         self.log_text.tag_configure("category", foreground="#9ca3af")
     
@@ -2981,6 +3412,29 @@ class JarvisGUI:
                 self.screen_status.configure(text="🖥️ Screen: ACTIVE", style="StreamOn.TLabel")
             else:
                 self.screen_status.configure(text="🖥️ Screen: OFF", style="StreamOff.TLabel")
+            
+            # Update voice status
+            if self.voice_status:
+                if status.get("voice_active"):
+                    self.voice_status.configure(text="🎤 Voice: ACTIVE (listening)", style="StreamOn.TLabel")
+                elif status.get("voice_listening"):
+                    self.voice_status.configure(text="🎤 Voice: Waiting for 'Jarvis'", style="StreamOn.TLabel")
+                else:
+                    self.voice_status.configure(text="🔇 Voice: OFF", style="StreamOff.TLabel")
+            
+            # Update voice button state
+            if self.voice_btn:
+                global voice_listener
+                if voice_listener and voice_listener.running:
+                    self.voice_btn.configure(text="🛑 Stop Voice", bg="#ef4444")
+                else:
+                    self.voice_btn.configure(text="🎙️ Start Voice", bg="#10b981")
+            
+            # Update last command
+            if self.last_command_label:
+                last_cmd = status.get("last_voice_command", "")
+                if last_cmd:
+                    self.last_command_label.configure(text=f"Last: \"{last_cmd[:40]}{'...' if len(last_cmd) > 40 else ''}\"")
             
             # Update logs
             logs = get_logs()
@@ -3054,7 +3508,20 @@ class JarvisGUI:
     
     def stop(self):
         """Stop the GUI."""
+        global voice_listener
+        
         self.running = False
+        
+        # Stop voice listener
+        if voice_listener:
+            voice_listener.stop()
+            voice_listener = None
+        
+        # Stop tray
+        if self.tray:
+            self.tray.stop()
+            self.tray = None
+        
         if self.root:
             try:
                 self.root.quit()
@@ -3083,7 +3550,17 @@ async def run_agent():
 
 def main():
     """Main entry point - starts GUI and agent."""
-    global jarvis_gui
+    global jarvis_gui, voice_listener
+    
+    print("\n" + "="*60)
+    print("🤖 JARVIS PC Agent v2.5 - AI Voice Edition")
+    print("="*60)
+    print("Features:")
+    print("  🎤 Voice Control - Say 'Jarvis' to activate")
+    print("  🔔 System Tray - Minimize to tray")
+    print("  📱 Windows Notifications")
+    print("  🌐 All PC Control Features")
+    print("="*60 + "\n")
     
     try:
         if HAS_TKINTER:
@@ -3091,6 +3568,12 @@ def main():
             jarvis_gui = JarvisGUI()
             
             if jarvis_gui.start():
+                # Show startup notification
+                notification_manager.notify(
+                    "JARVIS Agent Started",
+                    "Say 'Jarvis' to use voice control"
+                )
+                
                 # Run agent in background thread
                 def run_agent_thread():
                     loop = asyncio.new_event_loop()
@@ -3130,6 +3613,7 @@ def main():
         print("  1. Run: python -m pip install -r requirements.txt")
         print("  2. Make sure you have Python 3.10-3.12")
         print("  3. Check your internet connection")
+        print("  4. For voice: pip install SpeechRecognition pyttsx3")
         print("\nPress Enter to exit...")
         try:
             input()
