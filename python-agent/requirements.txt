@@ -27,5 +27,13 @@ opencv-python>=4.9.0.80  # PC camera capture
 # QR Code for pairing
 qrcode>=7.4.2            # QR code generation for terminal display
 
+# Voice Recognition (Wake Word)
+SpeechRecognition>=3.10.0  # Voice recognition for wake word
+pyttsx3>=2.90              # Text-to-speech (offline)
+
+# System Tray (Windows)
+pystray>=0.19.5          # System tray icon
+win10toast-click>=0.1.2  # Windows 10/11 notifications
+
 # Optional: For music features
 # youtube-search-python>=1.6.6
