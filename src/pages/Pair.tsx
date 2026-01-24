@@ -24,7 +24,7 @@ const Pair = forwardRef<HTMLDivElement>(function Pair(_, ref) {
 
   useEffect(() => {
     if (!sessionLoading && session) {
-      navigate("/dashboard", { replace: true });
+      navigate("/hub", { replace: true });
     }
   }, [session, sessionLoading, navigate]);
 
@@ -48,7 +48,7 @@ const Pair = forwardRef<HTMLDivElement>(function Pair(_, ref) {
           ? "PC connected. You won't need to pair again on this browser." 
           : "PC connected for this session." 
       });
-      setTimeout(() => navigate("/dashboard", { replace: true }), 600);
+      setTimeout(() => navigate("/hub", { replace: true }), 600);
     } else {
       toast({
         title: "Connection Failed",
