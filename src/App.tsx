@@ -8,21 +8,18 @@ import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { Loader2 } from "lucide-react";
 import { lazy, Suspense, forwardRef } from "react";
 
-// Lazy load pages to avoid ref warnings with React Router
+// Lazy load pages
 const Pair = lazy(() => import("./pages/Pair"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
-const ControlHub = lazy(() => import("./pages/ControlHub"));
+const Hub = lazy(() => import("./pages/Hub"));
 const VoiceAI = lazy(() => import("./pages/VoiceAI"));
 const Apps = lazy(() => import("./pages/Apps"));
 const Files = lazy(() => import("./pages/Files"));
 const MicCamera = lazy(() => import("./pages/MicCamera"));
-const Samsung = lazy(() => import("./pages/Samsung"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient();
 
-// ForwardRef wrapper to avoid React Router ref warning
 const LoadingFallback = forwardRef<HTMLDivElement>(function LoadingFallback(_, ref) {
   return (
     <div ref={ref} className="min-h-screen flex items-center justify-center bg-background">
@@ -50,23 +47,25 @@ function AppRoutes() {
     <Suspense fallback={<LoadingFallback />}>
       <Routes>
         <Route path="/pair" element={<Pair />} />
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route
-          path="/dashboard"
-          element={
-            <ProtectedRoute>
-              <Dashboard />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/" element={<Navigate to="/hub" replace />} />
+        
+        {/* Main Hub - unified control panel */}
         <Route
           path="/hub"
           element={
             <ProtectedRoute>
-              <ControlHub />
+              <Hub />
             </ProtectedRoute>
           }
         />
+        
+        {/* Redirect old routes to Hub */}
+        <Route path="/dashboard" element={<Navigate to="/hub" replace />} />
+        <Route path="/controls" element={<Navigate to="/hub" replace />} />
+        <Route path="/music" element={<Navigate to="/hub" replace />} />
+        <Route path="/remote" element={<Navigate to="/hub" replace />} />
+        
+        {/* Keep these as separate specialized pages */}
         <Route
           path="/voice"
           element={
@@ -75,10 +74,6 @@ function AppRoutes() {
             </ProtectedRoute>
           }
         />
-        {/* Redirect old routes to Control Hub */}
-        <Route path="/controls" element={<Navigate to="/hub" replace />} />
-        <Route path="/music" element={<Navigate to="/hub" replace />} />
-        <Route path="/remote" element={<Navigate to="/hub" replace />} />
         <Route
           path="/apps"
           element={
@@ -100,14 +95,6 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <MicCamera />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/samsung"
-          element={
-            <ProtectedRoute>
-              <Samsung />
             </ProtectedRoute>
           }
         />
