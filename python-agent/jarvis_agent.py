@@ -1347,6 +1347,7 @@ class CameraStreamer:
         def _try_open(idx: int, backend: Optional[int]) -> Optional["cv2.VideoCapture"]:
             backend_name = {cv2.CAP_MSMF: "MSMF", cv2.CAP_DSHOW: "DSHOW"}.get(backend, "default") if backend else "default"
             try:
+                add_log("info", f"Trying camera {idx} with {backend_name}...", category="camera")
                 cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
 
                 # Request a common, webcam-friendly format
@@ -1366,15 +1367,15 @@ class CameraStreamer:
                     cap.release()
                     return None
 
-                # Warm up - try to get a frame
-                for attempt in range(5):
-                    ret, _ = cap.read()
-                    if ret:
-                        add_log("info", f"Camera {idx} opened successfully with {backend_name}", category="camera")
+                # Warm up - try to get a frame with extended retries
+                for attempt in range(10):
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None and test_frame.size > 0:
+                        add_log("info", f"Camera {idx} opened successfully with {backend_name} (frame {test_frame.shape})", category="camera")
                         return cap
-                    time.sleep(0.05)
+                    time.sleep(0.1)
 
-                add_log("warn", f"Camera {idx} opened but no frames with {backend_name}", category="camera")
+                add_log("warn", f"Camera {idx} opened but no valid frames with {backend_name}", category="camera")
                 cap.release()
                 return None
             except Exception as e:
@@ -1382,13 +1383,13 @@ class CameraStreamer:
                 return None
 
         try:
-            # Windows: DSHOW is the most reliable for "0 opened but 0 frames" (MSMF grabFrame errors)
+            # Windows: DSHOW is the most reliable
             backends: List[Optional[int]] = [None]
             if platform.system() == "Windows":
                 backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
 
-            # Avoid overly aggressive probing (can trigger backend warnings / obsensor errors).
-            candidate_indexes = [camera_index, 0, 1, 2]
+            # Limited probing to avoid backend errors
+            candidate_indexes = [camera_index, 0, 1]
             cap = None
             tried_combos = []
 
@@ -1406,12 +1407,20 @@ class CameraStreamer:
             if cap is None:
                 self.last_error = f"No camera available. Tried: {', '.join(tried_combos[:6])}"
                 add_log("error", self.last_error, category="camera")
+                # Send error to websocket so browser knows
+                if self.ws:
+                    try:
+                        await self.ws.send(json.dumps({"type": "error", "message": self.last_error}))
+                    except:
+                        pass
                 return
 
             self.camera = cap
             add_log("info", f"Camera {camera_index} streaming started (target {self.fps} FPS, quality {self.quality})", category="camera")
 
             frame_interval = 1.0 / self.fps
+            consecutive_failures = 0
+            max_consecutive_failures = 30
             
             while self.running:
                 start_time = time.time()
@@ -1422,36 +1431,53 @@ class CameraStreamer:
                     continue
                 
                 ret, frame = self.camera.read()
-                if not ret:
-                    add_log("warn", "Failed to read frame from camera", category="camera")
+                if not ret or frame is None or frame.size == 0:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        self.last_error = f"Camera stopped producing frames after {consecutive_failures} failures"
+                        add_log("error", self.last_error, category="camera")
+                        break
+                    
+                    if consecutive_failures % 10 == 0:
+                        add_log("warn", f"Failed to read frame ({consecutive_failures}/{max_consecutive_failures})", category="camera")
+                    
                     # Try to reopen camera
-                    try:
-                        self.camera.release()
-                        await asyncio.sleep(0.5)
-                        self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY)
-                        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        self.camera.set(cv2.CAP_PROP_FPS, max(self.fps, 10))
-                        add_log("info", f"Camera {camera_index} reopened after frame failure", category="camera")
-                    except Exception as reopen_err:
-                        add_log("error", f"Camera reopen failed: {reopen_err}", category="camera")
-                    await asyncio.sleep(0.1)
+                    if consecutive_failures == 15:
+                        try:
+                            self.camera.release()
+                            await asyncio.sleep(0.5)
+                            self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY)
+                            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                            self.camera.set(cv2.CAP_PROP_FPS, max(self.fps, 10))
+                            add_log("info", f"Camera {camera_index} reopened after failures", category="camera")
+                        except Exception as reopen_err:
+                            add_log("error", f"Camera reopen failed: {reopen_err}", category="camera")
+                    
+                    await asyncio.sleep(0.05)
                     continue
+                
+                # Reset failure counter on success
+                consecutive_failures = 0
                 
                 # Resize frame for streaming
                 frame = cv2.resize(frame, (640, 480))
                 
-                # Encode frame as JPEG binary (NOT base64 - send raw bytes for performance)
+                # Encode frame as JPEG binary
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
                 frame_bytes = buffer.tobytes()
                 frame_size = len(frame_bytes)
                 
                 try:
-                    # Send raw binary JPEG data directly (much faster than base64 JSON)
+                    # Send raw binary JPEG data directly
                     await self.ws.send(frame_bytes)
                     self.frame_count += 1
                     self.bytes_sent += frame_size
                     self.last_frame_time = time.time()
+                    
+                    # Log progress periodically
+                    if self.frame_count % 100 == 0:
+                        add_log("info", f"Camera sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)", category="camera")
                 except Exception as e:
                     add_log("warn", f"Camera send error: {e}", category="camera")
                     if not await self._reconnect():
@@ -1660,12 +1686,18 @@ class ScreenStreamer:
         if not HAS_MSS:
             self.last_error = "mss not available"
             add_log("error", self.last_error, category="screen")
+            # Notify browser of error
+            if self.ws:
+                try:
+                    await self.ws.send(json.dumps({"type": "error", "message": self.last_error}))
+                except:
+                    pass
             return
 
         try:
             import mss
 
-            # Import numpy/cv2 lazily (they may not be available in minimal installs)
+            # Import numpy/cv2 lazily
             np = None
             cv2_local = None
             try:
@@ -1685,6 +1717,9 @@ class ScreenStreamer:
                 mon = monitors[idx]
                 add_log("info", f"Screen streaming started (monitor {idx})", f"target={self.fps}fps quality={self.quality} scale={self.scale}", category="screen")
 
+                consecutive_failures = 0
+                max_failures = 30
+
                 while self.running:
                     start_time = time.time()
 
@@ -1693,7 +1728,18 @@ class ScreenStreamer:
                             break
                         continue
 
-                    shot = sct.grab(mon)  # BGRA
+                    try:
+                        shot = sct.grab(mon)  # BGRA
+                    except Exception as grab_err:
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_failures:
+                            self.last_error = f"Screen capture failed repeatedly: {grab_err}"
+                            add_log("error", self.last_error, category="screen")
+                            break
+                        await asyncio.sleep(0.1)
+                        continue
+
+                    consecutive_failures = 0
 
                     # Fast path: numpy + opencv
                     if np is not None and cv2_local is not None:
@@ -1704,7 +1750,8 @@ class ScreenStreamer:
                             frame = cv2_local.resize(frame, (max(1, int(w * self.scale)), max(1, int(h * self.scale))))
                         ok, buf = cv2_local.imencode('.jpg', frame, [cv2_local.IMWRITE_JPEG_QUALITY, int(self.quality)])
                         if not ok:
-                            raise RuntimeError("Failed to encode screen frame")
+                            add_log("warn", "Failed to encode screen frame", category="screen")
+                            continue
                         frame_bytes = buf.tobytes()
                     else:
                         # Fallback: Pillow
@@ -1720,6 +1767,10 @@ class ScreenStreamer:
                         self.frame_count += 1
                         self.bytes_sent += len(frame_bytes)
                         self.last_frame_time = time.time()
+                        
+                        # Log progress periodically
+                        if self.frame_count % 100 == 0:
+                            add_log("info", f"Screen sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)", category="screen")
                     except Exception as e:
                         add_log("warn", f"Screen send error: {e}", category="screen")
                         if not await self._reconnect():
