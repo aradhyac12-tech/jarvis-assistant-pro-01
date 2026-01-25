@@ -1919,9 +1919,11 @@ class JarvisAgent:
         
         self.audio_streamer = AudioStreamer()
         self.camera_streamer = CameraStreamer()
+        self.screen_streamer = ScreenStreamer()
         self.phone_webcam_receiver = PhoneWebcamReceiver()
         self.audio_session_id = None
         self.camera_session_id = None
+        self.screen_session_id = None
         self.phone_webcam_session_id = None
         
         self._volume_cache = 50
@@ -2341,13 +2343,14 @@ class JarvisAgent:
         try:
             camera_stats = self.camera_streamer.get_stats()
             audio_stats = self.audio_streamer.get_stats()
+            screen_stats = self.screen_streamer.get_stats()
             
             return {
                 "success": True,
                 "camera": {
                     "frame_count": camera_stats.get("frame_count", 0),
                     "bytes_sent": camera_stats.get("bytes_sent", 0),
-                    "fps": camera_stats.get("fps", 0),
+                    "fps": camera_stats.get("fps_actual", camera_stats.get("fps", 0)),
                     "last_error": self.camera_streamer.last_error,
                     "running": self.camera_streamer.running,
                     "quality": self.camera_streamer.quality,
@@ -2360,6 +2363,15 @@ class JarvisAgent:
                     "send_rate_kbps": audio_stats.get("send_rate_kbps", 0),
                     "recv_rate_kbps": audio_stats.get("recv_rate_kbps", 0),
                     "sample_rate": self.audio_streamer.sample_rate,
+                },
+                "screen": {
+                    "frame_count": screen_stats.get("frame_count", 0),
+                    "bytes_sent": screen_stats.get("bytes_sent", 0),
+                    "fps": screen_stats.get("fps_actual", 0),
+                    "last_error": self.screen_streamer.last_error,
+                    "running": self.screen_streamer.running,
+                    "quality": self.screen_streamer.quality,
+                    "target_fps": self.screen_streamer.fps,
                 },
                 "phone_webcam": self.phone_webcam_receiver.get_stats() if hasattr(self, 'phone_webcam_receiver') else None,
             }
@@ -3360,6 +3372,48 @@ class JarvisAgent:
             elif command_type == "get_streaming_stats":
                 return self._get_streaming_stats()
 
+            # Ping for connectivity check
+            elif command_type == "ping":
+                return {"success": True, "pong": True, "timestamp": time.time()}
+
+            # Screen streaming via WebSocket relay
+            elif command_type == "start_screen_stream":
+                session_id = payload.get("session_id", str(uuid.uuid4()))
+                fps = payload.get("fps", 30)
+                quality = payload.get("quality", 70)
+                scale = payload.get("scale", 0.6)
+                monitor_index = payload.get("monitor_index", 1)
+                self.screen_session_id = session_id
+
+                connected = await self.screen_streamer.connect(session_id, fps, quality, scale, monitor_index)
+                if connected:
+                    asyncio.create_task(self.screen_streamer.start_streaming())
+                    return {"success": True, "session_id": session_id}
+                
+                return {
+                    "success": False, 
+                    "error": self.screen_streamer.last_error or "Failed to start screen stream"
+                }
+
+            elif command_type == "stop_screen_stream":
+                await self.screen_streamer.stop()
+                self.screen_session_id = None
+                return {"success": True}
+
+            elif command_type == "update_screen_settings":
+                fps = payload.get("fps")
+                quality = payload.get("quality")
+                scale = payload.get("scale")
+                updated = self.screen_streamer.update_settings(fps, quality, scale)
+                if updated:
+                    return {
+                        "success": True, 
+                        "fps": self.screen_streamer.fps, 
+                        "quality": self.screen_streamer.quality,
+                        "scale": self.screen_streamer.scale
+                    }
+                return {"success": False, "error": "Screen not streaming"}
+
             else:
                 add_log("warn", f"Unknown command: {command_type}", category="command")
                 return {"success": False, "error": f"Unknown command: {command_type}"}
@@ -3520,6 +3574,7 @@ class JarvisAgent:
         # Stop streamers
         await self.audio_streamer.stop()
         await self.camera_streamer.stop()
+        await self.screen_streamer.stop()
         
         # Mark device offline
         try:
