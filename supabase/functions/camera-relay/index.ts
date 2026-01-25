@@ -185,16 +185,20 @@ serve(async (req) => {
           }
         } else {
           // Binary data (raw frame bytes) - forward with throttling
+          // NOTE: Normalize Uint8Array -> ArrayBuffer slice for maximum compatibility.
           const now = Date.now();
           const minInterval = 1000 / session.targetFps;
-          
+
           if (now - session.lastFrameTime >= minInterval) {
             session.lastFrameTime = now;
             session.frameCount++;
-            
+
             const targetSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
             if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-              targetSocket.send(event.data);
+              const payload = event.data instanceof Uint8Array
+                ? event.data.buffer.slice(event.data.byteOffset, event.data.byteOffset + event.data.byteLength)
+                : event.data;
+              targetSocket.send(payload);
             }
           }
         }
