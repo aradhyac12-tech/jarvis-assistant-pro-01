@@ -27,6 +27,7 @@ serve(async (req) => {
   }
 
   try {
+    const requestId = crypto.randomUUID();
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -98,12 +99,22 @@ serve(async (req) => {
       );
     }
 
-    const { message } = await req.json();
+    let message: unknown;
+    try {
+      const body = await req.json();
+      message = (body as Record<string, unknown>)?.message;
+    } catch (e) {
+      console.error(`[jarvis-chat:${requestId}] invalid JSON body`, e);
+      return new Response(
+        JSON.stringify({ error: "Invalid JSON body", request_id: requestId }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     // Validate input
     if (!message || typeof message !== "string" || message.length > 10000) {
       return new Response(
-        JSON.stringify({ error: "Invalid message" }),
+        JSON.stringify({ error: "Invalid message", request_id: requestId }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -119,7 +130,7 @@ serve(async (req) => {
     const isHindi = hindiRegex.test(message);
     const language = isHindi ? "hi" : "en";
 
-    console.log(`Processing message | Device: ${deviceId || 'N/A'} | User: ${userId || 'N/A'} | Language: ${language}`);
+    console.log(`[jarvis-chat:${requestId}] Processing | Device: ${deviceId || 'N/A'} | User: ${userId || 'N/A'} | Language: ${language}`);
 
     // Comprehensive system prompt with ALL capabilities
     const systemPrompt = `You are JARVIS, an advanced AI assistant inspired by Iron Man's JARVIS. You control the user's PC and mobile device with voice commands.
@@ -273,6 +284,9 @@ User: "Find files named report"
 For general questions without actions, respond naturally without command blocks.
 Keep responses concise, friendly, and JARVIS-like.`;
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25_000);
+
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -286,29 +300,49 @@ Keep responses concise, friendly, and JARVIS-like.`;
           { role: "user", content: message },
         ],
       }),
+      signal: controller.signal,
     });
 
+    clearTimeout(timeout);
+
     if (!response.ok) {
-      const error = await response.text();
-      console.error("AI Gateway error:", error);
+      const errorText = await response.text().catch(() => "");
+      console.error(`[jarvis-chat:${requestId}] AI Gateway error ${response.status}:`, errorText);
       
       if (response.status === 429) {
         return new Response(
-          JSON.stringify({ error: "Rate limit exceeded. Please try again in a moment." }),
+          JSON.stringify({ error: "Rate limit exceeded. Please try again in a moment.", request_id: requestId }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
       if (response.status === 402) {
         return new Response(
-          JSON.stringify({ error: "AI credits depleted. Please add credits to continue." }),
+          JSON.stringify({ error: "AI credits depleted. Please add credits to continue.", request_id: requestId }),
           { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      
-      throw new Error("Failed to get AI response");
+
+      return new Response(
+        JSON.stringify({
+          error: "AI provider error",
+          status: response.status,
+          request_id: requestId,
+        }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const data = await response.json();
+    let data: any;
+    try {
+      data = await response.json();
+    } catch (e) {
+      const raw = await response.text().catch(() => "");
+      console.error(`[jarvis-chat:${requestId}] Failed to parse AI JSON:`, e, raw.slice(0, 1000));
+      return new Response(
+        JSON.stringify({ error: "Malformed AI response", request_id: requestId }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
     const aiResponse = data.choices?.[0]?.message?.content || "I apologize, I could not process that request.";
 
     // Extract commands from the response
@@ -328,13 +362,14 @@ Keep responses concise, friendly, and JARVIS-like.`;
     // Clean response (remove command blocks for display)
     const cleanResponse = aiResponse.replace(/```command[\s\S]*?```/g, "").trim();
 
-    console.log(`AI Response generated | Commands: ${commands.length}`);
+    console.log(`[jarvis-chat:${requestId}] AI Response generated | Commands: ${commands.length}`);
 
     return new Response(
       JSON.stringify({ 
         response: cleanResponse, 
         language,
-        commands
+        commands,
+        request_id: requestId,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
