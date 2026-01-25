@@ -112,12 +112,18 @@ export default function MicCamera() {
   const phoneWebcamWsRef = useRef<WebSocket | null>(null);
   const phoneWebcamTimerRef = useRef<number | null>(null);
 
-  // ==================== SCREEN MIRRORING STATE ====================
+  // ==================== SCREEN MIRRORING STATE (WebSocket-based) ====================
   const [screenMirrorActive, setScreenMirrorActive] = useState(false);
   const [screenMirrorFrame, setScreenMirrorFrame] = useState<string | null>(null);
-  const [screenMirrorFps, setScreenMirrorFps] = useState(10);
-  const [screenMirrorQuality, setScreenMirrorQuality] = useState(50);
-  const screenMirrorIntervalRef = useRef<number | null>(null);
+  const [screenMirrorFps, setScreenMirrorFps] = useState(30);
+  const [screenMirrorQuality, setScreenMirrorQuality] = useState(70);
+  const [screenMirrorSessionId, setScreenMirrorSessionId] = useState<string | null>(null);
+  const screenMirrorWsRef = useRef<WebSocket | null>(null);
+  const [screenMirrorLiveFps, setScreenMirrorLiveFps] = useState(0);
+  const [screenMirrorLatency, setScreenMirrorLatency] = useState(0);
+  const screenFpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
+  const screenFrameTimesRef = useRef<number[]>([]);
+  const [showScreenSettings, setShowScreenSettings] = useState(false);
 
   const [showDebug, setShowDebug] = useState(false);
   const [debugStats, setDebugStats] = useState({
@@ -660,59 +666,173 @@ export default function MicCamera() {
     toast({ title: "Audio Relay Stopped" });
   }, [sendCommand, phoneMicStream, toast]);
 
-  // ==================== SCREEN MIRRORING ====================
+  // ==================== SCREEN MIRRORING (WebSocket-based) ====================
   const startScreenMirror = useCallback(async () => {
     try {
-      addLog("info", "web", "Starting screen mirroring");
-      
+      const sessionId = crypto.randomUUID();
+      setScreenMirrorSessionId(sessionId);
+      addLog("info", "web", `Starting screen mirroring via WebSocket (session: ${sessionId.slice(0, 8)}...)`);
+
+      // Tell PC to start screen stream via WebSocket relay
       const started = await sendCommand(
-        "start_stream",
-        { fps: screenMirrorFps, quality: screenMirrorQuality, scale: 0.5 },
-        { awaitResult: true, timeoutMs: 10000 }
+        "start_screen_stream",
+        {
+          session_id: sessionId,
+          fps: screenMirrorFps,
+          quality: screenMirrorQuality,
+          scale: 0.5,
+        },
+        { awaitResult: true, timeoutMs: 15000 }
       );
-      
+
       if (!started.success) {
         const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
         addLog("error", "agent", msg);
         toast({ title: "Screen Mirror Error", description: msg, variant: "destructive" });
+        setScreenMirrorSessionId(null);
         return;
       }
-      
-      setScreenMirrorActive(true);
-      toast({ title: "Screen Mirroring Started", description: `Streaming at ${screenMirrorFps} FPS` });
-      
-      // Poll for frames
-      const pollFrames = async () => {
-        if (!screenMirrorActive) return;
+
+      addLog("info", "agent", "PC screen stream started");
+
+      // Connect as 'pc' type (receiver) - the Python agent connects as 'phone' (sender)
+      const ws = new WebSocket(
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true`
+      );
+      screenMirrorWsRef.current = ws;
+      ws.binaryType = "arraybuffer";
+
+      // Track current blob URL for cleanup
+      let currentBlobUrl: string | null = null;
+
+      ws.onmessage = async (event) => {
+        const now = Date.now();
+
         try {
-          const result = await sendCommand("get_frame", {}, { awaitResult: true, timeoutMs: 5000 });
-          if (result?.success && result.result?.frame) {
-            setScreenMirrorFrame(`data:image/jpeg;base64,${result.result.frame}`);
+          let arrayBuffer: ArrayBuffer | null = null;
+
+          if (event.data instanceof ArrayBuffer) {
+            arrayBuffer = event.data;
+          } else if (event.data instanceof Blob && event.data.size > 0) {
+            arrayBuffer = await event.data.arrayBuffer();
           }
-        } catch (err) {
-          console.debug("Frame poll error:", err);
+
+          if (arrayBuffer && arrayBuffer.byteLength > 100) {
+            const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
+            const newUrl = URL.createObjectURL(blob);
+
+            if (currentBlobUrl) {
+              URL.revokeObjectURL(currentBlobUrl);
+            }
+            currentBlobUrl = newUrl;
+
+            setScreenMirrorFrame(newUrl);
+
+            // Track frame times for latency calculation
+            screenFrameTimesRef.current.push(now);
+            if (screenFrameTimesRef.current.length > 10) {
+              screenFrameTimesRef.current.shift();
+            }
+
+            // Calculate latency from inter-frame gaps
+            if (screenFrameTimesRef.current.length >= 2) {
+              const gaps = [];
+              for (let i = 1; i < screenFrameTimesRef.current.length; i++) {
+                gaps.push(screenFrameTimesRef.current[i] - screenFrameTimesRef.current[i - 1]);
+              }
+              const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+              setScreenMirrorLatency(Math.round(avgGap));
+            }
+
+            // Update FPS counter
+            screenFpsCounterRef.current.frames++;
+            const elapsed = now - screenFpsCounterRef.current.lastCheck;
+            if (elapsed >= 1000) {
+              const fps = Math.round((screenFpsCounterRef.current.frames * 1000) / elapsed);
+              setScreenMirrorLiveFps(fps);
+              screenFpsCounterRef.current = { frames: 0, lastCheck: now };
+            }
+            return;
+          }
+
+          // Handle JSON messages (legacy base64 + control)
+          if (typeof event.data === "string") {
+            const data = JSON.parse(event.data);
+            if (data.type === "screen_frame" && data.data) {
+              setScreenMirrorFrame(`data:image/jpeg;base64,${data.data}`);
+            } else if (data.type === "peer_connected") {
+              addLog("info", "agent", "Screen mirror peer connected");
+            } else if (data.type === "peer_disconnected") {
+              addLog("warn", "agent", "Screen mirror peer disconnected");
+            }
+            if (data.type === "error" && data.message) {
+              addLog("error", "agent", `Screen relay error: ${data.message}`);
+              toast({ title: "Screen Mirror Error", description: data.message, variant: "destructive" });
+            }
+          }
+        } catch (e) {
+          console.debug("Screen frame parse issue:", e);
         }
       };
-      
-      screenMirrorIntervalRef.current = window.setInterval(pollFrames, 1000 / screenMirrorFps);
-      pollFrames(); // First frame immediately
+
+      ws.onopen = () => {
+        setScreenMirrorActive(true);
+        addLog("info", "web", "Screen mirror WebSocket connected");
+        toast({ title: "Screen Mirroring Started", description: `Streaming at up to ${screenMirrorFps} FPS` });
+      };
+
+      ws.onerror = (err) => {
+        addLog("error", "web", `Screen mirror WebSocket error: ${err}`);
+        toast({ title: "Screen Mirror Error", description: "WebSocket error", variant: "destructive" });
+      };
+
+      ws.onclose = () => {
+        setScreenMirrorActive(false);
+        if (currentBlobUrl) {
+          URL.revokeObjectURL(currentBlobUrl);
+          currentBlobUrl = null;
+        }
+        setScreenMirrorFrame(null);
+        setScreenMirrorLiveFps(0);
+        setScreenMirrorLatency(0);
+        screenFpsCounterRef.current = { frames: 0, lastCheck: Date.now() };
+        screenFrameTimesRef.current = [];
+        addLog("info", "web", "Screen mirror WebSocket closed");
+      };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       addLog("error", "web", `Screen mirror error: ${errMsg}`);
       toast({ title: "Screen Mirror Error", variant: "destructive" });
     }
-  }, [sendCommand, screenMirrorFps, screenMirrorQuality, toast]);
-  
+  }, [sendCommand, screenMirrorFps, screenMirrorQuality, CAMERA_WS_URL, toast]);
+
   const stopScreenMirror = useCallback(async () => {
-    if (screenMirrorIntervalRef.current) {
-      window.clearInterval(screenMirrorIntervalRef.current);
-      screenMirrorIntervalRef.current = null;
+    if (screenMirrorWsRef.current) {
+      screenMirrorWsRef.current.close();
+      screenMirrorWsRef.current = null;
     }
-    await sendCommand("stop_stream", {});
+    await sendCommand("stop_screen_stream", {});
     setScreenMirrorActive(false);
     setScreenMirrorFrame(null);
+    setScreenMirrorSessionId(null);
+    setScreenMirrorLiveFps(0);
+    setScreenMirrorLatency(0);
+    screenFpsCounterRef.current = { frames: 0, lastCheck: Date.now() };
+    screenFrameTimesRef.current = [];
     toast({ title: "Screen Mirroring Stopped" });
   }, [sendCommand, toast]);
+
+  // Send screen FPS/Quality settings to agent in real-time
+  const updateScreenSettings = useCallback(async (fps: number, quality: number) => {
+    if (screenMirrorActive && screenMirrorSessionId) {
+      try {
+        await sendCommand("update_screen_settings", { fps, quality });
+        addLog("info", "web", `Updated screen settings: FPS=${fps}, Quality=${quality}`);
+      } catch (err) {
+        addLog("warn", "web", `Failed to update screen settings: ${err}`);
+      }
+    }
+  }, [screenMirrorActive, screenMirrorSessionId, sendCommand]);
 
   // ==================== CLEANUP ====================
   useEffect(() => {
@@ -745,8 +865,8 @@ export default function MicCamera() {
       if (phoneCamShareTimerRef.current) {
         window.clearInterval(phoneCamShareTimerRef.current);
       }
-      if (screenMirrorIntervalRef.current) {
-        window.clearInterval(screenMirrorIntervalRef.current);
+      if (screenMirrorWsRef.current) {
+        screenMirrorWsRef.current.close();
       }
     };
   }, []);
@@ -1783,8 +1903,8 @@ export default function MicCamera() {
                           <Badge variant="outline" className={cn(
                             "bg-background/80 backdrop-blur font-mono text-xs",
                             cameraLatency > 100 ? "border-destructive text-destructive" : 
-                            cameraLatency > 50 ? "border-yellow-500 text-yellow-500" : 
-                            "border-green-500 text-green-500"
+                            cameraLatency > 50 ? "border-warning text-warning" : 
+                            "border-primary text-primary"
                           )}>
                             {cameraLatency}ms
                           </Badge>
@@ -1794,8 +1914,8 @@ export default function MicCamera() {
                             <div className="flex items-center justify-between text-xs">
                               <span className="text-muted-foreground">Frames: {debugStats.frameCount}</span>
                               <span className={cn(
-                                cameraFps >= 60 ? "text-green-500" : 
-                                cameraFps >= 30 ? "text-yellow-500" : "text-destructive"
+                                cameraFps >= 60 ? "text-primary" : 
+                                cameraFps >= 30 ? "text-warning" : "text-destructive"
                               )}>
                                 {cameraFps >= 60 ? "Excellent" : cameraFps >= 30 ? "Good" : "Low"}
                               </span>
@@ -1845,34 +1965,146 @@ export default function MicCamera() {
                     Screen Mirroring
                   </CardTitle>
                   <CardDescription>
-                    View your PC screen on your phone in real-time
+                    View your PC screen on your phone in real-time via WebSocket relay (up to 90 FPS)
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Settings */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="text-sm">FPS: {screenMirrorFps}</Label>
-                      <Slider
-                        value={[screenMirrorFps]}
-                        onValueChange={([v]) => setScreenMirrorFps(v)}
-                        min={1}
-                        max={30}
-                        step={1}
-                        disabled={screenMirrorActive}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-sm">Quality: {screenMirrorQuality}%</Label>
-                      <Slider
-                        value={[screenMirrorQuality]}
-                        onValueChange={([v]) => setScreenMirrorQuality(v)}
-                        min={10}
-                        max={100}
-                        step={5}
-                        disabled={screenMirrorActive}
-                      />
-                    </div>
+                  {/* Real-time Settings Panel */}
+                  <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
+                    <button
+                      onClick={() => setShowScreenSettings(!showScreenSettings)}
+                      className="w-full flex items-center justify-between p-3 hover:bg-secondary/20 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Settings className="h-4 w-4 text-primary" />
+                        <span className="font-medium text-sm">Stream Settings</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-xs">
+                          {screenMirrorFps} FPS
+                        </Badge>
+                        <Badge variant="outline" className="text-xs">
+                          {screenMirrorQuality}% Quality
+                        </Badge>
+                        <Zap className={cn(
+                          "h-4 w-4 transition-transform",
+                          showScreenSettings ? "rotate-180" : ""
+                        )} />
+                      </div>
+                    </button>
+                    
+                    {showScreenSettings && (
+                      <div className="p-4 pt-0 space-y-4 border-t border-border/30">
+                        {/* FPS Slider */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-sm flex items-center gap-2">
+                              <Gauge className="h-4 w-4" />
+                              Target FPS
+                            </Label>
+                            <span className="font-mono text-sm font-bold text-primary">{screenMirrorFps}</span>
+                          </div>
+                          <Slider
+                            value={[screenMirrorFps]}
+                            onValueChange={([v]) => setScreenMirrorFps(v)}
+                            onValueCommit={([v]) => {
+                              setScreenMirrorFps(v);
+                              updateScreenSettings(v, screenMirrorQuality);
+                            }}
+                            min={5}
+                            max={90}
+                            step={5}
+                            className="w-full"
+                          />
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>5 FPS (Low)</span>
+                            <span>30 (Smooth)</span>
+                            <span>90 (Ultra)</span>
+                          </div>
+                        </div>
+
+                        {/* Quality Slider */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-sm flex items-center gap-2">
+                              <Monitor className="h-4 w-4" />
+                              JPEG Quality
+                            </Label>
+                            <span className="font-mono text-sm font-bold text-primary">{screenMirrorQuality}%</span>
+                          </div>
+                          <Slider
+                            value={[screenMirrorQuality]}
+                            onValueChange={([v]) => setScreenMirrorQuality(v)}
+                            onValueCommit={([v]) => {
+                              setScreenMirrorQuality(v);
+                              updateScreenSettings(screenMirrorFps, v);
+                            }}
+                            min={10}
+                            max={100}
+                            step={5}
+                            className="w-full"
+                          />
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>10% (Fast)</span>
+                            <span>50% (Balanced)</span>
+                            <span>100% (Best)</span>
+                          </div>
+                        </div>
+
+                        {/* Presets */}
+                        <div className="flex flex-wrap gap-2 pt-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setScreenMirrorFps(15);
+                              setScreenMirrorQuality(50);
+                              updateScreenSettings(15, 50);
+                            }}
+                          >
+                            🐢 Low Bandwidth
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setScreenMirrorFps(30);
+                              setScreenMirrorQuality(70);
+                              updateScreenSettings(30, 70);
+                            }}
+                          >
+                            ⚖️ Balanced
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setScreenMirrorFps(60);
+                              setScreenMirrorQuality(85);
+                              updateScreenSettings(60, 85);
+                            }}
+                          >
+                            🚀 High Quality
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setScreenMirrorFps(90);
+                              setScreenMirrorQuality(100);
+                              updateScreenSettings(90, 100);
+                            }}
+                          >
+                            ⚡ Ultra
+                          </Button>
+                        </div>
+
+                        <p className="text-xs text-muted-foreground pt-1">
+                          <strong>Tip:</strong> Changes apply instantly without restarting the stream.
+                          Higher FPS = smoother but more bandwidth. Higher quality = sharper but larger frames.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Screen Preview */}
@@ -1886,21 +2118,37 @@ export default function MicCamera() {
                     ) : screenMirrorActive ? (
                       <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
                         <Loader2 className="h-8 w-8 animate-spin mr-2" />
-                        <span>Loading screen...</span>
+                        <span>Connecting to screen stream...</span>
                       </div>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
                         <ScreenShareOff className="h-12 w-12 mb-2 opacity-50" />
                         <p className="text-sm">Screen mirroring is off</p>
-                        <p className="text-xs">Click Start to view PC screen</p>
+                        <p className="text-xs">Click Start to view PC screen via WebSocket</p>
                       </div>
                     )}
                     
                     {screenMirrorActive && (
-                      <Badge variant="outline" className="absolute top-3 left-3 bg-primary/80 text-primary-foreground border-primary">
-                        <span className="w-2 h-2 rounded-full bg-primary-foreground animate-pulse mr-2" />
-                        LIVE · {screenMirrorFps} FPS
-                      </Badge>
+                      <>
+                        <Badge variant="outline" className="absolute top-3 left-3 bg-primary/80 text-primary-foreground border-primary">
+                          <span className="w-2 h-2 rounded-full bg-primary-foreground animate-pulse mr-2" />
+                          LIVE
+                        </Badge>
+                        {/* Real-time FPS and Latency Display */}
+                        <div className="absolute top-3 right-3 flex gap-2">
+                          <Badge variant="outline" className="bg-background/80 backdrop-blur font-mono text-xs">
+                            {screenMirrorLiveFps} FPS
+                          </Badge>
+                          <Badge variant="outline" className={cn(
+                            "bg-background/80 backdrop-blur font-mono text-xs",
+                            screenMirrorLatency > 100 ? "border-destructive text-destructive" : 
+                            screenMirrorLatency > 50 ? "border-warning text-warning" : 
+                            "border-primary text-primary"
+                          )}>
+                            {screenMirrorLatency}ms
+                          </Badge>
+                        </div>
+                      </>
                     )}
                   </div>
 
@@ -1922,9 +2170,8 @@ export default function MicCamera() {
                   {/* Info */}
                   <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
                     <p className="text-sm text-muted-foreground">
-                      <strong>Note:</strong> Screen mirroring captures your PC's primary monitor.
-                      Lower FPS = less bandwidth. Works via periodic screenshot polling.
-                      For smoother streaming, use a dedicated screen sharing app.
+                      <strong>WebSocket Relay:</strong> High-performance screen mirroring via binary WebSocket.
+                      Supports up to 90 FPS. PC agent streams screen frames through the camera-relay edge function.
                     </p>
                   </div>
                 </CardContent>
