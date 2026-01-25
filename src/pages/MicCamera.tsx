@@ -247,10 +247,10 @@ export default function MicCamera() {
 
       addLog("info", "agent", "PC camera opened successfully");
 
-      // Relay roles: browser client is "phone", Python agent is "pc".
-      // For PC webcam -> browser viewing, we connect as phone (receiver).
+      // Relay roles: Python agent connects as "phone" (sender), browser connects as "pc" (receiver).
+      // The relay forwards phone -> pc.
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true`
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true`
       );
       pcCameraWsRef.current = ws;
       ws.binaryType = "arraybuffer"; // Enable binary frame reception
@@ -585,7 +585,7 @@ export default function MicCamera() {
       console.error("Audio relay error:", error);
       toast({ title: "Audio Relay Error", variant: "destructive" });
     }
-  }, [sendCommand, audioDirection, WS_URL, toast, selectedInput]);
+  }, [sendCommand, audioDirection, WS_URL, toast, selectedInput, useSystemAudio]);
 
 
   // Audio playback queue to prevent overlapping
@@ -703,10 +703,10 @@ export default function MicCamera() {
 
       addLog("info", "agent", "PC screen stream started");
 
-      // Relay roles: browser client is "phone", Python agent is "pc".
-      // For PC screen -> browser viewing, we connect as phone (receiver).
+      // Relay roles: Python agent connects as "phone" (sender), browser connects as "pc" (receiver).
+      // The relay forwards phone -> pc.
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true`
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true`
       );
       screenMirrorWsRef.current = ws;
       ws.binaryType = "arraybuffer";

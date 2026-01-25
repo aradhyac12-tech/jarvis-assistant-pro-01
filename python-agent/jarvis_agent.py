@@ -148,6 +148,9 @@ except ImportError:
 
 # Camera streaming
 try:
+    # Reduce noisy OpenCV backend probing on Windows and avoid Orbbec/obsensor
+    # internal "Camera index out of range" errors when enumerating cameras.
+    os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_OBSENSOR", "0")
     import cv2
     HAS_OPENCV = True
 except ImportError:
@@ -1384,7 +1387,8 @@ class CameraStreamer:
             if platform.system() == "Windows":
                 backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
 
-            candidate_indexes = [camera_index, 0, 1, 2, 3, 4]
+            # Avoid overly aggressive probing (can trigger backend warnings / obsensor errors).
+            candidate_indexes = [camera_index, 0, 1, 2]
             cap = None
             tried_combos = []
 
@@ -1523,9 +1527,15 @@ class CameraStreamer:
         cameras: List[Dict[str, Any]] = []
 
         def _cap_open(idx: int) -> Optional["cv2.VideoCapture"]:
-            # Prefer DSHOW first on Windows (more stable than MSMF for many webcams)
+            # On Windows, probing many backends/indexes produces a lot of noisy warnings.
+            # We try a conservative strategy:
+            # 1) CAP_DSHOW first (most reliable for webcams)
+            # 2) CAP_MSMF only for low indexes (0/1) as a fallback
             if platform.system() == "Windows":
-                for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]:
+                backends: List[Optional[int]] = [cv2.CAP_DSHOW]
+                if idx in (0, 1):
+                    backends += [cv2.CAP_MSMF, None]
+                for backend in backends:
                     try:
                         cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
                         if cap.isOpened():
@@ -1541,7 +1551,9 @@ class CameraStreamer:
             except Exception:
                 return None
 
-        for i in range(5):
+        max_probe = 3 if platform.system() == "Windows" else 6
+
+        for i in range(max_probe):
             cap = None
             try:
                 cap = _cap_open(i)
