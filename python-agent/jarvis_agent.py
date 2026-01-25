@@ -1562,6 +1562,210 @@ class CameraStreamer:
         return cameras
 
 
+# ============== SCREEN STREAMER ==============
+class ScreenStreamer:
+    """High-performance screen mirroring to phone via camera-relay (binary JPEG frames)."""
+
+    def __init__(self):
+        self.running = False
+        self.ws = None
+        self.session_id = None
+
+        self.quality = 70
+        self.fps = 30
+        self.scale = 0.6
+        self.monitor_index = 1
+
+        self.frame_count = 0
+        self.bytes_sent = 0
+        self.last_frame_time = 0
+        self.last_stats_time = time.time()
+        self.last_error: Optional[str] = None
+
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+
+    async def connect(self, session_id: str, fps: int = 30, quality: int = 70, scale: float = 0.6, monitor_index: int = 1):
+        if not HAS_WEBSOCKETS:
+            self.last_error = "WebSockets not available"
+            add_log("error", self.last_error, category="screen")
+            return False
+
+        if not HAS_MSS:
+            self.last_error = "mss not available for screen capture"
+            add_log("error", self.last_error, category="screen")
+            return False
+
+        # OpenCV is strongly preferred for fast JPEG encode, but we can still proceed without it.
+        self.session_id = session_id
+        self.fps = max(1, min(90, int(fps)))
+        self.quality = max(10, min(100, int(quality)))
+        self.scale = max(0.1, min(1.0, float(scale)))
+        self.monitor_index = int(monitor_index) if monitor_index else 1
+        self.last_error = None
+        self.reconnect_attempts = 0
+
+        # CRITICAL: Connect as 'phone' type (sender). Web connects as 'pc' (receiver).
+        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
+        add_log("info", "Connecting screen stream as sender (phone)", f"fps={self.fps}, quality={self.quality}, scale={self.scale}", category="screen")
+
+        try:
+            self.ws = await websockets.connect(ws_url)
+            self.running = True
+            self.frame_count = 0
+            self.bytes_sent = 0
+            self.last_frame_time = 0
+            self.last_stats_time = time.time()
+            add_log("info", "Screen stream connected as sender", category="screen")
+            update_agent_status({"screen_streaming": True})
+            return True
+        except Exception as e:
+            self.last_error = str(e)
+            add_log("error", f"Screen stream connection failed: {e}", category="screen")
+            return False
+
+    async def _reconnect(self) -> bool:
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            self.last_error = "Max reconnect attempts reached"
+            add_log("error", self.last_error, category="screen")
+            return False
+
+        self.reconnect_attempts += 1
+        add_log("info", f"Reconnecting screen... (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})", category="screen")
+        await asyncio.sleep(1)
+
+        try:
+            ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={self.session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
+            self.ws = await websockets.connect(ws_url)
+            add_log("info", "Screen stream reconnected", category="screen")
+            return True
+        except Exception as e:
+            self.last_error = f"Reconnect failed: {e}"
+            add_log("error", self.last_error, category="screen")
+            return False
+
+    async def start_streaming(self):
+        if not HAS_MSS:
+            self.last_error = "mss not available"
+            add_log("error", self.last_error, category="screen")
+            return
+
+        try:
+            import mss
+
+            # Import numpy/cv2 lazily (they may not be available in minimal installs)
+            np = None
+            cv2_local = None
+            try:
+                import numpy as np  # type: ignore
+            except Exception:
+                pass
+            try:
+                import cv2 as cv2_local  # type: ignore
+            except Exception:
+                pass
+
+            frame_interval = 1.0 / max(self.fps, 1)
+
+            with mss.mss() as sct:
+                monitors = sct.monitors
+                idx = self.monitor_index if 0 < self.monitor_index < len(monitors) else 1
+                mon = monitors[idx]
+                add_log("info", f"Screen streaming started (monitor {idx})", f"target={self.fps}fps quality={self.quality} scale={self.scale}", category="screen")
+
+                while self.running:
+                    start_time = time.time()
+
+                    if not self.ws:
+                        if not await self._reconnect():
+                            break
+                        continue
+
+                    shot = sct.grab(mon)  # BGRA
+
+                    # Fast path: numpy + opencv
+                    if np is not None and cv2_local is not None:
+                        frame = np.array(shot)  # BGRA
+                        frame = cv2_local.cvtColor(frame, cv2_local.COLOR_BGRA2BGR)
+                        if self.scale != 1.0:
+                            h, w = frame.shape[:2]
+                            frame = cv2_local.resize(frame, (max(1, int(w * self.scale)), max(1, int(h * self.scale))))
+                        ok, buf = cv2_local.imencode('.jpg', frame, [cv2_local.IMWRITE_JPEG_QUALITY, int(self.quality)])
+                        if not ok:
+                            raise RuntimeError("Failed to encode screen frame")
+                        frame_bytes = buf.tobytes()
+                    else:
+                        # Fallback: Pillow
+                        img = Image.frombytes('RGB', shot.size, shot.bgra, 'raw', 'BGRX')
+                        if self.scale != 1.0:
+                            img = img.resize((max(1, int(img.width * self.scale)), max(1, int(img.height * self.scale))), Image.BILINEAR)
+                        buffer = io.BytesIO()
+                        img.save(buffer, format='JPEG', quality=int(self.quality), optimize=True)
+                        frame_bytes = buffer.getvalue()
+
+                    try:
+                        await self.ws.send(frame_bytes)
+                        self.frame_count += 1
+                        self.bytes_sent += len(frame_bytes)
+                        self.last_frame_time = time.time()
+                    except Exception as e:
+                        add_log("warn", f"Screen send error: {e}", category="screen")
+                        if not await self._reconnect():
+                            break
+
+                    elapsed = time.time() - start_time
+                    if elapsed < frame_interval:
+                        await asyncio.sleep(frame_interval - elapsed)
+
+        except Exception as e:
+            self.last_error = str(e)
+            add_log("error", f"Screen streaming error: {e}", category="screen")
+        finally:
+            await self.stop()
+
+    def update_settings(self, fps: Optional[int] = None, quality: Optional[int] = None, scale: Optional[float] = None) -> bool:
+        if not self.running:
+            return False
+        if fps is not None:
+            self.fps = max(1, min(90, int(fps)))
+            add_log("info", f"Screen FPS updated to {self.fps}", category="screen")
+        if quality is not None:
+            self.quality = max(10, min(100, int(quality)))
+            add_log("info", f"Screen quality updated to {self.quality}", category="screen")
+        if scale is not None:
+            self.scale = max(0.1, min(1.0, float(scale)))
+            add_log("info", f"Screen scale updated to {self.scale}", category="screen")
+        return True
+
+    def get_stats(self) -> Dict[str, Any]:
+        now = time.time()
+        elapsed = max(now - self.last_stats_time, 0.001)
+        return {
+            "frame_count": self.frame_count,
+            "bytes_sent": self.bytes_sent,
+            "fps_actual": round(self.frame_count / elapsed, 1),
+            "fps_target": self.fps,
+            "quality": self.quality,
+            "scale": self.scale,
+            "monitor_index": self.monitor_index,
+            "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
+            "running": self.running,
+            "connected": self.ws is not None,
+            "last_error": self.last_error,
+        }
+
+    async def stop(self):
+        self.running = False
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+        update_agent_status({"screen_streaming": False})
+        add_log("info", "Screen stream stopped", category="screen")
+
+
 # ============== PHONE WEBCAM RECEIVER ==============
 class PhoneWebcamReceiver:
     """Receives phone camera frames and displays them in a window (can be captured by OBS as virtual webcam)."""
