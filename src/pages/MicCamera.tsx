@@ -144,11 +144,13 @@ export default function MicCamera() {
   const fpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
   const frameTimesRef = useRef<number[]>([]);
 
-  // Derive the Edge Functions WebSocket domain from the configured backend project id
-  const projectRef = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined) ?? "";
+  // WebSocket base must match the same backend host used by the rest of the app (REST + functions).
+  // Otherwise the browser and PC agent can end up connected to different relay hosts and never see frames.
+  const BACKEND_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined) ?? "";
+  const WS_BASE = BACKEND_URL.replace(/\/$/, "").replace(/^http/, "ws");
 
-  const WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/audio-relay`;
-  const CAMERA_WS_URL = `wss://${projectRef}.functions.supabase.co/functions/v1/camera-relay`;
+  const WS_URL = `${WS_BASE}/functions/v1/audio-relay`;
+  const CAMERA_WS_URL = `${WS_BASE}/functions/v1/camera-relay`;
 
   // Send FPS/Quality settings to agent in real-time
   const updateCameraSettings = useCallback(async (fps: number, quality: number) => {
