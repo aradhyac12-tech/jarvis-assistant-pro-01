@@ -6,7 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { Loader2 } from "lucide-react";
-import { lazy, Suspense, forwardRef } from "react";
+import React, { lazy, Suspense, forwardRef } from "react";
 
 // Lazy load pages
 const Pair = lazy(() => import("./pages/Pair"));
@@ -29,9 +29,20 @@ const LoadingFallback = forwardRef<HTMLDivElement>(function LoadingFallback(_, r
 });
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { session, isLoading } = useDeviceSession();
+  const { session, isLoading, autoPair } = useDeviceSession();
+  const [autoPairing, setAutoPairing] = React.useState(false);
+  const attemptedRef = React.useRef(false);
 
-  if (isLoading) {
+  React.useEffect(() => {
+    // Zero-access-code auto-connect: if no session & first load, auto-pair to first online device
+    if (!isLoading && !session && !autoPairing && !attemptedRef.current) {
+      attemptedRef.current = true;
+      setAutoPairing(true);
+      autoPair().finally(() => setAutoPairing(false));
+    }
+  }, [isLoading, session, autoPairing, autoPair]);
+
+  if (isLoading || autoPairing) {
     return <LoadingFallback />;
   }
 
