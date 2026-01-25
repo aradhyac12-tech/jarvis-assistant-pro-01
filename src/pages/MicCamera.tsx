@@ -247,10 +247,11 @@ export default function MicCamera() {
 
       addLog("info", "agent", "PC camera opened successfully");
 
-      // CRITICAL FIX: Connect as 'pc' type - this is the RECEIVER
-      // The Python agent connects as 'phone' type - this is the SENDER
-      // The relay forwards from phone->pc, so we receive on 'pc' socket
-      const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true`);
+      // Relay roles: browser client is "phone", Python agent is "pc".
+      // For PC webcam -> browser viewing, we connect as phone (receiver).
+      const ws = new WebSocket(
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true`
+      );
       pcCameraWsRef.current = ws;
       ws.binaryType = "arraybuffer"; // Enable binary frame reception
 
@@ -403,10 +404,16 @@ export default function MicCamera() {
       addLog("info", "web", `Starting audio relay (direction: ${audioDirection})`);
 
       // Tell PC to start audio relay
-      const started = await sendCommand("start_audio_relay", {
-        session_id: sessionId,
-        direction: audioDirection,
-      }, { awaitResult: true, timeoutMs: 10000 });
+      const started = await sendCommand(
+        "start_audio_relay",
+        {
+          session_id: sessionId,
+          direction: audioDirection,
+          // When streaming PC -> Phone, allow selecting system audio vs microphone on the PC.
+          use_system_audio: useSystemAudio,
+        },
+        { awaitResult: true, timeoutMs: 10000 }
+      );
 
       if (!started.success) {
         const msg = typeof started.error === "string" ? started.error : "PC failed to start audio relay";
@@ -580,6 +587,7 @@ export default function MicCamera() {
     }
   }, [sendCommand, audioDirection, WS_URL, toast, selectedInput]);
 
+
   // Audio playback queue to prevent overlapping
   const audioPlaybackQueue = useRef<AudioBufferSourceNode[]>([]);
   const lastPlaybackTime = useRef<number>(0);
@@ -695,9 +703,10 @@ export default function MicCamera() {
 
       addLog("info", "agent", "PC screen stream started");
 
-      // Connect as 'pc' type (receiver) - the Python agent connects as 'phone' (sender)
+      // Relay roles: browser client is "phone", Python agent is "pc".
+      // For PC screen -> browser viewing, we connect as phone (receiver).
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true`
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true`
       );
       screenMirrorWsRef.current = ws;
       ws.binaryType = "arraybuffer";
