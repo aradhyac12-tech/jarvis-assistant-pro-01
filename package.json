@@ -11,6 +11,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/cli": "^8.0.1",
+    "@capacitor/core": "^8.0.1",
     "@elevenlabs/react": "^0.13.0",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "^1.2.11",

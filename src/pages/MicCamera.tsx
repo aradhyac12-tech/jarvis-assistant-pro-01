@@ -30,6 +30,8 @@ import {
   Settings,
   Gauge,
   Zap,
+  ScreenShare,
+  ScreenShareOff,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -97,6 +99,13 @@ export default function MicCamera() {
   const [phoneWebcamStarting, setPhoneWebcamStarting] = useState(false);
   const phoneWebcamWsRef = useRef<WebSocket | null>(null);
   const phoneWebcamTimerRef = useRef<number | null>(null);
+
+  // ==================== SCREEN MIRRORING STATE ====================
+  const [screenMirrorActive, setScreenMirrorActive] = useState(false);
+  const [screenMirrorFrame, setScreenMirrorFrame] = useState<string | null>(null);
+  const [screenMirrorFps, setScreenMirrorFps] = useState(10);
+  const [screenMirrorQuality, setScreenMirrorQuality] = useState(50);
+  const screenMirrorIntervalRef = useRef<number | null>(null);
 
   const [showDebug, setShowDebug] = useState(false);
   const [debugStats, setDebugStats] = useState({
@@ -230,13 +239,23 @@ export default function MicCamera() {
       // Track current blob URL for cleanup
       let currentBlobUrl: string | null = null;
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         const now = Date.now();
         
         try {
-          // Handle binary frames (JPEG bytes) - preferred for performance
+          let arrayBuffer: ArrayBuffer | null = null;
+
+          // Handle ArrayBuffer directly
           if (event.data instanceof ArrayBuffer) {
-            const blob = new Blob([event.data], { type: "image/jpeg" });
+            arrayBuffer = event.data;
+          }
+          // Handle Blob (browsers may deliver binary as Blob depending on server)
+          else if (event.data instanceof Blob && event.data.size > 0) {
+            arrayBuffer = await event.data.arrayBuffer();
+          }
+
+          if (arrayBuffer && arrayBuffer.byteLength > 100) {
+            const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
             const newUrl = URL.createObjectURL(blob);
             
             // Clean up previous blob URL to prevent memory leaks
@@ -281,25 +300,27 @@ export default function MicCamera() {
           }
           
           // Handle JSON messages (legacy base64 frames + control messages)
-          const data = JSON.parse(event.data);
-          if (data.type === "camera_frame" && data.data) {
-            // Validate base64 data before setting
-            if (typeof data.data === 'string' && data.data.length > 0) {
-              setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
-              setDebugStats((prev) => ({
-                ...prev,
-                frameCount: prev.frameCount + 1,
-                lastFrameTime: Date.now(),
-              }));
+          if (typeof event.data === "string") {
+            const data = JSON.parse(event.data);
+            if (data.type === "camera_frame" && data.data) {
+              // Validate base64 data before setting
+              if (typeof data.data === 'string' && data.data.length > 0) {
+                setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
+                setDebugStats((prev) => ({
+                  ...prev,
+                  frameCount: prev.frameCount + 1,
+                  lastFrameTime: Date.now(),
+                }));
+              }
+            } else if (data.type === "peer_connected") {
+              addLog("info", "agent", "PC camera peer connected");
+            } else if (data.type === "peer_disconnected") {
+              addLog("warn", "agent", "PC camera peer disconnected");
             }
-          } else if (data.type === "peer_connected") {
-            addLog("info", "agent", "PC camera peer connected");
-          } else if (data.type === "peer_disconnected") {
-            addLog("warn", "agent", "PC camera peer disconnected");
-          }
-          if (data.type === "error" && data.message) {
-            addLog("error", "agent", `Camera relay error: ${data.message}`);
-            toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
+            if (data.type === "error" && data.message) {
+              addLog("error", "agent", `Camera relay error: ${data.message}`);
+              toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
+            }
           }
         } catch (e) {
           // Log parse errors for debugging
@@ -378,9 +399,10 @@ export default function MicCamera() {
 
       addLog("info", "agent", "PC audio relay started");
 
-      // Connect WebSocket
+      // Connect WebSocket with binary support
       const ws = new WebSocket(`${WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}`);
       audioWsRef.current = ws;
+      ws.binaryType = "arraybuffer"; // Ensure we receive binary as ArrayBuffer
 
       ws.onopen = async () => {
         setAudioRelayActive(true);
@@ -483,9 +505,9 @@ export default function MicCamera() {
       };
 
       // If phone is receiving audio (pc_to_phone or bidirectional)
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
-          // Handle control messages (JSON)
+          // Handle control messages (JSON string)
           if (typeof event.data === 'string') {
             const msg = JSON.parse(event.data);
             if (msg.type === 'peer_connected') {
@@ -498,10 +520,16 @@ export default function MicCamera() {
             return;
           }
           
-          // Handle audio data for playback
+          // Handle audio data for playback (ArrayBuffer or Blob)
           if (audioDirection === "pc_to_phone" || audioDirection === "bidirectional") {
-            if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-              playReceivedAudio(event.data);
+            let audioData: ArrayBuffer | null = null;
+            if (event.data instanceof ArrayBuffer) {
+              audioData = event.data;
+            } else if (event.data instanceof Blob) {
+              audioData = await event.data.arrayBuffer();
+            }
+            if (audioData && audioData.byteLength > 2) {
+              playReceivedAudio(audioData);
             }
           }
         } catch (e) {
@@ -613,6 +641,60 @@ export default function MicCamera() {
     toast({ title: "Audio Relay Stopped" });
   }, [sendCommand, phoneMicStream, toast]);
 
+  // ==================== SCREEN MIRRORING ====================
+  const startScreenMirror = useCallback(async () => {
+    try {
+      addLog("info", "web", "Starting screen mirroring");
+      
+      const started = await sendCommand(
+        "start_stream",
+        { fps: screenMirrorFps, quality: screenMirrorQuality, scale: 0.5 },
+        { awaitResult: true, timeoutMs: 10000 }
+      );
+      
+      if (!started.success) {
+        const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
+        addLog("error", "agent", msg);
+        toast({ title: "Screen Mirror Error", description: msg, variant: "destructive" });
+        return;
+      }
+      
+      setScreenMirrorActive(true);
+      toast({ title: "Screen Mirroring Started", description: `Streaming at ${screenMirrorFps} FPS` });
+      
+      // Poll for frames
+      const pollFrames = async () => {
+        if (!screenMirrorActive) return;
+        try {
+          const result = await sendCommand("get_frame", {}, { awaitResult: true, timeoutMs: 5000 });
+          if (result?.success && result.result?.frame) {
+            setScreenMirrorFrame(`data:image/jpeg;base64,${result.result.frame}`);
+          }
+        } catch (err) {
+          console.debug("Frame poll error:", err);
+        }
+      };
+      
+      screenMirrorIntervalRef.current = window.setInterval(pollFrames, 1000 / screenMirrorFps);
+      pollFrames(); // First frame immediately
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      addLog("error", "web", `Screen mirror error: ${errMsg}`);
+      toast({ title: "Screen Mirror Error", variant: "destructive" });
+    }
+  }, [sendCommand, screenMirrorFps, screenMirrorQuality, toast]);
+  
+  const stopScreenMirror = useCallback(async () => {
+    if (screenMirrorIntervalRef.current) {
+      window.clearInterval(screenMirrorIntervalRef.current);
+      screenMirrorIntervalRef.current = null;
+    }
+    await sendCommand("stop_stream", {});
+    setScreenMirrorActive(false);
+    setScreenMirrorFrame(null);
+    toast({ title: "Screen Mirroring Stopped" });
+  }, [sendCommand, toast]);
+
   // ==================== CLEANUP ====================
   useEffect(() => {
     fetchPcCameras();
@@ -643,6 +725,9 @@ export default function MicCamera() {
       }
       if (phoneCamShareTimerRef.current) {
         window.clearInterval(phoneCamShareTimerRef.current);
+      }
+      if (screenMirrorIntervalRef.current) {
+        window.clearInterval(screenMirrorIntervalRef.current);
       }
     };
   }, []);
@@ -728,22 +813,26 @@ export default function MicCamera() {
           )}
 
           <Tabs defaultValue="audio" className="w-full">
-            <TabsList className="grid w-full grid-cols-4 mb-4">
+            <TabsList className="grid w-full grid-cols-5 mb-4">
               <TabsTrigger value="audio" className="text-sm">
-                <Volume2 className="h-4 w-4 mr-2" />
-                Audio
+                <Volume2 className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">Audio</span>
               </TabsTrigger>
               <TabsTrigger value="phone-camera" className="text-sm">
-                <Smartphone className="h-4 w-4 mr-2" />
-                Phone Cam
+                <Smartphone className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">Phone</span>
               </TabsTrigger>
               <TabsTrigger value="phone-webcam" className="text-sm">
-                <Camera className="h-4 w-4 mr-2" />
-                As Webcam
+                <Camera className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">Webcam</span>
               </TabsTrigger>
               <TabsTrigger value="pc-camera" className="text-sm">
-                <Webcam className="h-4 w-4 mr-2" />
-                PC Cam
+                <Webcam className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">PC Cam</span>
+              </TabsTrigger>
+              <TabsTrigger value="screen-mirror" className="text-sm">
+                <ScreenShare className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">Screen</span>
               </TabsTrigger>
             </TabsList>
 
@@ -1660,6 +1749,101 @@ export default function MicCamera() {
                       <strong>Note:</strong> PC camera streams here on your phone. 
                       The camera app does NOT open on the PC screen - it only shows on your phone.
                       Requires the PC agent with OpenCV (opencv-python) installed.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ==================== SCREEN MIRRORING TAB ==================== */}
+            <TabsContent value="screen-mirror">
+              <Card className="glass-dark border-border/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <ScreenShare className="h-5 w-5 text-primary" />
+                    Screen Mirroring
+                  </CardTitle>
+                  <CardDescription>
+                    View your PC screen on your phone in real-time
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Settings */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm">FPS: {screenMirrorFps}</Label>
+                      <Slider
+                        value={[screenMirrorFps]}
+                        onValueChange={([v]) => setScreenMirrorFps(v)}
+                        min={1}
+                        max={30}
+                        step={1}
+                        disabled={screenMirrorActive}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm">Quality: {screenMirrorQuality}%</Label>
+                      <Slider
+                        value={[screenMirrorQuality]}
+                        onValueChange={([v]) => setScreenMirrorQuality(v)}
+                        min={10}
+                        max={100}
+                        step={5}
+                        disabled={screenMirrorActive}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Screen Preview */}
+                  <div className="relative aspect-video bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
+                    {screenMirrorActive && screenMirrorFrame ? (
+                      <img
+                        src={screenMirrorFrame}
+                        alt="PC Screen"
+                        className="w-full h-full object-contain"
+                      />
+                    ) : screenMirrorActive ? (
+                      <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+                        <Loader2 className="h-8 w-8 animate-spin mr-2" />
+                        <span>Loading screen...</span>
+                      </div>
+                    ) : (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
+                        <ScreenShareOff className="h-12 w-12 mb-2 opacity-50" />
+                        <p className="text-sm">Screen mirroring is off</p>
+                        <p className="text-xs">Click Start to view PC screen</p>
+                      </div>
+                    )}
+                    
+                    {screenMirrorActive && (
+                      <Badge variant="outline" className="absolute top-3 left-3 bg-primary/80 text-primary-foreground border-primary">
+                        <span className="w-2 h-2 rounded-full bg-primary-foreground animate-pulse mr-2" />
+                        LIVE · {screenMirrorFps} FPS
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Controls */}
+                  <div className="flex items-center justify-center gap-4">
+                    {!screenMirrorActive ? (
+                      <Button onClick={startScreenMirror} className="gradient-primary">
+                        <ScreenShare className="h-4 w-4 mr-2" />
+                        Start Screen Mirror
+                      </Button>
+                    ) : (
+                      <Button onClick={stopScreenMirror} variant="destructive">
+                        <ScreenShareOff className="h-4 w-4 mr-2" />
+                        Stop Screen Mirror
+                      </Button>
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+                    <p className="text-sm text-muted-foreground">
+                      <strong>Note:</strong> Screen mirroring captures your PC's primary monitor.
+                      Lower FPS = less bandwidth. Works via periodic screenshot polling.
+                      For smoother streaming, use a dedicated screen sharing app.
                     </p>
                   </div>
                 </CardContent>
