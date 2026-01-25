@@ -83,6 +83,8 @@ export default function MicCamera() {
   const [selectedPcCamera, setSelectedPcCamera] = useState(0);
   const pcCameraWsRef = useRef<WebSocket | null>(null);
   const [pcCameraSessionId, setPcCameraSessionId] = useState<string | null>(null);
+  const [pcCameraError, setPcCameraError] = useState<string | null>(null);
+  const [screenMirrorError, setScreenMirrorError] = useState<string | null>(null);
 
   // ==================== CAMERA SETTINGS (real-time adjustable) ====================
   const [cameraFpsSetting, setCameraFpsSetting] = useState(30);
@@ -221,6 +223,7 @@ export default function MicCamera() {
 
   const startPcCamera = useCallback(async () => {
     try {
+      setPcCameraError(null);
       const sessionId = crypto.randomUUID();
       setPcCameraSessionId(sessionId);
       addLog("info", "web", `Starting PC camera stream (session: ${sessionId.slice(0, 8)}...)`);
@@ -239,6 +242,7 @@ export default function MicCamera() {
 
       if (!started.success) {
         const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
+        setPcCameraError(msg);
         addLog("error", "agent", `Camera open failed: ${msg}`);
         toast({ title: "PC Camera Error", description: msg, variant: "destructive" });
         setPcCameraSessionId(null);
@@ -337,6 +341,7 @@ export default function MicCamera() {
               addLog("warn", "agent", "PC camera peer disconnected");
             }
             if (data.type === "error" && data.message) {
+              setPcCameraError(data.message);
               addLog("error", "agent", `Camera relay error: ${data.message}`);
               toast({ title: "PC Camera Error", description: data.message, variant: "destructive" });
             }
@@ -349,6 +354,7 @@ export default function MicCamera() {
 
       ws.onopen = () => {
         setPcCameraActive(true);
+        setPcCameraError(null);
         setDebugStats((prev) => ({ ...prev, cameraWsConnected: true }));
         addLog("info", "web", "Camera WebSocket connected");
         toast({ title: "PC Camera Started", description: "PC webcam is streaming to your phone" });
@@ -677,6 +683,7 @@ export default function MicCamera() {
   // ==================== SCREEN MIRRORING (WebSocket-based) ====================
   const startScreenMirror = useCallback(async () => {
     try {
+      setScreenMirrorError(null);
       const sessionId = crypto.randomUUID();
       setScreenMirrorSessionId(sessionId);
       addLog("info", "web", `Starting screen mirroring via WebSocket (session: ${sessionId.slice(0, 8)}...)`);
@@ -695,6 +702,7 @@ export default function MicCamera() {
 
       if (!started.success) {
         const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
+        setScreenMirrorError(msg);
         addLog("error", "agent", msg);
         toast({ title: "Screen Mirror Error", description: msg, variant: "destructive" });
         setScreenMirrorSessionId(null);
@@ -775,6 +783,7 @@ export default function MicCamera() {
               addLog("warn", "agent", "Screen mirror peer disconnected");
             }
             if (data.type === "error" && data.message) {
+              setScreenMirrorError(data.message);
               addLog("error", "agent", `Screen relay error: ${data.message}`);
               toast({ title: "Screen Mirror Error", description: data.message, variant: "destructive" });
             }
@@ -786,6 +795,7 @@ export default function MicCamera() {
 
       ws.onopen = () => {
         setScreenMirrorActive(true);
+        setScreenMirrorError(null);
         addLog("info", "web", "Screen mirror WebSocket connected");
         toast({ title: "Screen Mirroring Started", description: `Streaming at up to ${screenMirrorFps} FPS` });
       };
@@ -1880,6 +1890,11 @@ export default function MicCamera() {
                         <Webcam className="h-12 w-12 mb-2 text-destructive/50" />
                         <p className="text-sm font-medium text-destructive">No frames received</p>
                         <p className="text-xs mt-1">Frames received: {debugStats.frameCount}</p>
+                        {pcCameraError && (
+                          <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[280px] text-center">
+                            <strong>Error:</strong> {pcCameraError}
+                          </div>
+                        )}
                         <div className="mt-3 p-3 bg-background/80 rounded-lg text-xs max-w-[280px]">
                           <p className="font-semibold mb-1">Troubleshooting:</p>
                           <ul className="list-disc list-inside space-y-0.5 text-muted-foreground">
@@ -1889,6 +1904,23 @@ export default function MicCamera() {
                             <li>Go to Settings → Run Diagnostics</li>
                           </ul>
                         </div>
+                      </div>
+                    ) : pcCameraError ? (
+                      // Not active but has error - show the error
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
+                        <Webcam className="h-12 w-12 mb-2 text-destructive/50" />
+                        <p className="text-sm font-medium text-destructive">Camera Failed</p>
+                        <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[300px] text-center">
+                          {pcCameraError}
+                        </div>
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="mt-3"
+                          onClick={() => setPcCameraError(null)}
+                        >
+                          Dismiss
+                        </Button>
                       </div>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
@@ -2124,10 +2156,31 @@ export default function MicCamera() {
                         alt="PC Screen"
                         className="w-full h-full object-contain"
                       />
-                    ) : screenMirrorActive ? (
-                      <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-                        <Loader2 className="h-8 w-8 animate-spin mr-2" />
-                        <span>Connecting to screen stream...</span>
+                    ) : screenMirrorActive && !screenMirrorFrame ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
+                        <Loader2 className="h-8 w-8 animate-spin mb-2" />
+                        <span>Waiting for screen frames...</span>
+                        {screenMirrorError && (
+                          <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[280px] text-center">
+                            <strong>Error:</strong> {screenMirrorError}
+                          </div>
+                        )}
+                      </div>
+                    ) : screenMirrorError ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
+                        <ScreenShareOff className="h-12 w-12 mb-2 text-destructive/50" />
+                        <p className="text-sm font-medium text-destructive">Screen Mirror Failed</p>
+                        <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[300px] text-center">
+                          {screenMirrorError}
+                        </div>
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="mt-3"
+                          onClick={() => setScreenMirrorError(null)}
+                        >
+                          Dismiss
+                        </Button>
                       </div>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
