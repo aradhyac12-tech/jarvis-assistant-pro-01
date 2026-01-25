@@ -36,6 +36,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { useAudioDevices } from "@/hooks/useAudioDevices";
 import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
 
@@ -45,6 +46,17 @@ export default function MicCamera() {
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { selectedDevice } = useDeviceContext();
+  const { 
+    inputDevices, 
+    outputDevices, 
+    selectedInput, 
+    selectedOutput, 
+    setSelectedInput, 
+    setSelectedOutput,
+    getInputStream,
+    refreshDevices,
+    loading: devicesLoading,
+  } = useAudioDevices();
 
   // ==================== PHONE CAMERA STATE ====================
   const [phoneCameraActive, setPhoneCameraActive] = useState(false);
@@ -415,18 +427,25 @@ export default function MicCamera() {
             // STANDARDIZED: 16kHz sample rate for better cross-platform compatibility
             const STANDARD_SAMPLE_RATE = 16000;
             
+            // Use selected input device if available
+            const audioConstraints: MediaTrackConstraints = {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              sampleRate: STANDARD_SAMPLE_RATE,
+              channelCount: 1,
+            };
+            
+            if (selectedInput) {
+              audioConstraints.deviceId = { exact: selectedInput };
+            }
+            
             const stream = await navigator.mediaDevices.getUserMedia({
-              audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: STANDARD_SAMPLE_RATE,
-                channelCount: 1,
-              },
+              audio: audioConstraints,
             });
 
             setPhoneMicStream(stream);
-            addLog("info", "web", `Phone microphone access granted (${STANDARD_SAMPLE_RATE}Hz)`);
+            addLog("info", "web", `Phone microphone access granted (${STANDARD_SAMPLE_RATE}Hz) - Device: ${selectedInput || 'default'}`);
 
             // Create audio context at standardized sample rate
             const audioContext = new AudioContext({ sampleRate: STANDARD_SAMPLE_RATE });
@@ -553,7 +572,7 @@ export default function MicCamera() {
       console.error("Audio relay error:", error);
       toast({ title: "Audio Relay Error", variant: "destructive" });
     }
-  }, [sendCommand, audioDirection, WS_URL, toast]);
+  }, [sendCommand, audioDirection, WS_URL, toast, selectedInput]);
 
   // Audio playback queue to prevent overlapping
   const audioPlaybackQueue = useRef<AudioBufferSourceNode[]>([]);
@@ -886,6 +905,68 @@ export default function MicCamera() {
                       </SelectContent>
                     </Select>
                   </div>
+
+                  {/* Device Selectors */}
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {/* Microphone selector */}
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2 text-sm">
+                        <Mic className="h-4 w-4" />
+                        Phone Microphone
+                      </Label>
+                      <Select
+                        value={selectedInput}
+                        onValueChange={setSelectedInput}
+                        disabled={audioRelayActive || devicesLoading}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder={devicesLoading ? "Loading..." : "Select microphone"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {inputDevices.map((device) => (
+                            <SelectItem key={device.deviceId} value={device.deviceId}>
+                              {device.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Speaker selector */}
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2 text-sm">
+                        <Speaker className="h-4 w-4" />
+                        Phone Speaker
+                      </Label>
+                      <Select
+                        value={selectedOutput}
+                        onValueChange={setSelectedOutput}
+                        disabled={audioRelayActive || devicesLoading}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder={devicesLoading ? "Loading..." : "Select speaker"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {outputDevices.map((device) => (
+                            <SelectItem key={device.deviceId} value={device.deviceId}>
+                              {device.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={refreshDevices}
+                    disabled={devicesLoading}
+                    className="w-fit"
+                  >
+                    <RefreshCw className={cn("h-4 w-4 mr-2", devicesLoading && "animate-spin")} />
+                    Refresh Devices
+                  </Button>
 
                   {/* Audio visualizer */}
                   <div className="relative h-32 bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
