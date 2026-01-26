@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
+import { CameraTroubleshooter } from "@/components/CameraTroubleshooter";
 import { BackButton } from "@/components/BackButton";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -1364,6 +1365,21 @@ export default function MicCamera() {
                       <Switch checked={facingMode === "user"} onCheckedChange={() => void switchPhoneCamera()} />
                     </div>
                   </div>
+
+                  {/* Camera Troubleshooter Panel */}
+                  <CameraTroubleshooter
+                    facingMode={facingMode}
+                    onCameraReady={(stream) => {
+                      // If camera was tested successfully, use that stream
+                      setPhoneCameraStream(stream);
+                      if (phoneCameraRef.current) {
+                        phoneCameraRef.current.srcObject = stream;
+                        phoneCameraRef.current.play().catch(() => {});
+                      }
+                      setPhoneCameraActive(true);
+                      toast({ title: "Camera Ready", description: "Camera started from troubleshooter" });
+                    }}
+                  />
 
                   {/* Share session */}
                   <div className="grid gap-3 rounded-lg border border-border/50 bg-secondary/10 p-3">
