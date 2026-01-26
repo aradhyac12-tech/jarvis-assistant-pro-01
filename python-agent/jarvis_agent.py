@@ -4090,59 +4090,64 @@ class SystemTray:
 
 # ============== NATIVE GUI (TKINTER) ==============
 class JarvisGUI:
-    """Native desktop GUI for the JARVIS Agent using Tkinter."""
+    """Ultra-minimal JARVIS Agent GUI - clean, elegant, dark theme."""
     
     def __init__(self):
         self.root = None
         self.running = False
-        self.update_interval = 1000  # ms
+        self.update_interval = 1000
         self.minimized_to_tray = False
         self.tray = None
         
-        # References to UI elements
+        # UI references
         self.pairing_label = None
-        self.status_label = None
-        self.device_label = None
-        self.cpu_label = None
-        self.mem_label = None
-        self.vol_label = None
-        self.bright_label = None
+        self.status_dot = None
+        self.status_text = None
         self.cpu_bar = None
         self.mem_bar = None
-        self.vol_bar = None
-        self.bright_bar = None
-        self.audio_status = None
-        self.camera_status = None
-        self.screen_status = None
-        self.voice_status = None
-        self.voice_btn = None
-        self.last_command_label = None
+        self.stream_indicators = {}
         self.log_text = None
         self.last_log_count = 0
+        
+        # Colors - Modern dark theme
+        self.colors = {
+            "bg": "#09090b",
+            "card": "#18181b",
+            "border": "#27272a",
+            "text": "#fafafa",
+            "muted": "#71717a",
+            "primary": "#3b82f6",
+            "success": "#22c55e",
+            "warning": "#eab308",
+            "error": "#ef4444",
+            "accent": "#8b5cf6",
+        }
     
     def start(self):
-        """Start the GUI in the main thread."""
+        """Start the GUI."""
         if not HAS_TKINTER:
-            print("⚠️  Tkinter not available. Running in headless mode.")
+            print("⚠️  Tkinter not available. Running headless.")
             return False
         
         self.running = True
         self.root = tk.Tk()
-        self.root.title("JARVIS Agent v2.5")
-        self.root.geometry("700x850")
-        self.root.configure(bg="#0a0e17")
-        self.root.resizable(True, True)
+        self.root.title("JARVIS")
+        self.root.geometry("460x680")
+        self.root.configure(bg=self.colors["bg"])
+        self.root.resizable(False, False)
         
-        # Handle window close - minimize to tray instead
+        # Center window
+        self.root.update_idletasks()
+        x = (self.root.winfo_screenwidth() - 460) // 2
+        y = (self.root.winfo_screenheight() - 680) // 2
+        self.root.geometry(f"+{x}+{y}")
+        
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         
-        # Configure styles
         self._setup_styles()
-        
-        # Build UI
         self._build_ui()
         
-        # Start system tray
+        # System tray
         self.tray = SystemTray(
             gui_callback=self._show_window,
             voice_toggle_callback=self._toggle_voice,
@@ -4150,22 +4155,18 @@ class JarvisGUI:
         )
         self.tray.start()
         
-        # Start update loop
         self.root.after(500, self._update_ui)
-        
         return True
     
     def _on_close(self):
-        """Handle window close - minimize to tray."""
         if HAS_TRAY and self.tray and self.tray.running:
             self.root.withdraw()
             self.minimized_to_tray = True
-            notification_manager.notify("JARVIS Agent", "Minimized to system tray. Click icon to restore.")
+            notification_manager.notify("JARVIS", "Running in background")
         else:
             self._quit_app()
     
     def _show_window(self):
-        """Show the main window."""
         if self.root:
             self.root.deiconify()
             self.root.lift()
@@ -4173,49 +4174,29 @@ class JarvisGUI:
             self.minimized_to_tray = False
     
     def _toggle_voice(self):
-        """Toggle voice listener."""
         global voice_listener
         if voice_listener and voice_listener.running:
             voice_listener.stop()
-            notification_manager.notify("JARVIS Voice", "Voice control disabled")
         else:
             self._start_voice_listener()
     
     def _start_voice_listener(self):
-        """Start the voice listener."""
         global voice_listener
         if not HAS_SPEECH_RECOGNITION:
-            notification_manager.notify("JARVIS Voice", "Speech recognition not installed")
             return
-        
-        # Create voice listener with command callback
-        voice_listener = VoiceListener(
-            wake_word="jarvis",
-            on_command=self._handle_voice_command
-        )
+        voice_listener = VoiceListener(wake_word="jarvis", on_command=self._handle_voice_command)
         voice_listener.start()
     
     def _handle_voice_command(self, command: str) -> str:
-        """Handle a voice command and return response."""
-        # Send command to the AI backend
-        add_log("info", f"Voice command: {command}", category="voice")
-        
-        # For now, return a simple acknowledgement
-        # The actual command execution happens through the web dashboard
-        return f"I'll process that for you, sir."
+        add_log("info", f"Voice: {command}", category="voice")
+        return "Processing, sir."
     
     def _quit_app(self):
-        """Quit the application."""
         global voice_listener
-        
-        # Stop voice listener
         if voice_listener:
             voice_listener.stop()
-        
-        # Stop tray
         if self.tray:
             self.tray.stop()
-        
         self.running = False
         if self.root:
             try:
@@ -4225,328 +4206,195 @@ class JarvisGUI:
                 pass
     
     def _setup_styles(self):
-        """Configure ttk styles for dark theme."""
+        """Minimal ttk styles."""
         style = ttk.Style()
         style.theme_use('clam')
+        c = self.colors
         
-        # Colors
-        bg_dark = "#0a0e17"
-        bg_card = "#111827"
-        border = "#1f2937"
-        primary = "#3b82f6"
-        success = "#10b981"
-        warning = "#f59e0b"
-        error = "#ef4444"
-        text = "#f3f4f6"
-        text_muted = "#9ca3af"
-        
-        # Configure TFrame
-        style.configure("Card.TFrame", background=bg_card)
-        style.configure("Main.TFrame", background=bg_dark)
-        
-        # Configure TLabel
-        style.configure("Title.TLabel", background=bg_dark, foreground=primary, font=("Segoe UI", 24, "bold"))
-        style.configure("Subtitle.TLabel", background=bg_dark, foreground=text_muted, font=("Segoe UI", 10))
-        style.configure("Pairing.TLabel", background=bg_card, foreground=primary, font=("Consolas", 42, "bold"))
-        style.configure("PairingHint.TLabel", background=bg_card, foreground=text_muted, font=("Segoe UI", 10))
-        style.configure("Status.TLabel", background=bg_dark, foreground=success, font=("Segoe UI", 11, "bold"))
-        style.configure("StatusOff.TLabel", background=bg_dark, foreground=error, font=("Segoe UI", 11, "bold"))
-        style.configure("Card.TLabel", background=bg_card, foreground=text, font=("Segoe UI", 10))
-        style.configure("CardTitle.TLabel", background=bg_card, foreground=text_muted, font=("Segoe UI", 9))
-        style.configure("Stat.TLabel", background=bg_card, foreground=text, font=("Segoe UI", 18, "bold"))
-        style.configure("StreamOn.TLabel", background=bg_card, foreground=success, font=("Segoe UI", 10, "bold"))
-        style.configure("StreamOff.TLabel", background=bg_card, foreground=text_muted, font=("Segoe UI", 10))
-        
-        # Configure TProgressbar
-        style.configure("CPU.Horizontal.TProgressbar", background=primary, troughcolor=border, thickness=8)
-        style.configure("Mem.Horizontal.TProgressbar", background="#8b5cf6", troughcolor=border, thickness=8)
-        style.configure("Vol.Horizontal.TProgressbar", background=success, troughcolor=border, thickness=8)
-        style.configure("Bright.Horizontal.TProgressbar", background=warning, troughcolor=border, thickness=8)
+        style.configure("TFrame", background=c["bg"])
+        style.configure("Card.TFrame", background=c["card"])
+        style.configure("TLabel", background=c["bg"], foreground=c["text"], font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background=c["bg"], foreground=c["muted"], font=("Segoe UI", 9))
+        style.configure("Code.TLabel", background=c["card"], foreground=c["primary"], font=("JetBrains Mono", 36, "bold"))
+        style.configure("Small.TLabel", background=c["card"], foreground=c["muted"], font=("Segoe UI", 9))
+        style.configure("Stat.Horizontal.TProgressbar", background=c["primary"], troughcolor=c["border"], thickness=4)
     
     def _build_ui(self):
-        """Build the GUI layout."""
-        bg_dark = "#0a0e17"
-        bg_card = "#111827"
-        border = "#1f2937"
-        primary = "#3b82f6"
-        text = "#f3f4f6"
-        text_muted = "#9ca3af"
+        """Build minimal, elegant UI."""
+        c = self.colors
         
-        # Main container with scrollbar
-        main_frame = ttk.Frame(self.root, style="Main.TFrame")
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        # Main container
+        main = tk.Frame(self.root, bg=c["bg"])
+        main.pack(fill=tk.BOTH, expand=True, padx=24, pady=24)
         
-        # Header
-        header_frame = tk.Frame(main_frame, bg=bg_dark)
-        header_frame.pack(fill=tk.X, pady=(0, 15))
+        # Header row
+        header = tk.Frame(main, bg=c["bg"])
+        header.pack(fill=tk.X, pady=(0, 20))
         
-        title_label = ttk.Label(header_frame, text="🤖 JARVIS Agent", style="Title.TLabel")
-        title_label.pack(side=tk.LEFT)
+        title = tk.Label(header, text="JARVIS", font=("Segoe UI", 20, "bold"), fg=c["text"], bg=c["bg"])
+        title.pack(side=tk.LEFT)
         
-        self.status_label = ttk.Label(header_frame, text="● Connecting...", style="StatusOff.TLabel")
-        self.status_label.pack(side=tk.RIGHT, padx=5)
+        # Status indicator
+        status_frame = tk.Frame(header, bg=c["bg"])
+        status_frame.pack(side=tk.RIGHT)
         
-        self.device_label = ttk.Label(header_frame, text="", style="Subtitle.TLabel")
-        self.device_label.pack(side=tk.RIGHT, padx=10)
+        self.status_dot = tk.Canvas(status_frame, width=10, height=10, bg=c["bg"], highlightthickness=0)
+        self.status_dot.pack(side=tk.LEFT, padx=(0, 6))
+        self.status_dot.create_oval(2, 2, 8, 8, fill=c["muted"], outline="")
         
-        # Pairing Section
-        pairing_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground=primary, highlightthickness=2)
-        pairing_frame.pack(fill=tk.X, pady=(0, 15), ipady=15)
+        self.status_text = tk.Label(status_frame, text="Connecting", font=("Segoe UI", 10), fg=c["muted"], bg=c["bg"])
+        self.status_text.pack(side=tk.LEFT)
         
-        pairing_title = ttk.Label(pairing_frame, text="📱 Enter this code in the mobile app", style="PairingHint.TLabel")
-        pairing_title.pack(pady=(15, 5))
+        # Pairing card - Hero section
+        pairing_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
+        pairing_card.pack(fill=tk.X, pady=(0, 20), ipady=20)
         
-        self.pairing_label = ttk.Label(pairing_frame, text="------", style="Pairing.TLabel")
-        self.pairing_label.pack(pady=10)
+        tk.Label(pairing_card, text="PAIRING CODE", font=("Segoe UI", 9, "bold"), fg=c["muted"], bg=c["card"]).pack(pady=(16, 4))
         
-        pairing_hint = ttk.Label(pairing_frame, text="Open JARVIS app → Tap 'Pair' → Enter code", style="PairingHint.TLabel")
-        pairing_hint.pack(pady=(5, 15))
+        self.pairing_label = tk.Label(pairing_card, text="------", font=("JetBrains Mono", 40, "bold"), fg=c["primary"], bg=c["card"])
+        self.pairing_label.pack()
         
-        # Stats Grid - 2x2 layout
-        stats_frame = tk.Frame(main_frame, bg=bg_dark)
-        stats_frame.pack(fill=tk.X, pady=(0, 15))
+        tk.Label(pairing_card, text="Enter this code in the mobile app", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(pady=(4, 16))
+        
+        # Stats row - CPU & Memory only
+        stats_row = tk.Frame(main, bg=c["bg"])
+        stats_row.pack(fill=tk.X, pady=(0, 16))
         
         for i in range(2):
-            stats_frame.columnconfigure(i, weight=1)
+            stats_row.columnconfigure(i, weight=1)
         
-        # Row 1: CPU and Memory
-        cpu_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
-        cpu_card.grid(row=0, column=0, padx=(0, 5), pady=5, sticky="nsew")
-        ttk.Label(cpu_card, text="⚡ CPU", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
-        self.cpu_label = ttk.Label(cpu_card, text="0%", style="Stat.TLabel")
-        self.cpu_label.pack(anchor=tk.W, padx=10)
-        self.cpu_bar = ttk.Progressbar(cpu_card, style="CPU.Horizontal.TProgressbar", length=150, mode='determinate')
-        self.cpu_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        # CPU
+        cpu_frame = tk.Frame(stats_row, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
+        cpu_frame.grid(row=0, column=0, padx=(0, 8), sticky="nsew")
+        tk.Label(cpu_frame, text="CPU", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=12, pady=(10, 4))
+        self.cpu_bar = ttk.Progressbar(cpu_frame, style="Stat.Horizontal.TProgressbar", length=160, mode='determinate')
+        self.cpu_bar.pack(fill=tk.X, padx=12, pady=(0, 10))
         
-        mem_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
-        mem_card.grid(row=0, column=1, padx=(5, 0), pady=5, sticky="nsew")
-        ttk.Label(mem_card, text="💾 Memory", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
-        self.mem_label = ttk.Label(mem_card, text="0%", style="Stat.TLabel")
-        self.mem_label.pack(anchor=tk.W, padx=10)
-        self.mem_bar = ttk.Progressbar(mem_card, style="Mem.Horizontal.TProgressbar", length=150, mode='determinate')
-        self.mem_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        # Memory
+        mem_frame = tk.Frame(stats_row, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
+        mem_frame.grid(row=0, column=1, padx=(8, 0), sticky="nsew")
+        tk.Label(mem_frame, text="MEMORY", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=12, pady=(10, 4))
+        self.mem_bar = ttk.Progressbar(mem_frame, style="Stat.Horizontal.TProgressbar", length=160, mode='determinate')
+        self.mem_bar.pack(fill=tk.X, padx=12, pady=(0, 10))
         
-        # Row 2: Volume and Brightness
-        vol_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
-        vol_card.grid(row=1, column=0, padx=(0, 5), pady=5, sticky="nsew")
-        ttk.Label(vol_card, text="🔊 Volume", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
-        self.vol_label = ttk.Label(vol_card, text="50%", style="Stat.TLabel")
-        self.vol_label.pack(anchor=tk.W, padx=10)
-        self.vol_bar = ttk.Progressbar(vol_card, style="Vol.Horizontal.TProgressbar", length=150, mode='determinate')
-        self.vol_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        # Stream status - Simple horizontal indicators
+        stream_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
+        stream_card.pack(fill=tk.X, pady=(0, 16), ipady=12)
         
-        bright_card = tk.Frame(stats_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
-        bright_card.grid(row=1, column=1, padx=(5, 0), pady=5, sticky="nsew")
-        ttk.Label(bright_card, text="☀️ Brightness", style="CardTitle.TLabel").pack(anchor=tk.W, padx=10, pady=(10, 3))
-        self.bright_label = ttk.Label(bright_card, text="50%", style="Stat.TLabel")
-        self.bright_label.pack(anchor=tk.W, padx=10)
-        self.bright_bar = ttk.Progressbar(bright_card, style="Bright.Horizontal.TProgressbar", length=150, mode='determinate')
-        self.bright_bar.pack(fill=tk.X, padx=10, pady=(3, 10))
+        tk.Label(stream_card, text="STREAMS", font=("Segoe UI", 9, "bold"), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=16, pady=(12, 8))
         
-        # Voice Control Section
-        voice_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground="#10b981", highlightthickness=2)
-        voice_frame.pack(fill=tk.X, pady=(0, 15), ipady=10)
+        indicators_row = tk.Frame(stream_card, bg=c["card"])
+        indicators_row.pack(fill=tk.X, padx=16, pady=(0, 12))
         
-        voice_header = tk.Frame(voice_frame, bg=bg_card)
-        voice_header.pack(fill=tk.X, padx=15, pady=(10, 5))
+        for name, icon in [("Audio", "🔊"), ("Camera", "📷"), ("Screen", "🖥")]:
+            frame = tk.Frame(indicators_row, bg=c["card"])
+            frame.pack(side=tk.LEFT, padx=(0, 24))
+            
+            dot = tk.Canvas(frame, width=8, height=8, bg=c["card"], highlightthickness=0)
+            dot.pack(side=tk.LEFT, padx=(0, 6))
+            dot.create_oval(1, 1, 7, 7, fill=c["muted"], outline="", tags="dot")
+            
+            tk.Label(frame, text=name, font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
+            
+            self.stream_indicators[name.lower()] = dot
         
-        ttk.Label(voice_header, text="🎤 Voice Control (Wake Word: 'Jarvis')", style="CardTitle.TLabel").pack(side=tk.LEFT)
+        # Activity log
+        log_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
+        log_card.pack(fill=tk.BOTH, expand=True)
         
-        self.voice_btn = tk.Button(voice_header, text="🎙️ Start Voice", bg="#10b981", fg="white",
-                                   activebackground="#059669", activeforeground="white",
-                                   bd=0, padx=15, pady=5, cursor="hand2",
-                                   font=("Segoe UI", 10, "bold"),
-                                   command=self._toggle_voice)
-        self.voice_btn.pack(side=tk.RIGHT)
+        log_header = tk.Frame(log_card, bg=c["card"])
+        log_header.pack(fill=tk.X, padx=16, pady=(12, 8))
         
-        voice_status_row = tk.Frame(voice_frame, bg=bg_card)
-        voice_status_row.pack(fill=tk.X, padx=15, pady=(5, 5))
+        tk.Label(log_header, text="ACTIVITY", font=("Segoe UI", 9, "bold"), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
         
-        self.voice_status = ttk.Label(voice_status_row, text="🔇 Voice: OFF", style="StreamOff.TLabel")
-        self.voice_status.pack(side=tk.LEFT)
-        
-        self.last_command_label = ttk.Label(voice_status_row, text="", style="PairingHint.TLabel")
-        self.last_command_label.pack(side=tk.RIGHT)
-        
-        # Streaming Status
-        stream_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
-        stream_frame.pack(fill=tk.X, pady=(0, 15), ipady=8)
-        
-        ttk.Label(stream_frame, text="📡 Streaming Status", style="CardTitle.TLabel").pack(anchor=tk.W, padx=15, pady=(10, 8))
-        
-        stream_row = tk.Frame(stream_frame, bg=bg_card)
-        stream_row.pack(fill=tk.X, padx=15, pady=(0, 10))
-        
-        self.audio_status = ttk.Label(stream_row, text="🔇 Audio: OFF", style="StreamOff.TLabel")
-        self.audio_status.pack(side=tk.LEFT, padx=(0, 25))
-        
-        self.camera_status = ttk.Label(stream_row, text="📷 Camera: OFF", style="StreamOff.TLabel")
-        self.camera_status.pack(side=tk.LEFT, padx=(0, 25))
-        
-        self.screen_status = ttk.Label(stream_row, text="🖥️ Screen: OFF", style="StreamOff.TLabel")
-        self.screen_status.pack(side=tk.LEFT)
-        
-        # Activity Log
-        log_frame = tk.Frame(main_frame, bg=bg_card, highlightbackground=border, highlightthickness=1)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        
-        log_header = tk.Frame(log_frame, bg=bg_card)
-        log_header.pack(fill=tk.X, padx=15, pady=(10, 5))
-        
-        ttk.Label(log_header, text="📋 Activity Log", style="CardTitle.TLabel").pack(side=tk.LEFT)
-        
-        clear_btn = tk.Button(log_header, text="Clear", bg="#1f2937", fg=text_muted, 
-                             activebackground="#374151", activeforeground=text,
-                             bd=0, padx=10, pady=3, cursor="hand2",
-                             command=self._clear_logs)
+        clear_btn = tk.Label(log_header, text="Clear", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"], cursor="hand2")
         clear_btn.pack(side=tk.RIGHT)
+        clear_btn.bind("<Button-1>", lambda e: self._clear_logs())
         
-        # Log text area
-        self.log_text = scrolledtext.ScrolledText(log_frame, bg="#0d1117", fg=text, 
-                                                   font=("Consolas", 9), wrap=tk.WORD,
-                                                   insertbackground=text, bd=0, 
-                                                   highlightthickness=0, height=10)
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.log_text = scrolledtext.ScrolledText(
+            log_card, bg="#0c0c0e", fg=c["text"], font=("JetBrains Mono", 9), 
+            wrap=tk.WORD, bd=0, highlightthickness=0, height=12, insertbackground=c["text"]
+        )
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
         self.log_text.configure(state=tk.DISABLED)
         
-        # Configure log text tags
-        self.log_text.tag_configure("error", foreground="#ef4444")
-        self.log_text.tag_configure("warn", foreground="#f59e0b")
-        self.log_text.tag_configure("info", foreground="#3b82f6")
-        self.log_text.tag_configure("voice", foreground="#10b981")
-        self.log_text.tag_configure("time", foreground="#6b7280")
-        self.log_text.tag_configure("category", foreground="#9ca3af")
-    
+        # Log tags
+        self.log_text.tag_configure("error", foreground=c["error"])
+        self.log_text.tag_configure("warn", foreground=c["warning"])
+        self.log_text.tag_configure("info", foreground=c["primary"])
+        self.log_text.tag_configure("voice", foreground=c["success"])
+        self.log_text.tag_configure("time", foreground=c["muted"])
+
     def _update_ui(self):
-        """Update UI with current agent status."""
+        """Update UI with current status."""
         if not self.running or not self.root:
             return
         
         try:
             status = get_agent_status()
+            c = self.colors
             
-            # Update status
+            # Status indicator
             if status.get("connected"):
-                self.status_label.configure(text="● Connected", style="Status.TLabel")
+                self.status_dot.itemconfig("all", fill=c["success"])
+                self.status_text.configure(text="Connected", fg=c["success"])
             else:
-                self.status_label.configure(text="● Disconnected", style="StatusOff.TLabel")
+                self.status_dot.itemconfig("all", fill=c["muted"])
+                self.status_text.configure(text="Offline", fg=c["muted"])
             
-            # Update device name
-            self.device_label.configure(text=status.get("device_name", ""))
+            # Pairing code
+            code = status.get("pairing_code", "------")
+            self.pairing_label.configure(text=code if code else "------")
             
-            # Update pairing code
-            pairing_code = status.get("pairing_code", "------")
-            self.pairing_label.configure(text=pairing_code if pairing_code else "------")
+            # Stats
+            self.cpu_bar["value"] = int(status.get("cpu_percent", 0))
+            self.mem_bar["value"] = int(status.get("memory_percent", 0))
             
-            # Update stats
-            cpu = int(status.get("cpu_percent", 0))
-            mem = int(status.get("memory_percent", 0))
-            vol = int(status.get("volume", 50))
-            bright = int(status.get("brightness", 50))
+            # Stream indicators
+            stream_map = {
+                "audio": status.get("audio_streaming"),
+                "camera": status.get("camera_streaming"),
+                "screen": status.get("screen_streaming"),
+            }
+            for name, active in stream_map.items():
+                if name in self.stream_indicators:
+                    color = c["success"] if active else c["muted"]
+                    self.stream_indicators[name].itemconfig("dot", fill=color)
             
-            self.cpu_label.configure(text=f"{cpu}%")
-            self.cpu_bar["value"] = cpu
-            
-            self.mem_label.configure(text=f"{mem}%")
-            self.mem_bar["value"] = mem
-            
-            self.vol_label.configure(text=f"{vol}%")
-            self.vol_bar["value"] = vol
-            
-            self.bright_label.configure(text=f"{bright}%")
-            self.bright_bar["value"] = bright
-            
-            # Update streaming status
-            if status.get("audio_streaming"):
-                self.audio_status.configure(text="🔊 Audio: ACTIVE", style="StreamOn.TLabel")
-            else:
-                self.audio_status.configure(text="🔇 Audio: OFF", style="StreamOff.TLabel")
-            
-            if status.get("camera_streaming"):
-                self.camera_status.configure(text="📹 Camera: ACTIVE", style="StreamOn.TLabel")
-            else:
-                self.camera_status.configure(text="📷 Camera: OFF", style="StreamOff.TLabel")
-            
-            if status.get("screen_streaming"):
-                self.screen_status.configure(text="🖥️ Screen: ACTIVE", style="StreamOn.TLabel")
-            else:
-                self.screen_status.configure(text="🖥️ Screen: OFF", style="StreamOff.TLabel")
-            
-            # Update voice status
-            if self.voice_status:
-                if status.get("voice_active"):
-                    self.voice_status.configure(text="🎤 Voice: ACTIVE (listening)", style="StreamOn.TLabel")
-                elif status.get("voice_listening"):
-                    self.voice_status.configure(text="🎤 Voice: Waiting for 'Jarvis'", style="StreamOn.TLabel")
-                else:
-                    self.voice_status.configure(text="🔇 Voice: OFF", style="StreamOff.TLabel")
-            
-            # Update voice button state
-            if self.voice_btn:
-                global voice_listener
-                if voice_listener and voice_listener.running:
-                    self.voice_btn.configure(text="🛑 Stop Voice", bg="#ef4444")
-                else:
-                    self.voice_btn.configure(text="🎙️ Start Voice", bg="#10b981")
-            
-            # Update last command
-            if self.last_command_label:
-                last_cmd = status.get("last_voice_command", "")
-                if last_cmd:
-                    self.last_command_label.configure(text=f"Last: \"{last_cmd[:40]}{'...' if len(last_cmd) > 40 else ''}\"")
-            
-            # Update logs
+            # Logs
             logs = get_logs()
             if len(logs) != self.last_log_count:
                 self._render_logs(logs)
                 self.last_log_count = len(logs)
-            
+                
         except Exception as e:
-            print(f"GUI update error: {e}")
+            print(f"UI update error: {e}")
         
-        # Schedule next update
         if self.running and self.root:
             self.root.after(self.update_interval, self._update_ui)
-    
+
     def _render_logs(self, logs):
-        """Render logs to text widget."""
+        """Render logs - minimal format."""
         if not self.log_text:
             return
         
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete(1.0, tk.END)
         
-        for log in logs[:50]:  # Show last 50 logs
-            timestamp = log.get("timestamp", "")
+        for log in logs[:30]:
             try:
-                time_str = datetime.fromisoformat(timestamp).strftime("%H:%M:%S")
+                time_str = datetime.fromisoformat(log.get("timestamp", "")).strftime("%H:%M")
             except:
-                time_str = timestamp[:8] if len(timestamp) >= 8 else timestamp
+                time_str = "--:--"
             
             level = log.get("level", "info")
-            category = log.get("category", "general")
-            message = log.get("message", "")
-            details = log.get("details", "")
+            msg = log.get("message", "")
             
-            # Insert timestamp
-            self.log_text.insert(tk.END, f"[{time_str}] ", "time")
-            
-            # Insert level
-            level_text = f"[{level.upper()}] "
-            self.log_text.insert(tk.END, level_text, level)
-            
-            # Insert category
-            self.log_text.insert(tk.END, f"({category}) ", "category")
-            
-            # Insert message
-            self.log_text.insert(tk.END, message)
-            
-            if details:
-                self.log_text.insert(tk.END, f" | {details}", "category")
-            
-            self.log_text.insert(tk.END, "\n")
+            self.log_text.insert(tk.END, f"{time_str} ", "time")
+            self.log_text.insert(tk.END, f"{msg}\n", level if level in ["error", "warn", "voice"] else "info")
         
         self.log_text.configure(state=tk.DISABLED)
+        self.log_text.see(tk.END)
     
     def _clear_logs(self):
         """Clear the activity log."""

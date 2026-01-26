@@ -1535,7 +1535,6 @@ export default function MicCamera() {
                           <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
                             <Smartphone className="h-12 w-12 mb-2 opacity-50" />
                             <p className="text-sm">No phone stream</p>
-                            <p className="text-xs">Connect from your PC with a Session ID</p>
                           </div>
                         )}
                       </div>
