@@ -202,24 +202,51 @@ export default function MicCamera() {
   }, [pcCameraActive, pcCameraSessionId, sendCommand]);
 
   // ==================== PHONE CAMERA ====================
-  const startPhoneCamera = useCallback(async () => {
+  const startPhoneCamera = useCallback(async (mode?: "user" | "environment") => {
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        toast({
+          title: "Camera Error",
+          description: "Camera API not available on this device/browser",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: mode ?? facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
 
       setPhoneCameraStream(stream);
       if (phoneCameraRef.current) {
         phoneCameraRef.current.srcObject = stream;
+        // Some mobile browsers need an explicit play() after srcObject assignment.
+        try {
+          await phoneCameraRef.current.play();
+        } catch {
+          // ignore
+        }
       }
       setPhoneCameraActive(true);
       toast({ title: "Phone Camera Started", description: "Camera is streaming in the preview" });
     } catch (error) {
       console.error("Camera error:", error);
+      const name = error instanceof Error ? error.name : "CameraError";
+      const message = error instanceof Error ? error.message : String(error);
+
+      const fix =
+        name === "NotAllowedError"
+          ? "Permission denied. Allow Camera access in browser/site settings."
+          : name === "NotFoundError"
+          ? "No camera found. Connect/enable a camera and try again."
+          : name === "NotReadableError"
+          ? "Camera is busy. Close other apps using the camera and retry."
+          : "Check camera connection and permissions.";
+
       toast({
         title: "Camera Error",
-        description: "Could not access camera. Please grant permission.",
+        description: `${fix}${message ? ` (${name})` : ""}`,
         variant: "destructive",
       });
     }
@@ -237,12 +264,14 @@ export default function MicCamera() {
     toast({ title: "Phone Camera Stopped" });
   }, [phoneCameraStream, toast]);
 
-  const switchPhoneCamera = useCallback(() => {
+  const switchPhoneCamera = useCallback(async () => {
     const newMode = facingMode === "user" ? "environment" : "user";
     setFacingMode(newMode);
     if (phoneCameraActive) {
       stopPhoneCamera();
-      setTimeout(() => startPhoneCamera(), 300);
+      // IMPORTANT: restart must be in the same user gesture (no setTimeout),
+      // otherwise mobile browsers may deny camera permissions.
+      await startPhoneCamera(newMode);
     }
   }, [phoneCameraActive, facingMode, startPhoneCamera, stopPhoneCamera]);
 
@@ -1307,7 +1336,7 @@ export default function MicCamera() {
 
                   <div className="flex items-center justify-center gap-4">
                     {!phoneCameraActive ? (
-                      <Button onClick={startPhoneCamera} className="gradient-primary">
+                      <Button onClick={() => void startPhoneCamera()} className="gradient-primary">
                         <Play className="h-4 w-4 mr-2" />
                         Start Camera
                       </Button>
@@ -1317,7 +1346,7 @@ export default function MicCamera() {
                           <Square className="h-4 w-4 mr-2" />
                           Stop
                         </Button>
-                        <Button onClick={switchPhoneCamera} variant="secondary">
+                        <Button onClick={() => void switchPhoneCamera()} variant="secondary">
                           <RefreshCw className="h-4 w-4 mr-2" />
                           Flip
                         </Button>
@@ -1332,7 +1361,7 @@ export default function MicCamera() {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-muted-foreground">Front Camera</span>
-                      <Switch checked={facingMode === "user"} onCheckedChange={() => switchPhoneCamera()} />
+                      <Switch checked={facingMode === "user"} onCheckedChange={() => void switchPhoneCamera()} />
                     </div>
                   </div>
 
