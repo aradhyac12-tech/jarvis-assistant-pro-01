@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
+import { BackButton } from "@/components/BackButton";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -952,6 +953,7 @@ export default function MicCamera() {
       <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
         <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
           <div className="flex items-center gap-3">
+            <BackButton />
             <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
               <Camera className="w-5 h-5 text-primary-foreground" />
             </div>

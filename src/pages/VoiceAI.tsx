@@ -16,7 +16,6 @@ import {
   MicOff, 
   Volume2,
   Settings,
-  ArrowLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -25,9 +24,9 @@ import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useWebSpeechTTS } from "@/hooks/useWebSpeechTTS";
 import { useContinuousVoice } from "@/hooks/useContinuousVoice";
 import { AudioWaveform, CircularWaveform } from "@/components/AudioWaveform";
+import { BackButton } from "@/components/BackButton";
 import { addLog } from "@/components/IssueLog";
 import { supabase } from "@/integrations/supabase/client";
-import { Link } from "react-router-dom";
 
 interface Message {
   id: string;
@@ -221,11 +220,7 @@ export default function VoiceAI() {
       <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
         <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
           <div className="flex items-center gap-3">
-            <Link to="/hub">
-              <Button variant="ghost" size="icon" className="h-8 w-8">
-                <ArrowLeft className="w-4 h-4" />
-              </Button>
-            </Link>
+            <BackButton />
             <div>
               <h1 className="font-semibold text-sm">JARVIS AI</h1>
               <p className="text-xs text-muted-foreground">

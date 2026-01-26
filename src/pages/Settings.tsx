@@ -6,12 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Settings2, Bell, Shield, Mic, Monitor, Check, LogOut, Link2Off, Activity } from "lucide-react";
+import { Settings2, Bell, Shield, Mic, Monitor, Check, LogOut, Link2Off, Activity, ArrowLeft } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useNavigate } from "react-router-dom";
 import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
+import { BackButton } from "@/components/BackButton";
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState("Hey Jarvis");
@@ -35,9 +36,12 @@ export default function Settings() {
   return (
     <DashboardLayout>
       <div className="space-y-6 animate-fade-in max-w-4xl">
-        <div>
-          <h1 className="text-3xl font-bold neon-text">Settings</h1>
-          <p className="text-muted-foreground">Configure your Jarvis assistant</p>
+        <div className="flex items-center gap-4">
+          <BackButton />
+          <div>
+            <h1 className="text-3xl font-bold neon-text">Settings</h1>
+            <p className="text-muted-foreground">Configure your Jarvis assistant</p>
+          </div>
         </div>
 
         <div className="grid gap-6">

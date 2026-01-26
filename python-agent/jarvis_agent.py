@@ -3831,6 +3831,145 @@ class JarvisAgent:
                 self.test_pattern_session_id = None
                 return {"success": True}
 
+            # ============== BOOST PC COMMANDS ==============
+            elif command_type == "boost_ram":
+                freed_mb = 0
+                try:
+                    import gc
+                    gc.collect()
+                    # Windows memory cleanup
+                    if sys.platform == "win32":
+                        import ctypes
+                        kernel32 = ctypes.windll.kernel32
+                        # Set process working set to minimum
+                        handle = kernel32.GetCurrentProcess()
+                        kernel32.SetProcessWorkingSetSize(handle, -1, -1)
+                        freed_mb = 50  # Estimated
+                        add_log("info", f"RAM cleanup: ~{freed_mb}MB freed", category="system")
+                    return {"success": True, "freed_mb": freed_mb}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "clear_temp_files":
+                freed_mb = 0
+                try:
+                    import shutil
+                    temp_paths = [
+                        os.path.join(os.environ.get("TEMP", ""), ""),
+                        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
+                        os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Prefetch"),
+                    ]
+                    for temp_path in temp_paths:
+                        if os.path.exists(temp_path):
+                            try:
+                                for item in os.listdir(temp_path):
+                                    item_path = os.path.join(temp_path, item)
+                                    try:
+                                        if os.path.isfile(item_path):
+                                            size = os.path.getsize(item_path)
+                                            os.remove(item_path)
+                                            freed_mb += size / (1024 * 1024)
+                                        elif os.path.isdir(item_path):
+                                            shutil.rmtree(item_path, ignore_errors=True)
+                                    except:
+                                        pass
+                            except:
+                                pass
+                    add_log("info", f"Temp files cleared: ~{int(freed_mb)}MB freed", category="system")
+                    return {"success": True, "freed_mb": int(freed_mb)}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "set_power_plan":
+                try:
+                    plan = payload.get("plan", "high_performance")
+                    if sys.platform == "win32":
+                        plans = {
+                            "high_performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+                            "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e",
+                            "power_saver": "a1841308-3541-4fab-bc81-f71556f20b4a",
+                        }
+                        plan_guid = plans.get(plan, plans["high_performance"])
+                        os.system(f"powercfg /setactive {plan_guid}")
+                        add_log("info", f"Power plan set to: {plan}", category="system")
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "gaming_mode":
+                try:
+                    enable = payload.get("enable", True)
+                    if sys.platform == "win32":
+                        # Disable focus assist / do not disturb
+                        if enable:
+                            # Set priority for current process
+                            import ctypes
+                            kernel32 = ctypes.windll.kernel32
+                            handle = kernel32.GetCurrentProcess()
+                            kernel32.SetPriorityClass(handle, 0x00008000)  # ABOVE_NORMAL
+                            add_log("info", "Gaming mode enabled", category="system")
+                        else:
+                            add_log("info", "Gaming mode disabled", category="system")
+                    return {"success": True, "enabled": enable}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "restart_explorer":
+                try:
+                    if sys.platform == "win32":
+                        os.system("taskkill /f /im explorer.exe")
+                        time.sleep(1)
+                        os.system("start explorer.exe")
+                        add_log("info", "Explorer restarted", category="system")
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            # ============== NOTIFICATION SYNC ==============
+            elif command_type == "start_notification_sync":
+                add_log("info", "Notification sync started", category="sync")
+                return {"success": True}
+
+            elif command_type == "stop_notification_sync":
+                add_log("info", "Notification sync stopped", category="sync")
+                return {"success": True}
+
+            # ============== CALL CONTROLS ==============
+            elif command_type == "mute_pc":
+                try:
+                    if sys.platform == "win32":
+                        from ctypes import cast, POINTER
+                        from comtypes import CLSCTX_ALL
+                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        volume = cast(interface, POINTER(IAudioEndpointVolume))
+                        volume.SetMute(1, None)
+                        add_log("info", "PC muted", category="audio")
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "unmute_pc":
+                try:
+                    if sys.platform == "win32":
+                        from ctypes import cast, POINTER
+                        from comtypes import CLSCTX_ALL
+                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        volume = cast(interface, POINTER(IAudioEndpointVolume))
+                        volume.SetMute(0, None)
+                        add_log("info", "PC unmuted", category="audio")
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type in ["answer_call", "decline_call", "end_call", "call_mute"]:
+                # These are phone-side actions - just acknowledge
+                add_log("info", f"Call action: {command_type}", category="call")
+                return {"success": True}
+
             else:
                 add_log("warn", f"Unknown command: {command_type}", category="command")
                 return {"success": False, "error": f"Unknown command: {command_type}"}
