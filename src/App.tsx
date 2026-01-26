@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
+import { LazyLoadErrorBoundary } from "@/components/LazyLoadErrorBoundary";
 import { Loader2 } from "lucide-react";
 import React, { lazy, Suspense, forwardRef } from "react";
 
@@ -55,71 +56,73 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function AppRoutes() {
   return (
-    <Suspense fallback={<LoadingFallback />}>
-      <Routes>
-        <Route path="/pair" element={<Pair />} />
-        <Route path="/" element={<Navigate to="/hub" replace />} />
-        
-        {/* Main Hub - unified control panel */}
-        <Route
-          path="/hub"
-          element={
-            <ProtectedRoute>
-              <Hub />
-            </ProtectedRoute>
-          }
-        />
-        
-        {/* Redirect old routes to Hub */}
-        <Route path="/dashboard" element={<Navigate to="/hub" replace />} />
-        <Route path="/controls" element={<Navigate to="/hub" replace />} />
-        <Route path="/music" element={<Navigate to="/hub" replace />} />
-        <Route path="/remote" element={<Navigate to="/hub" replace />} />
-        
-        {/* Keep these as separate specialized pages */}
-        <Route
-          path="/voice"
-          element={
-            <ProtectedRoute>
-              <VoiceAI />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/apps"
-          element={
-            <ProtectedRoute>
-              <Apps />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/files"
-          element={
-            <ProtectedRoute>
-              <Files />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/miccamera"
-          element={
-            <ProtectedRoute>
-              <MicCamera />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/settings"
-          element={
-            <ProtectedRoute>
-              <Settings />
-            </ProtectedRoute>
-          }
-        />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
-    </Suspense>
+    <LazyLoadErrorBoundary>
+      <Suspense fallback={<LoadingFallback />}>
+        <Routes>
+          <Route path="/pair" element={<Pair />} />
+          <Route path="/" element={<Navigate to="/hub" replace />} />
+          
+          {/* Main Hub - unified control panel */}
+          <Route
+            path="/hub"
+            element={
+              <ProtectedRoute>
+                <Hub />
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Redirect old routes to Hub */}
+          <Route path="/dashboard" element={<Navigate to="/hub" replace />} />
+          <Route path="/controls" element={<Navigate to="/hub" replace />} />
+          <Route path="/music" element={<Navigate to="/hub" replace />} />
+          <Route path="/remote" element={<Navigate to="/hub" replace />} />
+          
+          {/* Keep these as separate specialized pages */}
+          <Route
+            path="/voice"
+            element={
+              <ProtectedRoute>
+                <VoiceAI />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/apps"
+            element={
+              <ProtectedRoute>
+                <Apps />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/files"
+            element={
+              <ProtectedRoute>
+                <Files />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/miccamera"
+            element={
+              <ProtectedRoute>
+                <MicCamera />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <Settings />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
+    </LazyLoadErrorBoundary>
   );
 }
 
