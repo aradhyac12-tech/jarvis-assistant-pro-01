@@ -3749,6 +3749,27 @@ class JarvisAgent:
             elif command_type == "ping":
                 return {"success": True, "pong": True, "timestamp": time.time()}
 
+            # Check audio support for diagnostics
+            elif command_type == "check_audio_support":
+                has_pyaudio = False
+                has_websockets = False
+                try:
+                    import pyaudio
+                    has_pyaudio = True
+                except ImportError:
+                    pass
+                try:
+                    import websockets
+                    has_websockets = True
+                except ImportError:
+                    pass
+                return {
+                    "success": True,
+                    "has_pyaudio": has_pyaudio,
+                    "has_websockets": has_websockets,
+                    "audio_supported": has_pyaudio and has_websockets
+                }
+
             # Screen streaming via WebSocket relay
             elif command_type == "start_screen_stream":
                 session_id = payload.get("session_id", str(uuid.uuid4()))
