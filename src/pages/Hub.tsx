@@ -59,6 +59,7 @@ import { ClipboardSync } from "@/components/ClipboardSync";
 import { FileTransfer } from "@/components/FileTransfer";
 import { MediaSyncPanel } from "@/components/MediaSyncPanel";
 import { RemoteInputPanel } from "@/components/RemoteInputPanel";
+import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
 
 type Tab = "control" | "remote" | "media" | "tools";
 
@@ -500,7 +501,8 @@ export default function Hub() {
             {activeTab === "media" && (
               <div className="grid gap-4 md:grid-cols-2">
                 <MediaSyncPanel />
-                <ZoomMeetings />
+                <GalaxyBudsManager />
+                <ZoomMeetings className="md:col-span-2" />
               </div>
             )}
 
