@@ -32,7 +32,12 @@ import {
   Zap,
   ScreenShare,
   ScreenShareOff,
+  Maximize2,
+  PictureInPicture2,
 } from "lucide-react";
+import { StreamDisplayControls } from "@/components/StreamDisplayControls";
+import { AudioRelayDiagnostics } from "@/components/AudioRelayDiagnostics";
+import { MobileCameraDiagnostics } from "@/components/MobileCameraDiagnostics";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -1927,96 +1932,15 @@ export default function MicCamera() {
                     )}
                   </div>
 
-                  {/* PC Camera preview */}
-                  <div className="relative aspect-video bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
-                    {pcCameraActive && pcCameraFrame ? (
-                      <img
-                        src={pcCameraFrame}
-                        alt="PC Camera"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : pcCameraActive && !pcCameraFrame ? (
-                      // Active but no frames - show diagnostic info
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
-                        <Webcam className="h-12 w-12 mb-2 text-destructive/50" />
-                        <p className="text-sm font-medium text-destructive">No frames received</p>
-                        <p className="text-xs mt-1">Frames received: {debugStats.frameCount}</p>
-                        {pcCameraError && (
-                          <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[280px] text-center">
-                            <strong>Error:</strong> {pcCameraError}
-                          </div>
-                        )}
-                        <div className="mt-3 p-3 bg-background/80 rounded-lg text-xs max-w-[280px]">
-                          <p className="font-semibold mb-1">Troubleshooting:</p>
-                          <ul className="list-disc list-inside space-y-0.5 text-muted-foreground">
-                            <li>Check PC agent logs for camera errors</li>
-                            <li>Try a different camera in the selector</li>
-                            <li>Ensure no other app is using the camera</li>
-                            <li>Go to Settings → Run Diagnostics</li>
-                          </ul>
-                        </div>
-                      </div>
-                    ) : pcCameraError ? (
-                      // Not active but has error - show the error
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
-                        <Webcam className="h-12 w-12 mb-2 text-destructive/50" />
-                        <p className="text-sm font-medium text-destructive">Camera Failed</p>
-                        <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[300px] text-center">
-                          {pcCameraError}
-                        </div>
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="mt-3"
-                          onClick={() => setPcCameraError(null)}
-                        >
-                          Dismiss
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
-                        <Webcam className="h-12 w-12 mb-2 opacity-50" />
-                        <p className="text-sm">PC Camera is off</p>
-                        <p className="text-xs">Click Start to stream PC webcam</p>
-                      </div>
-                    )}
-
-                    {pcCameraActive && (
-                      <>
-                        <Badge variant="outline" className="absolute top-3 left-3 bg-primary/80 text-primary-foreground border-primary">
-                          <span className="w-2 h-2 rounded-full bg-primary-foreground animate-pulse mr-2" />
-                          PC → PHONE
-                        </Badge>
-                        {/* Real-time FPS and Latency Display */}
-                        <div className="absolute top-3 right-3 flex gap-2">
-                          <Badge variant="outline" className="bg-background/80 backdrop-blur font-mono text-xs">
-                            {cameraFps} FPS
-                          </Badge>
-                          <Badge variant="outline" className={cn(
-                            "bg-background/80 backdrop-blur font-mono text-xs",
-                            cameraLatency > 100 ? "border-destructive text-destructive" : 
-                            cameraLatency > 50 ? "border-warning text-warning" : 
-                            "border-primary text-primary"
-                          )}>
-                            {cameraLatency}ms
-                          </Badge>
-                        </div>
-                        {pcCameraFrame && (
-                          <div className="absolute bottom-3 left-3 right-3 bg-background/80 backdrop-blur rounded-lg p-2">
-                            <div className="flex items-center justify-between text-xs">
-                              <span className="text-muted-foreground">Frames: {debugStats.frameCount}</span>
-                              <span className={cn(
-                                cameraFps >= 60 ? "text-primary" : 
-                                cameraFps >= 30 ? "text-warning" : "text-destructive"
-                              )}>
-                                {cameraFps >= 60 ? "Excellent" : cameraFps >= 30 ? "Good" : "Low"}
-                              </span>
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
+                  {/* PC Camera preview with display controls */}
+                  <StreamDisplayControls
+                    frame={pcCameraFrame}
+                    isActive={pcCameraActive}
+                    fps={cameraFps}
+                    latency={cameraLatency}
+                    title="PC Camera"
+                    error={pcCameraError}
+                  />
 
                   {/* Controls */}
                   <div className="flex items-center justify-center gap-4">
@@ -2199,71 +2123,15 @@ export default function MicCamera() {
                     )}
                   </div>
 
-                  {/* Screen Preview */}
-                  <div className="relative aspect-video bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
-                    {screenMirrorActive && screenMirrorFrame ? (
-                      <img
-                        src={screenMirrorFrame}
-                        alt="PC Screen"
-                        className="w-full h-full object-contain"
-                      />
-                    ) : screenMirrorActive && !screenMirrorFrame ? (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
-                        <Loader2 className="h-8 w-8 animate-spin mb-2" />
-                        <span>Waiting for screen frames...</span>
-                        {screenMirrorError && (
-                          <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[280px] text-center">
-                            <strong>Error:</strong> {screenMirrorError}
-                          </div>
-                        )}
-                      </div>
-                    ) : screenMirrorError ? (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-destructive/5">
-                        <ScreenShareOff className="h-12 w-12 mb-2 text-destructive/50" />
-                        <p className="text-sm font-medium text-destructive">Screen Mirror Failed</p>
-                        <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive max-w-[300px] text-center">
-                          {screenMirrorError}
-                        </div>
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="mt-3"
-                          onClick={() => setScreenMirrorError(null)}
-                        >
-                          Dismiss
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
-                        <ScreenShareOff className="h-12 w-12 mb-2 opacity-50" />
-                        <p className="text-sm">Screen mirroring is off</p>
-                        <p className="text-xs">Click Start to view PC screen via WebSocket</p>
-                      </div>
-                    )}
-                    
-                    {screenMirrorActive && (
-                      <>
-                        <Badge variant="outline" className="absolute top-3 left-3 bg-primary/80 text-primary-foreground border-primary">
-                          <span className="w-2 h-2 rounded-full bg-primary-foreground animate-pulse mr-2" />
-                          LIVE
-                        </Badge>
-                        {/* Real-time FPS and Latency Display */}
-                        <div className="absolute top-3 right-3 flex gap-2">
-                          <Badge variant="outline" className="bg-background/80 backdrop-blur font-mono text-xs">
-                            {screenMirrorLiveFps} FPS
-                          </Badge>
-                          <Badge variant="outline" className={cn(
-                            "bg-background/80 backdrop-blur font-mono text-xs",
-                            screenMirrorLatency > 100 ? "border-destructive text-destructive" : 
-                            screenMirrorLatency > 50 ? "border-warning text-warning" : 
-                            "border-primary text-primary"
-                          )}>
-                            {screenMirrorLatency}ms
-                          </Badge>
-                        </div>
-                      </>
-                    )}
-                  </div>
+                  {/* Screen Preview with display controls */}
+                  <StreamDisplayControls
+                    frame={screenMirrorFrame}
+                    isActive={screenMirrorActive}
+                    fps={screenMirrorLiveFps}
+                    latency={screenMirrorLatency}
+                    title="Screen Mirror"
+                    error={screenMirrorError}
+                  />
 
                   {/* Controls */}
                   <div className="flex items-center justify-center gap-4">
@@ -2294,6 +2162,12 @@ export default function MicCamera() {
             {/* Unified Diagnostics Tab */}
             <TabsContent value="diagnostics" className="space-y-4">
               <UnifiedStreamDiagnostics className="w-full" />
+              
+              {/* Audio Relay Diagnostics */}
+              <AudioRelayDiagnostics className="w-full" />
+              
+              {/* Mobile Camera Diagnostics */}
+              <MobileCameraDiagnostics className="w-full" />
               
               <Card className="border-border/50">
                 <CardHeader>
