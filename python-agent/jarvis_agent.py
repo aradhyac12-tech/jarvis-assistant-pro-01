@@ -2582,20 +2582,26 @@ class JarvisAgent:
             if platform.system() == "Windows":
                 if app_id:
                     # Security: Validate app_id to prevent command injection
-                    if not re.match(r'^[a-zA-Z0-9._!-]+$', app_id):
+                    # Windows AppIDs can contain: letters, numbers, dots, underscores, hyphens, exclamation marks
+                    # Example: Microsoft.WindowsCalculator_8wekyb3d8bbwe!App
+                    # Example: {6D809377-6AF0-444B-8957-A3773F02200E}\Discord\Update.exe
+                    # Allow: alphanumeric, dots, underscores, hyphens, exclamation, curly braces, backslashes
+                    if not re.match(r'^[\w.\-!{}\\]+$', app_id):
                         add_log("warn", f"Invalid app_id format rejected: {app_id}", category="apps")
-                        return {"success": False, "error": "Invalid app ID format"}
-                    
-                    try:
-                        subprocess.Popen(
-                            ['explorer', f'shell:AppsFolder\\{app_id}'],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                        add_log("info", f"Opened via AppID: {app_id}", category="apps")
-                        return {"success": True, "message": f"Opened {app_name}"}
-                    except Exception as e:
-                        add_log("warn", f"AppID launch failed, falling back: {e}", category="apps")
+                        # Don't fail - just fall back to name-based search
+                        add_log("info", f"Falling back to name search for: {app_name}", category="apps")
+                        app_id = None
+                    else:
+                        try:
+                            subprocess.Popen(
+                                ['explorer', f'shell:AppsFolder\\{app_id}'],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            add_log("info", f"Opened via AppID: {app_id}", category="apps")
+                            return {"success": True, "message": f"Opened {app_name}"}
+                        except Exception as e:
+                            add_log("warn", f"AppID launch failed, falling back: {e}", category="apps")
 
                 # Extended app mappings for common applications
                 app_paths = {
@@ -2937,6 +2943,47 @@ class JarvisAgent:
             add_log("info", f"Composing email to: {to}", category="mobile")
             return {"success": True, "message": f"Opening email to {to}"}
         except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _join_zoom(self, meeting_id: str = "", password: str = "", meeting_link: str = ""):
+        """Join a Zoom meeting via link or meeting ID + password."""
+        import re
+        try:
+            # Method 1: Direct meeting link
+            if meeting_link:
+                meeting_link = meeting_link.strip()
+                add_log("info", f"Joining Zoom via link: {meeting_link[:50]}...", category="zoom")
+                
+                # Validate it's a Zoom URL
+                if "zoom.us" in meeting_link or "zoom.com" in meeting_link:
+                    webbrowser.open(meeting_link)
+                    return {"success": True, "message": "Opening Zoom meeting from link"}
+                else:
+                    return {"success": False, "error": "Invalid Zoom meeting link"}
+            
+            # Method 2: Meeting ID + optional password
+            if meeting_id:
+                # Clean meeting ID (remove spaces, dashes)
+                clean_id = re.sub(r'[\s\-]', '', meeting_id.strip())
+                
+                if not clean_id.isdigit():
+                    return {"success": False, "error": "Invalid meeting ID format"}
+                
+                add_log("info", f"Joining Zoom meeting: {clean_id}", category="zoom")
+                
+                # Build Zoom URL
+                zoom_url = f"https://zoom.us/j/{clean_id}"
+                if password:
+                    # Password needs to be URL encoded
+                    zoom_url += f"?pwd={urllib.parse.quote(password.strip())}"
+                
+                webbrowser.open(zoom_url)
+                return {"success": True, "message": f"Joining Zoom meeting {clean_id}"}
+            
+            return {"success": False, "error": "No meeting ID or link provided"}
+            
+        except Exception as e:
+            add_log("error", f"Zoom join failed: {e}", category="zoom")
             return {"success": False, "error": str(e)}
     
     def _open_url(self, url: str):
@@ -3326,7 +3373,14 @@ class JarvisAgent:
                     payload.get("body", "")
                 )
 
-            # Screen / system info
+            # Zoom meetings
+            elif command_type == "join_zoom":
+                return self._join_zoom(
+                    meeting_id=payload.get("meeting_id", ""),
+                    password=payload.get("password", ""),
+                    meeting_link=payload.get("meeting_link", "")
+                )
+
             elif command_type == "screenshot":
                 return self._take_screenshot(
                     payload.get("quality", 70),
