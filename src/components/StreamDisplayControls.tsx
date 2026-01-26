@@ -8,6 +8,7 @@ import {
   X,
   Move,
   Loader2,
+  GripVertical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -34,9 +35,12 @@ export function StreamDisplayControls({
 }: StreamDisplayControlsProps) {
   const [displayMode, setDisplayMode] = useState<"normal" | "fullscreen" | "floating">("normal");
   const [floatingPos, setFloatingPos] = useState({ x: 20, y: 20 });
+  const [floatingSize, setFloatingSize] = useState({ width: 480, height: 270 });
   const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
   const floatingRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef({ x: 0, y: 0 });
+  const resizeStartRef = useRef({ width: 0, height: 0, x: 0, y: 0 });
 
   // Exit fullscreen when stream stops
   useEffect(() => {
@@ -60,7 +64,7 @@ export function StreamDisplayControls({
   }, [displayMode]);
 
   const toggleFullscreen = useCallback(async () => {
-    const container = document.getElementById("stream-fullscreen-container");
+    const container = document.getElementById(`stream-fullscreen-${title.replace(/\s/g, "-")}`);
     if (!container) return;
 
     if (displayMode === "fullscreen") {
@@ -69,7 +73,7 @@ export function StreamDisplayControls({
       }
       setDisplayMode("normal");
     } else {
-      setDisplayMode("floating"); // Exit floating if active
+      if (displayMode === "floating") setDisplayMode("normal");
       try {
         await container.requestFullscreen();
         setDisplayMode("fullscreen");
@@ -77,7 +81,7 @@ export function StreamDisplayControls({
         console.error("Fullscreen failed:", err);
       }
     }
-  }, [displayMode]);
+  }, [displayMode, title]);
 
   const toggleFloating = useCallback(() => {
     if (displayMode === "floating") {
@@ -87,18 +91,19 @@ export function StreamDisplayControls({
         document.exitFullscreen().catch(() => {});
       }
       setDisplayMode("floating");
-      // Reset position to bottom-right
-      setFloatingPos({ 
-        x: window.innerWidth - 340, 
-        y: window.innerHeight - 220 
+      // Position at bottom-right with nice size
+      setFloatingPos({
+        x: window.innerWidth - floatingSize.width - 24,
+        y: window.innerHeight - floatingSize.height - 80,
       });
     }
-  }, [displayMode]);
+  }, [displayMode, floatingSize]);
 
   // Dragging logic for floating window
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (displayMode !== "floating") return;
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(true);
     dragStartRef.current = {
       x: e.clientX - floatingPos.x,
@@ -106,18 +111,41 @@ export function StreamDisplayControls({
     };
   }, [displayMode, floatingPos]);
 
+  // Resize logic
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizing(true);
+    resizeStartRef.current = {
+      width: floatingSize.width,
+      height: floatingSize.height,
+      x: e.clientX,
+      y: e.clientY,
+    };
+  }, [floatingSize]);
+
   useEffect(() => {
-    if (!isDragging) return;
+    if (!isDragging && !isResizing) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      setFloatingPos({
-        x: Math.max(0, Math.min(window.innerWidth - 320, e.clientX - dragStartRef.current.x)),
-        y: Math.max(0, Math.min(window.innerHeight - 200, e.clientY - dragStartRef.current.y)),
-      });
+      if (isDragging) {
+        setFloatingPos({
+          x: Math.max(0, Math.min(window.innerWidth - floatingSize.width, e.clientX - dragStartRef.current.x)),
+          y: Math.max(0, Math.min(window.innerHeight - floatingSize.height - 40, e.clientY - dragStartRef.current.y)),
+        });
+      }
+      if (isResizing) {
+        const deltaX = e.clientX - resizeStartRef.current.x;
+        const deltaY = e.clientY - resizeStartRef.current.y;
+        const newWidth = Math.max(320, Math.min(800, resizeStartRef.current.width + deltaX));
+        const newHeight = Math.max(180, Math.min(600, resizeStartRef.current.height + deltaY));
+        setFloatingSize({ width: newWidth, height: newHeight });
+      }
     };
 
     const handleMouseUp = () => {
       setIsDragging(false);
+      setIsResizing(false);
     };
 
     document.addEventListener("mousemove", handleMouseMove);
@@ -126,13 +154,13 @@ export function StreamDisplayControls({
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDragging]);
+  }, [isDragging, isResizing, floatingSize]);
 
   // Render the stream content
   const renderStreamContent = () => {
     if (!isActive) {
       return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-secondary/30">
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-secondary/50">
           <p className="text-sm">Stream is off</p>
         </div>
       );
@@ -140,7 +168,7 @@ export function StreamDisplayControls({
 
     if (error) {
       return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-destructive bg-destructive/5">
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-destructive bg-destructive/10">
           <p className="text-sm font-medium">Error</p>
           <p className="text-xs max-w-[200px] text-center mt-1">{error}</p>
         </div>
@@ -149,8 +177,8 @@ export function StreamDisplayControls({
 
     if (!frame) {
       return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
-          <Loader2 className="h-8 w-8 animate-spin mb-2" />
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-secondary/30">
+          <Loader2 className="h-8 w-8 animate-spin mb-2 text-primary" />
           <p className="text-sm">Waiting for frames...</p>
         </div>
       );
@@ -171,11 +199,11 @@ export function StreamDisplayControls({
 
   // Render the controls overlay
   const renderControls = () => (
-    <div className="absolute top-2 right-2 flex gap-1 z-10">
+    <div className="absolute top-2 right-2 flex gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
       <Button
         variant="ghost"
         size="icon"
-        className="h-7 w-7 bg-background/60 backdrop-blur hover:bg-background/80"
+        className="h-8 w-8 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
         onClick={toggleFloating}
         title={displayMode === "floating" ? "Exit floating" : "Floating window"}
       >
@@ -184,7 +212,7 @@ export function StreamDisplayControls({
       <Button
         variant="ghost"
         size="icon"
-        className="h-7 w-7 bg-background/60 backdrop-blur hover:bg-background/80"
+        className="h-8 w-8 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
         onClick={toggleFullscreen}
         title={displayMode === "fullscreen" ? "Exit fullscreen" : "Fullscreen"}
       >
@@ -194,39 +222,31 @@ export function StreamDisplayControls({
           <Maximize2 className="h-4 w-4" />
         )}
       </Button>
-      {displayMode === "floating" && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 bg-background/60 backdrop-blur hover:bg-background/80"
-          onClick={() => setDisplayMode("normal")}
-          title="Close floating"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      )}
     </div>
   );
 
-  // Render stats overlay
+  // Render stats overlay - minimal, only when streaming
   const renderStats = () => {
     if (!isActive || !frame) return null;
     return (
-      <div className="absolute top-2 left-2 flex gap-1.5 z-10">
-        <Badge variant="outline" className="bg-background/60 backdrop-blur font-mono text-xs px-1.5 py-0.5">
+      <div className="absolute bottom-2 left-2 flex gap-1.5 z-10">
+        <Badge 
+          variant="outline" 
+          className="bg-black/50 backdrop-blur-sm border-transparent text-white font-mono text-[10px] px-1.5 py-0"
+        >
           {fps} FPS
         </Badge>
-        <Badge
-          variant="outline"
-          className={cn(
-            "bg-background/60 backdrop-blur font-mono text-xs px-1.5 py-0.5",
-            latency > 100 ? "border-destructive text-destructive" :
-            latency > 50 ? "border-warning text-warning" :
-            "border-primary text-primary"
-          )}
-        >
-          {latency}ms
-        </Badge>
+        {latency > 0 && (
+          <Badge
+            variant="outline"
+            className={cn(
+              "bg-black/50 backdrop-blur-sm border-transparent font-mono text-[10px] px-1.5 py-0",
+              latency > 100 ? "text-destructive" : latency > 50 ? "text-warning" : "text-primary"
+            )}
+          >
+            {latency}ms
+          </Badge>
+        )}
       </div>
     );
   };
@@ -235,9 +255,9 @@ export function StreamDisplayControls({
   if (displayMode === "normal") {
     return (
       <div
-        id="stream-fullscreen-container"
+        id={`stream-fullscreen-${title.replace(/\s/g, "-")}`}
         className={cn(
-          "relative aspect-video rounded-xl border border-border/50 overflow-hidden bg-secondary/30",
+          "group relative aspect-video rounded-xl overflow-hidden bg-black/90",
           className
         )}
       >
@@ -248,38 +268,40 @@ export function StreamDisplayControls({
     );
   }
 
-  // Floating mode - fixed position draggable window
+  // Floating mode - fixed position draggable + resizable window
   if (displayMode === "floating") {
     return (
       <>
         {/* Placeholder in normal position */}
         <div
           className={cn(
-            "relative aspect-video rounded-xl border border-dashed border-border/50 overflow-hidden bg-secondary/10",
+            "relative aspect-video rounded-xl border-2 border-dashed border-primary/30 overflow-hidden bg-primary/5",
             className
           )}
         >
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">
+          <div className="absolute inset-0 flex items-center justify-center text-primary/60 text-sm">
             <PictureInPicture2 className="h-5 w-5 mr-2" />
-            Floating mode active
+            Floating mode
           </div>
         </div>
 
         {/* Floating window */}
         <div
           ref={floatingRef}
-          className="fixed z-50 w-[320px] rounded-lg border border-border shadow-2xl overflow-hidden bg-background"
+          className="fixed z-[9999] rounded-xl border border-white/10 shadow-2xl overflow-hidden bg-black"
           style={{
             left: floatingPos.x,
             top: floatingPos.y,
+            width: floatingSize.width,
+            height: floatingSize.height,
           }}
         >
           {/* Draggable header */}
           <div
-            className="flex items-center justify-between px-2 py-1.5 bg-secondary/50 cursor-move select-none"
+            className="absolute top-0 left-0 right-0 flex items-center justify-between px-3 py-2 bg-gradient-to-b from-black/80 to-transparent cursor-move z-20"
             onMouseDown={handleMouseDown}
           >
-            <div className="flex items-center gap-1.5 text-xs font-medium">
+            <div className="flex items-center gap-2 text-white/80 text-xs font-medium">
               <Move className="h-3 w-3" />
               {title}
             </div>
@@ -287,7 +309,7 @@ export function StreamDisplayControls({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-5 w-5"
+                className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
                 onClick={toggleFullscreen}
               >
                 <Maximize2 className="h-3 w-3" />
@@ -295,17 +317,26 @@ export function StreamDisplayControls({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-5 w-5"
+                className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
                 onClick={() => setDisplayMode("normal")}
               >
                 <X className="h-3 w-3" />
               </Button>
             </div>
           </div>
+
           {/* Stream content */}
-          <div className="relative aspect-video">
+          <div className="relative w-full h-full">
             {renderStreamContent()}
             {renderStats()}
+          </div>
+
+          {/* Resize handle */}
+          <div
+            className="absolute bottom-0 right-0 w-6 h-6 cursor-se-resize z-20 flex items-center justify-center"
+            onMouseDown={handleResizeStart}
+          >
+            <GripVertical className="h-4 w-4 text-white/30 rotate-[-45deg]" />
           </div>
         </div>
       </>
@@ -315,14 +346,23 @@ export function StreamDisplayControls({
   // Fullscreen mode
   return (
     <div
-      id="stream-fullscreen-container"
-      className="relative w-full h-full bg-black"
+      id={`stream-fullscreen-${title.replace(/\s/g, "-")}`}
+      className="relative w-full h-full bg-black group"
     >
       {renderStreamContent()}
-      {renderControls()}
+      <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+          onClick={toggleFullscreen}
+        >
+          <Minimize2 className="h-5 w-5" />
+        </Button>
+      </div>
       {renderStats()}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/60 text-xs">
-        Press ESC to exit fullscreen
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/40 text-sm opacity-0 group-hover:opacity-100 transition-opacity">
+        Press ESC to exit
       </div>
     </div>
   );
