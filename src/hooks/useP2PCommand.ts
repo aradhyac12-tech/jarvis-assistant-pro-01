@@ -244,8 +244,9 @@ export function useP2PCommand() {
     fallbackCommand(commandType, payload);
   }, [fallbackCommand]);
 
-  // Batched mouse movement for smoothness
-  const MOUSE_BATCH_MS = 8; // 120fps batching
+  // Batched mouse movement for smoothness (KDE Connect style - 16ms = 60fps)
+  const MOUSE_BATCH_MS = 16;
+  const MOUSE_THRESHOLD = 1.5; // Minimum movement before sending
 
   const fireMouse = useCallback((deltaX: number, deltaY: number) => {
     mouseAccumulator.current.x += deltaX;
@@ -255,7 +256,8 @@ export function useP2PCommand() {
 
     mouseTimerRef.current = window.setTimeout(() => {
       const { x, y } = mouseAccumulator.current;
-      if (Math.abs(x) > 0.1 || Math.abs(y) > 0.1) {
+      // Only send if movement exceeds threshold (reduces spam)
+      if (Math.abs(x) >= MOUSE_THRESHOLD || Math.abs(y) >= MOUSE_THRESHOLD) {
         fireCommand("mouse_move", { x: Math.round(x), y: Math.round(y), relative: true });
       }
       mouseAccumulator.current = { x: 0, y: 0 };
