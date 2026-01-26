@@ -1892,48 +1892,69 @@ class TestPatternStreamer:
         ]
         
         try:
+            # PERF: Use ImageDraw rectangles instead of per-pixel putpixel loops.
+            # The old implementation could take seconds per frame and looked like "no frames received".
+            from PIL import ImageDraw
+
+            bar_width = width // len(bar_colors)
+            first_frame_sent = False
+
             while self.running and self.ws:
                 start_time = time.time()
-                
-                # Create frame with color bars
-                img = Image.new('RGB', (width, height), (0, 0, 0))
-                bar_width = width // len(bar_colors)
-                
+
+                # Create frame with color bars (fast)
+                img = Image.new("RGB", (width, height), (0, 0, 0))
+                draw = ImageDraw.Draw(img)
+
                 for i, color in enumerate(bar_colors):
-                    for x in range(i * bar_width, (i + 1) * bar_width):
-                        for y in range(height):
-                            img.putpixel((x, y), color)
-                
+                    x0 = i * bar_width
+                    x1 = (i + 1) * bar_width - 1
+                    # Ensure last bar covers remainder
+                    if i == len(bar_colors) - 1:
+                        x1 = width
+                    draw.rectangle([x0, 0, x1, height], fill=color)
+
                 # Draw frame counter overlay
                 self.frame_count += 1
                 try:
-                    from PIL import ImageDraw
-                    draw = ImageDraw.Draw(img)
                     text = f"TEST FRAME {self.frame_count}"
-                    draw.rectangle([10, 10, 300, 60], fill=(0, 0, 0))
-                    draw.text((20, 20), text, fill=(255, 255, 255))
-                    
-                    # Add timestamp
+                    draw.rectangle([10, 10, 320, 64], fill=(0, 0, 0))
+                    draw.text((20, 18), text, fill=(255, 255, 255))
+
                     ts_text = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                     draw.text((20, 40), ts_text, fill=(255, 255, 0))
                 except Exception:
-                    pass  # Font issues, skip text
-                
+                    # Font issues, skip text
+                    pass
+
                 # Encode as JPEG
                 buffer = io.BytesIO()
-                img.save(buffer, format='JPEG', quality=self.quality)
+                img.save(buffer, format="JPEG", quality=self.quality)
                 frame_bytes = buffer.getvalue()
-                
+
                 try:
                     await self.ws.send(frame_bytes)
                     self.bytes_sent += len(frame_bytes)
-                    
+
+                    if not first_frame_sent:
+                        first_frame_sent = True
+                        add_log(
+                            "info",
+                            f"Test pattern first frame sent ({len(frame_bytes) // 1024} KB)",
+                            category="test_pattern",
+                        )
+
                     if self.frame_count % 30 == 0:
-                        add_log("info", f"Test pattern sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)", category="test_pattern")
+                        add_log(
+                            "info",
+                            f"Test pattern sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)",
+                            category="test_pattern",
+                        )
                 except Exception as e:
+                    self.last_error = str(e)
                     add_log("warn", f"Test pattern send error: {e}", category="test_pattern")
                     break
-                
+
                 elapsed = time.time() - start_time
                 if elapsed < frame_interval:
                     await asyncio.sleep(frame_interval - elapsed)

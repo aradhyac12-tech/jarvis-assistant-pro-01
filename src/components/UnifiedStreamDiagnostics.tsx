@@ -250,6 +250,41 @@ export function UnifiedStreamDiagnostics({ className, defaultTab = "all" }: Unif
     const patternSessionId = crypto.randomUUID();
     let framesReceived = 0;
     let peerConnected = false;
+    let relayFrameCount = 0;
+    let relayHasPhone = false;
+    let relayHasPc = false;
+    let bytesReceived = 0;
+    let pollTimer: number | null = null;
+    let didStart = false;
+
+    const pollRelaySession = async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke("camera-relay", {
+          method: "POST",
+          body: { action: "get_session", sessionId: patternSessionId },
+        });
+        if (error) throw error;
+        const session = (data as any)?.session as
+          | {
+              hasPhone?: boolean;
+              hasPC?: boolean;
+              frameCount?: number;
+              targetFps?: number;
+              quality?: number;
+            }
+          | null
+          | undefined;
+        relayFrameCount = session?.frameCount ?? 0;
+        relayHasPhone = !!session?.hasPhone;
+        relayHasPc = !!session?.hasPC;
+
+        updateStep("test_pattern", {
+          details: `relay: frames=${relayFrameCount}, hasPhone=${relayHasPhone}, hasPC=${relayHasPc} | browser: frames=${framesReceived}, bytes=${Math.round(bytesReceived / 1024)}KB`,
+        });
+      } catch {
+        // Non-fatal; the WebSocket path is still the primary signal.
+      }
+    };
 
     try {
       // Connect as receiver FIRST
@@ -267,9 +302,13 @@ export function UnifiedStreamDiagnostics({ className, defaultTab = "all" }: Unif
 
       updateStep("test_pattern", { status: "running", message: "WebSocket connected, starting agent..." });
 
+      // Start polling relay session state (helps differentiate: agent not sending vs browser not receiving)
+      await pollRelaySession();
+      pollTimer = window.setInterval(pollRelaySession, 1000);
+
       // Set up message handler BEFORE sending command
       const framePromise = new Promise<void>((resolve) => {
-        const frameTimeout = window.setTimeout(() => resolve(), 8000); // Longer timeout
+        const frameTimeout = window.setTimeout(() => resolve(), 15000);
         
         ws.onmessage = (event) => {
           // Handle JSON messages (peer_connected, etc.)
@@ -285,17 +324,25 @@ export function UnifiedStreamDiagnostics({ className, defaultTab = "all" }: Unif
             }
             return;
           }
-          
-          // Handle binary frames
-          if (event.data instanceof ArrayBuffer && event.data.byteLength > 100) {
+
+          const handleFrame = (ab: ArrayBuffer) => {
+            if (ab.byteLength <= 100) return;
             framesReceived++;
+            bytesReceived += ab.byteLength;
             if (framesReceived === 1) {
               updateStep("test_pattern", { status: "running", message: `Receiving frames... (${framesReceived})` });
             }
-            if (framesReceived >= 5) {
+            if (framesReceived >= 3) {
               window.clearTimeout(frameTimeout);
               resolve();
             }
+          };
+
+          // Handle binary frames (ArrayBuffer or Blob)
+          if (event.data instanceof ArrayBuffer) {
+            handleFrame(event.data);
+          } else if (event.data instanceof Blob && event.data.size > 0) {
+            event.data.arrayBuffer().then(handleFrame).catch(() => null);
           }
         };
       });
@@ -307,6 +354,8 @@ export function UnifiedStreamDiagnostics({ className, defaultTab = "all" }: Unif
         { awaitResult: true, timeoutMs: 15000 }
       );
 
+      didStart = started.success;
+
       if (!started.success) {
         updateStep("test_pattern", {
           status: "warning",
@@ -314,16 +363,14 @@ export function UnifiedStreamDiagnostics({ className, defaultTab = "all" }: Unif
           details: started.error as string || "Agent may not support this command",
           fix: "Update your Python agent to latest version",
         });
-        ws.close();
         return { success: false, framesReceived: 0 };
       }
 
       // Wait for frames
       await framePromise;
 
-      // Stop test pattern
-      await sendCommand("stop_test_pattern", {});
-      ws.close();
+      // Final relay poll (helps verdict)
+      await pollRelaySession();
 
       if (framesReceived > 0) {
         updateStep("test_pattern", {
@@ -336,7 +383,9 @@ export function UnifiedStreamDiagnostics({ className, defaultTab = "all" }: Unif
         updateStep("test_pattern", {
           status: "warning",
           message: "Agent connected but no frames received",
-          fix: "Agent may have issue generating frames (check PIL/OpenCV)",
+          fix: relayFrameCount > 0
+            ? "Relay received frames but browser didn't. Likely client decoding/WS handling issue."
+            : "Agent likely isn't generating/sending frames. Check agent test-pattern logs.",
         });
         return { success: false, framesReceived: 0 };
       } else {
@@ -353,6 +402,18 @@ export function UnifiedStreamDiagnostics({ className, defaultTab = "all" }: Unif
         message: `Failed: ${err instanceof Error ? err.message : String(err)}`,
       });
       return { success: false, framesReceived: 0 };
+    } finally {
+      if (pollTimer) window.clearInterval(pollTimer);
+      try {
+        if (didStart) await sendCommand("stop_test_pattern", {});
+      } catch {
+        // ignore
+      }
+      try {
+        wsRef.current?.close();
+      } catch {
+        // ignore
+      }
     }
   }, [WS_BASE, sendCommand]);
 
