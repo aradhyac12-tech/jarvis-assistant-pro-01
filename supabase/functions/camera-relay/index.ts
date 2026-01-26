@@ -1,45 +1,28 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-interface CameraSession {
-  phoneSocket: WebSocket | null;
-  pcSocket: WebSocket | null;
-  lastFrameTime: number;
-  frameCount: number;
-  targetFps: number;
-  quality: number;
-  lastActivity: number;
-  useBinaryMode: boolean; // New: support binary frame transfers
-}
+/**
+ * Camera/Screen Relay using Supabase Realtime Broadcast
+ * 
+ * This solves the stateless edge function problem by using Supabase Realtime
+ * as the shared communication layer instead of in-memory state.
+ * 
+ * Flow:
+ * 1. Agent (phone) connects and broadcasts frames to channel `stream:{sessionId}`
+ * 2. Browser (pc) subscribes to the same channel and receives frames
+ * 3. Both can be on different edge function instances - doesn't matter!
+ */
 
-// Store active camera sessions
-const cameraSessions = new Map<string, CameraSession>();
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// Session cleanup interval (every 30 seconds)
-const CLEANUP_INTERVAL = 30000;
-const SESSION_TIMEOUT = 60000; // 60 seconds of inactivity
-const MAX_FPS = 90; // Support up to 90 FPS for smooth streaming
-
-// Cleanup stale sessions
-setInterval(() => {
-  const now = Date.now();
-  for (const [sessionId, session] of cameraSessions.entries()) {
-    if (now - session.lastActivity > SESSION_TIMEOUT) {
-      console.log(`[camera-relay] Cleaning up stale session: ${sessionId}`);
-      if (session.phoneSocket?.readyState === WebSocket.OPEN) {
-        session.phoneSocket.close();
-      }
-      if (session.pcSocket?.readyState === WebSocket.OPEN) {
-        session.pcSocket.close();
-      }
-      cameraSessions.delete(sessionId);
-    }
-  }
-}, CLEANUP_INTERVAL);
+// Local tracking for WebSocket connections (per-instance only)
+const localConnections = new Map<string, { socket: WebSocket; type: string; channel: any }>();
 
 serve(async (req) => {
   const { headers, method } = req;
@@ -54,153 +37,151 @@ serve(async (req) => {
   if (upgradeHeader.toLowerCase() === "websocket") {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("sessionId") || crypto.randomUUID();
-    const clientType = url.searchParams.get("type") || "phone"; // 'phone' or 'pc'
-    const targetFps = Math.min(parseInt(url.searchParams.get("fps") || "30", 10), MAX_FPS);
+    const clientType = url.searchParams.get("type") || "phone"; // 'phone' (sender) or 'pc' (receiver)
+    const targetFps = Math.min(parseInt(url.searchParams.get("fps") || "30", 10), 90);
     const quality = parseInt(url.searchParams.get("quality") || "50", 10);
     const useBinary = url.searchParams.get("binary") === "true";
 
-    console.log(`[camera-relay] WebSocket upgrade: session=${sessionId}, type=${clientType}, fps=${targetFps}, quality=${quality}, binary=${useBinary}`);
+    console.log(`[camera-relay] WebSocket upgrade: session=${sessionId}, type=${clientType}, fps=${targetFps}, binary=${useBinary}`);
 
     const { socket, response } = Deno.upgradeWebSocket(req);
+    const connectionId = `${sessionId}:${clientType}:${crypto.randomUUID().slice(0, 8)}`;
 
-    // Initialize or get session
-    if (!cameraSessions.has(sessionId)) {
-      cameraSessions.set(sessionId, {
-        phoneSocket: null,
-        pcSocket: null,
-        lastFrameTime: 0,
-        frameCount: 0,
-        targetFps,
-        quality,
-        lastActivity: Date.now(),
-        useBinaryMode: useBinary,
-      });
-    }
+    // Create Supabase client for Realtime
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+      realtime: {
+        params: { eventsPerSecond: 100 }
+      }
+    });
 
-    const session = cameraSessions.get(sessionId)!;
+    const channelName = `stream:${sessionId}`;
+    let frameCount = 0;
+    let lastFrameTime = 0;
+    const minInterval = 1000 / targetFps;
 
     socket.onopen = () => {
-      console.log(`[camera-relay] ${clientType} connected to session ${sessionId}`);
-      
-      if (clientType === 'phone') {
-        // Close existing phone connection if any (reconnect scenario)
-        if (session.phoneSocket && session.phoneSocket.readyState === WebSocket.OPEN) {
-          console.log(`[camera-relay] Closing existing phone connection for reconnect`);
-          session.phoneSocket.close();
-        }
-        session.phoneSocket = socket;
-      } else {
-        // Close existing PC connection if any (reconnect scenario)
-        if (session.pcSocket && session.pcSocket.readyState === WebSocket.OPEN) {
-          console.log(`[camera-relay] Closing existing PC connection for reconnect`);
-          session.pcSocket.close();
-        }
-        session.pcSocket = socket;
-      }
-      session.lastActivity = Date.now();
+      console.log(`[camera-relay] ${clientType} connected: ${connectionId}`);
 
-      // Notify the other party
-      const otherSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
-      if (otherSocket && otherSocket.readyState === WebSocket.OPEN) {
-        otherSocket.send(JSON.stringify({ 
-          type: 'peer_connected', 
-          peer: clientType,
-          targetFps: session.targetFps,
-          quality: session.quality
-        }));
+      // Create/join the Realtime broadcast channel
+      const channel = supabase.channel(channelName, {
+        config: {
+          broadcast: { self: false } // Don't echo back to sender
+        }
+      });
+
+      // PC (receiver) listens for frames
+      if (clientType === 'pc') {
+        channel.on('broadcast', { event: 'frame' }, (payload) => {
+          if (socket.readyState === WebSocket.OPEN) {
+            try {
+              // Forward frame data to browser
+              if (payload.payload?.binary) {
+                // Binary frame as base64 - decode and send as ArrayBuffer
+                const binaryStr = atob(payload.payload.data);
+                const bytes = new Uint8Array(binaryStr.length);
+                for (let i = 0; i < binaryStr.length; i++) {
+                  bytes[i] = binaryStr.charCodeAt(i);
+                }
+                socket.send(bytes.buffer);
+              } else {
+                // JSON frame
+                socket.send(JSON.stringify(payload.payload));
+              }
+            } catch (e) {
+              console.error(`[camera-relay] Frame forward error:`, e);
+            }
+          }
+        });
+
+        // Listen for peer events
+        channel.on('broadcast', { event: 'peer_status' }, (payload) => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify(payload.payload));
+          }
+        });
       }
 
-      // Send connection status to the connecting client
-      socket.send(JSON.stringify({
-        type: 'connected',
-        sessionId,
-        peerConnected: !!(clientType === 'phone' ? session.pcSocket : session.phoneSocket),
-      }));
+      channel.subscribe((status) => {
+        console.log(`[camera-relay] Channel ${channelName} status: ${status}`);
+        
+        if (status === 'SUBSCRIBED') {
+          // Notify peer that we connected
+          channel.send({
+            type: 'broadcast',
+            event: 'peer_status',
+            payload: { type: 'peer_connected', peer: clientType, targetFps, quality }
+          });
+
+          // Send connection confirmation to client
+          socket.send(JSON.stringify({
+            type: 'connected',
+            sessionId,
+            channelName,
+            clientType
+          }));
+        }
+      });
+
+      localConnections.set(connectionId, { socket, type: clientType, channel });
     };
 
-    socket.onmessage = (event) => {
-      session.lastActivity = Date.now();
-      
+    socket.onmessage = async (event) => {
+      const conn = localConnections.get(connectionId);
+      if (!conn?.channel) return;
+
       try {
+        // Handle binary frames (from phone/agent)
+        if (event.data instanceof ArrayBuffer || event.data instanceof Uint8Array) {
+          const now = Date.now();
+          if (now - lastFrameTime < minInterval) return; // Throttle
+          
+          lastFrameTime = now;
+          frameCount++;
+
+          // Convert binary to base64 for broadcast (Realtime doesn't support raw binary)
+          const bytes = event.data instanceof Uint8Array ? event.data : new Uint8Array(event.data);
+          const binary = String.fromCharCode(...bytes);
+          const base64 = btoa(binary);
+
+          await conn.channel.send({
+            type: 'broadcast',
+            event: 'frame',
+            payload: { binary: true, data: base64, frameNumber: frameCount, timestamp: now }
+          });
+          return;
+        }
+
+        // Handle JSON messages
         if (typeof event.data === 'string') {
           const msg = JSON.parse(event.data);
-          
-          // Control messages
+
           if (msg.type === 'ping') {
             socket.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
             return;
           }
 
-          if (msg.type === 'set_fps') {
-            session.targetFps = msg.fps;
-            // Notify PC about new FPS target
-            if (session.pcSocket && session.pcSocket.readyState === WebSocket.OPEN) {
-              session.pcSocket.send(JSON.stringify({ type: 'fps_changed', fps: msg.fps }));
-            }
-            return;
-          }
-
-          if (msg.type === 'set_quality') {
-            session.quality = msg.quality;
-            // Notify PC about new quality
-            if (session.pcSocket && session.pcSocket.readyState === WebSocket.OPEN) {
-              session.pcSocket.send(JSON.stringify({ type: 'quality_changed', quality: msg.quality }));
-            }
-            return;
-          }
-
-          const isFrame = msg.type === 'camera_frame' || msg.type === 'screen_frame';
-
-          if (isFrame) {
-            // Frame throttling - check if enough time has passed
+          // Frame data (JSON encoded)
+          if (msg.type === 'camera_frame' || msg.type === 'screen_frame') {
             const now = Date.now();
-            const minInterval = 1000 / session.targetFps;
+            if (now - lastFrameTime < minInterval) return;
+            
+            lastFrameTime = now;
+            frameCount++;
 
-            if (now - session.lastFrameTime >= minInterval) {
-              session.lastFrameTime = now;
-              session.frameCount++;
-
-              // Forward frames to the opposite peer (phone <-> pc)
-              const targetSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
-              if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-                targetSocket.send(
-                  JSON.stringify({
-                    type: msg.type,
-                    data: msg.data,
-                    width: msg.width,
-                    height: msg.height,
-                    frameNumber: session.frameCount,
-                    timestamp: now,
-                  })
-                );
-              }
-            }
+            await conn.channel.send({
+              type: 'broadcast',
+              event: 'frame',
+              payload: { ...msg, frameNumber: frameCount, timestamp: now }
+            });
             return;
           }
 
-          // Forward other JSON messages to the appropriate peer
-          const targetSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
-          if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-            targetSocket.send(event.data);
-          }
-        } else {
-          // Binary data (raw frame bytes) - forward with throttling
-          // NOTE: Normalize Uint8Array -> ArrayBuffer slice for maximum compatibility.
-          const now = Date.now();
-          const minInterval = 1000 / session.targetFps;
-
-          if (now - session.lastFrameTime >= minInterval) {
-            session.lastFrameTime = now;
-            session.frameCount++;
-
-            const targetSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
-            if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-              const payload = event.data instanceof Uint8Array
-                ? event.data.buffer.slice(event.data.byteOffset, event.data.byteOffset + event.data.byteLength)
-                : event.data;
-              targetSocket.send(payload);
-            }
-          }
+          // Forward other messages
+          await conn.channel.send({
+            type: 'broadcast',
+            event: 'message',
+            payload: msg
+          });
         }
       } catch (e) {
         console.error(`[camera-relay] Message error:`, e);
@@ -208,25 +189,21 @@ serve(async (req) => {
     };
 
     socket.onclose = () => {
-      console.log(`[camera-relay] ${clientType} disconnected from session ${sessionId}`);
+      console.log(`[camera-relay] ${clientType} disconnected: ${connectionId}`);
       
-      if (clientType === 'phone') {
-        session.phoneSocket = null;
-      } else {
-        session.pcSocket = null;
+      const conn = localConnections.get(connectionId);
+      if (conn?.channel) {
+        // Notify peers of disconnect
+        conn.channel.send({
+          type: 'broadcast',
+          event: 'peer_status',
+          payload: { type: 'peer_disconnected', peer: clientType }
+        }).finally(() => {
+          supabase.removeChannel(conn.channel);
+        });
       }
-
-      // Notify the other party
-      const otherSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
-      if (otherSocket && otherSocket.readyState === WebSocket.OPEN) {
-        otherSocket.send(JSON.stringify({ type: 'peer_disconnected', peer: clientType }));
-      }
-
-      // Clean up empty sessions
-      if (!session.phoneSocket && !session.pcSocket) {
-        cameraSessions.delete(sessionId);
-        console.log(`[camera-relay] Session ${sessionId} cleaned up`);
-      }
+      
+      localConnections.delete(connectionId);
     };
 
     socket.onerror = (e) => {
@@ -236,25 +213,14 @@ serve(async (req) => {
     return response;
   }
 
-  // HTTP endpoints for session management
+  // HTTP endpoints for diagnostics
   if (method === 'POST') {
     try {
       const body = await req.json();
-      const { action, sessionId, fps, quality } = body;
+      const { action, sessionId } = body;
 
       if (action === 'create_session') {
         const newSessionId = sessionId || crypto.randomUUID();
-        cameraSessions.set(newSessionId, {
-          phoneSocket: null,
-          pcSocket: null,
-          lastFrameTime: 0,
-          frameCount: 0,
-          targetFps: Math.min(fps || 30, MAX_FPS),
-          quality: quality || 50,
-          lastActivity: Date.now(),
-          useBinaryMode: false,
-        });
-
         const host = new URL(req.url).host;
         const ref = host.split(".")[0];
 
@@ -263,41 +229,22 @@ serve(async (req) => {
             success: true,
             sessionId: newSessionId,
             wsUrl: `wss://${ref}.functions.supabase.co/functions/v1/camera-relay?sessionId=${newSessionId}`,
+            note: 'Using Realtime broadcast - instances are now shared'
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
       if (action === 'get_session') {
-        const session = cameraSessions.get(sessionId);
+        // With Realtime, we can't easily query session state
+        // Return info about local connections only
+        const localCount = [...localConnections.keys()].filter(k => k.startsWith(sessionId)).length;
         return new Response(
           JSON.stringify({
-            success: !!session,
-            session: session ? {
-              hasPhone: !!session.phoneSocket,
-              hasPC: !!session.pcSocket,
-              frameCount: session.frameCount,
-              targetFps: session.targetFps,
-              quality: session.quality,
-              lastActivity: session.lastActivity,
-            } : null
+            success: true,
+            note: 'Sessions use Realtime broadcast - state is distributed',
+            localConnectionsForSession: localCount
           }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-
-      if (action === 'close_session') {
-        const session = cameraSessions.get(sessionId);
-        if (session) {
-          [session.phoneSocket, session.pcSocket].forEach(s => {
-            if (s && s.readyState === WebSocket.OPEN) {
-              s.close();
-            }
-          });
-          cameraSessions.delete(sessionId);
-        }
-        return new Response(
-          JSON.stringify({ success: true }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -319,7 +266,8 @@ serve(async (req) => {
   return new Response(
     JSON.stringify({
       status: 'ok',
-      activeSessions: cameraSessions.size,
+      transport: 'supabase-realtime-broadcast',
+      note: 'Frames routed via Realtime - no instance isolation issues',
       timestamp: new Date().toISOString()
     }),
     { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
