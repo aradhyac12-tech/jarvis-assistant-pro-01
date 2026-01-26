@@ -1829,6 +1829,132 @@ class ScreenStreamer:
         add_log("info", "Screen stream stopped", category="screen")
 
 
+# ============== TEST PATTERN STREAMER ==============
+class TestPatternStreamer:
+    """Generates synthetic color bar + frame counter frames for diagnostic purposes.
+    
+    This bypasses camera/screen capture entirely, sending only generated frames.
+    If web receives these frames, the relay is working; the issue is capture.
+    """
+    
+    def __init__(self):
+        self.running = False
+        self.ws = None
+        self.session_id = None
+        self.fps = 10
+        self.quality = 70
+        self.frame_count = 0
+        self.bytes_sent = 0
+        self.last_error: Optional[str] = None
+    
+    async def connect(self, session_id: str, fps: int = 10, quality: int = 70):
+        if not HAS_WEBSOCKETS:
+            self.last_error = "WebSockets not available"
+            add_log("error", self.last_error, category="test_pattern")
+            return False
+        
+        self.session_id = session_id
+        self.fps = max(1, min(30, int(fps)))
+        self.quality = max(10, min(100, int(quality)))
+        self.last_error = None
+        
+        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
+        add_log("info", "Connecting test pattern as sender (phone)", f"fps={self.fps}", category="test_pattern")
+        
+        try:
+            self.ws = await websockets.connect(ws_url)
+            self.running = True
+            self.frame_count = 0
+            self.bytes_sent = 0
+            add_log("info", "Test pattern connected as sender", category="test_pattern")
+            return True
+        except Exception as e:
+            self.last_error = str(e)
+            add_log("error", f"Test pattern connection failed: {e}", category="test_pattern")
+            return False
+    
+    async def start_streaming(self):
+        """Generate and send synthetic color bar frames."""
+        add_log("info", "Test pattern streaming started", category="test_pattern")
+        
+        frame_interval = 1.0 / max(self.fps, 1)
+        width, height = 640, 480
+        
+        # Color bars (SMPTE-like)
+        bar_colors = [
+            (192, 192, 192),  # White/Gray
+            (192, 192, 0),    # Yellow
+            (0, 192, 192),    # Cyan
+            (0, 192, 0),      # Green
+            (192, 0, 192),    # Magenta
+            (192, 0, 0),      # Red
+            (0, 0, 192),      # Blue
+        ]
+        
+        try:
+            while self.running and self.ws:
+                start_time = time.time()
+                
+                # Create frame with color bars
+                img = Image.new('RGB', (width, height), (0, 0, 0))
+                bar_width = width // len(bar_colors)
+                
+                for i, color in enumerate(bar_colors):
+                    for x in range(i * bar_width, (i + 1) * bar_width):
+                        for y in range(height):
+                            img.putpixel((x, y), color)
+                
+                # Draw frame counter overlay
+                self.frame_count += 1
+                try:
+                    from PIL import ImageDraw
+                    draw = ImageDraw.Draw(img)
+                    text = f"TEST FRAME {self.frame_count}"
+                    draw.rectangle([10, 10, 300, 60], fill=(0, 0, 0))
+                    draw.text((20, 20), text, fill=(255, 255, 255))
+                    
+                    # Add timestamp
+                    ts_text = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    draw.text((20, 40), ts_text, fill=(255, 255, 0))
+                except Exception:
+                    pass  # Font issues, skip text
+                
+                # Encode as JPEG
+                buffer = io.BytesIO()
+                img.save(buffer, format='JPEG', quality=self.quality)
+                frame_bytes = buffer.getvalue()
+                
+                try:
+                    await self.ws.send(frame_bytes)
+                    self.bytes_sent += len(frame_bytes)
+                    
+                    if self.frame_count % 30 == 0:
+                        add_log("info", f"Test pattern sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)", category="test_pattern")
+                except Exception as e:
+                    add_log("warn", f"Test pattern send error: {e}", category="test_pattern")
+                    break
+                
+                elapsed = time.time() - start_time
+                if elapsed < frame_interval:
+                    await asyncio.sleep(frame_interval - elapsed)
+        
+        except Exception as e:
+            self.last_error = str(e)
+            add_log("error", f"Test pattern error: {e}", category="test_pattern")
+        finally:
+            await self.stop()
+    
+    async def stop(self):
+        self.running = False
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+        add_log("info", f"Test pattern stopped after {self.frame_count} frames", category="test_pattern")
+
+
 # ============== PHONE WEBCAM RECEIVER ==============
 class PhoneWebcamReceiver:
     """Receives phone camera frames and displays them in a window (can be captured by OBS as virtual webcam)."""
@@ -1984,10 +2110,12 @@ class JarvisAgent:
         self.camera_streamer = CameraStreamer()
         self.screen_streamer = ScreenStreamer()
         self.phone_webcam_receiver = PhoneWebcamReceiver()
+        self.test_pattern_streamer = TestPatternStreamer()
         self.audio_session_id = None
         self.camera_session_id = None
         self.screen_session_id = None
         self.phone_webcam_session_id = None
+        self.test_pattern_session_id = None
         
         self._volume_cache = 50
         self._brightness_cache = 50
@@ -3530,6 +3658,29 @@ class JarvisAgent:
                         "scale": self.screen_streamer.scale
                     }
                 return {"success": False, "error": "Screen not streaming"}
+
+            # Test pattern for diagnostics - sends synthetic frames
+            elif command_type == "start_test_pattern":
+                session_id = payload.get("session_id", str(uuid.uuid4()))
+                fps = payload.get("fps", 10)
+                quality = payload.get("quality", 70)
+                mode = payload.get("mode", "camera")  # "camera" or "screen"
+                self.test_pattern_session_id = session_id
+                
+                connected = await self.test_pattern_streamer.connect(session_id, fps, quality)
+                if connected:
+                    asyncio.create_task(self.test_pattern_streamer.start_streaming())
+                    return {"success": True, "session_id": session_id, "mode": mode}
+                
+                return {
+                    "success": False,
+                    "error": self.test_pattern_streamer.last_error or "Failed to start test pattern"
+                }
+            
+            elif command_type == "stop_test_pattern":
+                await self.test_pattern_streamer.stop()
+                self.test_pattern_session_id = None
+                return {"success": True}
 
             else:
                 add_log("warn", f"Unknown command: {command_type}", category="command")

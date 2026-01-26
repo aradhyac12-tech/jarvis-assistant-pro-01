@@ -40,6 +40,7 @@ import { useAudioDevices } from "@/hooks/useAudioDevices";
 import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
+import { StreamIssueFinder } from "@/components/StreamIssueFinder";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
@@ -1017,7 +1018,7 @@ export default function MicCamera() {
           )}
 
           <Tabs defaultValue="audio" className="w-full">
-            <TabsList className="grid w-full grid-cols-5 mb-4">
+            <TabsList className="grid w-full grid-cols-6 mb-4">
               <TabsTrigger value="audio" className="text-sm">
                 <Volume2 className="h-4 w-4 mr-1.5" />
                 <span className="hidden sm:inline">Audio</span>
@@ -1037,6 +1038,10 @@ export default function MicCamera() {
               <TabsTrigger value="screen-mirror" className="text-sm">
                 <ScreenShare className="h-4 w-4 mr-1.5" />
                 <span className="hidden sm:inline">Screen</span>
+              </TabsTrigger>
+              <TabsTrigger value="diagnostics" className="text-sm">
+                <Zap className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">Debug</span>
               </TabsTrigger>
             </TabsList>
 
@@ -2280,6 +2285,95 @@ export default function MicCamera() {
                     <p className="text-sm text-muted-foreground">
                       <strong>WebSocket Relay:</strong> High-performance screen mirroring via binary WebSocket.
                       Supports up to 90 FPS. PC agent streams screen frames through the camera-relay edge function.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Issue Finder Tab */}
+            <TabsContent value="diagnostics" className="space-y-4">
+              <StreamIssueFinder className="w-full" />
+              
+              <Card className="border-border/50">
+                <CardHeader>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Zap className="h-5 w-5 text-primary" />
+                    Quick Tests
+                  </CardTitle>
+                  <CardDescription>
+                    Run test pattern to isolate capture vs relay issues
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        addLog("info", "web", "Starting test pattern...");
+                        const sessionId = crypto.randomUUID();
+                        
+                        // Connect receiver first
+                        const WS_BASE = getFunctionsWsBase();
+                        const ws = new WebSocket(
+                          `${WS_BASE}/functions/v1/camera-relay?sessionId=${sessionId}&type=pc&fps=10&quality=70&binary=true`
+                        );
+                        ws.binaryType = "arraybuffer";
+                        
+                        let framesReceived = 0;
+                        ws.onmessage = (e) => {
+                          if (e.data instanceof ArrayBuffer && e.data.byteLength > 100) {
+                            framesReceived++;
+                            if (framesReceived === 1) {
+                              toast({ title: "✅ Test Pattern Working!", description: "Frames are being received" });
+                            }
+                          }
+                        };
+                        
+                        ws.onopen = async () => {
+                          // Tell agent to start test pattern
+                          await sendCommand("start_test_pattern", { session_id: sessionId, fps: 10, quality: 70 });
+                          
+                          // Wait 5 seconds then check
+                          setTimeout(async () => {
+                            await sendCommand("stop_test_pattern", {});
+                            ws.close();
+                            if (framesReceived === 0) {
+                              toast({
+                                title: "❌ No Test Frames Received",
+                                description: "The relay may not be routing correctly. Check agent logs.",
+                                variant: "destructive",
+                              });
+                            } else {
+                              toast({
+                                title: "Test Complete",
+                                description: `Received ${framesReceived} test frames. Relay is working!`,
+                              });
+                            }
+                          }, 5000);
+                        };
+                      }}
+                    >
+                      <Zap className="h-4 w-4 mr-2" />
+                      Test Pattern
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        const WS_BASE = getFunctionsWsBase();
+                        addLog("info", "web", `WebSocket base: ${WS_BASE}`);
+                        toast({ title: "WebSocket Host", description: WS_BASE });
+                      }}
+                    >
+                      <Monitor className="h-4 w-4 mr-2" />
+                      Show WS Host
+                    </Button>
+                  </div>
+                  
+                  <div className="p-3 rounded-lg bg-muted/30">
+                    <p className="text-xs text-muted-foreground">
+                      <strong>Test Pattern:</strong> Sends generated color bars from PC agent. If you see frames, 
+                      the relay works and the issue is camera/screen capture. If no frames, check WebSocket routing.
                     </p>
                   </div>
                 </CardContent>
