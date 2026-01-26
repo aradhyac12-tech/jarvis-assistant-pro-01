@@ -36,8 +36,7 @@ import {
   PictureInPicture2,
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
-import { AudioRelayDiagnostics } from "@/components/AudioRelayDiagnostics";
-import { MobileCameraDiagnostics } from "@/components/MobileCameraDiagnostics";
+import { InlineDiagnostics } from "@/components/InlineDiagnostics";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -45,7 +44,6 @@ import { useAudioDevices } from "@/hooks/useAudioDevices";
 import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
-import { UnifiedStreamDiagnostics } from "@/components/UnifiedStreamDiagnostics";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
@@ -1023,18 +1021,14 @@ export default function MicCamera() {
           )}
 
           <Tabs defaultValue="audio" className="w-full">
-            <TabsList className="grid w-full grid-cols-6 mb-4">
+            <TabsList className="grid w-full grid-cols-4 mb-4">
               <TabsTrigger value="audio" className="text-sm">
                 <Volume2 className="h-4 w-4 mr-1.5" />
                 <span className="hidden sm:inline">Audio</span>
               </TabsTrigger>
               <TabsTrigger value="phone-camera" className="text-sm">
-                <Smartphone className="h-4 w-4 mr-1.5" />
-                <span className="hidden sm:inline">Phone</span>
-              </TabsTrigger>
-              <TabsTrigger value="phone-webcam" className="text-sm">
                 <Camera className="h-4 w-4 mr-1.5" />
-                <span className="hidden sm:inline">Webcam</span>
+                <span className="hidden sm:inline">Phone Cam</span>
               </TabsTrigger>
               <TabsTrigger value="pc-camera" className="text-sm">
                 <Webcam className="h-4 w-4 mr-1.5" />
@@ -1043,10 +1037,6 @@ export default function MicCamera() {
               <TabsTrigger value="screen-mirror" className="text-sm">
                 <ScreenShare className="h-4 w-4 mr-1.5" />
                 <span className="hidden sm:inline">Screen</span>
-              </TabsTrigger>
-              <TabsTrigger value="diagnostics" className="text-sm">
-                <Zap className="h-4 w-4 mr-1.5" />
-                <span className="hidden sm:inline">Debug</span>
               </TabsTrigger>
             </TabsList>
 
@@ -1268,6 +1258,9 @@ export default function MicCamera() {
                       {audioDirection === "bidirectional" && " Audio flows both ways for voice chat."}
                     </p>
                   </div>
+
+                  {/* Inline Diagnostics */}
+                  <InlineDiagnostics type="audio" />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1540,217 +1533,9 @@ export default function MicCamera() {
                       </div>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
 
-            {/* ==================== PHONE AS WEBCAM TAB ==================== */}
-            <TabsContent value="phone-webcam">
-              <Card className="glass-dark border-border/50">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Camera className="h-5 w-5 text-primary" />
-                    Phone as Webcam
-                  </CardTitle>
-                  <CardDescription>
-                    Use your phone camera as a virtual webcam on your PC (great for video calls!)
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* How it works */}
-                  <div className="p-4 rounded-lg bg-primary/5 border border-primary/20">
-                    <h3 className="font-medium mb-2">How it works:</h3>
-                    <ol className="text-sm text-muted-foreground space-y-1.5 list-decimal list-inside">
-                      <li><strong>Start camera</strong> on your phone (below)</li>
-                      <li><strong>Start Phone Webcam</strong> on PC - opens a window with your phone's camera</li>
-                      <li>Use <strong>OBS Virtual Camera</strong> or <strong>Window Capture</strong> in video apps</li>
-                    </ol>
-                  </div>
-
-                  {/* Phone camera preview for webcam */}
-                  <div className="relative aspect-video bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
-                    {phoneCameraActive ? (
-                      <video
-                        ref={phoneCameraRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
-                        <Camera className="h-12 w-12 mb-2 opacity-50" />
-                        <p className="text-sm">Start your phone camera first</p>
-                      </div>
-                    )}
-
-                    {phoneWebcamActive && (
-                      <Badge className="absolute top-3 left-3 bg-neon-green/80 text-background">
-                        <span className="w-2 h-2 rounded-full bg-white animate-pulse mr-2" />
-                        STREAMING TO PC
-                      </Badge>
-                    )}
-                  </div>
-
-                  {/* Controls */}
-                  <div className="flex flex-col gap-3">
-                    {/* Step 1: Start phone camera */}
-                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/20">
-                      <div>
-                        <p className="font-medium text-sm">Step 1: Phone Camera</p>
-                        <p className="text-xs text-muted-foreground">Enable your phone camera</p>
-                      </div>
-                      {!phoneCameraActive ? (
-                        <Button onClick={startPhoneCamera} variant="secondary" size="sm">
-                          <Play className="h-4 w-4 mr-2" />
-                          Start Camera
-                        </Button>
-                      ) : (
-                        <Button onClick={stopPhoneCamera} variant="outline" size="sm">
-                          <Square className="h-4 w-4 mr-2" />
-                          Stop
-                        </Button>
-                      )}
-                    </div>
-
-                    {/* Step 2: Stream to PC */}
-                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/20">
-                      <div>
-                        <p className="font-medium text-sm">Step 2: Stream to PC</p>
-                        <p className="text-xs text-muted-foreground">
-                          {phoneWebcamActive ? "Streaming to PC webcam window" : "Start streaming to open webcam window on PC"}
-                        </p>
-                      </div>
-                      {!phoneWebcamActive ? (
-                        <Button 
-                          onClick={async () => {
-                            if (!phoneCameraActive) {
-                              toast({ title: "Start camera first", description: "Enable your phone camera above", variant: "destructive" });
-                              return;
-                            }
-                            
-                            setPhoneWebcamStarting(true);
-                            const sessionId = crypto.randomUUID();
-                            setPhoneWebcamSessionId(sessionId);
-                            
-                            // Tell PC to start receiving
-                            const result = await sendCommand("start_phone_webcam", { session_id: sessionId }, { awaitResult: true, timeoutMs: 15000 });
-                            
-                            if (!result.success) {
-                              toast({ 
-                                title: "Failed to start", 
-                                description: typeof result.error === 'string' ? result.error : "PC could not start webcam receiver",
-                                variant: "destructive" 
-                              });
-                              setPhoneWebcamStarting(false);
-                              return;
-                            }
-                            
-                            // Connect phone to relay and start sending frames
-                            const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=30&quality=80`);
-                            phoneWebcamWsRef.current = ws;
-                            
-                            ws.onopen = () => {
-                              setPhoneWebcamActive(true);
-                              setPhoneWebcamStarting(false);
-                              toast({ title: "Phone as Webcam active!", description: "A window opened on your PC showing your phone camera" });
-                              
-                              if (!shareCanvasRef.current) {
-                                shareCanvasRef.current = document.createElement("canvas");
-                              }
-                              
-                              // Send frames at ~30fps for smooth webcam experience
-                              phoneWebcamTimerRef.current = window.setInterval(() => {
-                                const v = phoneCameraRef.current;
-                                if (!v || v.readyState < 2) return;
-                                
-                                const canvas = shareCanvasRef.current!;
-                                const w = Math.min(v.videoWidth || 640, 1280);
-                                const h = Math.min(v.videoHeight || 480, 720);
-                                canvas.width = w;
-                                canvas.height = h;
-                                
-                                const ctx = canvas.getContext("2d");
-                                if (!ctx) return;
-                                ctx.drawImage(v, 0, 0, w, h);
-                                
-                                const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-                                const b64 = dataUrl.split(",")[1] || "";
-                                
-                                if (ws.readyState === WebSocket.OPEN) {
-                                  ws.send(JSON.stringify({
-                                    type: "camera_frame",
-                                    data: b64,
-                                    width: w,
-                                    height: h,
-                                  }));
-                                }
-                              }, 33); // ~30fps
-                            };
-                            
-                            ws.onclose = () => {
-                              setPhoneWebcamActive(false);
-                              setPhoneWebcamStarting(false);
-                              if (phoneWebcamTimerRef.current) {
-                                window.clearInterval(phoneWebcamTimerRef.current);
-                                phoneWebcamTimerRef.current = null;
-                              }
-                            };
-                            
-                            ws.onerror = () => {
-                              toast({ title: "Connection error", variant: "destructive" });
-                              setPhoneWebcamStarting(false);
-                            };
-                          }}
-                          className="gradient-primary" 
-                          size="sm"
-                          disabled={!phoneCameraActive || phoneWebcamStarting}
-                        >
-                          {phoneWebcamStarting ? (
-                            <>
-                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                              Starting...
-                            </>
-                          ) : (
-                            <>
-                              <Camera className="h-4 w-4 mr-2" />
-                              Start Webcam
-                            </>
-                          )}
-                        </Button>
-                      ) : (
-                        <Button 
-                          onClick={async () => {
-                            if (phoneWebcamTimerRef.current) {
-                              window.clearInterval(phoneWebcamTimerRef.current);
-                              phoneWebcamTimerRef.current = null;
-                            }
-                            phoneWebcamWsRef.current?.close();
-                            phoneWebcamWsRef.current = null;
-                            setPhoneWebcamActive(false);
-                            
-                            await sendCommand("stop_phone_webcam", {});
-                            toast({ title: "Phone webcam stopped" });
-                          }}
-                          variant="destructive" 
-                          size="sm"
-                        >
-                          <Square className="h-4 w-4 mr-2" />
-                          Stop Webcam
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Tips */}
-                  <div className="p-3 rounded-lg bg-secondary/20 text-sm text-muted-foreground">
-                    <p><strong>💡 Tips:</strong></p>
-                    <ul className="list-disc list-inside mt-1 space-y-1">
-                      <li>In Zoom/Teams/etc, select the window capture or virtual camera</li>
-                      <li>Install OBS Studio for best virtual webcam experience</li>
-                      <li>Keep your phone screen on while streaming</li>
-                    </ul>
-                  </div>
+                  {/* Inline Diagnostics */}
+                  <InlineDiagnostics type="phone-camera" />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1967,6 +1752,9 @@ export default function MicCamera() {
                       Requires the PC agent with OpenCV (opencv-python) installed.
                     </p>
                   </div>
+
+                  {/* Inline Diagnostics */}
+                  <InlineDiagnostics type="pc-camera" />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -2154,171 +1942,9 @@ export default function MicCamera() {
                       Supports up to 90 FPS. PC agent streams screen frames through the camera-relay edge function.
                     </p>
                   </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
 
-            {/* Unified Diagnostics Tab */}
-            <TabsContent value="diagnostics" className="space-y-4">
-              <UnifiedStreamDiagnostics className="w-full" />
-              
-              {/* Audio Relay Diagnostics */}
-              <AudioRelayDiagnostics className="w-full" />
-              
-              {/* Mobile Camera Diagnostics */}
-              <MobileCameraDiagnostics className="w-full" />
-              
-              <Card className="border-border/50">
-                <CardHeader>
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Zap className="h-5 w-5 text-primary" />
-                    Quick Actions
-                  </CardTitle>
-                  <CardDescription>
-                    Manual tests and debugging tools
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <Button
-                      variant="outline"
-                      onClick={async () => {
-                        addLog("info", "web", "Starting test pattern...");
-                        const sessionId = crypto.randomUUID();
-                        
-                        // Connect receiver first
-                        const WS_BASE = getFunctionsWsBase();
-                        const ws = new WebSocket(
-                          `${WS_BASE}/functions/v1/camera-relay?sessionId=${sessionId}&type=pc&fps=10&quality=70&binary=true`
-                        );
-                        ws.binaryType = "arraybuffer";
-                        
-                        let framesReceived = 0;
-                        let peerConnected = false;
-                        
-                        ws.onmessage = (e) => {
-                          if (typeof e.data === "string") {
-                            try {
-                              const msg = JSON.parse(e.data);
-                              if (msg.type === "peer_connected") {
-                                peerConnected = true;
-                                toast({ title: "Agent Connected", description: "Waiting for frames..." });
-                              }
-                            } catch {}
-                            return;
-                          }
-                          if (e.data instanceof ArrayBuffer && e.data.byteLength > 100) {
-                            framesReceived++;
-                            if (framesReceived === 1) {
-                              toast({ title: "✅ Test Pattern Working!", description: "Frames are being received" });
-                            }
-                          }
-                        };
-                        
-                        ws.onopen = async () => {
-                          toast({ title: "WebSocket Connected", description: "Sending start command..." });
-                          
-                          // Tell agent to start test pattern with increased timeout
-                          const result = await sendCommand("start_test_pattern", { session_id: sessionId, fps: 10, quality: 70 }, { awaitResult: true, timeoutMs: 15000 });
-                          
-                          if (!result.success) {
-                            toast({
-                              title: "Command Failed",
-                              description: result.error as string || "Agent couldn't start test pattern",
-                              variant: "destructive",
-                            });
-                            ws.close();
-                            return;
-                          }
-                          
-                          // Wait 8 seconds (longer for agent to connect and send)
-                          setTimeout(async () => {
-                            await sendCommand("stop_test_pattern", {});
-                            ws.close();
-                            if (framesReceived === 0) {
-                              toast({
-                                title: "❌ No Test Frames Received",
-                                description: peerConnected 
-                                  ? "Agent connected but no frames. Check PIL/OpenCV on agent."
-                                  : "Agent didn't connect. Check WebSocket URL and agent logs.",
-                                variant: "destructive",
-                              });
-                            } else {
-                              toast({
-                                title: "✅ Test Complete",
-                                description: `Received ${framesReceived} frames. Streaming works!`,
-                              });
-                            }
-                          }, 8000);
-                        };
-                        
-                        ws.onerror = () => {
-                          toast({
-                            title: "WebSocket Error",
-                            description: "Failed to connect to camera relay",
-                            variant: "destructive",
-                          });
-                        };
-                      }}
-                    >
-                      <Zap className="h-4 w-4 mr-2" />
-                      Test Pattern
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        const WS_BASE = getFunctionsWsBase();
-                        addLog("info", "web", `WebSocket base: ${WS_BASE}`);
-                        toast({ title: "WebSocket Host", description: WS_BASE });
-                      }}
-                    >
-                      <Monitor className="h-4 w-4 mr-2" />
-                      Show WS Host
-                    </Button>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-3">
-                    <Button
-                      variant="outline"
-                      onClick={async () => {
-                        const result = await sendCommand("get_streaming_stats", {}, { awaitResult: true, timeoutMs: 8000 });
-                        if (result.success && result.result) {
-                          const stats = result.result as Record<string, unknown>;
-                          console.log("Streaming stats:", stats);
-                          toast({ 
-                            title: "Stats Retrieved", 
-                            description: `Camera: ${(stats.camera as Record<string, unknown>)?.frame_count ?? 0} frames, Screen: ${(stats.screen as Record<string, unknown>)?.frame_count ?? 0} frames` 
-                          });
-                        } else {
-                          toast({ title: "Stats Failed", description: "Could not get streaming stats", variant: "destructive" });
-                        }
-                      }}
-                    >
-                      <Settings className="h-4 w-4 mr-2" />
-                      Get Stats
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={async () => {
-                        const result = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
-                        if (result.success) {
-                          toast({ title: "✅ Agent Responding", description: "Ping successful" });
-                        } else {
-                          toast({ title: "❌ No Response", description: "Agent not responding", variant: "destructive" });
-                        }
-                      }}
-                    >
-                      <RefreshCw className="h-4 w-4 mr-2" />
-                      Ping Agent
-                    </Button>
-                  </div>
-                  
-                  <div className="p-3 rounded-lg bg-muted/30">
-                    <p className="text-xs text-muted-foreground">
-                      <strong>Tip:</strong> Run diagnostics above to automatically test all streaming components.
-                      Use Test Pattern to verify the relay routes frames correctly (agent connects as sender, browser as receiver).
-                    </p>
-                  </div>
+                  {/* Inline Diagnostics */}
+                  <InlineDiagnostics type="screen" />
                 </CardContent>
               </Card>
             </TabsContent>
