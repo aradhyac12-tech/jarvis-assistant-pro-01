@@ -39,6 +39,7 @@ import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useAudioDevices } from "@/hooks/useAudioDevices";
 import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
+import { getFunctionsWsBase } from "@/lib/relay";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
@@ -144,13 +145,44 @@ export default function MicCamera() {
   const fpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
   const frameTimesRef = useRef<number[]>([]);
 
-  // WebSocket base must match the same backend host used by the rest of the app (REST + functions).
-  // Otherwise the browser and PC agent can end up connected to different relay hosts and never see frames.
-  const BACKEND_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined) ?? "";
-  const WS_BASE = BACKEND_URL.replace(/\/$/, "").replace(/^http/, "ws");
-
+  // WebSocket streaming MUST use the functions subdomain; the PC agent connects there.
+  // If the browser connects to a different host, you'll get "connected" with 0 frames forever.
+  const WS_BASE = getFunctionsWsBase();
   const WS_URL = `${WS_BASE}/functions/v1/audio-relay`;
   const CAMERA_WS_URL = `${WS_BASE}/functions/v1/camera-relay`;
+
+  const waitForWsOpen = useCallback((ws: WebSocket, timeoutMs = 8000) => {
+    return new Promise<void>((resolve, reject) => {
+      if (ws.readyState === WebSocket.OPEN) return resolve();
+
+      const t = window.setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        reject(new Error("WebSocket connection timeout"));
+      }, timeoutMs);
+
+      ws.addEventListener(
+        "open",
+        () => {
+          window.clearTimeout(t);
+          resolve();
+        },
+        { once: true }
+      );
+
+      ws.addEventListener(
+        "error",
+        () => {
+          window.clearTimeout(t);
+          reject(new Error("WebSocket connection failed"));
+        },
+        { once: true }
+      );
+    });
+  }, []);
 
   // Send FPS/Quality settings to agent in real-time
   const updateCameraSettings = useCallback(async (fps: number, quality: number) => {
@@ -230,43 +262,19 @@ export default function MicCamera() {
       setPcCameraSessionId(sessionId);
       addLog("info", "web", `Starting PC camera stream (session: ${sessionId.slice(0, 8)}...)`);
 
-      // Tell PC to start camera stream with current settings
-      const started = await sendCommand(
-        "start_camera_stream",
-        {
-          session_id: sessionId,
-          camera_index: selectedPcCamera,
-          fps: cameraFpsSetting,
-          quality: cameraQualitySetting,
-        },
-        { awaitResult: true, timeoutMs: 20000 }
-      );
-
-      if (!started.success) {
-        const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
-        setPcCameraError(msg);
-        addLog("error", "agent", `Camera open failed: ${msg}`);
-        toast({ title: "PC Camera Error", description: msg, variant: "destructive" });
-        setPcCameraSessionId(null);
-        return;
-      }
-
-      addLog("info", "agent", "PC camera opened successfully");
-
-      // Relay roles: Python agent connects as "phone" (sender), browser connects as "pc" (receiver).
-      // The relay forwards phone -> pc.
+      // 1) Connect receiver FIRST (browser as type=pc)
       const ws = new WebSocket(
         `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true`
       );
       pcCameraWsRef.current = ws;
-      ws.binaryType = "arraybuffer"; // Enable binary frame reception
+      ws.binaryType = "arraybuffer";
 
       // Track current blob URL for cleanup
       let currentBlobUrl: string | null = null;
 
       ws.onmessage = async (event) => {
         const now = Date.now();
-        
+
         try {
           let arrayBuffer: ArrayBuffer | null = null;
 
@@ -282,21 +290,21 @@ export default function MicCamera() {
           if (arrayBuffer && arrayBuffer.byteLength > 100) {
             const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
             const newUrl = URL.createObjectURL(blob);
-            
+
             // Clean up previous blob URL to prevent memory leaks
             if (currentBlobUrl) {
               URL.revokeObjectURL(currentBlobUrl);
             }
             currentBlobUrl = newUrl;
-            
+
             setPcCameraFrame(newUrl);
-            
+
             // Track frame times for latency calculation
             frameTimesRef.current.push(now);
             if (frameTimesRef.current.length > 10) {
               frameTimesRef.current.shift();
             }
-            
+
             // Calculate latency from inter-frame gaps
             if (frameTimesRef.current.length >= 2) {
               const gaps = [];
@@ -306,7 +314,7 @@ export default function MicCamera() {
               const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
               setCameraLatency(Math.round(avgGap));
             }
-            
+
             // Update FPS counter
             fpsCounterRef.current.frames++;
             const elapsed = now - fpsCounterRef.current.lastCheck;
@@ -315,7 +323,7 @@ export default function MicCamera() {
               setCameraFps(fps);
               fpsCounterRef.current = { frames: 0, lastCheck: now };
             }
-            
+
             setDebugStats((prev) => ({
               ...prev,
               frameCount: prev.frameCount + 1,
@@ -323,13 +331,13 @@ export default function MicCamera() {
             }));
             return;
           }
-          
+
           // Handle JSON messages (legacy base64 frames + control messages)
           if (typeof event.data === "string") {
             const data = JSON.parse(event.data);
             if (data.type === "camera_frame" && data.data) {
               // Validate base64 data before setting
-              if (typeof data.data === 'string' && data.data.length > 0) {
+              if (typeof data.data === "string" && data.data.length > 0) {
                 setPcCameraFrame(`data:image/jpeg;base64,${data.data}`);
                 setDebugStats((prev) => ({
                   ...prev,
@@ -359,12 +367,10 @@ export default function MicCamera() {
         setPcCameraError(null);
         setDebugStats((prev) => ({ ...prev, cameraWsConnected: true }));
         addLog("info", "web", "Camera WebSocket connected");
-        toast({ title: "PC Camera Started", description: "PC webcam is streaming to your phone" });
       };
 
       ws.onerror = (err) => {
         addLog("error", "web", `Camera WebSocket error: ${err}`);
-        toast({ title: "PC Camera Error", description: "WebSocket error", variant: "destructive" });
       };
 
       ws.onclose = () => {
@@ -378,13 +384,45 @@ export default function MicCamera() {
         setDebugStats((prev) => ({ ...prev, cameraWsConnected: false }));
         addLog("info", "web", "Camera WebSocket closed");
       };
+
+      await waitForWsOpen(ws);
+
+      // 2) Then tell PC agent to connect and start sending
+      const started = await sendCommand(
+        "start_camera_stream",
+        {
+          session_id: sessionId,
+          camera_index: selectedPcCamera,
+          fps: cameraFpsSetting,
+          quality: cameraQualitySetting,
+        },
+        { awaitResult: true, timeoutMs: 20000 }
+      );
+
+      if (!started.success) {
+        const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
+        setPcCameraError(msg);
+        addLog("error", "agent", `Camera open failed: ${msg}`);
+        toast({ title: "PC Camera Error", description: msg, variant: "destructive" });
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        setPcCameraSessionId(null);
+        return;
+      }
+
+      addLog("info", "agent", "PC camera opened successfully");
+
+      toast({ title: "PC Camera Started", description: "PC webcam is streaming to your phone" });
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       addLog("error", "web", `PC Camera error: ${errMsg}`);
       console.error("PC Camera error:", error);
       toast({ title: "PC Camera Error", description: "Unexpected error starting PC camera", variant: "destructive" });
     }
-  }, [sendCommand, selectedPcCamera, CAMERA_WS_URL, toast]);
+  }, [sendCommand, selectedPcCamera, cameraFpsSetting, cameraQualitySetting, CAMERA_WS_URL, toast, waitForWsOpen]);
 
   const stopPcCamera = useCallback(async () => {
     await sendCommand("stop_camera_stream", {});
@@ -690,31 +728,7 @@ export default function MicCamera() {
       setScreenMirrorSessionId(sessionId);
       addLog("info", "web", `Starting screen mirroring via WebSocket (session: ${sessionId.slice(0, 8)}...)`);
 
-      // Tell PC to start screen stream via WebSocket relay
-      const started = await sendCommand(
-        "start_screen_stream",
-        {
-          session_id: sessionId,
-          fps: screenMirrorFps,
-          quality: screenMirrorQuality,
-          scale: 0.5,
-        },
-        { awaitResult: true, timeoutMs: 15000 }
-      );
-
-      if (!started.success) {
-        const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
-        setScreenMirrorError(msg);
-        addLog("error", "agent", msg);
-        toast({ title: "Screen Mirror Error", description: msg, variant: "destructive" });
-        setScreenMirrorSessionId(null);
-        return;
-      }
-
-      addLog("info", "agent", "PC screen stream started");
-
-      // Relay roles: Python agent connects as "phone" (sender), browser connects as "pc" (receiver).
-      // The relay forwards phone -> pc.
+      // 1) Connect receiver FIRST (browser as type=pc)
       const ws = new WebSocket(
         `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true`
       );
@@ -799,12 +813,10 @@ export default function MicCamera() {
         setScreenMirrorActive(true);
         setScreenMirrorError(null);
         addLog("info", "web", "Screen mirror WebSocket connected");
-        toast({ title: "Screen Mirroring Started", description: `Streaming at up to ${screenMirrorFps} FPS` });
       };
 
       ws.onerror = (err) => {
         addLog("error", "web", `Screen mirror WebSocket error: ${err}`);
-        toast({ title: "Screen Mirror Error", description: "WebSocket error", variant: "destructive" });
       };
 
       ws.onclose = () => {
@@ -820,12 +832,44 @@ export default function MicCamera() {
         screenFrameTimesRef.current = [];
         addLog("info", "web", "Screen mirror WebSocket closed");
       };
+
+      await waitForWsOpen(ws);
+
+      // 2) Then tell PC to start screen stream via relay
+      const started = await sendCommand(
+        "start_screen_stream",
+        {
+          session_id: sessionId,
+          fps: screenMirrorFps,
+          quality: screenMirrorQuality,
+          scale: 0.5,
+        },
+        { awaitResult: true, timeoutMs: 15000 }
+      );
+
+      if (!started.success) {
+        const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
+        setScreenMirrorError(msg);
+        addLog("error", "agent", msg);
+        toast({ title: "Screen Mirror Error", description: msg, variant: "destructive" });
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        setScreenMirrorSessionId(null);
+        return;
+      }
+
+      addLog("info", "agent", "PC screen stream started");
+
+      toast({ title: "Screen Mirroring Started", description: `Streaming at up to ${screenMirrorFps} FPS` });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       addLog("error", "web", `Screen mirror error: ${errMsg}`);
       toast({ title: "Screen Mirror Error", variant: "destructive" });
     }
-  }, [sendCommand, screenMirrorFps, screenMirrorQuality, CAMERA_WS_URL, toast]);
+  }, [sendCommand, screenMirrorFps, screenMirrorQuality, CAMERA_WS_URL, toast, waitForWsOpen]);
 
   const stopScreenMirror = useCallback(async () => {
     if (screenMirrorWsRef.current) {
