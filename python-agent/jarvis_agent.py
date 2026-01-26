@@ -1265,15 +1265,27 @@ class AudioStreamer:
 
 # ============== CAMERA STREAMER ==============
 class CameraStreamer:
-    """Handles PC camera streaming to phone."""
+    """Handles PC camera streaming to phone with adaptive quality."""
+    
+    # Max frame size to avoid Realtime broadcast limits (keep under 500KB for reliability)
+    MAX_FRAME_SIZE = 400 * 1024  # 400KB max
+    
+    # Resolution presets based on quality setting
+    RESOLUTION_PRESETS = {
+        "ultra": (1280, 720),   # 720p for high quality
+        "high": (854, 480),     # 480p
+        "medium": (640, 360),   # 360p
+        "low": (426, 240),      # 240p - fastest
+    }
     
     def __init__(self):
         self.running = False
         self.ws = None
         self.session_id = None
         self.camera = None
-        self.quality = 100  # Max quality for best image
-        self.fps = 90       # High FPS for smooth streaming
+        self.quality = 70       # JPEG quality (will auto-adjust)
+        self.fps = 30           # Target FPS
+        self.resolution = "medium"  # Default resolution preset
         
         self.frame_count = 0
         self.bytes_sent = 0
@@ -1283,9 +1295,24 @@ class CameraStreamer:
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 5
         
+        # Adaptive quality tracking
+        self.avg_frame_size = 0
+        self.quality_adjustments = 0
+        
         # Store last error for web UI
         self.last_error: Optional[str] = None
         
+    def _get_resolution_preset(self, quality: int) -> str:
+        """Map quality percentage to resolution preset."""
+        if quality >= 90:
+            return "ultra"
+        elif quality >= 70:
+            return "high"
+        elif quality >= 40:
+            return "medium"
+        else:
+            return "low"
+    
     async def connect(self, session_id: str, fps: int = 30, quality: int = 70):
         if not HAS_WEBSOCKETS or not HAS_OPENCV:
             error_msg = "WebSockets or OpenCV not available"
@@ -1294,15 +1321,17 @@ class CameraStreamer:
             return False
             
         self.session_id = session_id
-        self.fps = fps
+        self.fps = min(fps, 60)  # Cap at 60 FPS for stability
         self.quality = quality
+        self.resolution = self._get_resolution_preset(quality)
         self.last_error = None
+        self.avg_frame_size = 0
+        self.quality_adjustments = 0
         
         # CRITICAL: Connect as 'phone' type - this is the SENDER
-        # The web frontend connects as 'pc' type - this is the RECEIVER
-        # The relay forwards from phone->pc, so we must be 'phone' to send frames
-        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
-        add_log("info", f"Connecting camera stream as sender (phone)", f"fps={fps}, quality={quality}", category="camera")
+        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={self.fps}&quality={quality}&binary=true"
+        res = self.RESOLUTION_PRESETS[self.resolution]
+        add_log("info", f"Camera connecting as sender", f"fps={self.fps}, quality={quality}, res={res[0]}x{res[1]}", category="camera")
         
         try:
             self.ws = await websockets.connect(ws_url)
@@ -1463,24 +1492,42 @@ class CameraStreamer:
                 # Reset failure counter on success
                 consecutive_failures = 0
                 
-                # Resize frame for streaming
-                frame = cv2.resize(frame, (640, 480))
+                # Get target resolution based on quality setting
+                target_res = self.RESOLUTION_PRESETS.get(self.resolution, (640, 360))
+                frame = cv2.resize(frame, target_res)
                 
-                # Encode frame as JPEG binary
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
+                # Encode with current quality
+                current_quality = self.quality
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, current_quality])
                 frame_bytes = buffer.tobytes()
                 frame_size = len(frame_bytes)
                 
+                # Adaptive quality: if frame too large, reduce quality and re-encode
+                if frame_size > self.MAX_FRAME_SIZE and current_quality > 30:
+                    # Step down quality until frame fits
+                    for step_quality in [70, 50, 40, 30]:
+                        if step_quality >= current_quality:
+                            continue
+                        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, step_quality])
+                        frame_bytes = buffer.tobytes()
+                        frame_size = len(frame_bytes)
+                        if frame_size <= self.MAX_FRAME_SIZE:
+                            self.quality_adjustments += 1
+                            if self.quality_adjustments % 50 == 1:
+                                add_log("info", f"Auto-reduced quality to {step_quality} (frame was {frame_size//1024}KB)", category="camera")
+                            break
+                
+                # Track average frame size for monitoring
+                self.avg_frame_size = (self.avg_frame_size * 0.9) + (frame_size * 0.1)
+                
                 try:
-                    # Send raw binary JPEG data directly
                     await self.ws.send(frame_bytes)
                     self.frame_count += 1
                     self.bytes_sent += frame_size
                     self.last_frame_time = time.time()
                     
-                    # Log progress periodically
-                    if self.frame_count % 100 == 0:
-                        add_log("info", f"Camera sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)", category="camera")
+                    if self.frame_count % 150 == 0:
+                        add_log("info", f"Camera: {self.frame_count} frames, avg {int(self.avg_frame_size//1024)}KB/frame", category="camera")
                 except Exception as e:
                     add_log("warn", f"Camera send error: {e}", category="camera")
                     if not await self._reconnect():
@@ -1518,12 +1565,14 @@ class CameraStreamer:
             return False
         
         if fps is not None:
-            self.fps = max(1, min(90, fps))  # Clamp to 1-90
+            self.fps = max(1, min(60, fps))  # Clamp to 1-60 for stability
             add_log("info", f"Camera FPS updated to {self.fps}", category="camera")
         
         if quality is not None:
-            self.quality = max(10, min(100, quality))  # Clamp to 10-100
-            add_log("info", f"Camera quality updated to {self.quality}", category="camera")
+            self.quality = max(10, min(100, quality))
+            self.resolution = self._get_resolution_preset(quality)
+            res = self.RESOLUTION_PRESETS[self.resolution]
+            add_log("info", f"Camera quality={quality}, resolution={res[0]}x{res[1]}", category="camera")
         
         return True
     
@@ -1607,7 +1656,18 @@ class CameraStreamer:
 
 # ============== SCREEN STREAMER ==============
 class ScreenStreamer:
-    """High-performance screen mirroring to phone via camera-relay (binary JPEG frames)."""
+    """High-performance screen mirroring with adaptive quality."""
+    
+    # Max frame size to avoid Realtime broadcast limits
+    MAX_FRAME_SIZE = 400 * 1024  # 400KB max
+    
+    # Scale presets based on quality
+    SCALE_PRESETS = {
+        "ultra": 0.75,   # 75% of screen - max detail
+        "high": 0.6,     # 60% - good balance
+        "medium": 0.45,  # 45% - faster
+        "low": 0.3,      # 30% - fastest
+    }
 
     def __init__(self):
         self.running = False
@@ -1616,7 +1676,7 @@ class ScreenStreamer:
 
         self.quality = 70
         self.fps = 30
-        self.scale = 0.6
+        self.scale = 0.5
         self.monitor_index = 1
 
         self.frame_count = 0
@@ -1624,11 +1684,26 @@ class ScreenStreamer:
         self.last_frame_time = 0
         self.last_stats_time = time.time()
         self.last_error: Optional[str] = None
+        
+        # Adaptive quality tracking
+        self.avg_frame_size = 0
+        self.quality_adjustments = 0
 
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 5
+    
+    def _get_scale_preset(self, quality: int) -> float:
+        """Map quality to scale preset."""
+        if quality >= 90:
+            return self.SCALE_PRESETS["ultra"]
+        elif quality >= 70:
+            return self.SCALE_PRESETS["high"]
+        elif quality >= 40:
+            return self.SCALE_PRESETS["medium"]
+        else:
+            return self.SCALE_PRESETS["low"]
 
-    async def connect(self, session_id: str, fps: int = 30, quality: int = 70, scale: float = 0.6, monitor_index: int = 1):
+    async def connect(self, session_id: str, fps: int = 30, quality: int = 70, scale: float = None, monitor_index: int = 1):
         if not HAS_WEBSOCKETS:
             self.last_error = "WebSockets not available"
             add_log("error", self.last_error, category="screen")
@@ -1639,18 +1714,23 @@ class ScreenStreamer:
             add_log("error", self.last_error, category="screen")
             return False
 
-        # OpenCV is strongly preferred for fast JPEG encode, but we can still proceed without it.
         self.session_id = session_id
-        self.fps = max(1, min(90, int(fps)))
+        self.fps = max(1, min(60, int(fps)))  # Cap at 60 for stability
         self.quality = max(10, min(100, int(quality)))
-        self.scale = max(0.1, min(1.0, float(scale)))
+        # Auto-determine scale based on quality if not specified
+        if scale is None:
+            self.scale = self._get_scale_preset(quality)
+        else:
+            self.scale = max(0.1, min(1.0, float(scale)))
         self.monitor_index = int(monitor_index) if monitor_index else 1
         self.last_error = None
         self.reconnect_attempts = 0
+        self.avg_frame_size = 0
+        self.quality_adjustments = 0
 
         # CRITICAL: Connect as 'phone' type (sender). Web connects as 'pc' (receiver).
         ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
-        add_log("info", "Connecting screen stream as sender (phone)", f"fps={self.fps}, quality={self.quality}, scale={self.scale}", category="screen")
+        add_log("info", f"Screen connecting", f"fps={self.fps}, quality={self.quality}, scale={self.scale:.2f}", category="screen")
 
         try:
             self.ws = await websockets.connect(ws_url)
@@ -1753,19 +1833,39 @@ class ScreenStreamer:
                         if self.scale != 1.0:
                             h, w = frame.shape[:2]
                             frame = cv2_local.resize(frame, (max(1, int(w * self.scale)), max(1, int(h * self.scale))))
-                        ok, buf = cv2_local.imencode('.jpg', frame, [cv2_local.IMWRITE_JPEG_QUALITY, int(self.quality)])
+                        
+                        # Encode with current quality
+                        current_quality = int(self.quality)
+                        ok, buf = cv2_local.imencode('.jpg', frame, [cv2_local.IMWRITE_JPEG_QUALITY, current_quality])
                         if not ok:
                             add_log("warn", "Failed to encode screen frame", category="screen")
                             continue
                         frame_bytes = buf.tobytes()
+                        frame_size = len(frame_bytes)
+                        
+                        # Adaptive: if frame too large, reduce quality
+                        if frame_size > self.MAX_FRAME_SIZE and current_quality > 30:
+                            for step_q in [60, 45, 35, 25]:
+                                if step_q >= current_quality:
+                                    continue
+                                ok, buf = cv2_local.imencode('.jpg', frame, [cv2_local.IMWRITE_JPEG_QUALITY, step_q])
+                                if ok:
+                                    frame_bytes = buf.tobytes()
+                                    frame_size = len(frame_bytes)
+                                    if frame_size <= self.MAX_FRAME_SIZE:
+                                        self.quality_adjustments += 1
+                                        break
                     else:
                         # Fallback: Pillow
                         img = Image.frombytes('RGB', shot.size, shot.bgra, 'raw', 'BGRX')
                         if self.scale != 1.0:
                             img = img.resize((max(1, int(img.width * self.scale)), max(1, int(img.height * self.scale))), Image.BILINEAR)
                         buffer = io.BytesIO()
-                        img.save(buffer, format='JPEG', quality=int(self.quality), optimize=True)
+                        img.save(buffer, format='JPEG', quality=int(min(self.quality, 70)), optimize=True)
                         frame_bytes = buffer.getvalue()
+                    
+                    # Track avg frame size
+                    self.avg_frame_size = (self.avg_frame_size * 0.9) + (len(frame_bytes) * 0.1)
 
                     try:
                         await self.ws.send(frame_bytes)
@@ -1773,9 +1873,8 @@ class ScreenStreamer:
                         self.bytes_sent += len(frame_bytes)
                         self.last_frame_time = time.time()
                         
-                        # Log progress periodically
-                        if self.frame_count % 100 == 0:
-                            add_log("info", f"Screen sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)", category="screen")
+                        if self.frame_count % 150 == 0:
+                            add_log("info", f"Screen: {self.frame_count} frames, avg {int(self.avg_frame_size//1024)}KB", category="screen")
                     except Exception as e:
                         add_log("warn", f"Screen send error: {e}", category="screen")
                         if not await self._reconnect():
@@ -1795,11 +1894,14 @@ class ScreenStreamer:
         if not self.running:
             return False
         if fps is not None:
-            self.fps = max(1, min(90, int(fps)))
+            self.fps = max(1, min(60, int(fps)))  # Cap at 60 for stability
             add_log("info", f"Screen FPS updated to {self.fps}", category="screen")
         if quality is not None:
             self.quality = max(10, min(100, int(quality)))
-            add_log("info", f"Screen quality updated to {self.quality}", category="screen")
+            # Auto-adjust scale based on quality if not explicitly set
+            if scale is None:
+                self.scale = self._get_scale_preset(quality)
+            add_log("info", f"Screen quality={self.quality}, scale={self.scale:.2f}", category="screen")
         if scale is not None:
             self.scale = max(0.1, min(1.0, float(scale)))
             add_log("info", f"Screen scale updated to {self.scale}", category="screen")
