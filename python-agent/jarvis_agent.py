@@ -148,9 +148,12 @@ except ImportError:
 
 # Camera streaming
 try:
-    # Reduce noisy OpenCV backend probing on Windows and avoid Orbbec/obsensor
-    # internal "Camera index out of range" errors when enumerating cameras.
+    # Suppress noisy OpenCV backend probing warnings on Windows
+    # and avoid Orbbec/obsensor internal "Camera index out of range" errors
     os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_OBSENSOR", "0")
+    os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_INTEL_MFX", "0")
+    # Suppress OpenCV warnings during import
+    os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
     import cv2
     HAS_OPENCV = True
 except ImportError:
@@ -1553,43 +1556,45 @@ class CameraStreamer:
         cameras: List[Dict[str, Any]] = []
 
         def _cap_open(idx: int) -> Optional["cv2.VideoCapture"]:
-            # On Windows, probing many backends/indexes produces a lot of noisy warnings.
-            # We try a conservative strategy:
-            # 1) CAP_DSHOW first (most reliable for webcams)
-            # 2) CAP_MSMF only for low indexes (0/1) as a fallback
+            """Try to open camera with minimal backend noise."""
             if platform.system() == "Windows":
-                backends: List[Optional[int]] = [cv2.CAP_DSHOW]
-                if idx in (0, 1):
-                    backends += [cv2.CAP_MSMF, None]
-                for backend in backends:
-                    try:
-                        cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
-                        if cap.isOpened():
-                            return cap
-                        cap.release()
-                    except Exception:
-                        pass
+                # On Windows, only use CAP_DSHOW - it's the most reliable
+                # and produces the least warning noise.
+                try:
+                    cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                    if cap.isOpened():
+                        return cap
+                    cap.release()
+                except Exception:
+                    pass
                 return None
+            else:
+                # On Linux/Mac, use default backend
+                try:
+                    cap = cv2.VideoCapture(idx)
+                    return cap if cap.isOpened() else None
+                except Exception:
+                    return None
 
-            try:
-                cap = cv2.VideoCapture(idx)
-                return cap if cap.isOpened() else None
-            except Exception:
-                return None
-
-        max_probe = 3 if platform.system() == "Windows" else 6
+        # Only probe first 2 cameras on Windows to avoid warning spam
+        max_probe = 2 if platform.system() == "Windows" else 4
 
         for i in range(max_probe):
             cap = None
             try:
                 cap = _cap_open(i)
                 if cap and cap.isOpened():
-                    cameras.append({
-                        "index": i,
-                        "name": f"Camera {i}",
-                        "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                        "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                    })
+                    # Read one frame to ensure camera actually works
+                    ret, _ = cap.read()
+                    if ret:
+                        cameras.append({
+                            "index": i,
+                            "name": f"Camera {i}",
+                            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                        })
+            except Exception:
+                pass
             finally:
                 try:
                     if cap:
