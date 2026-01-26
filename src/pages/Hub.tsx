@@ -40,6 +40,8 @@ import {
   Search,
   Zap,
   Music,
+  Clipboard,
+  ArrowUpDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -53,7 +55,10 @@ import { ZoomMeetings } from "@/components/ZoomMeetings";
 import { BoostPC } from "@/components/BoostPC";
 import { NotificationSync } from "@/components/NotificationSync";
 import { CallControls } from "@/components/CallControls";
-import { BackButton } from "@/components/BackButton";
+import { ClipboardSync } from "@/components/ClipboardSync";
+import { FileTransfer } from "@/components/FileTransfer";
+import { MediaSyncPanel } from "@/components/MediaSyncPanel";
+import { RemoteInputPanel } from "@/components/RemoteInputPanel";
 
 type Tab = "control" | "remote" | "media" | "tools";
 
@@ -65,18 +70,11 @@ interface SystemStats {
   battery_plugged?: boolean;
 }
 
-interface MediaState {
-  title: string;
-  artist: string;
-  isPlaying: boolean;
-  volume: number;
-}
-
 export default function Hub() {
   const { devices, selectedDevice, isLoading, refreshDevices } = useDeviceContext();
   const { isReconnecting } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
-  const { fireMouse, fireKey, fireClick, connectionMode, latency: p2pLatency } = useP2PCommand();
+  const { connectionMode, latency: p2pLatency, isConnected: p2pConnected } = useP2PCommand();
   const { toast } = useToast();
 
   const [activeTab, setActiveTab] = useState<Tab>("control");
@@ -89,18 +87,7 @@ export default function Hub() {
   
   const [cmdInput, setCmdInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
-  const [textInput, setTextInput] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
 
-  const [mediaState, setMediaState] = useState<MediaState>({
-    title: "Not Playing",
-    artist: "Play something on your PC",
-    isPlaying: false,
-    volume: 80,
-  });
-
-  const trackpadRef = useRef<HTMLDivElement>(null);
-  const lastPosition = useRef({ x: 0, y: 0 });
   const volumeCommitRef = useRef<number | null>(null);
   const brightnessCommitRef = useRef<number | null>(null);
 
@@ -144,7 +131,7 @@ export default function Hub() {
     }
   }, [selectedDevice?.is_online, syncSystemState]);
 
-  // Fetch system stats and media state
+  // Fetch system stats
   const fetchStats = useCallback(async () => {
     if (!selectedDevice?.is_online) return;
     try {
@@ -157,32 +144,11 @@ export default function Hub() {
     }
   }, [selectedDevice?.is_online, sendCommand]);
 
-  const fetchMediaState = useCallback(async () => {
-    if (!selectedDevice?.is_online) return;
-    try {
-      const result = await sendCommand("get_media_state", {}, { awaitResult: true, timeoutMs: 4000 });
-      if (result?.success && 'result' in result && result.result) {
-        const state = result.result as Record<string, unknown>;
-        if (state.success) {
-          setMediaState({
-            title: (state.title as string) || "Not Playing",
-            artist: (state.artist as string) || "Unknown artist",
-            isPlaying: (state.is_playing as boolean) ?? false,
-            volume: (state.volume as number) ?? 80,
-          });
-        }
-      }
-    } catch (e) {
-      console.error("Failed to fetch media state:", e);
-    }
-  }, [selectedDevice?.is_online, sendCommand]);
-
   useEffect(() => {
     if (selectedDevice?.is_online) {
       fetchStats();
-      fetchMediaState();
     }
-  }, [selectedDevice?.is_online, fetchStats, fetchMediaState]);
+  }, [selectedDevice?.is_online, fetchStats]);
 
   // Realtime device updates
   useEffect(() => {
@@ -217,7 +183,6 @@ export default function Hub() {
       try {
         const result = await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 3000 });
         if (result?.success && selectedDevice?.id) {
-          // Update device in DB for persistence
           await supabase.from("devices").update({ current_volume: v[0] }).eq("id", selectedDevice.id);
         }
       } catch (e) {
@@ -260,7 +225,7 @@ export default function Hub() {
     toast({ title: `${action.charAt(0).toUpperCase() + action.slice(1)} initiated` });
   }, [sendCommand, toast]);
 
-  // FIXED: Command execution with proper error handling
+  // Command execution
   const handleCommand = async () => {
     if (!cmdInput.trim() || isProcessing) return;
     setIsProcessing(true);
@@ -279,7 +244,6 @@ export default function Hub() {
         const query = lower.slice(5).trim();
         await sendCommand("play_music", { query, service: "youtube" });
         toast({ title: "Playing", description: query });
-        setTimeout(fetchMediaState, 2000);
       } else if (lower.startsWith("search ")) {
         await sendCommand("search_web", { query: lower.slice(7), engine: "google" });
         toast({ title: "Searching..." });
@@ -294,78 +258,6 @@ export default function Hub() {
     setCmdInput("");
     setIsProcessing(false);
   };
-
-  // FIXED: Play music command
-  const handlePlayMusic = async () => {
-    if (!searchQuery.trim()) return;
-    setIsProcessing(true);
-    try {
-      await sendCommand("play_music", { query: searchQuery, service: "youtube" });
-      toast({ title: "Playing", description: searchQuery });
-      setSearchQuery("");
-      setTimeout(fetchMediaState, 2000);
-    } catch (e) {
-      toast({ title: "Playback failed", variant: "destructive" });
-    }
-    setIsProcessing(false);
-  };
-
-  // Media controls
-  const handlePlayPause = useCallback(async () => {
-    setMediaState(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
-    await sendCommand("media_control", { action: "play_pause" });
-    setTimeout(fetchMediaState, 500);
-  }, [sendCommand, fetchMediaState]);
-
-  const handleNext = useCallback(async () => {
-    setMediaState(prev => ({ ...prev, title: "Loading...", artist: "Skipping..." }));
-    await sendCommand("media_control", { action: "next" });
-    setTimeout(fetchMediaState, 800);
-  }, [sendCommand, fetchMediaState]);
-
-  const handlePrevious = useCallback(async () => {
-    setMediaState(prev => ({ ...prev, title: "Loading...", artist: "Going back..." }));
-    await sendCommand("media_control", { action: "previous" });
-    setTimeout(fetchMediaState, 800);
-  }, [sendCommand, fetchMediaState]);
-
-  // Remote handlers
-  const sendText = () => {
-    if (!textInput.trim()) return;
-    sendCommand("type_text", { text: textInput });
-    setTextInput("");
-    toast({ title: "Text sent" });
-  };
-
-  const handleTrackpadStart = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    const point = "touches" in e ? e.touches[0] : e;
-    lastPosition.current = { x: point.clientX, y: point.clientY };
-  }, []);
-
-  const handleTrackpadMove = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    if (!("buttons" in e) || e.buttons !== 1) {
-      if (!("touches" in e)) return;
-    }
-    const point = "touches" in e ? e.touches[0] : e;
-    const sensitivity = 3;
-    const deltaX = (point.clientX - lastPosition.current.x) * sensitivity;
-    const deltaY = (point.clientY - lastPosition.current.y) * sensitivity;
-    lastPosition.current = { x: point.clientX, y: point.clientY };
-    if (Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5) {
-      fireMouse(deltaX, deltaY);
-    }
-  }, [fireMouse]);
-
-  const quickKeys = [
-    { label: "Enter", key: "enter" },
-    { label: "Esc", key: "escape" },
-    { label: "Tab", key: "tab" },
-    { label: "⌫", key: "backspace" },
-    { label: "Ctrl+C", key: "ctrl+c" },
-    { label: "Ctrl+V", key: "ctrl+v" },
-    { label: "Alt+Tab", key: "alt+tab" },
-    { label: "Win", key: "win" },
-  ];
 
   const quickLinks = [
     { title: "Voice", icon: Mic, href: "/voice", color: "text-primary" },
@@ -395,7 +287,6 @@ export default function Hub() {
         <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
           <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
             <div className="flex items-center gap-3">
-              <BackButton showHome={false} />
               <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
                 <Bot className="w-5 h-5 text-primary-foreground" />
               </div>
@@ -591,156 +482,25 @@ export default function Hub() {
                     </div>
                   </CardContent>
                 </Card>
+
+                {/* Remote Input on front page */}
+                <RemoteInputPanel className="md:col-span-2" />
               </div>
             )}
 
             {/* Remote Tab */}
             {activeTab === "remote" && (
               <div className="grid gap-4 md:grid-cols-2">
-                {/* Trackpad */}
-                <Card className="border-border/40">
-                  <CardContent className="p-4">
-                    <p className="text-xs text-muted-foreground mb-2">Touch/drag to move mouse</p>
-                    <div
-                      ref={trackpadRef}
-                      className="aspect-[4/3] bg-muted/30 rounded-lg border border-dashed border-border/60 cursor-crosshair flex items-center justify-center select-none"
-                      onMouseDown={handleTrackpadStart}
-                      onMouseMove={handleTrackpadMove}
-                      onTouchStart={handleTrackpadStart}
-                      onTouchMove={handleTrackpadMove}
-                    >
-                      <Mouse className="w-8 h-8 text-muted-foreground/30" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 mt-3">
-                      <Button variant="secondary" onClick={() => fireClick("left")}>Left Click</Button>
-                      <Button variant="secondary" onClick={() => fireClick("right")}>Right Click</Button>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Keyboard */}
-                <Card className="border-border/40">
-                  <CardContent className="p-4 space-y-3">
-                    <div className="flex gap-2">
-                      <Input
-                        placeholder="Type text..."
-                        value={textInput}
-                        onChange={(e) => setTextInput(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && sendText()}
-                        className="flex-1"
-                        disabled={!isConnected}
-                      />
-                      <Button onClick={sendText} disabled={!isConnected} size="icon">
-                        <Keyboard className="w-4 h-4" />
-                      </Button>
-                    </div>
-
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {quickKeys.map((k) => (
-                        <Button key={k.key} variant="outline" size="sm" className="text-xs" onClick={() => fireKey(k.key)} disabled={!isConnected}>
-                          {k.label}
-                        </Button>
-                      ))}
-                    </div>
-
-                    <div className="flex justify-center">
-                      <div className="grid grid-cols-3 gap-1 w-fit">
-                        <div />
-                        <Button variant="outline" size="icon" onClick={() => fireKey("up")} disabled={!isConnected}><ArrowUp className="w-4 h-4" /></Button>
-                        <div />
-                        <Button variant="outline" size="icon" onClick={() => fireKey("left")} disabled={!isConnected}><ArrowLeft className="w-4 h-4" /></Button>
-                        <Button variant="outline" size="icon" onClick={() => fireKey("down")} disabled={!isConnected}><ArrowDown className="w-4 h-4" /></Button>
-                        <Button variant="outline" size="icon" onClick={() => fireKey("right")} disabled={!isConnected}><ArrowRight className="w-4 h-4" /></Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+                <RemoteInputPanel />
+                <ClipboardSync />
               </div>
             )}
 
             {/* Media Tab */}
             {activeTab === "media" && (
               <div className="grid gap-4 md:grid-cols-2">
-                {/* Now Playing */}
-                <Card className="border-border/40">
-                  <CardContent className="p-4 space-y-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-14 h-14 rounded-lg bg-muted flex items-center justify-center">
-                        <Music className="w-6 h-6 text-muted-foreground" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium truncate">{mediaState.title}</p>
-                        <p className="text-sm text-muted-foreground truncate">{mediaState.artist}</p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-center gap-3">
-                      <Button variant="ghost" size="icon" onClick={handlePrevious} disabled={!isConnected}>
-                        <SkipBack className="w-5 h-5" />
-                      </Button>
-                      <Button size="icon" className="w-12 h-12 rounded-full" onClick={handlePlayPause} disabled={!isConnected}>
-                        {mediaState.isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={handleNext} disabled={!isConnected}>
-                        <SkipForward className="w-5 h-5" />
-                      </Button>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <Volume2 className="w-4 h-4 text-muted-foreground shrink-0" />
-                      <Slider
-                        value={[volume]}
-                        onValueChange={handleVolumeSlider}
-                        onValueCommit={handleVolumeCommit}
-                        max={100}
-                        step={1}
-                        className="flex-1"
-                        disabled={!isConnected}
-                      />
-                      <span className="text-sm text-muted-foreground w-10 text-right tabular-nums">{volume}%</span>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Search & Play */}
-                <Card className="border-border/40">
-                  <CardContent className="p-4 space-y-3">
-                    <p className="text-sm font-medium">Play on YouTube</p>
-                    <div className="flex gap-2">
-                      <Input
-                        placeholder="Song, artist, or URL..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && handlePlayMusic()}
-                        className="flex-1"
-                        disabled={!isConnected}
-                      />
-                      <Button onClick={handlePlayMusic} disabled={!isConnected || !searchQuery.trim() || isProcessing}>
-                        {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-                      </Button>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {["lofi beats", "trending music", "chill vibes"].map((q) => (
-                        <Button
-                          key={q}
-                          variant="outline"
-                          size="sm"
-                          className="text-xs"
-                          onClick={() => {
-                            setSearchQuery(q);
-                            handlePlayMusic();
-                          }}
-                          disabled={!isConnected}
-                        >
-                          {q}
-                        </Button>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Zoom Meetings */}
-                <ZoomMeetings className="md:col-span-2" />
+                <MediaSyncPanel />
+                <ZoomMeetings />
               </div>
             )}
 
@@ -748,8 +508,9 @@ export default function Hub() {
             {activeTab === "tools" && (
               <div className="grid gap-4 md:grid-cols-2">
                 <BoostPC />
+                <FileTransfer />
                 <NotificationSync />
-                <CallControls className="md:col-span-2" />
+                <CallControls />
               </div>
             )}
 

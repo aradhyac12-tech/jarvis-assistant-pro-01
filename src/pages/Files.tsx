@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,12 +17,13 @@ import {
   Loader2,
   RefreshCw,
   FolderUp,
+  ArrowLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
-import { BackButton } from "@/components/BackButton";
+import { Link } from "react-router-dom";
 
 interface FileItem {
   name: string;
@@ -177,50 +177,49 @@ export default function Files() {
   );
 
   return (
-    <DashboardLayout>
-      <ScrollArea className="h-[calc(100vh-2rem)]">
-        <div className="space-y-4 animate-fade-in pr-4 pt-12 md:pt-0">
-          {/* Header */}
-          <div className="flex items-center justify-between">
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
+        <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
+          <div className="flex items-center gap-3">
+            <Link to="/hub">
+              <Button variant="ghost" size="icon" className="h-9 w-9">
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+            </Link>
             <div>
-              <h1 className="text-2xl md:text-3xl font-bold neon-text">Files</h1>
-              <p className="text-muted-foreground text-sm">Browse files on your PC</p>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={handleGoHome}>
-                <Home className="h-4 w-4" />
-              </Button>
-              <Button variant="outline" size="sm" onClick={handleGoUp}>
-                <FolderUp className="h-4 w-4" />
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => fetchFiles()} disabled={isLoading}>
-                <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-              </Button>
+              <h1 className="font-semibold text-sm">Files</h1>
+              <p className="text-xs text-muted-foreground truncate max-w-[200px]" title={fullPath}>
+                {fullPath || "Loading..."}
+              </p>
             </div>
           </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleGoHome}>
+              <Home className="h-4 w-4" />
+            </Button>
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleGoUp}>
+              <FolderUp className="h-4 w-4" />
+            </Button>
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => fetchFiles()} disabled={isLoading}>
+              <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+            </Button>
+          </div>
+        </div>
+      </header>
 
-          {/* Breadcrumb & Search */}
-          <Card className="glass-dark border-border/50">
-            <CardContent className="p-3">
-              <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-muted-foreground truncate" title={fullPath}>
-                    {fullPath || "Loading..."}
-                  </p>
-                </div>
-
-                <div className="relative w-full md:w-64 shrink-0">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search files..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10"
-                  />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+      <ScrollArea className="h-[calc(100vh-3.5rem)]">
+        <main className="max-w-4xl mx-auto p-4 space-y-4">
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search files..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10"
+            />
+          </div>
 
           {/* Quick Access */}
           <div className="flex gap-2 flex-wrap">
@@ -249,27 +248,27 @@ export default function Files() {
           </div>
 
           {/* Files Grid */}
-          <Card className="glass-dark border-border/50">
+          <Card className="border-border/40">
             <CardContent className="p-4">
               {isLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="h-8 w-8 animate-spin text-primary" />
                 </div>
               ) : filteredFiles.length > 0 ? (
-                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
                   {filteredFiles.map((file, index) => {
                     const FileIcon = getFileIcon(file.name, file.is_directory);
                     return (
                       <div
                         key={`${file.name}-${index}`}
-                        className="p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 cursor-pointer transition-all hover-scale text-center group"
+                        className="p-3 rounded-lg bg-muted/30 hover:bg-muted/50 cursor-pointer transition-all hover:scale-[1.02] text-center group"
                         onClick={() => handleNavigate(file)}
                       >
                         <div className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center mx-auto mb-2 group-hover:bg-primary/10 transition-colors">
                           <FileIcon
                             className={cn(
                               "h-5 w-5",
-                              file.is_directory ? "text-neon-blue" : "text-muted-foreground"
+                              file.is_directory ? "text-primary" : "text-muted-foreground"
                             )}
                           />
                         </div>
@@ -277,7 +276,7 @@ export default function Files() {
                           {file.name}
                         </p>
                         {!file.is_directory && file.size > 0 && (
-                          <p className="text-xs text-muted-foreground mt-1">
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
                             {formatSize(file.size)}
                           </p>
                         )}
@@ -288,15 +287,15 @@ export default function Files() {
               ) : (
                 <div className="text-center py-12">
                   <FolderOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground">
+                  <p className="text-muted-foreground text-sm">
                     {files.length === 0 ? "No files in this directory" : "No files match your search"}
                   </p>
                 </div>
               )}
             </CardContent>
           </Card>
-        </div>
+        </main>
       </ScrollArea>
-    </DashboardLayout>
+    </div>
   );
 }
