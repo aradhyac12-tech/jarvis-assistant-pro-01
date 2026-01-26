@@ -236,8 +236,8 @@ else:
 # =====================================================================
 # EMBEDDED BACKEND CONFIGURATION - DO NOT CHANGE UNLESS YOU KNOW WHAT YOU'RE DOING
 # =====================================================================
-DEFAULT_JARVIS_URL = "https://giihgligzrokdzonyzjo.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdpaWhnbGlnenJva2R6b255empvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwNDM0MzEsImV4cCI6MjA4NDYxOTQzMX0.u1-OYznEnWr-i0PIJIDolcxxVh79HNBolfBpWa6ffAU"
+DEFAULT_JARVIS_URL = "https://gkppopjoedadacolxufi.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrcHBvcGpvZWRhZGFjb2x4dWZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk0MzAyNjAsImV4cCI6MjA4NTAwNjI2MH0.BTudp4YXmUuYv6gtPeurUzqzM_mbf_j7QqsL78uwQUE"
 # =====================================================================
 
 
