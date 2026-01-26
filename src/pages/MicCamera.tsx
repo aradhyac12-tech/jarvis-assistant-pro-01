@@ -40,7 +40,7 @@ import { useAudioDevices } from "@/hooks/useAudioDevices";
 import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
-import { StreamIssueFinder } from "@/components/StreamIssueFinder";
+import { UnifiedStreamDiagnostics } from "@/components/UnifiedStreamDiagnostics";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
@@ -2291,18 +2291,18 @@ export default function MicCamera() {
               </Card>
             </TabsContent>
 
-            {/* Issue Finder Tab */}
+            {/* Unified Diagnostics Tab */}
             <TabsContent value="diagnostics" className="space-y-4">
-              <StreamIssueFinder className="w-full" />
+              <UnifiedStreamDiagnostics className="w-full" />
               
               <Card className="border-border/50">
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
                     <Zap className="h-5 w-5 text-primary" />
-                    Quick Tests
+                    Quick Actions
                   </CardTitle>
                   <CardDescription>
-                    Run test pattern to isolate capture vs relay issues
+                    Manual tests and debugging tools
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -2321,7 +2321,19 @@ export default function MicCamera() {
                         ws.binaryType = "arraybuffer";
                         
                         let framesReceived = 0;
+                        let peerConnected = false;
+                        
                         ws.onmessage = (e) => {
+                          if (typeof e.data === "string") {
+                            try {
+                              const msg = JSON.parse(e.data);
+                              if (msg.type === "peer_connected") {
+                                peerConnected = true;
+                                toast({ title: "Agent Connected", description: "Waiting for frames..." });
+                              }
+                            } catch {}
+                            return;
+                          }
                           if (e.data instanceof ArrayBuffer && e.data.byteLength > 100) {
                             framesReceived++;
                             if (framesReceived === 1) {
@@ -2331,26 +2343,48 @@ export default function MicCamera() {
                         };
                         
                         ws.onopen = async () => {
-                          // Tell agent to start test pattern
-                          await sendCommand("start_test_pattern", { session_id: sessionId, fps: 10, quality: 70 });
+                          toast({ title: "WebSocket Connected", description: "Sending start command..." });
                           
-                          // Wait 5 seconds then check
+                          // Tell agent to start test pattern with increased timeout
+                          const result = await sendCommand("start_test_pattern", { session_id: sessionId, fps: 10, quality: 70 }, { awaitResult: true, timeoutMs: 15000 });
+                          
+                          if (!result.success) {
+                            toast({
+                              title: "Command Failed",
+                              description: result.error as string || "Agent couldn't start test pattern",
+                              variant: "destructive",
+                            });
+                            ws.close();
+                            return;
+                          }
+                          
+                          // Wait 8 seconds (longer for agent to connect and send)
                           setTimeout(async () => {
                             await sendCommand("stop_test_pattern", {});
                             ws.close();
                             if (framesReceived === 0) {
                               toast({
                                 title: "❌ No Test Frames Received",
-                                description: "The relay may not be routing correctly. Check agent logs.",
+                                description: peerConnected 
+                                  ? "Agent connected but no frames. Check PIL/OpenCV on agent."
+                                  : "Agent didn't connect. Check WebSocket URL and agent logs.",
                                 variant: "destructive",
                               });
                             } else {
                               toast({
-                                title: "Test Complete",
-                                description: `Received ${framesReceived} test frames. Relay is working!`,
+                                title: "✅ Test Complete",
+                                description: `Received ${framesReceived} frames. Streaming works!`,
                               });
                             }
-                          }, 5000);
+                          }, 8000);
+                        };
+                        
+                        ws.onerror = () => {
+                          toast({
+                            title: "WebSocket Error",
+                            description: "Failed to connect to camera relay",
+                            variant: "destructive",
+                          });
                         };
                       }}
                     >
@@ -2370,10 +2404,46 @@ export default function MicCamera() {
                     </Button>
                   </div>
                   
+                  <div className="grid grid-cols-2 gap-3">
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        const result = await sendCommand("get_streaming_stats", {}, { awaitResult: true, timeoutMs: 8000 });
+                        if (result.success && result.result) {
+                          const stats = result.result as Record<string, unknown>;
+                          console.log("Streaming stats:", stats);
+                          toast({ 
+                            title: "Stats Retrieved", 
+                            description: `Camera: ${(stats.camera as Record<string, unknown>)?.frame_count ?? 0} frames, Screen: ${(stats.screen as Record<string, unknown>)?.frame_count ?? 0} frames` 
+                          });
+                        } else {
+                          toast({ title: "Stats Failed", description: "Could not get streaming stats", variant: "destructive" });
+                        }
+                      }}
+                    >
+                      <Settings className="h-4 w-4 mr-2" />
+                      Get Stats
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        const result = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
+                        if (result.success) {
+                          toast({ title: "✅ Agent Responding", description: "Ping successful" });
+                        } else {
+                          toast({ title: "❌ No Response", description: "Agent not responding", variant: "destructive" });
+                        }
+                      }}
+                    >
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Ping Agent
+                    </Button>
+                  </div>
+                  
                   <div className="p-3 rounded-lg bg-muted/30">
                     <p className="text-xs text-muted-foreground">
-                      <strong>Test Pattern:</strong> Sends generated color bars from PC agent. If you see frames, 
-                      the relay works and the issue is camera/screen capture. If no frames, check WebSocket routing.
+                      <strong>Tip:</strong> Run diagnostics above to automatically test all streaming components.
+                      Use Test Pattern to verify the relay routes frames correctly (agent connects as sender, browser as receiver).
                     </p>
                   </div>
                 </CardContent>
