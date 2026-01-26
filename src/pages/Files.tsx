@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { BackButton } from "@/components/BackButton";
 
 interface FileItem {
   name: string;

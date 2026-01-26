@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
+import { GlobalPiPProvider } from "@/contexts/GlobalPiPContext";
+import { GlobalFloatingPiP } from "@/components/GlobalFloatingPiP";
 import { LazyLoadErrorBoundary } from "@/components/LazyLoadErrorBoundary";
 import { Loader2 } from "lucide-react";
 import React, { lazy, Suspense, forwardRef } from "react";
@@ -131,11 +133,14 @@ const App = () => (
     <TooltipProvider>
       <DeviceSessionProvider>
         <DeviceProvider>
-          <Toaster />
-          <Sonner />
-          <BrowserRouter>
-            <AppRoutes />
-          </BrowserRouter>
+          <GlobalPiPProvider>
+            <Toaster />
+            <Sonner />
+            <BrowserRouter>
+              <AppRoutes />
+              <GlobalFloatingPiP />
+            </BrowserRouter>
+          </GlobalPiPProvider>
         </DeviceProvider>
       </DeviceSessionProvider>
     </TooltipProvider>

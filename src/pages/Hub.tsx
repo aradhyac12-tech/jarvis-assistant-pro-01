@@ -46,12 +46,16 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
-import { useFastCommand } from "@/hooks/useFastCommand";
+import { useP2PCommand } from "@/hooks/useP2PCommand";
 import { supabase } from "@/integrations/supabase/client";
 import { Link } from "react-router-dom";
 import { ZoomMeetings } from "@/components/ZoomMeetings";
+import { BoostPC } from "@/components/BoostPC";
+import { NotificationSync } from "@/components/NotificationSync";
+import { CallControls } from "@/components/CallControls";
+import { BackButton } from "@/components/BackButton";
 
-type Tab = "control" | "remote" | "media";
+type Tab = "control" | "remote" | "media" | "tools";
 
 interface SystemStats {
   cpu_percent?: number;
@@ -72,7 +76,7 @@ export default function Hub() {
   const { devices, selectedDevice, isLoading, refreshDevices } = useDeviceContext();
   const { isReconnecting } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
-  const { fireCommand, fireMouse, fireKey } = useFastCommand();
+  const { fireMouse, fireKey, fireClick, connectionMode, latency: p2pLatency } = useP2PCommand();
   const { toast } = useToast();
 
   const [activeTab, setActiveTab] = useState<Tab>("control");
@@ -328,7 +332,7 @@ export default function Hub() {
   // Remote handlers
   const sendText = () => {
     if (!textInput.trim()) return;
-    fireCommand("type_text", { text: textInput });
+    sendCommand("type_text", { text: textInput });
     setTextInput("");
     toast({ title: "Text sent" });
   };
@@ -391,12 +395,20 @@ export default function Hub() {
         <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
           <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
             <div className="flex items-center gap-3">
+              <BackButton showHome={false} />
               <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
                 <Bot className="w-5 h-5 text-primary-foreground" />
               </div>
               <div>
                 <h1 className="font-semibold text-sm">JARVIS</h1>
-                <p className="text-xs text-muted-foreground">{selectedDevice?.name || "No device"}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-muted-foreground">{selectedDevice?.name || "No device"}</p>
+                  {connectionMode !== "disconnected" && (
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                      {connectionMode === "p2p" ? "P2P" : "WS"} {p2pLatency}ms
+                    </Badge>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -459,6 +471,7 @@ export default function Hub() {
                 { id: "control" as Tab, label: "Control", icon: Monitor },
                 { id: "remote" as Tab, label: "Remote", icon: Mouse },
                 { id: "media" as Tab, label: "Media", icon: Music },
+                { id: "tools" as Tab, label: "Tools", icon: Zap },
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -599,8 +612,8 @@ export default function Hub() {
                       <Mouse className="w-8 h-8 text-muted-foreground/30" />
                     </div>
                     <div className="grid grid-cols-2 gap-2 mt-3">
-                      <Button variant="secondary" onClick={() => fireCommand("mouse_click", { button: "left" })}>Left Click</Button>
-                      <Button variant="secondary" onClick={() => fireCommand("mouse_click", { button: "right" })}>Right Click</Button>
+                      <Button variant="secondary" onClick={() => fireClick("left")}>Left Click</Button>
+                      <Button variant="secondary" onClick={() => fireClick("right")}>Right Click</Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -728,6 +741,15 @@ export default function Hub() {
 
                 {/* Zoom Meetings */}
                 <ZoomMeetings className="md:col-span-2" />
+              </div>
+            )}
+
+            {/* Tools Tab */}
+            {activeTab === "tools" && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <BoostPC />
+                <NotificationSync />
+                <CallControls className="md:col-span-2" />
               </div>
             )}
 
