@@ -1,19 +1,23 @@
 import { useCallback, useRef, useEffect, useState } from "react";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { useFastCommand } from "@/hooks/useFastCommand";
 import { getFunctionsWsBase } from "@/lib/relay";
 
 /**
  * P2P/WebSocket hybrid command system for ultra-low latency.
  * - Same network: WebRTC P2P (5-10ms latency)
  * - Different network: WebSocket direct (20-50ms latency)
+ * - Fallback: Supabase edge function (50-100ms latency)
  * 
  * This bypasses Supabase backend polling for real-time controls.
  */
 export function useP2PCommand() {
   const { session } = useDeviceSession();
   const { selectedDevice } = useDeviceContext();
-  const [connectionMode, setConnectionMode] = useState<"p2p" | "websocket" | "disconnected">("disconnected");
+  const { fireCommand: fallbackCommand, fireMouse: fallbackMouse, fireKey: fallbackKey, fireScroll: fallbackScroll } = useFastCommand();
+  
+  const [connectionMode, setConnectionMode] = useState<"p2p" | "websocket" | "fallback" | "disconnected">("disconnected");
   const [latency, setLatency] = useState(0);
   
   const wsRef = useRef<WebSocket | null>(null);
@@ -23,6 +27,8 @@ export function useP2PCommand() {
   const lastPingRef = useRef<number>(0);
   const mouseAccumulator = useRef({ x: 0, y: 0 });
   const mouseTimerRef = useRef<number | null>(null);
+  const connectionAttempts = useRef(0);
+  const maxAttempts = 3;
 
   const sessionToken = session?.session_token;
   const deviceId = selectedDevice?.id || session?.device_id;
@@ -65,14 +71,22 @@ export function useP2PCommand() {
 
     ws.onclose = () => {
       console.log("[P2P] WebSocket disconnected");
-      setConnectionMode("disconnected");
-      // Reconnect after delay
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      reconnectTimer.current = window.setTimeout(connectWebSocket, 3000);
+      connectionAttempts.current++;
+      
+      if (connectionAttempts.current < maxAttempts) {
+        setConnectionMode("fallback"); // Use Supabase fallback
+        // Reconnect after delay
+        if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = window.setTimeout(connectWebSocket, 3000);
+      } else {
+        setConnectionMode("fallback");
+        console.log("[P2P] Max attempts reached, using fallback mode");
+      }
     };
 
     ws.onerror = (err) => {
       console.error("[P2P] WebSocket error:", err);
+      setConnectionMode("fallback");
     };
 
     wsRef.current = ws;
@@ -225,8 +239,10 @@ export function useP2PCommand() {
       return;
     }
 
-    console.warn("[P2P] No connection available for command");
-  }, []);
+    // Last resort: use Supabase edge function fallback
+    console.debug("[P2P] Using fallback for command:", commandType);
+    fallbackCommand(commandType, payload);
+  }, [fallbackCommand]);
 
   // Batched mouse movement for smoothness
   const MOUSE_BATCH_MS = 8; // 120fps batching
