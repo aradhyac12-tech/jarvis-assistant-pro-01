@@ -215,6 +215,53 @@ export type Database = {
         }
         Relationships: []
       }
+      saved_meetings: {
+        Row: {
+          created_at: string
+          device_id: string | null
+          id: string
+          last_used_at: string | null
+          meeting_id: string | null
+          meeting_link: string | null
+          meeting_name: string
+          meeting_password: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          device_id?: string | null
+          id?: string
+          last_used_at?: string | null
+          meeting_id?: string | null
+          meeting_link?: string | null
+          meeting_name: string
+          meeting_password?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          device_id?: string | null
+          id?: string
+          last_used_at?: string | null
+          meeting_id?: string | null
+          meeting_link?: string | null
+          meeting_name?: string
+          meeting_password?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "saved_meetings_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "devices"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_settings: {
         Row: {
           created_at: string

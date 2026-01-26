@@ -49,6 +49,7 @@ import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useFastCommand } from "@/hooks/useFastCommand";
 import { supabase } from "@/integrations/supabase/client";
 import { Link } from "react-router-dom";
+import { ZoomMeetings } from "@/components/ZoomMeetings";
 
 type Tab = "control" | "remote" | "media";
 
@@ -724,6 +725,9 @@ export default function Hub() {
                     </div>
                   </CardContent>
                 </Card>
+
+                {/* Zoom Meetings */}
+                <ZoomMeetings className="md:col-span-2" />
               </div>
             )}
 
