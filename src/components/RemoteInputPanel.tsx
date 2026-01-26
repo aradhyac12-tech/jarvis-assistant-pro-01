@@ -58,15 +58,18 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
   }, []);
 
   const handleTrackpadMove = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    if (!("buttons" in e) || e.buttons !== 1) {
+    // Only process if actively dragging
+    if ("buttons" in e && e.buttons !== 1) {
       if (!("touches" in e)) return;
     }
     const point = "touches" in e ? e.touches[0] : e;
-    const sensitivity = 3;
+    const sensitivity = 2.5; // Reduced from 3 for smoother control
     const deltaX = (point.clientX - lastPosition.current.x) * sensitivity;
     const deltaY = (point.clientY - lastPosition.current.y) * sensitivity;
     lastPosition.current = { x: point.clientX, y: point.clientY };
-    if (Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5) {
+    
+    // Higher threshold to reduce micro-movements
+    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
       fireMouse(deltaX, deltaY);
     }
   }, [fireMouse]);

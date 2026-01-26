@@ -101,13 +101,45 @@ export function GalaxyBudsManager({ className }: { className?: string }) {
     }
   }, [fallbackDevice]);
 
+  // Switch audio output (defined first to avoid circular ref)
+  const switchToDevice = useCallback(async (deviceId: string, deviceName: string) => {
+    setSwitchingTo(deviceId);
+    try {
+      const result = await sendCommand("set_audio_output", { device_id: deviceId }, { awaitResult: true, timeoutMs: 5000 });
+      
+      if (result.success) {
+        setCurrentDefault(deviceId);
+        toast({
+          title: "Audio Output Changed",
+          description: `Now using: ${deviceName}`,
+        });
+      } else {
+        toast({
+          title: "Switch Failed",
+          description: "Could not change audio output",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to switch audio:", error);
+      toast({
+        title: "Switch Error",
+        description: "Failed to communicate with PC agent",
+        variant: "destructive",
+      });
+    } finally {
+      setSwitchingTo(null);
+    }
+  }, [sendCommand, toast]);
+
   // Poll PC audio devices
   const pollAudioDevices = useCallback(async () => {
     try {
       const result = await sendCommand("list_audio_outputs", {}, { awaitResult: true, timeoutMs: 5000 });
       
       if (result.success && result.result) {
-        const devices = result.result as Array<{ id: string; name: string; is_default?: boolean }>;
+        const response = result.result as { devices?: Array<{ id: string; name: string; is_default?: boolean }> };
+        const devices = response.devices || [];
         
         const mapped: AudioDevice[] = devices.map((d) => ({
           id: d.id,
@@ -127,6 +159,7 @@ export function GalaxyBudsManager({ className }: { className?: string }) {
         const budsDevice = mapped.find((d) => isGalaxyBuds(d.name));
         
         if (budsDevice) {
+          const wasDetected = budsState.detected;
           setBudsState({
             detected: true,
             connectedTo: budsDevice.isDefault ? "pc" : "none",
@@ -140,12 +173,13 @@ export function GalaxyBudsManager({ className }: { className?: string }) {
           }
 
           // Auto-switch logic: if buds just appeared and auto-switch is enabled
-          if (autoSwitchEnabled && !budsDevice.isDefault) {
-            const wasDefault = previousDefaultRef.current === budsDevice.id;
-            if (!wasDefault) {
-              // Buds detected but not default - switch to them
-              await switchToDevice(budsDevice.id, budsDevice.name);
-            }
+          if (autoSwitchEnabled && !wasDetected && !budsDevice.isDefault) {
+            // Buds just appeared - switch to them
+            await switchToDevice(budsDevice.id, budsDevice.name);
+            toast({
+              title: "Galaxy Buds Connected",
+              description: `Switched to ${budsDevice.name}`,
+            });
           }
         } else {
           // Buds not detected - maybe disconnected
@@ -177,38 +211,7 @@ export function GalaxyBudsManager({ className }: { className?: string }) {
     } catch (error) {
       console.error("Failed to poll audio devices:", error);
     }
-  }, [sendCommand, autoSwitchEnabled, preferredBudsId, fallbackDevice, budsState.detected, budsState.lastSeen, toast]);
-
-  // Switch audio output
-  const switchToDevice = useCallback(async (deviceId: string, deviceName: string) => {
-    setSwitchingTo(deviceId);
-    try {
-      const result = await sendCommand("set_audio_output", { device_id: deviceId }, { awaitResult: true, timeoutMs: 5000 });
-      
-      if (result.success) {
-        setCurrentDefault(deviceId);
-        toast({
-          title: "Audio Output Changed",
-          description: `Now using: ${deviceName}`,
-        });
-      } else {
-        toast({
-          title: "Switch Failed",
-          description: "Could not change audio output",
-          variant: "destructive",
-        });
-      }
-    } catch (error) {
-      console.error("Failed to switch audio:", error);
-      toast({
-        title: "Switch Error",
-        description: "Failed to communicate with PC agent",
-        variant: "destructive",
-      });
-    } finally {
-      setSwitchingTo(null);
-    }
-  }, [sendCommand, toast]);
+  }, [sendCommand, autoSwitchEnabled, preferredBudsId, fallbackDevice, budsState.detected, budsState.lastSeen, toast, switchToDevice]);
 
   // Start/stop polling
   useEffect(() => {

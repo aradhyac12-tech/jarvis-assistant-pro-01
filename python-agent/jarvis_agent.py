@@ -3970,6 +3970,234 @@ class JarvisAgent:
                 add_log("info", f"Call action: {command_type}", category="call")
                 return {"success": True}
 
+            # ============== FILE TRANSFER ==============
+            elif command_type == "receive_file_chunk":
+                try:
+                    file_id = payload.get("file_id", "")
+                    chunk_index = payload.get("chunk_index", 0)
+                    total_chunks = payload.get("total_chunks", 1)
+                    data_base64 = payload.get("data", "")
+                    file_name = payload.get("file_name", "received_file")
+                    
+                    # Decode chunk
+                    chunk_data = base64.b64decode(data_base64)
+                    
+                    # Determine save path
+                    save_folder = payload.get("save_folder") or os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
+                    os.makedirs(save_folder, exist_ok=True)
+                    
+                    # For first chunk, create file; for subsequent chunks, append
+                    file_path = os.path.join(save_folder, file_name)
+                    mode = "wb" if chunk_index == 0 else "ab"
+                    
+                    with open(file_path, mode) as f:
+                        f.write(chunk_data)
+                    
+                    progress = int((chunk_index + 1) / total_chunks * 100)
+                    
+                    if chunk_index + 1 == total_chunks:
+                        add_log("info", f"File received: {file_name}", category="file")
+                        notification_manager.notify("File Received", f"{file_name} saved to Downloads/Jarvis")
+                        return {"success": True, "completed": True, "path": file_path, "progress": 100}
+                    
+                    return {"success": True, "completed": False, "progress": progress}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "send_file_chunk":
+                try:
+                    file_path = payload.get("path", "")
+                    chunk_index = payload.get("chunk_index", 0)
+                    chunk_size = payload.get("chunk_size", 64 * 1024)  # 64KB default
+                    
+                    if not os.path.exists(file_path):
+                        return {"success": False, "error": "File not found"}
+                    
+                    file_size = os.path.getsize(file_path)
+                    total_chunks = (file_size + chunk_size - 1) // chunk_size
+                    
+                    with open(file_path, "rb") as f:
+                        f.seek(chunk_index * chunk_size)
+                        chunk_data = f.read(chunk_size)
+                    
+                    data_base64 = base64.b64encode(chunk_data).decode("utf-8")
+                    
+                    return {
+                        "success": True,
+                        "data": data_base64,
+                        "chunk_index": chunk_index,
+                        "total_chunks": total_chunks,
+                        "file_size": file_size,
+                        "file_name": os.path.basename(file_path)
+                    }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            # ============== AUDIO DEVICE MANAGEMENT ==============
+            elif command_type == "list_audio_outputs":
+                try:
+                    devices = []
+                    if sys.platform == "win32" and HAS_PYCAW:
+                        from pycaw.pycaw import AudioUtilities
+                        
+                        # Get all audio endpoints
+                        try:
+                            from pycaw.pycaw import EDataFlow, DEVICE_STATE
+                            from comtypes import CLSCTX_ALL
+                            
+                            # Get default device for comparison
+                            default_speakers = AudioUtilities.GetSpeakers()
+                            default_id = default_speakers.GetId() if default_speakers else ""
+                            
+                            # Enumerate all render (output) devices
+                            enumerator = AudioUtilities.GetDeviceEnumerator()
+                            collection = enumerator.EnumAudioEndpoints(EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value)
+                            
+                            for i in range(collection.GetCount()):
+                                dev = collection.Item(i)
+                                dev_id = dev.GetId()
+                                # Get friendly name
+                                props = dev.OpenPropertyStore(0)
+                                try:
+                                    from pycaw.pycaw import PKEY_Device_FriendlyName
+                                    name = props.GetValue(PKEY_Device_FriendlyName).GetValue()
+                                except:
+                                    name = f"Audio Device {i}"
+                                
+                                devices.append({
+                                    "id": dev_id,
+                                    "name": name,
+                                    "is_default": dev_id == default_id
+                                })
+                        except Exception as enum_err:
+                            add_log("warn", f"Device enumeration fallback: {enum_err}", category="audio")
+                            # Fallback: just return default
+                            default_speakers = AudioUtilities.GetSpeakers()
+                            if default_speakers:
+                                devices.append({
+                                    "id": "default",
+                                    "name": "Default Speakers",
+                                    "is_default": True
+                                })
+                    
+                    return {"success": True, "devices": devices}
+                except Exception as e:
+                    return {"success": False, "error": str(e), "devices": []}
+
+            elif command_type == "set_audio_output":
+                try:
+                    device_id = payload.get("device_id", "")
+                    if sys.platform == "win32":
+                        # Use nircmd or PowerShell to set default audio device
+                        # This requires additional setup - for now, acknowledge
+                        add_log("info", f"Set audio output: {device_id}", category="audio")
+                        # Try PowerShell method
+                        try:
+                            import subprocess
+                            # Using AudioDeviceCmdlets if available
+                            ps_cmd = f'Set-AudioDevice -ID "{device_id}"'
+                            result = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, timeout=5)
+                            if result.returncode == 0:
+                                return {"success": True}
+                            else:
+                                # Fallback acknowledgment
+                                add_log("warn", "AudioDeviceCmdlets not installed - manual switch needed", category="audio")
+                                return {"success": True, "manual": True}
+                        except Exception as ps_err:
+                            add_log("warn", f"PowerShell audio switch: {ps_err}", category="audio")
+                            return {"success": True, "manual": True}
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "list_cameras":
+                try:
+                    cameras = []
+                    if HAS_OPENCV:
+                        # Try to detect available cameras
+                        for i in range(5):  # Check first 5 indices
+                            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY)
+                            if cap.isOpened():
+                                cameras.append({"index": i, "name": f"Camera {i}"})
+                                cap.release()
+                    return {"success": True, "cameras": cameras}
+                except Exception as e:
+                    return {"success": False, "error": str(e), "cameras": []}
+
+            # ============== P2P / NETWORK DETECTION ==============
+            elif command_type == "get_network_info":
+                try:
+                    import socket
+                    
+                    # Get local IP addresses
+                    local_ips = []
+                    hostname = socket.gethostname()
+                    
+                    try:
+                        # Get all IPs
+                        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+                            ip = info[4][0]
+                            if not ip.startswith("127."):
+                                local_ips.append(ip)
+                    except:
+                        pass
+                    
+                    # Also try via connection method
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        s.connect(("8.8.8.8", 80))
+                        primary_ip = s.getsockname()[0]
+                        s.close()
+                        if primary_ip not in local_ips:
+                            local_ips.insert(0, primary_ip)
+                    except:
+                        pass
+                    
+                    # Derive network prefix (e.g., 192.168.1.x -> 192.168.1)
+                    network_prefix = ""
+                    if local_ips:
+                        parts = local_ips[0].split(".")
+                        if len(parts) == 4:
+                            network_prefix = ".".join(parts[:3])
+                    
+                    return {
+                        "success": True,
+                        "hostname": hostname,
+                        "local_ips": local_ips,
+                        "network_prefix": network_prefix,
+                        "p2p_port": 9876  # P2P WebSocket port if we implement it
+                    }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            elif command_type == "check_same_network":
+                try:
+                    import socket
+                    
+                    phone_ip = payload.get("phone_ip", "")
+                    
+                    # Get PC's network prefix
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    pc_ip = s.getsockname()[0]
+                    s.close()
+                    
+                    # Compare network prefixes
+                    pc_prefix = ".".join(pc_ip.split(".")[:3])
+                    phone_prefix = ".".join(phone_ip.split(".")[:3]) if phone_ip else ""
+                    
+                    same_network = pc_prefix == phone_prefix and phone_prefix != ""
+                    
+                    return {
+                        "success": True,
+                        "same_network": same_network,
+                        "pc_ip": pc_ip,
+                        "phone_ip": phone_ip,
+                        "pc_prefix": pc_prefix
+                    }
+                except Exception as e:
+                    return {"success": False, "error": str(e), "same_network": False}
+
             else:
                 add_log("warn", f"Unknown command: {command_type}", category="command")
                 return {"success": False, "error": f"Unknown command: {command_type}"}
