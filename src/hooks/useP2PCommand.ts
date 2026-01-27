@@ -35,6 +35,10 @@ export function useP2PCommand() {
   const pingIntervalRef = useRef<number | null>(null);
   const mouseAccumulator = useRef({ x: 0, y: 0 });
   const mouseTimerRef = useRef<number | null>(null);
+  const scrollAccumulator = useRef(0);
+  const scrollTimerRef = useRef<number | null>(null);
+  const zoomAccumulator = useRef(0);
+  const zoomTimerRef = useRef<number | null>(null);
   const connectionAttempts = useRef(0);
   const maxAttempts = 3;
   const isUpgradingRef = useRef(false);
@@ -410,10 +414,13 @@ export function useP2PCommand() {
     fallbackCommand(commandType, payload);
   }, [fallbackCommand, localP2P]);
 
-  // Batched mouse movement (16ms = 60fps)
-  const MOUSE_BATCH_MS = 16;
-  const MOUSE_THRESHOLD = 1.5;
-
+  // ============ OPTIMIZED INPUT BATCHING ============
+  // Coalesce rapid inputs to prevent command spam (KDE Connect style)
+  
+  // Mouse: Batch at 32ms (~30fps) with higher threshold
+  const MOUSE_BATCH_MS = 32;
+  const MOUSE_THRESHOLD = 2;
+  
   const fireMouse = useCallback((deltaX: number, deltaY: number) => {
     mouseAccumulator.current.x += deltaX;
     mouseAccumulator.current.y += deltaY;
@@ -422,12 +429,56 @@ export function useP2PCommand() {
 
     mouseTimerRef.current = window.setTimeout(() => {
       const { x, y } = mouseAccumulator.current;
+      // Only send if movement exceeds threshold
       if (Math.abs(x) >= MOUSE_THRESHOLD || Math.abs(y) >= MOUSE_THRESHOLD) {
         fireCommand("mouse_move", { x: Math.round(x), y: Math.round(y), relative: true });
       }
       mouseAccumulator.current = { x: 0, y: 0 };
       mouseTimerRef.current = null;
     }, MOUSE_BATCH_MS);
+  }, [fireCommand]);
+
+  // Scroll: Batch at 50ms with accumulation
+  const SCROLL_BATCH_MS = 50;
+  const SCROLL_THRESHOLD = 3;
+
+  const fireScroll = useCallback((deltaY: number) => {
+    // Natural scroll direction, scaled appropriately
+    scrollAccumulator.current += deltaY * -0.3;
+
+    if (scrollTimerRef.current !== null) return;
+
+    scrollTimerRef.current = window.setTimeout(() => {
+      const amount = Math.round(scrollAccumulator.current);
+      if (Math.abs(amount) >= SCROLL_THRESHOLD) {
+        fireCommand("mouse_scroll", { amount });
+      }
+      scrollAccumulator.current = 0;
+      scrollTimerRef.current = null;
+    }, SCROLL_BATCH_MS);
+  }, [fireCommand]);
+
+  // Pinch-to-zoom: Batch at 100ms, send single zoom command
+  const ZOOM_BATCH_MS = 100;
+  const ZOOM_THRESHOLD = 0.05;
+
+  const fireZoom = useCallback((delta: number) => {
+    zoomAccumulator.current += delta;
+
+    if (zoomTimerRef.current !== null) return;
+
+    zoomTimerRef.current = window.setTimeout(() => {
+      const amount = zoomAccumulator.current;
+      if (Math.abs(amount) >= ZOOM_THRESHOLD) {
+        // Send a single zoom command with direction and magnitude
+        fireCommand("pinch_zoom", { 
+          direction: amount > 0 ? "in" : "out",
+          steps: Math.min(Math.ceil(Math.abs(amount) * 3), 5)
+        });
+      }
+      zoomAccumulator.current = 0;
+      zoomTimerRef.current = null;
+    }, ZOOM_BATCH_MS);
   }, [fireCommand]);
 
   const fireKey = useCallback((key: string) => {
@@ -439,12 +490,18 @@ export function useP2PCommand() {
     }
   }, [fireCommand]);
 
-  const fireScroll = useCallback((deltaY: number) => {
-    fireCommand("mouse_scroll", { amount: Math.round(deltaY * -0.5) });
-  }, [fireCommand]);
-
   const fireClick = useCallback((button: "left" | "right" | "middle" = "left") => {
     fireCommand("mouse_click", { button });
+  }, [fireCommand]);
+
+  // 3-finger gesture: Show Desktop (Win+D)
+  const fireGesture3Finger = useCallback(() => {
+    fireCommand("gesture_3_finger", {});
+  }, [fireCommand]);
+
+  // 4-finger swipe: Virtual desktop switch
+  const fireGesture4Finger = useCallback((direction: "left" | "right") => {
+    fireCommand("gesture_4_finger", { direction });
   }, [fireCommand]);
 
   // Manual P2P toggle
@@ -479,7 +536,10 @@ export function useP2PCommand() {
     fireMouse,
     fireKey,
     fireScroll,
+    fireZoom,
     fireClick,
+    fireGesture3Finger,
+    fireGesture4Finger,
     connectionMode,
     latency: effectiveLatency,
     isConnected: connectionMode !== "disconnected",

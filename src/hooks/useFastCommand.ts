@@ -29,10 +29,13 @@ export function useFastCommand() {
     [selectedDevice?.id, session?.device_id, session?.session_token]
   );
 
-  // Batched mouse move - accumulates movements and sends periodically
+  // ============ OPTIMIZED BATCHING (KDE Connect style) ============
+  
+  // Mouse: Batch at 32ms (~30fps) with threshold to reduce spam
   const mouseAccumulator = useRef({ x: 0, y: 0 });
   const mouseTimerRef = useRef<number | null>(null);
-  const MOUSE_BATCH_MS = 16; // ~60fps batching
+  const MOUSE_BATCH_MS = 32;
+  const MOUSE_THRESHOLD = 2;
 
   const fireMouse = useCallback(
     (deltaX: number, deltaY: number) => {
@@ -43,7 +46,7 @@ export function useFastCommand() {
 
       mouseTimerRef.current = window.setTimeout(() => {
         const { x, y } = mouseAccumulator.current;
-        if (Math.abs(x) > 0 || Math.abs(y) > 0) {
+        if (Math.abs(x) >= MOUSE_THRESHOLD || Math.abs(y) >= MOUSE_THRESHOLD) {
           fireCommand("mouse_move", { x: Math.round(x), y: Math.round(y), relative: true });
         }
         mouseAccumulator.current = { x: 0, y: 0 };
@@ -53,7 +56,7 @@ export function useFastCommand() {
     [fireCommand]
   );
 
-  // Debounced key presses for rapid typing
+  // Key presses with minimal debounce
   const lastKeyTime = useRef(0);
   const KEY_DEBOUNCE_MS = 30;
 
@@ -73,21 +76,22 @@ export function useFastCommand() {
     [fireCommand]
   );
 
-  // Mouse scroll - batched like mouse move for smooth scrolling
+  // Scroll: Batch at 50ms with accumulation and threshold
   const scrollAccumulator = useRef(0);
   const scrollTimerRef = useRef<number | null>(null);
-  const SCROLL_BATCH_MS = 16; // ~60fps batching
+  const SCROLL_BATCH_MS = 50;
+  const SCROLL_THRESHOLD = 3;
 
   const fireScroll = useCallback(
     (deltaY: number) => {
-      // Invert and scale for natural scrolling feel
-      scrollAccumulator.current += deltaY * -0.5;
+      // Natural scroll direction
+      scrollAccumulator.current += deltaY * -0.3;
 
       if (scrollTimerRef.current !== null) return;
 
       scrollTimerRef.current = window.setTimeout(() => {
         const amount = Math.round(scrollAccumulator.current);
-        if (Math.abs(amount) > 0) {
+        if (Math.abs(amount) >= SCROLL_THRESHOLD) {
           fireCommand("mouse_scroll", { amount });
         }
         scrollAccumulator.current = 0;
@@ -97,27 +101,26 @@ export function useFastCommand() {
     [fireCommand]
   );
 
-  // Pinch-to-zoom - batched for smooth zooming
+  // Pinch-to-zoom: Batch at 100ms, single command
   const zoomAccumulator = useRef(0);
   const zoomTimerRef = useRef<number | null>(null);
-  const ZOOM_BATCH_MS = 16; // ~60fps batching
+  const ZOOM_BATCH_MS = 100;
+  const ZOOM_THRESHOLD = 0.05;
 
   const fireZoom = useCallback(
     (delta: number) => {
-      // delta > 0 = zoom in, delta < 0 = zoom out
       zoomAccumulator.current += delta;
 
       if (zoomTimerRef.current !== null) return;
 
       zoomTimerRef.current = window.setTimeout(() => {
         const amount = zoomAccumulator.current;
-        if (Math.abs(amount) > 0.01) {
-          // Send zoom command - positive = zoom in (ctrl+plus), negative = zoom out (ctrl+minus)
-          const zoomType = amount > 0 ? "zoom_in" : "zoom_out";
-          const steps = Math.min(Math.abs(Math.round(amount * 5)), 10); // Cap at 10 steps
-          for (let i = 0; i < steps; i++) {
-            fireCommand("key_combo", { keys: ["ctrl", zoomType === "zoom_in" ? "+" : "-"] });
-          }
+        if (Math.abs(amount) >= ZOOM_THRESHOLD) {
+          // Single zoom command instead of multiple key_combo calls
+          fireCommand("pinch_zoom", { 
+            direction: amount > 0 ? "in" : "out",
+            steps: Math.min(Math.ceil(Math.abs(amount) * 3), 5)
+          });
         }
         zoomAccumulator.current = 0;
         zoomTimerRef.current = null;
@@ -131,5 +134,24 @@ export function useFastCommand() {
     fireCommand("key_combo", { keys: ["ctrl", "0"] });
   }, [fireCommand]);
 
-  return { fireCommand, fireMouse, fireKey, fireScroll, fireZoom, fireZoomReset };
+  // 3-finger gesture: Show Desktop
+  const fireGesture3Finger = useCallback(() => {
+    fireCommand("gesture_3_finger", {});
+  }, [fireCommand]);
+
+  // 4-finger swipe: Virtual desktop switch
+  const fireGesture4Finger = useCallback((direction: "left" | "right") => {
+    fireCommand("gesture_4_finger", { direction });
+  }, [fireCommand]);
+
+  return { 
+    fireCommand, 
+    fireMouse, 
+    fireKey, 
+    fireScroll, 
+    fireZoom, 
+    fireZoomReset,
+    fireGesture3Finger,
+    fireGesture4Finger,
+  };
 }

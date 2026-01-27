@@ -104,6 +104,10 @@ The local P2P server is enabled by default and runs on `0.0.0.0:9876`.
 | `key_combo` | `{keys: ["ctrl","c"]}` | Key combination |
 | `mouse_move` | `{x, y, relative}` | Move cursor |
 | `mouse_click` | `{button, clicks}` | Click mouse |
+| `mouse_scroll` | `{amount: number}` | Scroll wheel |
+| `pinch_zoom` | `{direction: "in"/"out", steps}` | Zoom in/out (Ctrl+/Ctrl-) |
+| `gesture_3_finger` | - | Show desktop (Win+D) |
+| `gesture_4_finger` | `{direction: "left"/"right"}` | Switch virtual desktop |
 | `open_app` | `{app_name: "chrome"}` | Open application |
 | `play_music` | `{query: "song"}` | Search YouTube Music |
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,12 +15,14 @@ import {
   Zap,
   Wifi,
   Cloud,
+  Hand,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useP2PCommand } from "@/hooks/useP2PCommand";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { useGestureInput } from "@/hooks/useGestureInput";
 
 interface RemoteInputPanelProps {
   className?: string;
@@ -31,7 +33,17 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { selectedDevice } = useDeviceContext();
-  const { fireMouse, fireKey, fireClick, fireScroll, connectionMode, latency, networkState } = useP2PCommand();
+  const { 
+    fireMouse, 
+    fireKey, 
+    fireClick, 
+    fireScroll, 
+    fireZoom,
+    fireGesture3Finger,
+    fireGesture4Finger,
+    connectionMode, 
+    latency 
+  } = useP2PCommand();
 
   const getModeIcon = () => {
     switch (connectionMode) {
@@ -56,11 +68,18 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
   const [textInput, setTextInput] = useState("");
   const [isExpanded, setIsExpanded] = useState(!compact);
 
-  const trackpadRef = useRef<HTMLDivElement>(null);
-  const lastPosition = useRef({ x: 0, y: 0 });
-  const lastTouchTime = useRef(0);
-
   const isConnected = selectedDevice?.is_online || false;
+
+  // Gesture handlers using the new gesture detection hook
+  const gestureInput = useGestureInput({
+    onMouseMove: fireMouse,
+    onScroll: fireScroll,
+    onPinchZoom: fireZoom,
+    onGesture3Finger: fireGesture3Finger,
+    onGesture4FingerLeft: () => fireGesture4Finger("left"),
+    onGesture4FingerRight: () => fireGesture4Finger("right"),
+    onClick: fireClick,
+  });
 
   const quickKeys = [
     { label: "Enter", key: "enter" },
@@ -73,51 +92,13 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
     { label: "Win", key: "win" },
   ];
 
-  // Trackpad handlers
-  const handleTrackpadStart = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    const point = "touches" in e ? e.touches[0] : e;
-    lastPosition.current = { x: point.clientX, y: point.clientY };
-    lastTouchTime.current = Date.now();
-  }, []);
-
-  const handleTrackpadMove = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    // Only process if actively dragging
-    if ("buttons" in e && e.buttons !== 1) {
-      if (!("touches" in e)) return;
-    }
-    const point = "touches" in e ? e.touches[0] : e;
-    const sensitivity = 2.5; // Reduced from 3 for smoother control
-    const deltaX = (point.clientX - lastPosition.current.x) * sensitivity;
-    const deltaY = (point.clientY - lastPosition.current.y) * sensitivity;
-    lastPosition.current = { x: point.clientX, y: point.clientY };
-    
-    // Higher threshold to reduce micro-movements
-    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
-      fireMouse(deltaX, deltaY);
-    }
-  }, [fireMouse]);
-
-  const handleTrackpadEnd = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    const elapsed = Date.now() - lastTouchTime.current;
-    // Quick tap = click
-    if (elapsed < 200) {
-      fireClick("left");
-    }
-  }, [fireClick]);
-
-  // Scroll handler
-  const handleScroll = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    fireScroll(e.deltaY);
-  }, [fireScroll]);
-
   // Send text
-  const sendText = useCallback(() => {
+  const sendText = () => {
     if (!textInput.trim()) return;
     sendCommand("type_text", { text: textInput });
     setTextInput("");
     toast({ title: "Text sent" });
-  }, [textInput, sendCommand, toast]);
+  };
 
   if (compact && !isExpanded) {
     return (
@@ -132,6 +113,7 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
                   variant="outline" 
                   className={cn(
                     "text-[10px] px-1.5 py-0 gap-1",
+                    connectionMode === "local_p2p" && "border-emerald-500/30 text-emerald-400",
                     connectionMode === "p2p" && "border-green-500/30 text-green-400",
                     connectionMode === "websocket" && "border-blue-500/30 text-blue-400",
                     connectionMode === "fallback" && "border-yellow-500/30 text-yellow-400"
@@ -162,6 +144,7 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
                 variant="outline" 
                 className={cn(
                   "text-[10px] px-1.5 py-0 gap-1",
+                  connectionMode === "local_p2p" && "border-emerald-500/30 text-emerald-400",
                   connectionMode === "p2p" && "border-green-500/30 text-green-400",
                   connectionMode === "websocket" && "border-blue-500/30 text-blue-400",
                   connectionMode === "fallback" && "border-yellow-500/30 text-yellow-400"
@@ -181,19 +164,20 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
       </CardHeader>
 
       <CardContent className="p-4 pt-0 space-y-3">
-        {/* Trackpad */}
+        {/* Trackpad with gesture support */}
         <div
-          ref={trackpadRef}
-          className="aspect-[16/9] bg-muted/30 rounded-lg border border-dashed border-border/60 cursor-crosshair flex items-center justify-center select-none touch-none"
-          onMouseDown={handleTrackpadStart}
-          onMouseMove={handleTrackpadMove}
-          onMouseUp={handleTrackpadEnd}
-          onTouchStart={handleTrackpadStart}
-          onTouchMove={handleTrackpadMove}
-          onTouchEnd={handleTrackpadEnd}
-          onWheel={handleScroll}
+          className="aspect-[16/9] bg-muted/30 rounded-lg border border-dashed border-border/60 cursor-crosshair flex flex-col items-center justify-center select-none touch-none relative overflow-hidden"
+          {...gestureInput.touchHandlers}
+          {...gestureInput.mouseHandlers}
+          onWheel={gestureInput.wheelHandler}
         >
           <Mouse className="w-6 h-6 text-muted-foreground/30" />
+          <div className="absolute bottom-2 left-2 right-2">
+            <div className="flex items-center justify-center gap-1 text-[9px] text-muted-foreground/50">
+              <Hand className="w-3 h-3" />
+              <span>1 tap=click • 2 tap=right • 2f=scroll • pinch=zoom • 3f↓=desktop • 4f↔=switch</span>
+            </div>
+          </div>
         </div>
 
         {/* Mouse buttons */}
