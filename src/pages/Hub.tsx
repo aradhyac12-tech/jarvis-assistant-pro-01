@@ -53,14 +53,15 @@ import { supabase } from "@/integrations/supabase/client";
 import { Link } from "react-router-dom";
 import { ZoomMeetings } from "@/components/ZoomMeetings";
 import { BoostPC } from "@/components/BoostPC";
-import { NotificationSync } from "@/components/NotificationSync";
-import { CallControls } from "@/components/CallControls";
+import { NotificationSyncMinimal } from "@/components/NotificationSyncMinimal";
+import { CallControlsMinimal } from "@/components/CallControlsMinimal";
 import { ClipboardSync } from "@/components/ClipboardSync";
 import { FileTransfer } from "@/components/FileTransfer";
 import { MediaSyncPanel } from "@/components/MediaSyncPanel";
 import { RemoteInputPanel } from "@/components/RemoteInputPanel";
 import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
 import { NetworkStatusBadge } from "@/components/NetworkStatusBadge";
+import { ClawdBotPanel } from "@/components/ClawdBotPanel";
 
 type Tab = "control" | "remote" | "media" | "tools";
 
@@ -536,10 +537,11 @@ export default function Hub() {
             {/* Tools Tab */}
             {activeTab === "tools" && (
               <div className="grid gap-4 md:grid-cols-2">
+                <ClawdBotPanel />
+                <NotificationSyncMinimal />
+                <CallControlsMinimal />
                 <BoostPC />
-                <FileTransfer />
-                <NotificationSync />
-                <CallControls />
+                <FileTransfer className="md:col-span-2" />
               </div>
             )}
 
