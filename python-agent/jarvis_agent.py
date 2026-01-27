@@ -2810,6 +2810,49 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    def _pinch_zoom(self, direction: str, steps: int = 1):
+        """Handle pinch-to-zoom gesture by sending Ctrl+Plus/Minus."""
+        try:
+            key = "+" if direction == "in" else "-"
+            for _ in range(min(steps, 10)):  # Cap at 10 steps
+                pyautogui.hotkey("ctrl", key)
+            return {"success": True, "direction": direction, "steps": steps}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _gesture_3_finger(self):
+        """3-finger gesture: Show Desktop (Win+D on Windows)."""
+        try:
+            if platform.system() == "Windows":
+                pyautogui.hotkey("win", "d")
+            elif platform.system() == "Darwin":
+                # macOS: F11 for Show Desktop
+                pyautogui.press("f11")
+            else:
+                # Linux: Super+D is common
+                pyautogui.hotkey("super", "d")
+            return {"success": True, "action": "show_desktop"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _gesture_4_finger(self, direction: str):
+        """4-finger swipe: Switch virtual desktops (Ctrl+Win+Arrow on Windows)."""
+        try:
+            if platform.system() == "Windows":
+                arrow = "right" if direction == "right" else "left"
+                pyautogui.hotkey("ctrl", "win", arrow)
+            elif platform.system() == "Darwin":
+                # macOS: Ctrl+Left/Right for spaces
+                arrow = "right" if direction == "right" else "left"
+                pyautogui.hotkey("ctrl", arrow)
+            else:
+                # Linux: Ctrl+Alt+Arrow is common
+                arrow = "right" if direction == "right" else "left"
+                pyautogui.hotkey("ctrl", "alt", arrow)
+            return {"success": True, "action": "switch_desktop", "direction": direction}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
     def _get_clipboard(self) -> Dict[str, Any]:
         try:
             import pyperclip
@@ -3622,8 +3665,17 @@ class JarvisAgent:
                 )
             elif command_type == "mouse_scroll":
                 return self._mouse_scroll(payload.get("amount", 0))
-
-            # Clipboard
+            
+            # Gesture controls
+            elif command_type == "pinch_zoom":
+                return self._pinch_zoom(
+                    payload.get("direction", "in"),
+                    payload.get("steps", 1)
+                )
+            elif command_type == "gesture_3_finger":
+                return self._gesture_3_finger()
+            elif command_type == "gesture_4_finger":
+                return self._gesture_4_finger(payload.get("direction", "right"))
             elif command_type == "get_clipboard":
                 return self._get_clipboard()
             elif command_type == "set_clipboard":
