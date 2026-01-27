@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
 import {
   Video,
   Link2,
@@ -19,6 +20,14 @@ import {
   ExternalLink,
   Star,
   X,
+  Mic,
+  MicOff,
+  Camera,
+  CameraOff,
+  Calendar,
+  Image,
+  CheckCircle,
+  AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -34,14 +43,41 @@ interface SavedMeeting {
   meeting_link: string | null;
   last_used_at: string | null;
   created_at: string;
+  // New scheduling fields
+  auto_join_enabled?: boolean;
+  scheduled_time?: string | null;
+  scheduled_days?: string[];
+  mute_audio?: boolean;
+  mute_video?: boolean;
+  take_screenshot?: boolean;
+  next_scheduled_at?: string | null;
+}
+
+interface MeetingJoinLog {
+  id: string;
+  meeting_id: string;
+  joined_at: string;
+  screenshot_url: string | null;
+  status: string;
+  auto_joined: boolean;
 }
 
 interface ZoomMeetingsProps {
   className?: string;
 }
 
+const DAYS_OF_WEEK = [
+  { id: "sunday", label: "Sun" },
+  { id: "monday", label: "Mon" },
+  { id: "tuesday", label: "Tue" },
+  { id: "wednesday", label: "Wed" },
+  { id: "thursday", label: "Thu" },
+  { id: "friday", label: "Fri" },
+  { id: "saturday", label: "Sat" },
+];
+
 export function ZoomMeetings({ className }: ZoomMeetingsProps) {
-  const [activeTab, setActiveTab] = useState<"join" | "saved">("join");
+  const [activeTab, setActiveTab] = useState<"join" | "saved" | "schedule">("join");
   
   // Join form state
   const [joinMethod, setJoinMethod] = useState<"link" | "id">("link");
@@ -51,18 +87,31 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
   const [saveMeeting, setSaveMeeting] = useState(false);
   const [meetingName, setMeetingName] = useState("");
   
+  // Join options
+  const [muteAudio, setMuteAudio] = useState(true);
+  const [muteVideo, setMuteVideo] = useState(true);
+  const [takeScreenshot, setTakeScreenshot] = useState(true);
+  
   // Saved meetings
   const [savedMeetings, setSavedMeetings] = useState<SavedMeeting[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isJoining, setIsJoining] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   
+  // Screenshot preview
+  const [lastScreenshot, setLastScreenshot] = useState<string | null>(null);
+  
+  // Schedule editing
+  const [editingSchedule, setEditingSchedule] = useState<string | null>(null);
+  const [scheduleTime, setScheduleTime] = useState("09:00");
+  const [scheduleDays, setScheduleDays] = useState<string[]>([]);
+  
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
 
   // Fetch saved meetings
-  const fetchSavedMeetings = async () => {
+  const fetchSavedMeetings = useCallback(async () => {
     setIsLoading(true);
     try {
       const { data, error } = await supabase
@@ -76,11 +125,11 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
       console.error("Failed to fetch meetings:", err);
     }
     setIsLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
     fetchSavedMeetings();
-  }, []);
+  }, [fetchSavedMeetings]);
 
   // Extract meeting ID from Zoom link
   const extractMeetingInfo = (link: string) => {
@@ -91,16 +140,27 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
     return null;
   };
 
-  // Join meeting
+  // Join meeting with enhanced options
   const handleJoinMeeting = async (meeting?: SavedMeeting) => {
     const joinId = meeting?.id || "new";
     setIsJoining(joinId);
+    setLastScreenshot(null);
     
     try {
-      let payload: { meeting_id?: string; password?: string; meeting_link?: string } = {};
+      let payload: {
+        meeting_id?: string;
+        password?: string;
+        meeting_link?: string;
+        mute_audio: boolean;
+        mute_video: boolean;
+        take_screenshot: boolean;
+      } = {
+        mute_audio: meeting?.mute_audio ?? muteAudio,
+        mute_video: meeting?.mute_video ?? muteVideo,
+        take_screenshot: meeting?.take_screenshot ?? takeScreenshot,
+      };
       
       if (meeting) {
-        // Joining from saved meeting
         if (meeting.meeting_link) {
           payload.meeting_link = meeting.meeting_link;
         } else if (meeting.meeting_id) {
@@ -110,7 +170,6 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
           }
         }
       } else {
-        // Joining from form
         if (joinMethod === "link" && meetingLink) {
           payload.meeting_link = meetingLink;
         } else if (joinMethod === "id" && meetingId) {
@@ -131,13 +190,35 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         return;
       }
       
-      const res = await sendCommand("join_zoom", payload, { awaitResult: true, timeoutMs: 10000 });
+      // Extended timeout for screenshot
+      const res = await sendCommand("join_zoom", payload, { 
+        awaitResult: true, 
+        timeoutMs: payload.take_screenshot ? 20000 : 10000 
+      });
       
       if (res.success) {
+        const result = res as any;
+        
         toast({
-          title: "Joining Zoom",
-          description: "Opening Zoom meeting on your PC...",
+          title: "Joined Zoom Meeting",
+          description: `Audio: ${result.muted_audio ? "Muted" : "On"}, Video: ${result.muted_video ? "Off" : "On"}`,
         });
+        
+        // Log the join (using any type since table was just created)
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            await (supabase.from("meeting_join_logs" as any) as any).insert({
+              meeting_id: meeting?.id || null,
+              user_id: user.id,
+              status: "joined",
+              auto_joined: false,
+              screenshot_url: result.screenshot_path || null,
+            });
+          }
+        } catch (logErr) {
+          console.debug("Failed to log join:", logErr);
+        }
         
         // Update last_used_at for saved meeting
         if (meeting) {
@@ -151,6 +232,15 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         // Save meeting if requested
         if (!meeting && saveMeeting && meetingName.trim()) {
           await saveMeetingToDb();
+        }
+        
+        // Show screenshot indicator
+        if (result.screenshot || result.screenshot_path) {
+          setLastScreenshot(result.screenshot_path || "captured");
+          toast({
+            title: "Screenshot Captured",
+            description: "Meeting screenshot saved successfully",
+          });
         }
         
         // Clear form
@@ -205,11 +295,13 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         user_id: user.id,
         meeting_name: meetingName.trim(),
         device_id: session?.device_id || null,
+        mute_audio: muteAudio,
+        mute_video: muteVideo,
+        take_screenshot: takeScreenshot,
       };
       
       if (joinMethod === "link" && meetingLink) {
         meetingData.meeting_link = meetingLink;
-        // Also extract ID if present
         const extracted = extractMeetingInfo(meetingLink);
         if (extracted) {
           meetingData.meeting_id = extracted.id;
@@ -228,7 +320,7 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
       
       toast({
         title: "Meeting saved",
-        description: `"${meetingName}" saved for quick access`,
+        description: `"${meetingName}" saved with your preferences`,
       });
       
       fetchSavedMeetings();
@@ -243,6 +335,49 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
       });
     }
     setIsSaving(false);
+  };
+
+  // Update meeting schedule
+  const updateMeetingSchedule = async (meetingId: string, enabled: boolean, time?: string, days?: string[]) => {
+    try {
+      const updateData: any = {
+        auto_join_enabled: enabled,
+      };
+      
+      if (time !== undefined) updateData.scheduled_time = time || null;
+      if (days !== undefined) updateData.scheduled_days = days;
+      
+      const { error } = await supabase
+        .from("saved_meetings")
+        .update(updateData)
+        .eq("id", meetingId);
+      
+      if (error) throw error;
+      
+      toast({
+        title: enabled ? "Schedule Enabled" : "Schedule Disabled",
+        description: enabled ? "Meeting will auto-join at scheduled time" : "Auto-join disabled",
+      });
+      
+      fetchSavedMeetings();
+      setEditingSchedule(null);
+    } catch (err) {
+      console.error("Schedule update error:", err);
+      toast({
+        title: "Update failed",
+        description: "Could not update schedule",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Toggle day in schedule
+  const toggleDay = (day: string) => {
+    setScheduleDays(prev => 
+      prev.includes(day) 
+        ? prev.filter(d => d !== day)
+        : [...prev, day]
+    );
   };
 
   // Delete saved meeting
@@ -266,25 +401,47 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
     return date.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   };
 
+  const formatNextSchedule = (meeting: SavedMeeting) => {
+    if (!meeting.auto_join_enabled || !meeting.next_scheduled_at) return null;
+    const next = new Date(meeting.next_scheduled_at);
+    const now = new Date();
+    const diffMs = next.getTime() - now.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 60) return `in ${diffMins}m`;
+    if (diffMins < 1440) return `in ${Math.floor(diffMins / 60)}h`;
+    return next.toLocaleDateString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  };
+
   return (
     <Card className={cn("glass-dark border-border/50", className)}>
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-lg">
           <Video className="h-5 w-5 text-primary" />
           Zoom Meetings
+          {lastScreenshot && (
+            <Badge variant="outline" className="ml-auto gap-1 text-green-400 border-green-500/30">
+              <Image className="h-3 w-3" />
+              Screenshot saved
+            </Badge>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "join" | "saved")}>
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="join">Join Meeting</TabsTrigger>
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="join">Join</TabsTrigger>
             <TabsTrigger value="saved">
               Saved
               {savedMeetings.length > 0 && (
-                <Badge variant="secondary" className="ml-2 text-xs">
+                <Badge variant="secondary" className="ml-1 text-xs h-5 w-5 p-0 flex items-center justify-center">
                   {savedMeetings.length}
                 </Badge>
               )}
+            </TabsTrigger>
+            <TabsTrigger value="schedule">
+              <Calendar className="h-3 w-3 mr-1" />
+              Schedule
             </TabsTrigger>
           </TabsList>
 
@@ -298,7 +455,7 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                 className={cn(joinMethod === "link" && "gradient-primary")}
               >
                 <Link2 className="h-4 w-4 mr-2" />
-                Meeting Link
+                Link
               </Button>
               <Button
                 variant={joinMethod === "id" ? "default" : "secondary"}
@@ -307,7 +464,7 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                 className={cn(joinMethod === "id" && "gradient-primary")}
               >
                 <Key className="h-4 w-4 mr-2" />
-                Meeting ID
+                ID
               </Button>
             </div>
 
@@ -344,6 +501,37 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                 </div>
               </div>
             )}
+
+            {/* Join options */}
+            <div className="grid grid-cols-3 gap-2 p-3 rounded-lg bg-secondary/30">
+              <Button
+                variant={muteAudio ? "default" : "outline"}
+                size="sm"
+                onClick={() => setMuteAudio(!muteAudio)}
+                className={cn("h-auto py-2 flex-col gap-1", muteAudio && "bg-red-500/20 text-red-400 border-red-500/30")}
+              >
+                {muteAudio ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                <span className="text-[10px]">{muteAudio ? "Mic Off" : "Mic On"}</span>
+              </Button>
+              <Button
+                variant={muteVideo ? "default" : "outline"}
+                size="sm"
+                onClick={() => setMuteVideo(!muteVideo)}
+                className={cn("h-auto py-2 flex-col gap-1", muteVideo && "bg-red-500/20 text-red-400 border-red-500/30")}
+              >
+                {muteVideo ? <CameraOff className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
+                <span className="text-[10px]">{muteVideo ? "Cam Off" : "Cam On"}</span>
+              </Button>
+              <Button
+                variant={takeScreenshot ? "default" : "outline"}
+                size="sm"
+                onClick={() => setTakeScreenshot(!takeScreenshot)}
+                className={cn("h-auto py-2 flex-col gap-1", takeScreenshot && "bg-green-500/20 text-green-400 border-green-500/30")}
+              >
+                <Image className="h-4 w-4" />
+                <span className="text-[10px]">{takeScreenshot ? "Screenshot" : "No SS"}</span>
+              </Button>
+            </div>
 
             {/* Save option */}
             <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/30">
@@ -406,8 +594,11 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                       key={meeting.id}
                       className="flex items-center gap-3 p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-colors"
                     >
-                      <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                      <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 relative">
                         <Video className="h-5 w-5 text-primary" />
+                        {meeting.auto_join_enabled && (
+                          <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-background" />
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-sm truncate">{meeting.meeting_name}</p>
@@ -415,6 +606,16 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                           <Clock className="h-3 w-3" />
                           {formatDate(meeting.last_used_at)}
                         </div>
+                        {meeting.auto_join_enabled && (
+                          <Badge variant="outline" className="mt-1 text-[10px] text-green-400 border-green-500/30">
+                            Next: {formatNextSchedule(meeting)}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {meeting.mute_audio && <MicOff className="h-3 w-3 text-red-400" />}
+                        {meeting.mute_video && <CameraOff className="h-3 w-3 text-red-400" />}
+                        {meeting.take_screenshot && <Image className="h-3 w-3 text-green-400" />}
                       </div>
                       <div className="flex gap-1">
                         <Button
@@ -444,6 +645,125 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                 </div>
               </ScrollArea>
             )}
+          </TabsContent>
+
+          <TabsContent value="schedule" className="mt-4 space-y-4">
+            {savedMeetings.length === 0 ? (
+              <div className="text-center py-8">
+                <Calendar className="h-10 w-10 text-muted-foreground mx-auto mb-3 opacity-50" />
+                <p className="text-muted-foreground text-sm">No meetings to schedule</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Save a meeting first to set up auto-join
+                </p>
+              </div>
+            ) : (
+              <ScrollArea className="h-[350px]">
+                <div className="space-y-3 pr-4">
+                  {savedMeetings.map((meeting) => (
+                    <div key={meeting.id} className="p-3 rounded-lg bg-secondary/30 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Video className="h-4 w-4 text-primary" />
+                          <span className="font-medium text-sm">{meeting.meeting_name}</span>
+                        </div>
+                        <Switch
+                          checked={meeting.auto_join_enabled || false}
+                          onCheckedChange={(checked) => {
+                            if (checked && (!meeting.scheduled_time || !meeting.scheduled_days?.length)) {
+                              setEditingSchedule(meeting.id);
+                              setScheduleTime(meeting.scheduled_time || "09:00");
+                              setScheduleDays(meeting.scheduled_days || []);
+                            } else {
+                              updateMeetingSchedule(meeting.id, checked);
+                            }
+                          }}
+                        />
+                      </div>
+                      
+                      {(editingSchedule === meeting.id || meeting.auto_join_enabled) && (
+                        <div className="space-y-3 pt-2 border-t border-border/50">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-xs w-12">Time:</Label>
+                            <Input
+                              type="time"
+                              value={editingSchedule === meeting.id ? scheduleTime : (meeting.scheduled_time || "09:00")}
+                              onChange={(e) => setScheduleTime(e.target.value)}
+                              disabled={editingSchedule !== meeting.id && meeting.auto_join_enabled}
+                              className="h-8 text-xs flex-1"
+                            />
+                          </div>
+                          
+                          <div className="space-y-1">
+                            <Label className="text-xs">Days:</Label>
+                            <div className="flex gap-1">
+                              {DAYS_OF_WEEK.map((day) => {
+                                const isActive = editingSchedule === meeting.id 
+                                  ? scheduleDays.includes(day.id)
+                                  : meeting.scheduled_days?.includes(day.id);
+                                return (
+                                  <Button
+                                    key={day.id}
+                                    variant={isActive ? "default" : "outline"}
+                                    size="sm"
+                                    className={cn(
+                                      "h-7 w-9 p-0 text-[10px]",
+                                      isActive && "bg-primary text-primary-foreground"
+                                    )}
+                                    onClick={() => {
+                                      if (editingSchedule === meeting.id) {
+                                        toggleDay(day.id);
+                                      }
+                                    }}
+                                    disabled={editingSchedule !== meeting.id && meeting.auto_join_enabled}
+                                  >
+                                    {day.label}
+                                  </Button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          
+                          {editingSchedule === meeting.id && (
+                            <div className="flex gap-2 pt-2">
+                              <Button
+                                size="sm"
+                                onClick={() => updateMeetingSchedule(meeting.id, true, scheduleTime, scheduleDays)}
+                                disabled={scheduleDays.length === 0}
+                                className="flex-1"
+                              >
+                                <CheckCircle className="h-3 w-3 mr-1" />
+                                Save Schedule
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setEditingSchedule(null)}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          )}
+                          
+                          {meeting.auto_join_enabled && meeting.next_scheduled_at && editingSchedule !== meeting.id && (
+                            <div className="flex items-center gap-2 text-xs text-green-400">
+                              <CheckCircle className="h-3 w-3" />
+                              Next: {formatNextSchedule(meeting)}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
+            
+            <div className="p-3 rounded-lg bg-muted/50 text-xs text-muted-foreground">
+              <p className="flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" />
+                Scheduled meetings will auto-join with mic/camera off and take a screenshot
+              </p>
+            </div>
           </TabsContent>
         </Tabs>
       </CardContent>

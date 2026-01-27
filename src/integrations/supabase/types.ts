@@ -300,7 +300,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      calculate_next_meeting_time: {
+        Args: { p_scheduled_days: string[]; p_scheduled_time: string }
+        Returns: string
+      }
     }
     Enums: {
       [_ in never]: never
