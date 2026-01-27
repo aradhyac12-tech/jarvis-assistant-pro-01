@@ -175,9 +175,16 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
           <div className="absolute bottom-2 left-2 right-2">
             <div className="flex items-center justify-center gap-1 text-[9px] text-muted-foreground/50">
               <Hand className="w-3 h-3" />
-              <span>1 tap=click • 2 tap=right • 2f=scroll • pinch=zoom • 3f↓=desktop • 4f↔=switch</span>
+              <span>1tap=click • 2tap=right • 2f=scroll • pinch=zoom • 3f↓=desktop • 4f↔=switch</span>
             </div>
           </div>
+          {gestureInput.haptics.isSupported && (
+            <div className="absolute top-2 right-2">
+              <Badge variant="outline" className="text-[8px] px-1 py-0 border-primary/30 text-primary/60">
+                Haptic
+              </Badge>
+            </div>
+          )}
         </div>
 
         {/* Mouse buttons */}

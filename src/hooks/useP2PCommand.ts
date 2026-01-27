@@ -5,6 +5,7 @@ import { useFastCommand } from "@/hooks/useFastCommand";
 import { getFunctionsWsBase } from "@/lib/relay";
 import { useNetworkMonitor, NetworkInfo } from "@/hooks/useNetworkMonitor";
 import { useLocalP2P } from "@/hooks/useLocalP2P";
+import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
 export type ConnectionMode = "local_p2p" | "p2p" | "websocket" | "fallback" | "disconnected";
 
@@ -14,13 +15,17 @@ export type ConnectionMode = "local_p2p" | "p2p" | "websocket" | "fallback" | "d
  * - Same network: WebRTC P2P (5-10ms latency)
  * - Different network: WebSocket direct (20-50ms latency)
  * - Fallback: Supabase edge function (50-100ms latency)
+ * 
+ * OPTIMIZED: Uses requestAnimationFrame for 60fps mouse input,
+ * velocity-based acceleration, and haptic feedback.
  */
 export function useP2PCommand() {
   const { session } = useDeviceSession();
   const { selectedDevice } = useDeviceContext();
   const { fireCommand: fallbackCommand } = useFastCommand();
-  const networkMonitor = useNetworkMonitor(2000); // Check every 2 seconds
+  const networkMonitor = useNetworkMonitor(5000); // Check every 5 seconds (reduced from 2s)
   const localP2P = useLocalP2P(); // Local P2P WebSocket server
+  const haptics = useHapticFeedback();
   
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("disconnected");
   const [latency, setLatency] = useState(0);
@@ -33,12 +38,15 @@ export function useP2PCommand() {
   const reconnectTimer = useRef<number | null>(null);
   const lastPingRef = useRef<number>(0);
   const pingIntervalRef = useRef<number | null>(null);
-  const mouseAccumulator = useRef({ x: 0, y: 0 });
-  const mouseTimerRef = useRef<number | null>(null);
-  const scrollAccumulator = useRef(0);
-  const scrollTimerRef = useRef<number | null>(null);
-  const zoomAccumulator = useRef(0);
-  const zoomTimerRef = useRef<number | null>(null);
+  
+  // RAF-based mouse batching for 60fps smooth input
+  const mouseAccumulator = useRef({ x: 0, y: 0, lastSend: 0 });
+  const mouseRafRef = useRef<number | null>(null);
+  const scrollAccumulator = useRef({ delta: 0, lastSend: 0 });
+  const scrollRafRef = useRef<number | null>(null);
+  const zoomAccumulator = useRef({ delta: 0, lastSend: 0 });
+  const zoomRafRef = useRef<number | null>(null);
+  
   const connectionAttempts = useRef(0);
   const maxAttempts = 3;
   const isUpgradingRef = useRef(false);
@@ -414,72 +422,97 @@ export function useP2PCommand() {
     fallbackCommand(commandType, payload);
   }, [fallbackCommand, localP2P]);
 
-  // ============ OPTIMIZED INPUT BATCHING ============
-  // Coalesce rapid inputs to prevent command spam (KDE Connect style)
+  // ============ ULTRA-SMOOTH RAF-BASED INPUT BATCHING ============
+  // Uses requestAnimationFrame for 60fps mouse updates (KDE Connect style)
   
-  // Mouse: Batch at 32ms (~30fps) with higher threshold
-  const MOUSE_BATCH_MS = 32;
-  const MOUSE_THRESHOLD = 2;
+  // Mouse: RAF-based batching for maximum smoothness
+  const MOUSE_THRESHOLD = 1.5;
+  const MOUSE_MIN_INTERVAL_MS = 16; // ~60fps
   
   const fireMouse = useCallback((deltaX: number, deltaY: number) => {
     mouseAccumulator.current.x += deltaX;
     mouseAccumulator.current.y += deltaY;
 
-    if (mouseTimerRef.current !== null) return;
+    // Use RAF for smooth 60fps updates
+    if (mouseRafRef.current !== null) return;
 
-    mouseTimerRef.current = window.setTimeout(() => {
-      const { x, y } = mouseAccumulator.current;
-      // Only send if movement exceeds threshold
-      if (Math.abs(x) >= MOUSE_THRESHOLD || Math.abs(y) >= MOUSE_THRESHOLD) {
-        fireCommand("mouse_move", { x: Math.round(x), y: Math.round(y), relative: true });
+    mouseRafRef.current = requestAnimationFrame(() => {
+      const now = performance.now();
+      const elapsed = now - mouseAccumulator.current.lastSend;
+      
+      // Only send if enough time passed and movement exceeds threshold
+      if (elapsed >= MOUSE_MIN_INTERVAL_MS) {
+        const { x, y } = mouseAccumulator.current;
+        if (Math.abs(x) >= MOUSE_THRESHOLD || Math.abs(y) >= MOUSE_THRESHOLD) {
+          // Apply subtle acceleration for large movements
+          const magnitude = Math.sqrt(x * x + y * y);
+          const accel = magnitude > 20 ? 1.15 : 1.0;
+          
+          fireCommand("mouse_move", { 
+            x: Math.round(x * accel), 
+            y: Math.round(y * accel), 
+            relative: true 
+          });
+        }
+        mouseAccumulator.current = { x: 0, y: 0, lastSend: now };
       }
-      mouseAccumulator.current = { x: 0, y: 0 };
-      mouseTimerRef.current = null;
-    }, MOUSE_BATCH_MS);
+      mouseRafRef.current = null;
+    });
   }, [fireCommand]);
 
-  // Scroll: Batch at 50ms with accumulation
-  const SCROLL_BATCH_MS = 50;
-  const SCROLL_THRESHOLD = 3;
-
+  // Scroll: RAF-based with smooth accumulation
+  const SCROLL_THRESHOLD = 2;
+  const SCROLL_MIN_INTERVAL_MS = 32; // ~30fps for scroll
+  
   const fireScroll = useCallback((deltaY: number) => {
     // Natural scroll direction, scaled appropriately
-    scrollAccumulator.current += deltaY * -0.3;
+    scrollAccumulator.current.delta += deltaY * -0.3;
 
-    if (scrollTimerRef.current !== null) return;
+    if (scrollRafRef.current !== null) return;
 
-    scrollTimerRef.current = window.setTimeout(() => {
-      const amount = Math.round(scrollAccumulator.current);
-      if (Math.abs(amount) >= SCROLL_THRESHOLD) {
-        fireCommand("mouse_scroll", { amount });
+    scrollRafRef.current = requestAnimationFrame(() => {
+      const now = performance.now();
+      const elapsed = now - scrollAccumulator.current.lastSend;
+      
+      if (elapsed >= SCROLL_MIN_INTERVAL_MS) {
+        const amount = Math.round(scrollAccumulator.current.delta);
+        if (Math.abs(amount) >= SCROLL_THRESHOLD) {
+          fireCommand("mouse_scroll", { amount });
+          haptics.scroll();
+        }
+        scrollAccumulator.current = { delta: 0, lastSend: now };
       }
-      scrollAccumulator.current = 0;
-      scrollTimerRef.current = null;
-    }, SCROLL_BATCH_MS);
-  }, [fireCommand]);
+      scrollRafRef.current = null;
+    });
+  }, [fireCommand, haptics]);
 
-  // Pinch-to-zoom: Batch at 100ms, send single zoom command
-  const ZOOM_BATCH_MS = 100;
-  const ZOOM_THRESHOLD = 0.05;
-
+  // Pinch-to-zoom: Debounced with single command
+  const ZOOM_THRESHOLD = 0.04;
+  const ZOOM_MIN_INTERVAL_MS = 80;
+  
   const fireZoom = useCallback((delta: number) => {
-    zoomAccumulator.current += delta;
+    zoomAccumulator.current.delta += delta;
 
-    if (zoomTimerRef.current !== null) return;
+    if (zoomRafRef.current !== null) return;
 
-    zoomTimerRef.current = window.setTimeout(() => {
-      const amount = zoomAccumulator.current;
-      if (Math.abs(amount) >= ZOOM_THRESHOLD) {
-        // Send a single zoom command with direction and magnitude
-        fireCommand("pinch_zoom", { 
-          direction: amount > 0 ? "in" : "out",
-          steps: Math.min(Math.ceil(Math.abs(amount) * 3), 5)
-        });
+    zoomRafRef.current = requestAnimationFrame(() => {
+      const now = performance.now();
+      const elapsed = now - zoomAccumulator.current.lastSend;
+      
+      if (elapsed >= ZOOM_MIN_INTERVAL_MS) {
+        const amount = zoomAccumulator.current.delta;
+        if (Math.abs(amount) >= ZOOM_THRESHOLD) {
+          fireCommand("pinch_zoom", { 
+            direction: amount > 0 ? "in" : "out",
+            steps: Math.min(Math.ceil(Math.abs(amount) * 3), 5)
+          });
+          haptics.zoom();
+        }
+        zoomAccumulator.current = { delta: 0, lastSend: now };
       }
-      zoomAccumulator.current = 0;
-      zoomTimerRef.current = null;
-    }, ZOOM_BATCH_MS);
-  }, [fireCommand]);
+      zoomRafRef.current = null;
+    });
+  }, [fireCommand, haptics]);
 
   const fireKey = useCallback((key: string) => {
     if (key.includes("+")) {
@@ -488,21 +521,29 @@ export function useP2PCommand() {
     } else {
       fireCommand("press_key", { key: key.toLowerCase() });
     }
-  }, [fireCommand]);
+    haptics.tap();
+  }, [fireCommand, haptics]);
 
   const fireClick = useCallback((button: "left" | "right" | "middle" = "left") => {
     fireCommand("mouse_click", { button });
-  }, [fireCommand]);
+    if (button === "right") {
+      haptics.doubleTap();
+    } else {
+      haptics.tap();
+    }
+  }, [fireCommand, haptics]);
 
   // 3-finger gesture: Show Desktop (Win+D)
   const fireGesture3Finger = useCallback(() => {
     fireCommand("gesture_3_finger", {});
-  }, [fireCommand]);
+    haptics.gesture3Finger();
+  }, [fireCommand, haptics]);
 
   // 4-finger swipe: Virtual desktop switch
   const fireGesture4Finger = useCallback((direction: "left" | "right") => {
     fireCommand("gesture_4_finger", { direction });
-  }, [fireCommand]);
+    haptics.gesture4Finger();
+  }, [fireCommand, haptics]);
 
   // Manual P2P toggle
   const toggleAutoP2P = useCallback(() => {
@@ -525,6 +566,16 @@ export function useP2PCommand() {
   const forceLocalP2P = useCallback(() => {
     tryLocalP2PConnection();
   }, [tryLocalP2PConnection]);
+
+
+  // Cleanup RAF on unmount
+  useEffect(() => {
+    return () => {
+      if (mouseRafRef.current) cancelAnimationFrame(mouseRafRef.current);
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+      if (zoomRafRef.current) cancelAnimationFrame(zoomRafRef.current);
+    };
+  }, []);
 
   // Get effective latency based on current mode
   const effectiveLatency = connectionMode === "local_p2p" 
@@ -551,5 +602,6 @@ export function useP2PCommand() {
     forceLocalP2P,
     networkState: networkMonitor.networkState,
     localP2PState: localP2P.state,
+    haptics,
   };
 }
