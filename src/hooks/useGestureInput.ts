@@ -1,12 +1,15 @@
 import { useCallback, useRef } from "react";
+import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
 /**
  * Advanced gesture detection for multi-touch trackpad.
  * Handles:
- * - 1 finger: Mouse movement
+ * - 1 finger: Mouse movement (60fps RAF-based)
  * - 2 fingers: Scroll (vertical/horizontal) + Pinch-to-zoom
  * - 3 fingers: Minimize all (Win+D)
  * - 4 fingers left/right: Virtual desktop switch (Ctrl+Win+Left/Right)
+ * 
+ * Includes haptic feedback for gestures via Vibration API.
  */
 
 export interface GestureState {
@@ -35,16 +38,17 @@ interface GestureCallbacks {
   onClick: (button: "left" | "right") => void;
 }
 
-// Thresholds for gesture detection
-const MOVE_THRESHOLD = 3; // Min pixels before registering as intentional move
-const SCROLL_THRESHOLD = 5; // Min pixels for scroll
-const PINCH_THRESHOLD = 0.05; // Min scale change
-const SWIPE_THRESHOLD = 80; // Min horizontal pixels for 4-finger swipe
-const GESTURE_3_THRESHOLD = 60; // Min vertical for 3-finger swipe
-const TAP_MAX_TIME = 200; // Max ms for a tap
-const TAP_MAX_MOVE = 10; // Max movement for a tap
+// Thresholds for gesture detection (optimized for smoothness)
+const MOVE_THRESHOLD = 1.5; // Lower threshold for smoother response
+const SCROLL_THRESHOLD = 4;
+const PINCH_THRESHOLD = 0.04;
+const SWIPE_THRESHOLD = 80;
+const GESTURE_3_THRESHOLD = 60;
+const TAP_MAX_TIME = 180;
+const TAP_MAX_MOVE = 12;
 
 export function useGestureInput(callbacks: GestureCallbacks) {
+  const haptics = useHapticFeedback();
   const touchesRef = useRef<Map<number, TouchPoint>>(new Map());
   const gestureStartRef = useRef<{ time: number; centerX: number; centerY: number; distance: number } | null>(null);
   const lastCenterRef = useRef<{ x: number; y: number } | null>(null);
@@ -52,6 +56,8 @@ export function useGestureInput(callbacks: GestureCallbacks) {
   const gestureTriggeredRef = useRef(false);
   const touchStartTimeRef = useRef(0);
   const totalMovementRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
 
   // Calculate center point of all touches
   const getCenter = useCallback((touches: Map<number, TouchPoint>) => {
@@ -132,9 +138,24 @@ export function useGestureInput(callbacks: GestureCallbacks) {
     totalMovementRef.current += Math.abs(deltaX) + Math.abs(deltaY);
 
     if (fingerCount === 1) {
-      // Single finger: Mouse movement
-      if (Math.abs(deltaX) > MOVE_THRESHOLD / 3 || Math.abs(deltaY) > MOVE_THRESHOLD / 3) {
-        callbacks.onMouseMove(deltaX * 2.5, deltaY * 2.5);
+      // Single finger: Mouse movement with RAF for 60fps smoothness
+      if (Math.abs(deltaX) > MOVE_THRESHOLD / 2 || Math.abs(deltaY) > MOVE_THRESHOLD / 2) {
+        // Accumulate movement for RAF batch
+        if (!pendingMoveRef.current) {
+          pendingMoveRef.current = { x: 0, y: 0 };
+        }
+        pendingMoveRef.current.x += deltaX * 2.5;
+        pendingMoveRef.current.y += deltaY * 2.5;
+        
+        if (rafRef.current === null) {
+          rafRef.current = requestAnimationFrame(() => {
+            if (pendingMoveRef.current) {
+              callbacks.onMouseMove(pendingMoveRef.current.x, pendingMoveRef.current.y);
+              pendingMoveRef.current = null;
+            }
+            rafRef.current = null;
+          });
+        }
       }
     } else if (fingerCount === 2) {
       // Two fingers: Scroll OR Pinch-to-zoom
@@ -147,9 +168,9 @@ export function useGestureInput(callbacks: GestureCallbacks) {
         const scaleFactor = distanceDelta / 100;
         callbacks.onPinchZoom(scaleFactor);
         lastDistanceRef.current = currentDistance;
-      } else if (Math.abs(deltaY) > SCROLL_THRESHOLD / 2) {
-        // Scroll gesture
-        callbacks.onScroll(deltaY * 3);
+      } else if (Math.abs(deltaY) > SCROLL_THRESHOLD / 3) {
+        // Scroll gesture - smoother response
+        callbacks.onScroll(deltaY * 2.5);
       }
     } else if (fingerCount === 3 && !gestureTriggeredRef.current) {
       // Three fingers: Minimize all (Win+D) on downward swipe
@@ -157,6 +178,7 @@ export function useGestureInput(callbacks: GestureCallbacks) {
       if (startCenter) {
         const totalDeltaY = center.y - startCenter.centerY;
         if (totalDeltaY > GESTURE_3_THRESHOLD) {
+          haptics.gesture3Finger();
           callbacks.onGesture3Finger();
           gestureTriggeredRef.current = true;
         }
@@ -167,9 +189,11 @@ export function useGestureInput(callbacks: GestureCallbacks) {
       if (startCenter) {
         const totalDeltaX = center.x - startCenter.centerX;
         if (totalDeltaX > SWIPE_THRESHOLD) {
+          haptics.gesture4Finger();
           callbacks.onGesture4FingerRight();
           gestureTriggeredRef.current = true;
         } else if (totalDeltaX < -SWIPE_THRESHOLD) {
+          haptics.gesture4Finger();
           callbacks.onGesture4FingerLeft();
           gestureTriggeredRef.current = true;
         }
@@ -177,17 +201,26 @@ export function useGestureInput(callbacks: GestureCallbacks) {
     }
 
     lastCenterRef.current = center;
-  }, [callbacks, getCenter, getAverageDistance]);
+  }, [callbacks, getCenter, getAverageDistance, haptics]);
 
   const handleTouchEnd = useCallback((e: React.TouchEvent) => {
     const elapsed = Date.now() - touchStartTimeRef.current;
     const fingerCount = touchesRef.current.size;
     
+    // Cancel any pending RAF
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    pendingMoveRef.current = null;
+    
     // Detect tap (quick touch with minimal movement)
     if (elapsed < TAP_MAX_TIME && totalMovementRef.current < TAP_MAX_MOVE) {
       if (fingerCount === 1) {
+        haptics.tap();
         callbacks.onClick("left");
       } else if (fingerCount === 2) {
+        haptics.doubleTap();
         callbacks.onClick("right");
       }
     }
@@ -211,7 +244,7 @@ export function useGestureInput(callbacks: GestureCallbacks) {
       lastCenterRef.current = null;
       gestureTriggeredRef.current = false;
     }
-  }, [callbacks]);
+  }, [callbacks, haptics]);
 
   // Mouse event handlers for desktop (fallback)
   const mouseDownRef = useRef(false);
@@ -233,20 +266,43 @@ export function useGestureInput(callbacks: GestureCallbacks) {
     const deltaY = e.clientY - lastMouseRef.current.y;
     mouseMoveDistRef.current += Math.abs(deltaX) + Math.abs(deltaY);
     
+    // Use RAF for smooth desktop mouse handling too
     if (Math.abs(deltaX) > MOVE_THRESHOLD / 2 || Math.abs(deltaY) > MOVE_THRESHOLD / 2) {
-      callbacks.onMouseMove(deltaX * 2.5, deltaY * 2.5);
+      if (!pendingMoveRef.current) {
+        pendingMoveRef.current = { x: 0, y: 0 };
+      }
+      pendingMoveRef.current.x += deltaX * 2.5;
+      pendingMoveRef.current.y += deltaY * 2.5;
+      
+      if (rafRef.current === null) {
+        rafRef.current = requestAnimationFrame(() => {
+          if (pendingMoveRef.current) {
+            callbacks.onMouseMove(pendingMoveRef.current.x, pendingMoveRef.current.y);
+            pendingMoveRef.current = null;
+          }
+          rafRef.current = null;
+        });
+      }
     }
     
     lastMouseRef.current = { x: e.clientX, y: e.clientY };
   }, [callbacks]);
 
   const handleMouseUp = useCallback(() => {
+    // Cancel pending RAF
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    pendingMoveRef.current = null;
+    
     const elapsed = Date.now() - mouseStartTimeRef.current;
     if (elapsed < TAP_MAX_TIME && mouseMoveDistRef.current < TAP_MAX_MOVE) {
+      haptics.tap();
       callbacks.onClick("left");
     }
     mouseDownRef.current = false;
-  }, [callbacks]);
+  }, [callbacks, haptics]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -272,5 +328,6 @@ export function useGestureInput(callbacks: GestureCallbacks) {
       onMouseLeave: handleMouseUp,
     },
     wheelHandler: handleWheel,
+    haptics, // Expose haptics for external use
   };
 }
