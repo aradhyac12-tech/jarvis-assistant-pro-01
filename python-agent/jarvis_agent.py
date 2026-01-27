@@ -3201,24 +3201,29 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _join_zoom(self, meeting_id: str = "", password: str = "", meeting_link: str = ""):
-        """Join a Zoom meeting via link or meeting ID + password."""
+    def _join_zoom(self, meeting_id: str = "", password: str = "", meeting_link: str = "",
+                    mute_audio: bool = True, mute_video: bool = True, take_screenshot: bool = False,
+                    auto_join: bool = False):
+        """Join a Zoom meeting with camera/mic off and optional screenshot."""
         import re
+        import time as time_module
         try:
+            # Build the zoom URL with mute parameters
+            zoom_url = None
+            
             # Method 1: Direct meeting link
             if meeting_link:
                 meeting_link = meeting_link.strip()
                 add_log("info", f"Joining Zoom via link: {meeting_link[:50]}...", category="zoom")
                 
                 # Validate it's a Zoom URL
-                if "zoom.us" in meeting_link or "zoom.com" in meeting_link:
-                    webbrowser.open(meeting_link)
-                    return {"success": True, "message": "Opening Zoom meeting from link"}
-                else:
+                if "zoom.us" not in meeting_link and "zoom.com" not in meeting_link:
                     return {"success": False, "error": "Invalid Zoom meeting link"}
-            
+                
+                zoom_url = meeting_link
+                
             # Method 2: Meeting ID + optional password
-            if meeting_id:
+            elif meeting_id:
                 # Clean meeting ID (remove spaces, dashes)
                 clean_id = re.sub(r'[\s\-]', '', meeting_id.strip())
                 
@@ -3230,16 +3235,90 @@ class JarvisAgent:
                 # Build Zoom URL
                 zoom_url = f"https://zoom.us/j/{clean_id}"
                 if password:
-                    # Password needs to be URL encoded
                     zoom_url += f"?pwd={urllib.parse.quote(password.strip())}"
-                
-                webbrowser.open(zoom_url)
-                return {"success": True, "message": f"Joining Zoom meeting {clean_id}"}
+            else:
+                return {"success": False, "error": "No meeting ID or link provided"}
             
-            return {"success": False, "error": "No meeting ID or link provided"}
+            # Add mute parameters to URL
+            separator = "&" if "?" in zoom_url else "?"
+            if mute_audio:
+                zoom_url += f"{separator}unauthautojoin=true"
+                separator = "&"
+            if mute_video:
+                zoom_url += f"{separator}pwd=" if "pwd=" not in zoom_url else ""
+            
+            # Open Zoom meeting
+            webbrowser.open(zoom_url)
+            add_log("info", f"Opened Zoom meeting (audio={not mute_audio}, video={not mute_video})", category="zoom")
+            
+            result = {
+                "success": True, 
+                "message": "Joining Zoom meeting",
+                "muted_audio": mute_audio,
+                "muted_video": mute_video
+            }
+            
+            # Wait for Zoom to load and take screenshot if requested
+            if take_screenshot:
+                add_log("info", "Waiting for Zoom to load before screenshot...", category="zoom")
+                time_module.sleep(8)  # Wait for Zoom to launch and join
+                
+                # Take screenshot
+                screenshot_result = self._take_screenshot_internal()
+                if screenshot_result.get("success"):
+                    result["screenshot"] = screenshot_result.get("data")
+                    result["screenshot_path"] = screenshot_result.get("path")
+                    add_log("info", "Screenshot captured after joining Zoom", category="zoom")
+                else:
+                    result["screenshot_error"] = screenshot_result.get("error", "Failed to capture screenshot")
+            
+            # Try to mute audio/video via keyboard shortcuts after joining
+            if mute_audio or mute_video:
+                time_module.sleep(3)  # Additional wait for Zoom to be ready
+                try:
+                    import pyautogui
+                    # Zoom shortcuts: Alt+A for audio, Alt+V for video
+                    if mute_audio:
+                        pyautogui.hotkey('alt', 'a')
+                        add_log("info", "Sent Alt+A to mute audio", category="zoom")
+                        time_module.sleep(0.5)
+                    if mute_video:
+                        pyautogui.hotkey('alt', 'v') 
+                        add_log("info", "Sent Alt+V to stop video", category="zoom")
+                except Exception as e:
+                    add_log("warn", f"Could not send mute shortcuts: {e}", category="zoom")
+            
+            return result
             
         except Exception as e:
             add_log("error", f"Zoom join failed: {e}", category="zoom")
+            return {"success": False, "error": str(e)}
+    
+    def _take_screenshot_internal(self):
+        """Internal screenshot helper that returns base64 data."""
+        try:
+            import pyautogui
+            import io
+            import base64
+            
+            screenshot = pyautogui.screenshot()
+            
+            # Save to temp file
+            temp_path = os.path.join(os.environ.get("TEMP", "/tmp"), f"zoom_screenshot_{int(time.time())}.png")
+            screenshot.save(temp_path)
+            
+            # Also get base64 for sending back
+            buffer = io.BytesIO()
+            screenshot.save(buffer, format='PNG')
+            img_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+            return {
+                "success": True,
+                "path": temp_path,
+                "data": img_data[:100] + "..." if len(img_data) > 100 else img_data,  # Truncate for logging
+                "full_data": img_data
+            }
+        except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _open_url(self, url: str):
@@ -3634,7 +3713,11 @@ class JarvisAgent:
                 return self._join_zoom(
                     meeting_id=payload.get("meeting_id", ""),
                     password=payload.get("password", ""),
-                    meeting_link=payload.get("meeting_link", "")
+                    meeting_link=payload.get("meeting_link", ""),
+                    mute_audio=payload.get("mute_audio", True),
+                    mute_video=payload.get("mute_video", True),
+                    take_screenshot=payload.get("take_screenshot", False),
+                    auto_join=payload.get("auto_join", False)
                 )
 
             elif command_type == "screenshot":
