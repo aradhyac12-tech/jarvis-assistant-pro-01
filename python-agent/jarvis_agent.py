@@ -4211,6 +4211,7 @@ class JarvisAgent:
             elif command_type == "get_network_info":
                 try:
                     import socket
+                    from local_p2p_server import LOCAL_P2P_PORT, get_local_p2p_server
                     
                     # Get local IP addresses
                     local_ips = []
@@ -4243,12 +4244,39 @@ class JarvisAgent:
                         if len(parts) == 4:
                             network_prefix = ".".join(parts[:3])
                     
+                    # Check if local P2P server is running
+                    p2p_server = get_local_p2p_server()
+                    p2p_running = p2p_server is not None and p2p_server.running
+                    
                     return {
                         "success": True,
                         "hostname": hostname,
                         "local_ips": local_ips,
                         "network_prefix": network_prefix,
-                        "p2p_port": 9876  # P2P WebSocket port if we implement it
+                        "p2p_port": LOCAL_P2P_PORT,
+                        "p2p_server_running": p2p_running,
+                        "p2p_clients": len(p2p_server.clients) if p2p_server else 0,
+                    }
+                except ImportError:
+                    # Fallback if local_p2p_server module not available
+                    import socket
+                    local_ips = []
+                    hostname = socket.gethostname()
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        s.connect(("8.8.8.8", 80))
+                        local_ips = [s.getsockname()[0]]
+                        s.close()
+                    except:
+                        pass
+                    network_prefix = ".".join(local_ips[0].split(".")[:3]) if local_ips else ""
+                    return {
+                        "success": True,
+                        "hostname": hostname,
+                        "local_ips": local_ips,
+                        "network_prefix": network_prefix,
+                        "p2p_port": 9876,
+                        "p2p_server_running": False,
                     }
                 except Exception as e:
                     return {"success": False, "error": str(e)}
@@ -4424,6 +4452,9 @@ class JarvisAgent:
         
         await self.register_device()
         
+        # Start local P2P server for same-network ultra-low latency connections
+        self._start_local_p2p_server()
+        
         print("\n✅ Agent running! Open the Jarvis web app to control this PC.")
         print(f"   Local dashboard: http://localhost:{UI_PORT}")
         print("   Press Ctrl+C to stop.\n")
@@ -4434,9 +4465,35 @@ class JarvisAgent:
             self.heartbeat()
         )
     
+    def _start_local_p2p_server(self):
+        """Start the local P2P WebSocket server for same-network connections."""
+        try:
+            from local_p2p_server import start_local_p2p_server, LOCAL_P2P_PORT
+            
+            # Create async command handler wrapper
+            async def handle_local_command(command_type: str, payload: dict):
+                return await self._handle_command(command_type, payload)
+            
+            # Start the server
+            server = start_local_p2p_server(handle_local_command, LOCAL_P2P_PORT)
+            add_log("info", f"Local P2P server started on port {LOCAL_P2P_PORT}", category="p2p")
+            update_agent_status({"local_p2p_enabled": True, "local_p2p_port": LOCAL_P2P_PORT})
+            
+        except ImportError:
+            add_log("warn", "Local P2P server module not found", category="p2p")
+        except Exception as e:
+            add_log("warn", f"Failed to start local P2P server: {e}", category="p2p")
+    
     async def shutdown(self):
         """Clean shutdown."""
         self.running = False
+        
+        # Stop local P2P server
+        try:
+            from local_p2p_server import stop_local_p2p_server
+            stop_local_p2p_server()
+        except Exception:
+            pass
         
         # Stop streamers
         await self.audio_streamer.stop()
@@ -4450,7 +4507,7 @@ class JarvisAgent:
                 "last_seen": datetime.now(timezone.utc).isoformat()
             }).eq("id", self.device_id).execute()
             
-            update_agent_status({"connected": False})
+            update_agent_status({"connected": False, "local_p2p_enabled": False})
         except:
             pass
         

@@ -35,6 +35,7 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
 
   const getModeIcon = () => {
     switch (connectionMode) {
+      case "local_p2p": return <Zap className="h-3 w-3 text-emerald-400" />;
       case "p2p": return <Zap className="h-3 w-3 text-green-400" />;
       case "websocket": return <Wifi className="h-3 w-3 text-blue-400" />;
       case "fallback": return <Cloud className="h-3 w-3 text-yellow-400" />;
@@ -44,6 +45,7 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
 
   const getModeLabel = () => {
     switch (connectionMode) {
+      case "local_p2p": return "Local";
       case "p2p": return "P2P";
       case "websocket": return "WS";
       case "fallback": return "Cloud";

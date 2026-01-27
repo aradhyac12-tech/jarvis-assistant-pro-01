@@ -81,9 +81,13 @@ export default function Hub() {
     latency: p2pLatency, 
     isConnected: p2pConnected,
     autoP2P,
+    autoLocalP2P,
     toggleAutoP2P,
+    toggleAutoLocalP2P,
     forceP2PUpgrade,
+    forceLocalP2P,
     networkState,
+    localP2PState,
   } = useP2PCommand();
   const { toast } = useToast();
 
@@ -507,9 +511,13 @@ export default function Hub() {
                     connectionMode={connectionMode}
                     latency={p2pLatency}
                     networkState={networkState}
+                    localP2PState={localP2PState}
                     autoP2P={autoP2P}
+                    autoLocalP2P={autoLocalP2P}
                     onToggleAutoP2P={toggleAutoP2P}
+                    onToggleAutoLocalP2P={toggleAutoLocalP2P}
                     onForceUpgrade={forceP2PUpgrade}
+                    onForceLocalP2P={forceLocalP2P}
                   />
                   <ClipboardSync />
                 </div>

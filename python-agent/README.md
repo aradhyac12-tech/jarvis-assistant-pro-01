@@ -74,6 +74,17 @@ Local dashboard also available at http://localhost:8765
 | 📊 **System Stats** | Monitor CPU, RAM, disk usage |
 | 🎤 **Audio Relay** | Stream audio between phone and PC |
 | 📷 **Camera Stream** | Stream PC camera to phone |
+| 🌐 **Local P2P** | Ultra-low latency (~2-5ms) when on same network |
+
+## Local P2P (Same Network Mode)
+
+When your phone and PC are on the same network, the agent starts a local WebSocket server on **port 9876** for ultra-low latency connections:
+
+- **Latency:** ~2-5ms (vs ~50-100ms through cloud)
+- **Auto-detection:** The phone app automatically detects and connects to the local server
+- **Fallback:** If local P2P fails, it seamlessly falls back to cloud relay
+
+The local P2P server is enabled by default and runs on `0.0.0.0:9876`.
 
 ## Command Reference
 
