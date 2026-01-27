@@ -60,6 +60,7 @@ import { FileTransfer } from "@/components/FileTransfer";
 import { MediaSyncPanel } from "@/components/MediaSyncPanel";
 import { RemoteInputPanel } from "@/components/RemoteInputPanel";
 import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
+import { NetworkStatusBadge } from "@/components/NetworkStatusBadge";
 
 type Tab = "control" | "remote" | "media" | "tools";
 
@@ -75,7 +76,15 @@ export default function Hub() {
   const { devices, selectedDevice, isLoading, refreshDevices } = useDeviceContext();
   const { isReconnecting } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
-  const { connectionMode, latency: p2pLatency, isConnected: p2pConnected } = useP2PCommand();
+  const { 
+    connectionMode, 
+    latency: p2pLatency, 
+    isConnected: p2pConnected,
+    autoP2P,
+    toggleAutoP2P,
+    forceP2PUpgrade,
+    networkState,
+  } = useP2PCommand();
   const { toast } = useToast();
 
   const [activeTab, setActiveTab] = useState<Tab>("control");
@@ -493,7 +502,17 @@ export default function Hub() {
             {activeTab === "remote" && (
               <div className="grid gap-4 md:grid-cols-2">
                 <RemoteInputPanel />
-                <ClipboardSync />
+                <div className="space-y-4">
+                  <NetworkStatusBadge
+                    connectionMode={connectionMode}
+                    latency={p2pLatency}
+                    networkState={networkState}
+                    autoP2P={autoP2P}
+                    onToggleAutoP2P={toggleAutoP2P}
+                    onForceUpgrade={forceP2PUpgrade}
+                  />
+                  <ClipboardSync />
+                </div>
               </div>
             )}
 

@@ -12,6 +12,9 @@ import {
   ArrowRight,
   Maximize2,
   Minimize2,
+  Zap,
+  Wifi,
+  Cloud,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -28,7 +31,25 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { selectedDevice } = useDeviceContext();
-  const { fireMouse, fireKey, fireClick, fireScroll, connectionMode, latency } = useP2PCommand();
+  const { fireMouse, fireKey, fireClick, fireScroll, connectionMode, latency, networkState } = useP2PCommand();
+
+  const getModeIcon = () => {
+    switch (connectionMode) {
+      case "p2p": return <Zap className="h-3 w-3 text-green-400" />;
+      case "websocket": return <Wifi className="h-3 w-3 text-blue-400" />;
+      case "fallback": return <Cloud className="h-3 w-3 text-yellow-400" />;
+      default: return null;
+    }
+  };
+
+  const getModeLabel = () => {
+    switch (connectionMode) {
+      case "p2p": return "P2P";
+      case "websocket": return "WS";
+      case "fallback": return "Cloud";
+      default: return "";
+    }
+  };
 
   const [textInput, setTextInput] = useState("");
   const [isExpanded, setIsExpanded] = useState(!compact);
@@ -105,8 +126,17 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
               <Mouse className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm font-medium">Remote Input</span>
               {connectionMode !== "disconnected" && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                  {connectionMode === "p2p" ? "P2P" : "WS"} {latency}ms
+                <Badge 
+                  variant="outline" 
+                  className={cn(
+                    "text-[10px] px-1.5 py-0 gap-1",
+                    connectionMode === "p2p" && "border-green-500/30 text-green-400",
+                    connectionMode === "websocket" && "border-blue-500/30 text-blue-400",
+                    connectionMode === "fallback" && "border-yellow-500/30 text-yellow-400"
+                  )}
+                >
+                  {getModeIcon()}
+                  {getModeLabel()} {latency > 0 ? `${latency}ms` : ""}
                 </Badge>
               )}
             </div>
@@ -126,8 +156,17 @@ export function RemoteInputPanel({ className, compact = false }: RemoteInputPane
           <div className="flex items-center gap-2">
             <CardTitle className="text-sm">Remote Input</CardTitle>
             {connectionMode !== "disconnected" && (
-              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                {connectionMode === "p2p" ? "P2P" : "WS"} {latency}ms
+              <Badge 
+                variant="outline" 
+                className={cn(
+                  "text-[10px] px-1.5 py-0 gap-1",
+                  connectionMode === "p2p" && "border-green-500/30 text-green-400",
+                  connectionMode === "websocket" && "border-blue-500/30 text-blue-400",
+                  connectionMode === "fallback" && "border-yellow-500/30 text-yellow-400"
+                )}
+              >
+                {getModeIcon()}
+                {getModeLabel()} {latency > 0 ? `${latency}ms` : ""}
               </Badge>
             )}
           </div>
