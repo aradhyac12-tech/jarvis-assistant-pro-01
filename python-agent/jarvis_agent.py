@@ -508,7 +508,204 @@ agent_status: Dict[str, Any] = {
 }
 
 
-# ============== NOTIFICATION SYSTEM ==============
+# ============== LOCAL P2P SERVER (Integrated) ==============
+# This provides ultra-low latency (2-5ms) connections when phone and PC are on same network
+LOCAL_P2P_PORT = 9876
+
+class LocalP2PServer:
+    """Local WebSocket server for direct same-network connections."""
+    
+    def __init__(self, command_handler=None, port: int = LOCAL_P2P_PORT):
+        self.port = port
+        self.command_handler = command_handler
+        self.running = False
+        self.server = None
+        self.clients: set = set()
+        self.local_ips: list = []
+        self._server_thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        
+    def get_local_ips(self) -> list:
+        """Get all local IP addresses for this machine."""
+        import socket
+        ips = []
+        hostname = socket.gethostname()
+        
+        try:
+            for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+                ip = info[4][0]
+                if not ip.startswith("127."):
+                    ips.append(ip)
+        except Exception:
+            pass
+        
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            primary_ip = s.getsockname()[0]
+            s.close()
+            if primary_ip not in ips:
+                ips.insert(0, primary_ip)
+        except Exception:
+            pass
+        
+        self.local_ips = ips
+        return ips
+
+    async def handle_client(self, websocket, path: str):
+        """Handle a WebSocket client connection."""
+        if not HAS_WEBSOCKETS:
+            return
+            
+        client_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
+        add_log("info", f"P2P client connected: {client_ip}", category="p2p")
+        
+        self.clients.add(websocket)
+        
+        try:
+            await websocket.send(json.dumps({
+                "type": "welcome",
+                "server": "jarvis_local_p2p",
+                "version": "1.0",
+                "local_ips": self.local_ips,
+                "port": self.port,
+            }))
+            
+            async for message in websocket:
+                try:
+                    if isinstance(message, str):
+                        data = json.loads(message)
+                        response = await self._process_message(data)
+                        if response:
+                            await websocket.send(json.dumps(response))
+                except json.JSONDecodeError:
+                    await websocket.send(json.dumps({"type": "error", "error": "Invalid JSON"}))
+                except Exception as e:
+                    add_log("warn", f"P2P message error: {e}", category="p2p")
+                    await websocket.send(json.dumps({"type": "error", "error": str(e)}))
+                    
+        except Exception as e:
+            if "ConnectionClosed" not in str(type(e)):
+                add_log("warn", f"P2P client error: {e}", category="p2p")
+        finally:
+            self.clients.discard(websocket)
+            add_log("info", f"P2P client disconnected: {client_ip}", category="p2p")
+    
+    async def _process_message(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process incoming P2P message and return response."""
+        msg_type = data.get("type", "")
+        
+        if msg_type == "ping":
+            return {"type": "pong", "t": data.get("t", 0), "server_time": datetime.now().isoformat()}
+        
+        elif msg_type == "command":
+            command_type = data.get("commandType", "")
+            payload = data.get("payload", {})
+            
+            if self.command_handler:
+                try:
+                    if asyncio.iscoroutinefunction(self.command_handler):
+                        result = await self.command_handler(command_type, payload)
+                    else:
+                        result = self.command_handler(command_type, payload)
+                    
+                    return {"type": "command_result", "commandType": command_type, "result": result}
+                except Exception as e:
+                    return {"type": "command_error", "commandType": command_type, "error": str(e)}
+            else:
+                return {"type": "error", "error": "No command handler configured"}
+        
+        elif msg_type == "get_info":
+            return {"type": "info", "local_ips": self.local_ips, "port": self.port, "clients": len(self.clients)}
+        
+        return None
+    
+    async def _start_server(self):
+        """Internal method to start the WebSocket server."""
+        if not HAS_WEBSOCKETS:
+            add_log("warn", "WebSockets not available for P2P server", category="p2p")
+            return
+            
+        self.get_local_ips()
+        
+        try:
+            self.server = await websockets.serve(
+                self.handle_client,
+                "0.0.0.0",
+                self.port,
+                ping_interval=20,
+                ping_timeout=10,
+            )
+            self.running = True
+            
+            add_log("info", f"P2P server started on port {self.port}", category="p2p")
+            for ip in self.local_ips:
+                add_log("info", f"P2P available at: ws://{ip}:{self.port}/p2p", category="p2p")
+            
+            await self.server.wait_closed()
+            
+        except OSError as e:
+            if "Address already in use" in str(e):
+                add_log("warn", f"P2P port {self.port} already in use", category="p2p")
+            else:
+                add_log("error", f"P2P server error: {e}", category="p2p")
+            self.running = False
+    
+    def start(self):
+        """Start the P2P server in a background thread."""
+        if not HAS_WEBSOCKETS:
+            add_log("warn", "Cannot start P2P - websockets not installed", category="p2p")
+            return False
+        
+        if self.running:
+            return True
+        
+        def run_server():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            try:
+                self._loop.run_until_complete(self._start_server())
+            except Exception as e:
+                add_log("error", f"P2P server thread error: {e}", category="p2p")
+            finally:
+                self._loop.close()
+        
+        self._server_thread = threading.Thread(target=run_server, daemon=True)
+        self._server_thread.start()
+        return True
+    
+    def stop(self):
+        """Stop the P2P server."""
+        self.running = False
+        if self.server:
+            self.server.close()
+            self.server = None
+        add_log("info", "P2P server stopped", category="p2p")
+
+
+# Singleton P2P server instance
+_local_p2p_server: Optional[LocalP2PServer] = None
+
+
+def start_integrated_p2p_server(command_handler, port: int = LOCAL_P2P_PORT) -> Optional[LocalP2PServer]:
+    """Start the integrated P2P server."""
+    global _local_p2p_server
+    
+    if _local_p2p_server is not None and _local_p2p_server.running:
+        return _local_p2p_server
+    
+    _local_p2p_server = LocalP2PServer(command_handler=command_handler, port=port)
+    _local_p2p_server.start()
+    return _local_p2p_server
+
+
+def stop_integrated_p2p_server():
+    """Stop the integrated P2P server."""
+    global _local_p2p_server
+    
+    if _local_p2p_server:
+        _local_p2p_server.stop()
+        _local_p2p_server = None
 class NotificationManager:
     """Handles Windows notifications."""
     
@@ -4407,6 +4604,43 @@ class JarvisAgent:
                     cmd_type = cmd["command_type"]
                     payload = cmd.get("payload") or {}
                     cmd_id = cmd["id"]
+                    created_at = cmd.get("created_at", "")
+                    
+                    # CLIENT-SIDE STALE COMMAND FILTER: Skip commands older than 60 seconds
+                    # This prevents auto-execution of old commands when agent restarts
+                    if created_at:
+                        try:
+                            from datetime import datetime
+                            # Parse ISO timestamp
+                            cmd_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            now = datetime.now(timezone.utc)
+                            age_seconds = (now - cmd_time).total_seconds()
+                            
+                            if age_seconds > 60:
+                                add_log("warn", f"Skipping stale command: {cmd_type} (age: {int(age_seconds)}s)", category="command")
+                                # Mark as expired on the server
+                                try:
+                                    expire_data = json.dumps({
+                                        "action": "complete",
+                                        "commandId": cmd_id,
+                                        "result": {"success": False, "error": "Command expired (stale)"}
+                                    }).encode("utf-8")
+                                    expire_req = urllib.request.Request(
+                                        poll_url,
+                                        data=expire_data,
+                                        headers={
+                                            "Content-Type": "application/json",
+                                            "x-device-key": self.device_key,
+                                        },
+                                        method="POST"
+                                    )
+                                    with urllib.request.urlopen(expire_req, context=ssl_ctx, timeout=5) as _:
+                                        pass
+                                except Exception:
+                                    pass
+                                continue  # Skip this stale command
+                        except Exception as parse_err:
+                            add_log("warn", f"Could not parse command timestamp: {parse_err}", category="command")
                     
                     add_log("info", f"Executing: {cmd_type}", category="command")
                     
@@ -4518,34 +4752,25 @@ class JarvisAgent:
         )
     
     def _start_local_p2p_server(self):
-        """Start the local P2P WebSocket server for same-network connections."""
-        try:
-            from local_p2p_server import start_local_p2p_server, LOCAL_P2P_PORT
-            
-            # Create async command handler wrapper
-            async def handle_local_command(command_type: str, payload: dict):
-                return await self._handle_command(command_type, payload)
-            
-            # Start the server
-            server = start_local_p2p_server(handle_local_command, LOCAL_P2P_PORT)
+        """Start the integrated local P2P WebSocket server for same-network connections."""
+        # Create async command handler wrapper
+        async def handle_local_command(command_type: str, payload: dict):
+            return await self._handle_command(command_type, payload)
+        
+        # Start the integrated server (no separate file needed)
+        server = start_integrated_p2p_server(handle_local_command, LOCAL_P2P_PORT)
+        if server:
             add_log("info", f"Local P2P server started on port {LOCAL_P2P_PORT}", category="p2p")
             update_agent_status({"local_p2p_enabled": True, "local_p2p_port": LOCAL_P2P_PORT})
-            
-        except ImportError:
-            add_log("warn", "Local P2P server module not found", category="p2p")
-        except Exception as e:
-            add_log("warn", f"Failed to start local P2P server: {e}", category="p2p")
+        else:
+            add_log("warn", "Failed to start local P2P server", category="p2p")
     
     async def shutdown(self):
         """Clean shutdown."""
         self.running = False
         
-        # Stop local P2P server
-        try:
-            from local_p2p_server import stop_local_p2p_server
-            stop_local_p2p_server()
-        except Exception:
-            pass
+        # Stop integrated P2P server
+        stop_integrated_p2p_server()
         
         # Stop streamers
         await self.audio_streamer.stop()
