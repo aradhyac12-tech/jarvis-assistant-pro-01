@@ -3,100 +3,67 @@ import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useFastCommand } from "@/hooks/useFastCommand";
 import { getFunctionsWsBase } from "@/lib/relay";
+import { useNetworkMonitor, NetworkInfo } from "@/hooks/useNetworkMonitor";
+
+export type ConnectionMode = "p2p" | "websocket" | "fallback" | "disconnected";
 
 /**
- * P2P/WebSocket hybrid command system for ultra-low latency.
+ * P2P/WebSocket hybrid command system with continuous network monitoring.
+ * Automatically switches between modes based on network detection:
  * - Same network: WebRTC P2P (5-10ms latency)
  * - Different network: WebSocket direct (20-50ms latency)
  * - Fallback: Supabase edge function (50-100ms latency)
- * 
- * This bypasses Supabase backend polling for real-time controls.
  */
 export function useP2PCommand() {
   const { session } = useDeviceSession();
   const { selectedDevice } = useDeviceContext();
-  const { fireCommand: fallbackCommand, fireMouse: fallbackMouse, fireKey: fallbackKey, fireScroll: fallbackScroll } = useFastCommand();
+  const { fireCommand: fallbackCommand } = useFastCommand();
+  const networkMonitor = useNetworkMonitor(2000); // Check every 2 seconds
   
-  const [connectionMode, setConnectionMode] = useState<"p2p" | "websocket" | "fallback" | "disconnected">("disconnected");
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("disconnected");
   const [latency, setLatency] = useState(0);
+  const [autoP2P, setAutoP2P] = useState(true); // Auto-switch toggle
   
   const wsRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const lastPingRef = useRef<number>(0);
+  const pingIntervalRef = useRef<number | null>(null);
   const mouseAccumulator = useRef({ x: 0, y: 0 });
   const mouseTimerRef = useRef<number | null>(null);
   const connectionAttempts = useRef(0);
   const maxAttempts = 3;
+  const isUpgradingRef = useRef(false);
 
   const sessionToken = session?.session_token;
   const deviceId = selectedDevice?.id || session?.device_id;
 
-  // Connect via WebSocket for signaling and fallback
-  const connectWebSocket = useCallback(() => {
-    if (!sessionToken || !deviceId || wsRef.current?.readyState === WebSocket.OPEN) return;
-
-    const WS_BASE = getFunctionsWsBase();
-    const ws = new WebSocket(
-      `${WS_BASE}/functions/v1/device-commands?sessionToken=${sessionToken}&deviceId=${deviceId}&mode=direct`
-    );
-
-    ws.onopen = () => {
-      console.log("[P2P] WebSocket connected");
-      setConnectionMode("websocket");
-      // Try to upgrade to P2P
-      tryP2PUpgrade();
-    };
-
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        
-        // Handle P2P signaling
-        if (msg.type === "p2p_offer") {
-          handleP2POffer(msg.offer);
-        } else if (msg.type === "p2p_answer") {
-          handleP2PAnswer(msg.answer);
-        } else if (msg.type === "p2p_ice") {
-          handleICECandidate(msg.candidate);
-        } else if (msg.type === "pong") {
-          const now = Date.now();
-          setLatency(now - lastPingRef.current);
-        }
-      } catch (err) {
-        console.debug("[P2P] Message parse error:", err);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log("[P2P] WebSocket disconnected");
-      connectionAttempts.current++;
-      
-      if (connectionAttempts.current < maxAttempts) {
-        setConnectionMode("fallback"); // Use Supabase fallback
-        // Reconnect after delay
-        if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-        reconnectTimer.current = window.setTimeout(connectWebSocket, 3000);
-      } else {
-        setConnectionMode("fallback");
-        console.log("[P2P] Max attempts reached, using fallback mode");
-      }
-    };
-
-    ws.onerror = (err) => {
-      console.error("[P2P] WebSocket error:", err);
-      setConnectionMode("fallback");
-    };
-
-    wsRef.current = ws;
-  }, [sessionToken, deviceId]);
+  // Cleanup P2P connection
+  const cleanupP2P = useCallback(() => {
+    if (dataChannelRef.current) {
+      dataChannelRef.current.close();
+      dataChannelRef.current = null;
+    }
+    if (peerRef.current) {
+      peerRef.current.close();
+      peerRef.current = null;
+    }
+    isUpgradingRef.current = false;
+  }, []);
 
   // Attempt P2P upgrade via WebRTC
   const tryP2PUpgrade = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (isUpgradingRef.current || dataChannelRef.current?.readyState === "open") return;
+
+    isUpgradingRef.current = true;
+    console.log("[P2P] Attempting P2P upgrade...");
 
     try {
+      // Cleanup any existing connection
+      cleanupP2P();
+
       const pc = new RTCPeerConnection({
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
@@ -106,24 +73,28 @@ export function useP2PCommand() {
 
       // Create data channel for commands
       const dc = pc.createDataChannel("commands", {
-        ordered: false, // Lower latency for mouse movements
-        maxRetransmits: 0, // No retransmits for real-time
+        ordered: false,
+        maxRetransmits: 0,
       });
 
       dc.onopen = () => {
-        console.log("[P2P] Data channel open - P2P active!");
+        console.log("[P2P] ✅ Data channel open - P2P active!");
         setConnectionMode("p2p");
         dataChannelRef.current = dc;
-        // Start latency measurement
-        measureLatency();
+        isUpgradingRef.current = false;
       };
 
       dc.onclose = () => {
         console.log("[P2P] Data channel closed");
-        if (connectionMode === "p2p") {
+        dataChannelRef.current = null;
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
           setConnectionMode("websocket");
         }
-        dataChannelRef.current = null;
+      };
+
+      dc.onerror = (err) => {
+        console.error("[P2P] Data channel error:", err);
+        isUpgradingRef.current = false;
       };
 
       dc.onmessage = (e) => {
@@ -131,6 +102,15 @@ export function useP2PCommand() {
           const msg = JSON.parse(e.data);
           if (msg.type === "pong") {
             setLatency(Date.now() - lastPingRef.current);
+          } else if (msg.type === "network_info" && msg.data) {
+            // Update PC network info for continuous monitoring
+            const pcInfo: NetworkInfo = {
+              localIp: msg.data.local_ips?.[0] || "",
+              networkPrefix: msg.data.network_prefix || "",
+              connectionType: "ethernet",
+              isOnline: true,
+            };
+            networkMonitor.updatePcInfo(pcInfo);
           }
         } catch {}
       };
@@ -147,7 +127,10 @@ export function useP2PCommand() {
       pc.onconnectionstatechange = () => {
         console.log("[P2P] Connection state:", pc.connectionState);
         if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-          setConnectionMode("websocket");
+          isUpgradingRef.current = false;
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            setConnectionMode("websocket");
+          }
         }
       };
 
@@ -162,16 +145,22 @@ export function useP2PCommand() {
       }));
 
       peerRef.current = pc;
+
+      // Timeout for P2P upgrade
+      setTimeout(() => {
+        if (isUpgradingRef.current && dataChannelRef.current?.readyState !== "open") {
+          console.log("[P2P] Upgrade timeout, staying on WebSocket");
+          isUpgradingRef.current = false;
+        }
+      }, 5000);
+
     } catch (err) {
       console.error("[P2P] Upgrade failed:", err);
+      isUpgradingRef.current = false;
     }
-  }, [connectionMode]);
+  }, [cleanupP2P, networkMonitor]);
 
-  const handleP2POffer = useCallback(async (offer: RTCSessionDescriptionInit) => {
-    // This is for the receiving end (Python agent)
-    // Web app initiates, so this shouldn't be called here
-  }, []);
-
+  // Handle P2P answer from agent
   const handleP2PAnswer = useCallback(async (answer: RTCSessionDescriptionInit) => {
     if (!peerRef.current) return;
     try {
@@ -182,6 +171,7 @@ export function useP2PCommand() {
     }
   }, []);
 
+  // Handle ICE candidate
   const handleICECandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
     if (!peerRef.current) return;
     try {
@@ -191,37 +181,137 @@ export function useP2PCommand() {
     }
   }, []);
 
-  const measureLatency = useCallback(() => {
-    const ping = () => {
-      lastPingRef.current = Date.now();
-      if (dataChannelRef.current?.readyState === "open") {
-        dataChannelRef.current.send(JSON.stringify({ type: "ping", t: lastPingRef.current }));
-      } else if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: "ping", t: lastPingRef.current }));
+  // Connect via WebSocket
+  const connectWebSocket = useCallback(() => {
+    if (!sessionToken || !deviceId || wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    const WS_BASE = getFunctionsWsBase();
+    const ws = new WebSocket(
+      `${WS_BASE}/functions/v1/device-commands?sessionToken=${sessionToken}&deviceId=${deviceId}&mode=direct`
+    );
+
+    ws.onopen = () => {
+      console.log("[P2P] WebSocket connected");
+      setConnectionMode("websocket");
+      connectionAttempts.current = 0;
+      
+      // Request PC network info immediately
+      ws.send(JSON.stringify({ type: "command", commandType: "get_network_info", payload: {} }));
+      
+      // Try P2P upgrade if on same network
+      if (networkMonitor.networkState.sameNetwork && autoP2P) {
+        tryP2PUpgrade();
       }
     };
-    setInterval(ping, 2000);
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        
+        if (msg.type === "p2p_offer") {
+          // We're the initiator, shouldn't receive offers
+        } else if (msg.type === "p2p_answer") {
+          handleP2PAnswer(msg.answer);
+        } else if (msg.type === "p2p_ice") {
+          handleICECandidate(msg.candidate);
+        } else if (msg.type === "pong") {
+          setLatency(Date.now() - lastPingRef.current);
+        } else if (msg.type === "network_info" || msg.commandType === "get_network_info") {
+          // Update PC network info
+          const data = msg.data || msg.result;
+          if (data) {
+            const pcInfo: NetworkInfo = {
+              localIp: data.local_ips?.[0] || data.pc_ip || "",
+              networkPrefix: data.network_prefix || data.pc_prefix || "",
+              connectionType: "ethernet",
+              isOnline: true,
+            };
+            networkMonitor.updatePcInfo(pcInfo);
+          }
+        }
+      } catch (err) {
+        console.debug("[P2P] Message parse error:", err);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("[P2P] WebSocket disconnected");
+      connectionAttempts.current++;
+      cleanupP2P();
+      
+      if (connectionAttempts.current < maxAttempts) {
+        setConnectionMode("fallback");
+        if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = window.setTimeout(connectWebSocket, 3000);
+      } else {
+        setConnectionMode("fallback");
+        console.log("[P2P] Max attempts reached, using fallback mode");
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error("[P2P] WebSocket error:", err);
+      setConnectionMode("fallback");
+    };
+
+    wsRef.current = ws;
+  }, [sessionToken, deviceId, autoP2P, tryP2PUpgrade, handleP2PAnswer, handleICECandidate, cleanupP2P, networkMonitor]);
+
+  // Start latency measurement
+  const startLatencyMeasurement = useCallback(() => {
+    if (pingIntervalRef.current) return;
+    
+    pingIntervalRef.current = window.setInterval(() => {
+      lastPingRef.current = Date.now();
+      const msg = JSON.stringify({ type: "ping", t: lastPingRef.current });
+      
+      if (dataChannelRef.current?.readyState === "open") {
+        dataChannelRef.current.send(msg);
+      } else if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(msg);
+      }
+    }, 2000);
   }, []);
 
-  // Connect on mount
+  // Handle network changes - auto-switch P2P
+  useEffect(() => {
+    networkMonitor.onNetworkChange((sameNetwork) => {
+      if (!autoP2P) return;
+      
+      if (sameNetwork && connectionMode === "websocket") {
+        console.log("[P2P] 🔄 Same network detected, upgrading to P2P...");
+        tryP2PUpgrade();
+      } else if (!sameNetwork && connectionMode === "p2p") {
+        console.log("[P2P] 🔄 Different network detected, downgrading to WebSocket...");
+        cleanupP2P();
+        setConnectionMode("websocket");
+      }
+    });
+  }, [networkMonitor, autoP2P, connectionMode, tryP2PUpgrade, cleanupP2P]);
+
+  // Connect on mount and start monitoring
   useEffect(() => {
     if (sessionToken && deviceId) {
       connectWebSocket();
+      networkMonitor.startMonitoring();
+      startLatencyMeasurement();
     }
+    
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
-      if (peerRef.current) {
-        peerRef.current.close();
-        peerRef.current = null;
-      }
+      cleanupP2P();
+      networkMonitor.stopMonitoring();
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
       }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
     };
-  }, [sessionToken, deviceId, connectWebSocket]);
+  }, [sessionToken, deviceId, connectWebSocket, networkMonitor, startLatencyMeasurement, cleanupP2P]);
 
   // Fire command with lowest latency path
   const fireCommand = useCallback((commandType: string, payload: Record<string, unknown> = {}) => {
@@ -244,9 +334,9 @@ export function useP2PCommand() {
     fallbackCommand(commandType, payload);
   }, [fallbackCommand]);
 
-  // Batched mouse movement for smoothness (KDE Connect style - 16ms = 60fps)
+  // Batched mouse movement (16ms = 60fps)
   const MOUSE_BATCH_MS = 16;
-  const MOUSE_THRESHOLD = 1.5; // Minimum movement before sending
+  const MOUSE_THRESHOLD = 1.5;
 
   const fireMouse = useCallback((deltaX: number, deltaY: number) => {
     mouseAccumulator.current.x += deltaX;
@@ -256,7 +346,6 @@ export function useP2PCommand() {
 
     mouseTimerRef.current = window.setTimeout(() => {
       const { x, y } = mouseAccumulator.current;
-      // Only send if movement exceeds threshold (reduces spam)
       if (Math.abs(x) >= MOUSE_THRESHOLD || Math.abs(y) >= MOUSE_THRESHOLD) {
         fireCommand("mouse_move", { x: Math.round(x), y: Math.round(y), relative: true });
       }
@@ -282,6 +371,18 @@ export function useP2PCommand() {
     fireCommand("mouse_click", { button });
   }, [fireCommand]);
 
+  // Manual P2P toggle
+  const toggleAutoP2P = useCallback(() => {
+    setAutoP2P((prev) => !prev);
+  }, []);
+
+  // Force P2P upgrade attempt
+  const forceP2PUpgrade = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      tryP2PUpgrade();
+    }
+  }, [tryP2PUpgrade]);
+
   return {
     fireCommand,
     fireMouse,
@@ -291,5 +392,9 @@ export function useP2PCommand() {
     connectionMode,
     latency,
     isConnected: connectionMode !== "disconnected",
+    autoP2P,
+    toggleAutoP2P,
+    forceP2PUpgrade,
+    networkState: networkMonitor.networkState,
   };
 }
