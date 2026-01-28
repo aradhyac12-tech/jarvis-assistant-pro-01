@@ -56,12 +56,11 @@ import { BoostPC } from "@/components/BoostPC";
 import { NotificationSyncMinimal } from "@/components/NotificationSyncMinimal";
 import { CallControlsMinimal } from "@/components/CallControlsMinimal";
 import { ClipboardSync } from "@/components/ClipboardSync";
-import { FileTransfer } from "@/components/FileTransfer";
 import { MediaSyncPanel } from "@/components/MediaSyncPanel";
 import { RemoteInputPanel } from "@/components/RemoteInputPanel";
 import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
-import { NetworkStatusBadge } from "@/components/NetworkStatusBadge";
-import { ClawdBotPanel } from "@/components/ClawdBotPanel";
+import { SmartP2PManager } from "@/components/SmartP2PManager";
+import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
 
 type Tab = "control" | "remote" | "media" | "tools";
 
@@ -508,7 +507,7 @@ export default function Hub() {
               <div className="grid gap-4 md:grid-cols-2">
                 <RemoteInputPanel />
                 <div className="space-y-4">
-                  <NetworkStatusBadge
+                  <SmartP2PManager
                     connectionMode={connectionMode}
                     latency={p2pLatency}
                     networkState={networkState}
@@ -537,11 +536,11 @@ export default function Hub() {
             {/* Tools Tab */}
             {activeTab === "tools" && (
               <div className="grid gap-4 md:grid-cols-2">
-                <ClawdBotPanel />
                 <NotificationSyncMinimal />
                 <CallControlsMinimal />
+                <GalaxyBudsManager />
                 <BoostPC />
-                <FileTransfer className="md:col-span-2" />
+                <BidirectionalFileTransfer className="md:col-span-2" />
               </div>
             )}
 
