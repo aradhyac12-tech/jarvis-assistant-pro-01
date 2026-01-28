@@ -1,9 +1,16 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
+import { checkRateLimit, rateLimitExceededResponse, rateLimitHeaders, type RateLimitConfig } from "../_shared/rate-limiter.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token",
+};
+
+// Rate limit: 10 requests per minute per session (ElevenLabs has quota limits)
+const RATE_LIMIT_CONFIG: RateLimitConfig = {
+  windowMs: 60000, // 1 minute
+  maxRequests: 10,
 };
 
 /**
@@ -26,6 +33,19 @@ serve(async (req) => {
         JSON.stringify({ error: "ElevenLabs API key not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // Get session token for rate limiting
+    const sessionToken = req.headers.get("x-session-token");
+    const authHeader = req.headers.get("Authorization");
+    const rateLimitKey = sessionToken || authHeader?.slice(0, 32) || "anonymous";
+    
+    // Apply rate limiting
+    const rateLimitResult = checkRateLimit(`elevenlabs-tts:${rateLimitKey}`, RATE_LIMIT_CONFIG);
+    
+    if (!rateLimitResult.allowed) {
+      console.warn(`[elevenlabs-tts] Rate limit exceeded for key: ${rateLimitKey.slice(0, 8)}...`);
+      return rateLimitExceededResponse(rateLimitResult, RATE_LIMIT_CONFIG, corsHeaders);
     }
 
     const { text, voiceId } = await req.json();
