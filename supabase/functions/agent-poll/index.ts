@@ -58,27 +58,14 @@ serve(async (req) => {
 
     switch (action) {
       case "poll": {
-        // Filter out stale commands (older than 60 seconds) to prevent auto-execution of old commands
-        const staleThreshold = new Date(Date.now() - 60 * 1000).toISOString();
-        
-        // Get pending commands for this device that are not stale
+        // Get pending commands for this device
         const { data: commands, error: cmdError } = await supabase
           .from("commands")
           .select("id, command_type, payload, created_at")
           .eq("device_id", deviceId)
           .eq("status", "pending")
-          .gte("created_at", staleThreshold) // Only commands created in the last 60 seconds
           .order("created_at", { ascending: true })
           .limit(10);
-        
-        // Also clean up old stale commands to prevent database bloat
-        const cleanupThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min old
-        await supabase
-          .from("commands")
-          .update({ status: "expired" })
-          .eq("device_id", deviceId)
-          .eq("status", "pending")
-          .lt("created_at", cleanupThreshold);
 
         if (cmdError) {
           console.error("Command fetch error:", cmdError);

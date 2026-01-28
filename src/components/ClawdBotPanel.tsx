@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,9 +17,6 @@ import {
   Zap,
   Clock,
   CheckCircle2,
-  Copy,
-  ExternalLink,
-  HelpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useClawdBot, ClawdBotConfig } from "@/hooks/useClawdBot";
@@ -32,15 +29,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { useToast } from "@/hooks/use-toast";
 
 export function ClawdBotPanel({ className }: { className?: string }) {
-  const { toast } = useToast();
   const {
     config,
     status,
@@ -54,18 +44,9 @@ export function ClawdBotPanel({ className }: { className?: string }) {
   } = useClawdBot();
 
   const [showSetup, setShowSetup] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
   const [gatewayUrl, setGatewayUrl] = useState(config?.gatewayUrl || "http://localhost:18789");
   const [token, setToken] = useState(config?.token || "");
   const [messageInput, setMessageInput] = useState("");
-
-  // Update form when config changes
-  useEffect(() => {
-    if (config) {
-      setGatewayUrl(config.gatewayUrl);
-      setToken(config.token);
-    }
-  }, [config]);
 
   const handleConnect = async () => {
     const newConfig: ClawdBotConfig = {
@@ -83,11 +64,6 @@ export function ClawdBotPanel({ className }: { className?: string }) {
     const msg = messageInput;
     setMessageInput("");
     await sendMessage(msg);
-  };
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast({ title: "Copied to clipboard" });
   };
 
   const formatTime = (date: Date) => {
@@ -135,96 +111,6 @@ export function ClawdBotPanel({ className }: { className?: string }) {
               )}
             </Badge>
             
-            {/* Help Button */}
-            <Dialog open={showHelp} onOpenChange={setShowHelp}>
-              <DialogTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <HelpCircle className="h-4 w-4" />
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-lg">
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2">
-                    <Bot className="h-5 w-5 text-primary" />
-                    ClawdBot Setup Guide
-                  </DialogTitle>
-                </DialogHeader>
-                
-                <div className="space-y-4 py-4">
-                  <div className="space-y-2">
-                    <h4 className="font-medium text-sm">What is ClawdBot?</h4>
-                    <p className="text-sm text-muted-foreground">
-                      ClawdBot is a self-hosted AI gateway that lets you run your own AI assistant using Claude. 
-                      It provides an OpenAI-compatible API endpoint.
-                    </p>
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <h4 className="font-medium text-sm">Quick Setup</h4>
-                    <ol className="text-sm text-muted-foreground space-y-2 list-decimal list-inside">
-                      <li>
-                        Visit{" "}
-                        <a 
-                          href="https://clawd.bot" 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline inline-flex items-center gap-1"
-                        >
-                          clawd.bot <ExternalLink className="h-3 w-3" />
-                        </a>
-                      </li>
-                      <li>Download and install the gateway for your OS</li>
-                      <li>Run the gateway (default port: 18789)</li>
-                      <li>Copy your auth token from the gateway console</li>
-                      <li>Paste the token below and connect</li>
-                    </ol>
-                  </div>
-                  
-                  <Collapsible>
-                    <CollapsibleTrigger asChild>
-                      <Button variant="outline" size="sm" className="w-full">
-                        Show Default Configuration
-                      </Button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="mt-2 space-y-2">
-                      <div className="bg-muted rounded-md p-3 font-mono text-xs space-y-1">
-                        <div className="flex justify-between items-center">
-                          <span className="text-muted-foreground">Gateway URL:</span>
-                          <div className="flex items-center gap-1">
-                            <span>http://localhost:18789</span>
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              className="h-5 w-5"
-                              onClick={() => copyToClipboard("http://localhost:18789")}
-                            >
-                              <Copy className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-muted-foreground">API Path:</span>
-                          <span>/v1/chat/completions</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-muted-foreground">Status Path:</span>
-                          <span>/api/v1/status</span>
-                        </div>
-                      </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                  
-                  <div className="p-3 bg-primary/5 border border-primary/20 rounded-md">
-                    <p className="text-sm text-primary">
-                      <strong>Tip:</strong> Make sure the gateway is running before connecting. 
-                      You should see a console window with your auth token.
-                    </p>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-            
-            {/* Settings Button */}
             <Dialog open={showSetup} onOpenChange={setShowSetup}>
               <DialogTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-8 w-8">
@@ -261,13 +147,10 @@ export function ClawdBotPanel({ className }: { className?: string }) {
                     <Input
                       id="token"
                       type="password"
-                      placeholder="Enter gateway token from console"
+                      placeholder="Enter gateway token"
                       value={token}
                       onChange={(e) => setToken(e.target.value)}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      Find this in your ClawdBot gateway console window
-                    </p>
                   </div>
                 </div>
                 
@@ -298,27 +181,13 @@ export function ClawdBotPanel({ className }: { className?: string }) {
               <Bot className="h-8 w-8 text-muted-foreground" />
             </div>
             <p className="text-sm font-medium mb-1">Connect ClawdBot</p>
-            <p className="text-xs text-muted-foreground mb-4 max-w-[220px]">
-              Self-hosted AI assistant using Claude. Get yours at{" "}
-              <a 
-                href="https://clawd.bot" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                clawd.bot
-              </a>
+            <p className="text-xs text-muted-foreground mb-4 max-w-[200px]">
+              Link your self-hosted AI gateway for cross-platform messaging
             </p>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => setShowHelp(true)}>
-                <HelpCircle className="h-4 w-4 mr-2" />
-                How to Setup
-              </Button>
-              <Button size="sm" onClick={() => setShowSetup(true)}>
-                <Zap className="h-4 w-4 mr-2" />
-                Connect
-              </Button>
-            </div>
+            <Button size="sm" onClick={() => setShowSetup(true)}>
+              <Zap className="h-4 w-4 mr-2" />
+              Setup Gateway
+            </Button>
           </div>
         ) : (
           <>
@@ -355,10 +224,7 @@ export function ClawdBotPanel({ className }: { className?: string }) {
                 {messages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-36 text-muted-foreground">
                     <MessageSquare className="h-8 w-8 mb-2 opacity-50" />
-                    <p className="text-xs">Start a conversation with ClawdBot</p>
-                    <p className="text-xs text-muted-foreground/60 mt-1">
-                      Try: "What can you help me with?"
-                    </p>
+                    <p className="text-xs">Start a conversation</p>
                   </div>
                 ) : (
                   <>
@@ -378,7 +244,7 @@ export function ClawdBotPanel({ className }: { className?: string }) {
                               : "bg-muted"
                           )}
                         >
-                          <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                          <p className="text-sm">{msg.content}</p>
                           <p className={cn(
                             "text-[10px] mt-1",
                             msg.role === "user" 
@@ -410,10 +276,10 @@ export function ClawdBotPanel({ className }: { className?: string }) {
             {/* Input */}
             <div className="p-3 border-t border-border/50 flex gap-2">
               <Input
-                placeholder="Ask ClawdBot anything..."
+                placeholder="Ask Clawd anything..."
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+                onKeyDown={(e) => e.key === "Enter" && handleSend()}
                 className="flex-1 h-9 text-sm"
                 disabled={isTyping}
               />
@@ -431,7 +297,6 @@ export function ClawdBotPanel({ className }: { className?: string }) {
                   variant="ghost" 
                   className="h-9 w-9 shrink-0" 
                   onClick={clearMessages}
-                  title="Clear chat"
                 >
                   <Trash2 className="h-4 w-4" />
                 </Button>
