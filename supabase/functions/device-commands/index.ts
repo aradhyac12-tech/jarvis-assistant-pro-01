@@ -1,9 +1,16 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { checkRateLimit, rateLimitExceededResponse, rateLimitHeaders, type RateLimitConfig } from "../_shared/rate-limiter.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token",
+};
+
+// Rate limit: 60 requests per minute per session
+const RATE_LIMIT_CONFIG: RateLimitConfig = {
+  windowMs: 60000, // 1 minute
+  maxRequests: 60,
 };
 
 serve(async (req) => {
@@ -24,6 +31,14 @@ serve(async (req) => {
         JSON.stringify({ error: "Missing session token" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // Apply rate limiting based on session token
+    const rateLimitResult = checkRateLimit(`device-commands:${sessionToken}`, RATE_LIMIT_CONFIG);
+    
+    if (!rateLimitResult.allowed) {
+      console.warn(`[device-commands] Rate limit exceeded for session: ${sessionToken.slice(0, 8)}...`);
+      return rateLimitExceededResponse(rateLimitResult, RATE_LIMIT_CONFIG, corsHeaders);
     }
 
     // Validate session token and get device_id with retry for transient errors

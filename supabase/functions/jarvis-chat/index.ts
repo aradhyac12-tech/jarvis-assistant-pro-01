@@ -1,9 +1,16 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { checkRateLimit, rateLimitExceededResponse, rateLimitHeaders, type RateLimitConfig } from "../_shared/rate-limiter.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token, x-device-key",
+};
+
+// Rate limit: 20 requests per minute per session/device
+const RATE_LIMIT_CONFIG: RateLimitConfig = {
+  windowMs: 60000, // 1 minute
+  maxRequests: 20,
 };
 
 /**
@@ -97,6 +104,15 @@ serve(async (req) => {
         JSON.stringify({ error: "Unauthorized - please pair your device or login" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // Apply rate limiting based on session token, device key, or user ID
+    const rateLimitKey = sessionToken || deviceKey || userId || "anonymous";
+    const rateLimitResult = checkRateLimit(`jarvis-chat:${rateLimitKey}`, RATE_LIMIT_CONFIG);
+    
+    if (!rateLimitResult.allowed) {
+      console.warn(`[jarvis-chat] Rate limit exceeded for key: ${rateLimitKey.slice(0, 8)}...`);
+      return rateLimitExceededResponse(rateLimitResult, RATE_LIMIT_CONFIG, corsHeaders);
     }
 
     let message: unknown;

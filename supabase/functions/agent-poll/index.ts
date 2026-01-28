@@ -1,9 +1,16 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { checkRateLimit, rateLimitExceededResponse, rateLimitHeaders, type RateLimitConfig } from "../_shared/rate-limiter.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-device-key",
+};
+
+// Rate limit: 120 requests per minute per device (agent polls frequently)
+const RATE_LIMIT_CONFIG: RateLimitConfig = {
+  windowMs: 60000, // 1 minute
+  maxRequests: 120,
 };
 
 /**
@@ -36,6 +43,14 @@ serve(async (req) => {
         JSON.stringify({ error: "Missing device key" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // Apply rate limiting based on device key
+    const rateLimitResult = checkRateLimit(`agent-poll:${deviceKey}`, RATE_LIMIT_CONFIG);
+    
+    if (!rateLimitResult.allowed) {
+      console.warn(`[agent-poll] Rate limit exceeded for device: ${deviceKey.slice(0, 8)}...`);
+      return rateLimitExceededResponse(rateLimitResult, RATE_LIMIT_CONFIG, corsHeaders);
     }
 
     // Validate device_key and get device
