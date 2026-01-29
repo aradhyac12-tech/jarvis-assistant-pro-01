@@ -450,7 +450,7 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Quick Links */}
+                {/* Quick Links - Full Width */}
                 <Card className="border-border/20 bg-card/50 md:col-span-2">
                   <CardContent className="p-3">
                     <div className="grid grid-cols-4 gap-2">
@@ -466,30 +466,29 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Remote Input Preview */}
-                <RemoteInputPanel className="md:col-span-2" />
+                {/* Clipboard & Notifications on Control */}
+                <ClipboardSync />
+                <NotificationSyncMinimal />
               </div>
             )}
 
-            {/* Remote Tab */}
+            {/* Remote Tab - Mouse & Keyboard */}
             {activeTab === "remote" && (
               <div className="grid gap-3 md:grid-cols-2">
-                <RemoteInputPanel />
-                <div className="space-y-3">
-                  <SmartP2PManager
-                    connectionMode={connectionMode}
-                    latency={p2pLatency}
-                    networkState={networkState}
-                    localP2PState={localP2PState}
-                    autoP2P={autoP2P}
-                    autoLocalP2P={autoLocalP2P}
-                    onToggleAutoP2P={toggleAutoP2P}
-                    onToggleAutoLocalP2P={toggleAutoLocalP2P}
-                    onForceUpgrade={forceP2PUpgrade}
-                    onForceLocalP2P={forceLocalP2P}
-                  />
-                  <ClipboardSync />
-                </div>
+                <RemoteInputPanel className="md:col-span-2" />
+                <SmartP2PManager
+                  connectionMode={connectionMode}
+                  latency={p2pLatency}
+                  networkState={networkState}
+                  localP2PState={localP2PState}
+                  autoP2P={autoP2P}
+                  autoLocalP2P={autoLocalP2P}
+                  onToggleAutoP2P={toggleAutoP2P}
+                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
+                  onForceUpgrade={forceP2PUpgrade}
+                  onForceLocalP2P={forceLocalP2P}
+                />
+                <CallControlsMinimal />
               </div>
             )}
 
@@ -502,14 +501,12 @@ export default function Hub() {
               </div>
             )}
 
-            {/* Tools Tab */}
+            {/* Tools Tab - Files & System */}
             {activeTab === "tools" && (
               <div className="grid gap-3 md:grid-cols-2">
-                <NotificationSyncMinimal />
-                <CallControlsMinimal />
-                <GalaxyBudsManager />
-                <BoostPC />
                 <BidirectionalFileTransfer className="md:col-span-2" />
+                <BoostPC />
+                <GalaxyBudsManager />
               </div>
             )}
 
