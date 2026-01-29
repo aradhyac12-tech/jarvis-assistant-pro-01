@@ -295,11 +295,23 @@ export function useP2PCommand() {
     }, 2000);
   }, [localP2P]);
 
+  // Refs to avoid stale closures in callbacks
+  const autoLocalP2PRef = useRef(autoLocalP2P);
+  const autoP2PRef = useRef(autoP2P);
+  const connectionModeRef = useRef(connectionMode);
+  
+  useEffect(() => { autoLocalP2PRef.current = autoLocalP2P; }, [autoLocalP2P]);
+  useEffect(() => { autoP2PRef.current = autoP2P; }, [autoP2P]);
+  useEffect(() => { connectionModeRef.current = connectionMode; }, [connectionMode]);
+
   // Try to connect to local P2P server when on same network
+  // Stable callback that reads from refs
   const tryLocalP2PConnection = useCallback(async () => {
-    if (!autoLocalP2P || !networkMonitor.networkState.sameNetwork) return;
+    if (!autoLocalP2PRef.current) return;
     
     const pcInfo = networkMonitor.networkState.pc;
+    const sameNetwork = networkMonitor.networkState.sameNetwork;
+    if (!sameNetwork) return;
     if (!pcInfo?.localIp && !pcInfo?.networkPrefix) return;
     
     console.log("[LocalP2P] Attempting local P2P connection...");
@@ -315,34 +327,39 @@ export function useP2PCommand() {
       setConnectionMode("local_p2p");
       setLatency(localP2P.state.latency);
     }
-  }, [autoLocalP2P, networkMonitor.networkState, localP2P]);
+  }, [localP2P, networkMonitor.networkState.pc, networkMonitor.networkState.sameNetwork]);
 
   // Handle network changes - auto-switch between modes
+  // Register callback once, use refs for latest state
   useEffect(() => {
-    networkMonitor.onNetworkChange((sameNetwork) => {
+    const handleNetworkChange = (sameNetwork: boolean) => {
       if (sameNetwork) {
         // Same network - try local P2P first
-        if (autoLocalP2P) {
+        if (autoLocalP2PRef.current) {
           console.log("[P2P] 🔄 Same network detected, trying local P2P...");
-          tryLocalP2PConnection();
-        } else if (autoP2P && connectionMode === "websocket") {
+          // Defer to avoid sync issues
+          setTimeout(() => tryLocalP2PConnection(), 100);
+        } else if (autoP2PRef.current && connectionModeRef.current === "websocket") {
           console.log("[P2P] 🔄 Same network detected, upgrading to WebRTC P2P...");
           tryP2PUpgrade();
         }
       } else {
         // Different network - disconnect local P2P, use WebSocket/Cloud
-        if (connectionMode === "local_p2p") {
+        if (connectionModeRef.current === "local_p2p") {
           console.log("[P2P] 🔄 Different network, disconnecting local P2P...");
           localP2P.disconnect();
           setConnectionMode("websocket");
-        } else if (connectionMode === "p2p") {
+        } else if (connectionModeRef.current === "p2p") {
           console.log("[P2P] 🔄 Different network, downgrading to WebSocket...");
           cleanupP2P();
           setConnectionMode("websocket");
         }
       }
-    });
-  }, [networkMonitor, autoP2P, autoLocalP2P, connectionMode, tryP2PUpgrade, cleanupP2P, localP2P, tryLocalP2PConnection]);
+    };
+    
+    networkMonitor.onNetworkChange(handleNetworkChange);
+    // No cleanup needed - onNetworkChange just stores the callback in a ref
+  }, [networkMonitor, tryP2PUpgrade, cleanupP2P, localP2P, tryLocalP2PConnection]);
 
   // Monitor local P2P state changes
   useEffect(() => {
@@ -360,19 +377,20 @@ export function useP2PCommand() {
   }, [localP2P.isReady, localP2P.state.latency, connectionMode, connectWebSocket]);
 
   // Connect on mount and start monitoring
+  // Only re-run when session/device changes, not on every callback recreation
   useEffect(() => {
-    if (sessionToken && deviceId) {
-      connectWebSocket();
-      networkMonitor.startMonitoring();
-      startLatencyMeasurement();
-      
-      // Try local P2P after a short delay
-      if (autoLocalP2P) {
-        localP2PCheckRef.current = window.setTimeout(() => {
-          tryLocalP2PConnection();
-        }, 1000);
+    if (!sessionToken || !deviceId) return;
+    
+    connectWebSocket();
+    networkMonitor.startMonitoring();
+    startLatencyMeasurement();
+    
+    // Try local P2P after a short delay (use ref to get latest preference)
+    localP2PCheckRef.current = window.setTimeout(() => {
+      if (autoLocalP2PRef.current) {
+        tryLocalP2PConnection();
       }
-    }
+    }, 1000);
     
     return () => {
       if (wsRef.current) {
@@ -392,7 +410,8 @@ export function useP2PCommand() {
         clearTimeout(localP2PCheckRef.current);
       }
     };
-  }, [sessionToken, deviceId, connectWebSocket, networkMonitor, startLatencyMeasurement, cleanupP2P, localP2P, autoLocalP2P, tryLocalP2PConnection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionToken, deviceId]);
 
   // Fire command with lowest latency path
   const fireCommand = useCallback((commandType: string, payload: Record<string, unknown> = {}) => {
