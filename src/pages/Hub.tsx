@@ -12,10 +12,6 @@ import {
   Volume2,
   Sun,
   Monitor,
-  Play,
-  Pause,
-  SkipBack,
-  SkipForward,
   Power,
   Lock,
   RefreshCw,
@@ -32,6 +28,9 @@ import {
   Music,
   Moon,
   Wifi,
+  Video,
+  Wrench,
+  Cloud,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -45,12 +44,13 @@ import { ZoomMeetings } from "@/components/ZoomMeetings";
 import { BoostPC } from "@/components/BoostPC";
 import { NotificationSyncMinimal } from "@/components/NotificationSyncMinimal";
 import { CallControlsMinimal } from "@/components/CallControlsMinimal";
-import { ClipboardSync } from "@/components/ClipboardSync";
 import { MediaSyncPanel } from "@/components/MediaSyncPanel";
-import { RemoteInputPanel } from "@/components/RemoteInputPanel";
 import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
 import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
+import { EnhancedTrackpad } from "@/components/EnhancedTrackpad";
+import { KDEKeyboard } from "@/components/KDEKeyboard";
+import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 
 type Tab = "control" | "remote" | "media" | "tools";
 
@@ -77,6 +77,13 @@ export default function Hub() {
     forceLocalP2P,
     networkState,
     localP2PState,
+    fireMouse,
+    fireKey,
+    fireScroll,
+    fireZoom,
+    fireClick,
+    fireGesture3Finger,
+    fireGesture4Finger,
   } = useP2PCommand();
   const { toast } = useToast();
 
@@ -94,6 +101,28 @@ export default function Hub() {
   const brightnessCommitRef = useRef<number | null>(null);
 
   const isConnected = selectedDevice?.is_online || false;
+
+  // Get real connection status based on P2P connection mode
+  const getConnectionStatus = useCallback(() => {
+    if (!selectedDevice) return { text: "No Device", color: "text-muted-foreground", dot: "bg-muted-foreground" };
+    if (!isConnected) return { text: "Offline", color: "text-muted-foreground", dot: "bg-muted-foreground" };
+    if (isReconnecting) return { text: "Reconnecting", color: "text-[hsl(var(--warning))]", dot: "bg-[hsl(var(--warning))] animate-pulse" };
+    
+    switch (connectionMode) {
+      case "local_p2p":
+        return { text: `Local ${p2pLatency}ms`, color: "text-emerald-400", dot: "bg-emerald-400" };
+      case "p2p":
+        return { text: `P2P ${p2pLatency}ms`, color: "text-green-400", dot: "bg-green-400" };
+      case "websocket":
+        return { text: `WS ${p2pLatency}ms`, color: "text-blue-400", dot: "bg-blue-400" };
+      case "fallback":
+        return { text: "Cloud", color: "text-yellow-400", dot: "bg-yellow-400" };
+      default:
+        return { text: "Connecting", color: "text-muted-foreground", dot: "bg-muted-foreground animate-pulse" };
+    }
+  }, [selectedDevice, isConnected, isReconnecting, connectionMode, p2pLatency]);
+
+  const status = getConnectionStatus();
 
   // Sync volume/brightness from device
   useEffect(() => {
@@ -261,6 +290,12 @@ export default function Hub() {
     setIsProcessing(false);
   };
 
+  // Type text handler for trackpad
+  const handleTypeText = useCallback((text: string) => {
+    sendCommand("type_text", { text });
+    toast({ title: "Text sent" });
+  }, [sendCommand, toast]);
+
   const quickLinks = [
     { title: "Voice", icon: Mic, href: "/voice" },
     { title: "Files", icon: FolderOpen, href: "/files" },
@@ -272,7 +307,7 @@ export default function Hub() {
     { id: "control" as Tab, label: "Control", icon: Monitor },
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
-    { id: "tools" as Tab, label: "Tools", icon: Zap },
+    { id: "tools" as Tab, label: "Tools", icon: Wrench },
   ];
 
   // Loading state
@@ -297,14 +332,7 @@ export default function Hub() {
               <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
                 <Bot className="w-4 h-4 text-primary-foreground" />
               </div>
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-sm tracking-tight">JARVIS</span>
-                {connectionMode !== "disconnected" && (
-                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 font-mono border-border/30">
-                    {p2pLatency}ms
-                  </Badge>
-                )}
-              </div>
+              <span className="font-semibold text-sm tracking-tight">JARVIS</span>
             </div>
 
             <div className="flex items-center gap-2">
@@ -319,16 +347,13 @@ export default function Hub() {
                 </div>
               )}
 
-              {/* Status Badge */}
+              {/* Real Connection Status */}
               <div className={cn(
                 "flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-medium",
-                isConnected ? "text-[hsl(var(--success))]" : "text-muted-foreground"
+                status.color
               )}>
-                <span className={cn(
-                  "w-1.5 h-1.5 rounded-full",
-                  isConnected ? "bg-[hsl(var(--success))]" : isReconnecting ? "bg-[hsl(var(--warning))] animate-pulse" : "bg-muted-foreground"
-                )} />
-                {isConnected ? "Online" : isReconnecting ? "..." : "Offline"}
+                <span className={cn("w-1.5 h-1.5 rounded-full", status.dot)} />
+                {status.text}
               </div>
 
               <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); }} disabled={isLoading} className="h-7 w-7">
@@ -466,50 +491,82 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Remote Input Preview */}
-                <RemoteInputPanel className="md:col-span-2" />
+                {/* Notifications & Calls */}
+                <NotificationSyncMinimal />
+                <CallControlsMinimal />
               </div>
             )}
 
-            {/* Remote Tab */}
+            {/* Remote Tab - Trackpad + Keyboard + Clipboard */}
             {activeTab === "remote" && (
-              <div className="grid gap-3 md:grid-cols-2">
-                <RemoteInputPanel />
-                <div className="space-y-3">
-                  <SmartP2PManager
-                    connectionMode={connectionMode}
-                    latency={p2pLatency}
-                    networkState={networkState}
-                    localP2PState={localP2PState}
-                    autoP2P={autoP2P}
-                    autoLocalP2P={autoLocalP2P}
-                    onToggleAutoP2P={toggleAutoP2P}
-                    onToggleAutoLocalP2P={toggleAutoLocalP2P}
-                    onForceUpgrade={forceP2PUpgrade}
-                    onForceLocalP2P={forceLocalP2P}
-                  />
-                  <ClipboardSync />
-                </div>
+              <div className="space-y-3">
+                {/* P2P Connection Manager */}
+                <SmartP2PManager
+                  connectionMode={connectionMode}
+                  latency={p2pLatency}
+                  networkState={networkState}
+                  localP2PState={localP2PState}
+                  autoP2P={autoP2P}
+                  autoLocalP2P={autoLocalP2P}
+                  onToggleAutoP2P={toggleAutoP2P}
+                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
+                  onForceUpgrade={forceP2PUpgrade}
+                  onForceLocalP2P={forceLocalP2P}
+                />
+
+                {/* Large Trackpad */}
+                <EnhancedTrackpad
+                  onMouseMove={fireMouse}
+                  onScroll={fireScroll}
+                  onZoom={fireZoom}
+                  onGesture3Finger={fireGesture3Finger}
+                  onGesture4Finger={fireGesture4Finger}
+                  onClick={fireClick}
+                  onTypeText={handleTypeText}
+                  connectionMode={connectionMode}
+                  latency={p2pLatency}
+                  isConnected={isConnected}
+                />
+
+                {/* Full Keyboard */}
+                <Card className="border-border/30 bg-card/50">
+                  <CardContent className="p-4">
+                    <KDEKeyboard onKeyPress={fireKey} disabled={!isConnected} />
+                  </CardContent>
+                </Card>
+
+                {/* Auto Clipboard Sync */}
+                <Card className="border-border/30 bg-card/50">
+                  <CardContent className="p-4">
+                    <AutoClipboardSync />
+                  </CardContent>
+                </Card>
               </div>
             )}
 
-            {/* Media Tab */}
+            {/* Media Tab - Media + Buds (no Zoom) */}
             {activeTab === "media" && (
               <div className="grid gap-3 md:grid-cols-2">
                 <MediaSyncPanel />
                 <GalaxyBudsManager />
-                <ZoomMeetings className="md:col-span-2" />
               </div>
             )}
 
-            {/* Tools Tab */}
+            {/* Tools Tab - Zoom, Files, Boost, Buds */}
             {activeTab === "tools" && (
               <div className="grid gap-3 md:grid-cols-2">
-                <NotificationSyncMinimal />
-                <CallControlsMinimal />
-                <GalaxyBudsManager />
-                <BoostPC />
+                {/* Zoom Meetings - Separate from media */}
+                <Card className="border-border/20 bg-card/50 md:col-span-2">
+                  <CardContent className="p-0">
+                    <ZoomMeetings />
+                  </CardContent>
+                </Card>
+
+                {/* File Transfer */}
                 <BidirectionalFileTransfer className="md:col-span-2" />
+
+                {/* PC Optimization */}
+                <BoostPC />
               </div>
             )}
 

@@ -45,20 +45,38 @@ export function NotificationSyncMinimal({ className }: { className?: string }) {
   const [isEnabled, setIsEnabled] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
+  const requestNotificationPermission = useCallback(async (): Promise<boolean> => {
+    // Check if Notification API is available
+    if (!("Notification" in window)) {
+      console.debug("Notifications not supported");
+      return false;
+    }
+
+    // Already granted
+    if (Notification.permission === "granted") {
+      return true;
+    }
+
+    // Denied - can't request again
+    if (Notification.permission === "denied") {
+      return false;
+    }
+
+    // Request permission
+    try {
+      const permission = await Notification.requestPermission();
+      return permission === "granted";
+    } catch {
+      return false;
+    }
+  }, []);
+
   const toggleSync = useCallback(async () => {
     if (!isEnabled) {
-      if ("Notification" in window && Notification.permission !== "granted") {
-        const permission = await Notification.requestPermission();
-        if (permission !== "granted") {
-          toast({
-            title: "Permission Required",
-            description: "Enable notifications in browser settings",
-            variant: "destructive",
-          });
-          return;
-        }
-      }
-
+      // Try to get permission silently, don't show error if denied
+      const hasPermission = await requestNotificationPermission();
+      
+      // Start sync regardless - it will work on PC side even without browser notifications
       const result = await sendCommand("start_notification_sync", {}, { 
         awaitResult: true, 
         timeoutMs: 10000 
@@ -66,14 +84,21 @@ export function NotificationSyncMinimal({ className }: { className?: string }) {
       
       if (result?.success) {
         setIsEnabled(true);
-        toast({ title: "Notification Sync Active" });
+        if (hasPermission) {
+          toast({ title: "Notification Sync Active" });
+        } else {
+          toast({ 
+            title: "Sync Active (Limited)",
+            description: "Notifications will show on PC only" 
+          });
+        }
       }
     } else {
       await sendCommand("stop_notification_sync", {});
       setIsEnabled(false);
       toast({ title: "Sync Disabled" });
     }
-  }, [isEnabled, sendCommand, toast]);
+  }, [isEnabled, sendCommand, toast, requestNotificationPermission]);
 
   const dismissNotification = useCallback((id: string) => {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
