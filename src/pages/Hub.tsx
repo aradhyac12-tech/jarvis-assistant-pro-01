@@ -10,12 +10,8 @@ import {
   Bot,
   Mic,
   Volume2,
-  VolumeX,
   Sun,
-  Moon,
   Monitor,
-  Wifi,
-  WifiOff,
   Play,
   Pause,
   SkipBack,
@@ -31,17 +27,11 @@ import {
   Camera,
   FolderOpen,
   Settings,
-  Keyboard,
   Mouse,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  Search,
   Zap,
   Music,
-  Clipboard,
-  ArrowUpDown,
+  Moon,
+  Wifi,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -79,7 +69,6 @@ export default function Hub() {
   const { 
     connectionMode, 
     latency: p2pLatency, 
-    isConnected: p2pConnected,
     autoP2P,
     autoLocalP2P,
     toggleAutoP2P,
@@ -94,7 +83,6 @@ export default function Hub() {
   const [activeTab, setActiveTab] = useState<Tab>("control");
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   
-  // FIXED: Volume/Brightness synced from device on connection
   const [volume, setVolume] = useState(50);
   const [brightness, setBrightness] = useState(75);
   const [isLocked, setIsLocked] = useState(false);
@@ -107,7 +95,7 @@ export default function Hub() {
 
   const isConnected = selectedDevice?.is_online || false;
 
-  // Sync volume/brightness from device when it becomes available
+  // Sync volume/brightness from device
   useEffect(() => {
     if (selectedDevice) {
       const deviceVol = selectedDevice.current_volume;
@@ -123,7 +111,7 @@ export default function Hub() {
     }
   }, [selectedDevice?.id, selectedDevice?.current_volume, selectedDevice?.current_brightness, selectedDevice?.is_locked]);
 
-  // Fetch real volume/brightness from PC on connect
+  // Fetch real volume/brightness from PC
   const syncSystemState = useCallback(async () => {
     if (!selectedDevice?.is_online) return;
     try {
@@ -184,7 +172,7 @@ export default function Hub() {
     return () => { supabase.removeChannel(channel); };
   }, [selectedDevice?.id]);
 
-  // Volume handler with debounced commit and DB update
+  // Volume handler
   const handleVolumeSlider = useCallback((v: number[]) => {
     setVolume(v[0]);
   }, []);
@@ -206,7 +194,7 @@ export default function Hub() {
     }, 100);
   }, [sendCommand, selectedDevice?.id]);
 
-  // Brightness handler with debounced commit and DB update
+  // Brightness handler
   const handleBrightnessSlider = useCallback((v: number[]) => {
     setBrightness(v[0]);
   }, []);
@@ -265,7 +253,7 @@ export default function Hub() {
         await sendCommand("search_web", { query: cmdInput, engine: "google" });
         toast({ title: "Searching..." });
       }
-    } catch (e) {
+    } catch {
       toast({ title: "Command failed", variant: "destructive" });
     }
 
@@ -274,21 +262,26 @@ export default function Hub() {
   };
 
   const quickLinks = [
-    { title: "Voice", icon: Mic, href: "/voice", color: "text-primary" },
-    { title: "Files", icon: FolderOpen, href: "/files", color: "text-primary" },
-    { title: "Camera", icon: Camera, href: "/miccamera", color: "text-primary" },
-    { title: "Settings", icon: Settings, href: "/settings", color: "text-muted-foreground" },
+    { title: "Voice", icon: Mic, href: "/voice" },
+    { title: "Files", icon: FolderOpen, href: "/files" },
+    { title: "Camera", icon: Camera, href: "/miccamera" },
+    { title: "Settings", icon: Settings, href: "/settings" },
+  ];
+
+  const tabs = [
+    { id: "control" as Tab, label: "Control", icon: Monitor },
+    { id: "remote" as Tab, label: "Remote", icon: Mouse },
+    { id: "media" as Tab, label: "Media", icon: Music },
+    { id: "tools" as Tab, label: "Tools", icon: Zap },
   ];
 
   // Loading state
   if (isLoading && !selectedDevice) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
-            <Loader2 className="w-6 h-6 animate-spin text-primary" />
-          </div>
-          <p className="text-sm text-muted-foreground">Connecting to device...</p>
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+          <p className="text-xs text-muted-foreground">Connecting...</p>
         </div>
       </div>
     );
@@ -297,98 +290,85 @@ export default function Hub() {
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-background">
-        {/* Header */}
-        <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
-          <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
-                <Bot className="w-5 h-5 text-primary-foreground" />
+        {/* Header - Ultra Minimal */}
+        <header className="sticky top-0 z-50 border-b border-border/20 bg-background/80 backdrop-blur-xl">
+          <div className="flex items-center justify-between h-12 px-4 max-w-3xl mx-auto">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
+                <Bot className="w-4 h-4 text-primary-foreground" />
               </div>
-              <div>
-                <h1 className="font-semibold text-sm">JARVIS</h1>
-                <div className="flex items-center gap-2">
-                  <p className="text-xs text-muted-foreground">{selectedDevice?.name || "No device"}</p>
-                  {connectionMode !== "disconnected" && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                      {connectionMode === "p2p" ? "P2P" : "WS"} {p2pLatency}ms
-                    </Badge>
-                  )}
-                </div>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm tracking-tight">JARVIS</span>
+                {connectionMode !== "disconnected" && (
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 font-mono border-border/30">
+                    {p2pLatency}ms
+                  </Badge>
+                )}
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <Badge
-                variant="outline"
-                className={cn(
-                  "gap-1.5 text-xs font-medium",
-                  isConnected ? "border-primary/50 text-primary" : "border-muted text-muted-foreground"
-                )}
-              >
-                <span className={cn(
-                  "w-1.5 h-1.5 rounded-full",
-                  isConnected ? "bg-primary" : isReconnecting ? "bg-warning animate-pulse" : "bg-muted-foreground"
-                )} />
-                {isConnected ? "Online" : isReconnecting ? "Reconnecting" : "Offline"}
-              </Badge>
-
+              {/* System Stats - Compact */}
               {systemStats && (
-                <div className="hidden md:flex items-center gap-3 text-xs text-muted-foreground px-2">
-                  <span className="flex items-center gap-1"><Cpu className="w-3 h-3" /> {systemStats.cpu_percent}%</span>
-                  <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" /> {systemStats.memory_percent}%</span>
+                <div className="hidden sm:flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
+                  <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />{systemStats.cpu_percent}%</span>
+                  <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" />{systemStats.memory_percent}%</span>
                   {systemStats.battery_percent !== undefined && (
-                    <span className="flex items-center gap-1"><Battery className="w-3 h-3" /> {systemStats.battery_percent}%</span>
+                    <span className="flex items-center gap-1"><Battery className="w-3 h-3" />{systemStats.battery_percent}%</span>
                   )}
                 </div>
               )}
 
-              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); }} disabled={isLoading} className="h-8 w-8">
-                <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
+              {/* Status Badge */}
+              <div className={cn(
+                "flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-medium",
+                isConnected ? "text-[hsl(var(--success))]" : "text-muted-foreground"
+              )}>
+                <span className={cn(
+                  "w-1.5 h-1.5 rounded-full",
+                  isConnected ? "bg-[hsl(var(--success))]" : isReconnecting ? "bg-[hsl(var(--warning))] animate-pulse" : "bg-muted-foreground"
+                )} />
+                {isConnected ? "Online" : isReconnecting ? "..." : "Offline"}
+              </div>
+
+              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); }} disabled={isLoading} className="h-7 w-7">
+                <RefreshCw className={cn("w-3.5 h-3.5", isLoading && "animate-spin")} />
               </Button>
             </div>
           </div>
         </header>
 
-        <ScrollArea className="h-[calc(100vh-3.5rem)]">
-          <main className="max-w-4xl mx-auto p-4 space-y-4">
-            {/* Command Input */}
-            <Card className="border-border/40">
-              <CardContent className="p-3">
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Type a command... (open chrome, play music, search...)"
-                    value={cmdInput}
-                    onChange={(e) => setCmdInput(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleCommand()}
-                    className="flex-1 bg-muted/50 border-0 focus-visible:ring-1"
-                    disabled={!isConnected}
-                  />
-                  <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="shrink-0">
-                    {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+        <ScrollArea className="h-[calc(100vh-3rem)]">
+          <main className="max-w-3xl mx-auto p-3 space-y-3">
+            {/* Command Input - Minimal */}
+            <div className="flex gap-2">
+              <Input
+                placeholder="Type a command..."
+                value={cmdInput}
+                onChange={(e) => setCmdInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCommand()}
+                className="flex-1 h-9 bg-card border-border/30 focus-visible:ring-1 text-sm"
+                disabled={!isConnected}
+              />
+              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-9 w-9 shrink-0">
+                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              </Button>
+            </div>
 
-            {/* Tab Navigation */}
-            <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-lg w-fit">
-              {[
-                { id: "control" as Tab, label: "Control", icon: Monitor },
-                { id: "remote" as Tab, label: "Remote", icon: Mouse },
-                { id: "media" as Tab, label: "Media", icon: Music },
-                { id: "tools" as Tab, label: "Tools", icon: Zap },
-              ].map((tab) => (
+            {/* Tab Navigation - Pill Style */}
+            <div className="flex items-center gap-0.5 p-0.5 bg-card/50 rounded-lg w-fit border border-border/20">
+              {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={cn(
-                    "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all",
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
                     activeTab === tab.id
-                      ? "bg-background text-foreground shadow-sm"
+                      ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   )}
                 >
-                  <tab.icon className="w-4 h-4" />
+                  <tab.icon className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">{tab.label}</span>
                 </button>
               ))}
@@ -396,16 +376,16 @@ export default function Hub() {
 
             {/* Control Tab */}
             {activeTab === "control" && (
-              <div className="grid gap-4 md:grid-cols-2">
-                {/* Volume & Brightness */}
-                <Card className="border-border/40">
-                  <CardContent className="p-4 space-y-5">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="flex items-center gap-2 text-muted-foreground">
-                          <Volume2 className="w-4 h-4" /> Volume
+              <div className="grid gap-3 md:grid-cols-2">
+                {/* Volume & Brightness - Combined */}
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-3 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="flex items-center gap-1.5 text-muted-foreground">
+                          <Volume2 className="w-3.5 h-3.5" /> Volume
                         </span>
-                        <span className="font-medium tabular-nums">{volume}%</span>
+                        <span className="font-mono text-muted-foreground">{volume}%</span>
                       </div>
                       <Slider
                         value={[volume]}
@@ -418,12 +398,12 @@ export default function Hub() {
                       />
                     </div>
 
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="flex items-center gap-2 text-muted-foreground">
-                          <Sun className="w-4 h-4" /> Brightness
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="flex items-center gap-1.5 text-muted-foreground">
+                          <Sun className="w-3.5 h-3.5" /> Brightness
                         </span>
-                        <span className="font-medium tabular-nums">{brightness}%</span>
+                        <span className="font-mono text-muted-foreground">{brightness}%</span>
                       </div>
                       <Slider
                         value={[brightness]}
@@ -438,58 +418,47 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Power & Lock */}
-                <Card className="border-border/40">
-                  <CardContent className="p-4">
+                {/* Power Controls */}
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-3">
                     <div className="grid grid-cols-4 gap-2">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button variant="outline" size="icon" className="h-12 w-full" onClick={handleLock} disabled={!isConnected}>
-                            <Lock className="w-5 h-5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Lock PC</TooltipContent>
-                      </Tooltip>
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button variant="outline" size="icon" className="h-12 w-full" onClick={() => handlePower("sleep")} disabled={!isConnected}>
-                            <Moon className="w-5 h-5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Sleep</TooltipContent>
-                      </Tooltip>
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button variant="outline" size="icon" className="h-12 w-full" onClick={() => handlePower("restart")} disabled={!isConnected}>
-                            <RefreshCw className="w-5 h-5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Restart</TooltipContent>
-                      </Tooltip>
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button variant="outline" size="icon" className="h-12 w-full text-destructive hover:text-destructive" onClick={() => handlePower("shutdown")} disabled={!isConnected}>
-                            <Power className="w-5 h-5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Shutdown</TooltipContent>
-                      </Tooltip>
+                      {[
+                        { icon: Lock, action: handleLock, label: "Lock" },
+                        { icon: Moon, action: () => handlePower("sleep"), label: "Sleep" },
+                        { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart" },
+                        { icon: Power, action: () => handlePower("shutdown"), label: "Shutdown", danger: true },
+                      ].map((btn) => (
+                        <Tooltip key={btn.label}>
+                          <TooltipTrigger asChild>
+                            <Button 
+                              variant="outline" 
+                              size="icon" 
+                              className={cn(
+                                "h-10 w-full border-border/20",
+                                btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30"
+                              )}
+                              onClick={btn.action} 
+                              disabled={!isConnected}
+                            >
+                              <btn.icon className="w-4 h-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent className="text-xs">{btn.label}</TooltipContent>
+                        </Tooltip>
+                      ))}
                     </div>
                   </CardContent>
                 </Card>
 
                 {/* Quick Links */}
-                <Card className="border-border/40 md:col-span-2">
-                  <CardContent className="p-4">
+                <Card className="border-border/20 bg-card/50 md:col-span-2">
+                  <CardContent className="p-3">
                     <div className="grid grid-cols-4 gap-2">
                       {quickLinks.map((link) => (
                         <Link key={link.href} to={link.href}>
-                          <Button variant="ghost" className="w-full h-auto flex-col gap-2 py-4 hover:bg-muted/50">
-                            <link.icon className={cn("w-5 h-5", link.color)} />
-                            <span className="text-xs">{link.title}</span>
+                          <Button variant="ghost" className="w-full h-auto flex-col gap-1.5 py-3 hover:bg-secondary/50 border border-transparent hover:border-border/20">
+                            <link.icon className="w-4 h-4 text-primary" />
+                            <span className="text-[10px] text-muted-foreground">{link.title}</span>
                           </Button>
                         </Link>
                       ))}
@@ -497,16 +466,16 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Remote Input on front page */}
+                {/* Remote Input Preview */}
                 <RemoteInputPanel className="md:col-span-2" />
               </div>
             )}
 
             {/* Remote Tab */}
             {activeTab === "remote" && (
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-2">
                 <RemoteInputPanel />
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <SmartP2PManager
                     connectionMode={connectionMode}
                     latency={p2pLatency}
@@ -526,7 +495,7 @@ export default function Hub() {
 
             {/* Media Tab */}
             {activeTab === "media" && (
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-2">
                 <MediaSyncPanel />
                 <GalaxyBudsManager />
                 <ZoomMeetings className="md:col-span-2" />
@@ -535,7 +504,7 @@ export default function Hub() {
 
             {/* Tools Tab */}
             {activeTab === "tools" && (
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-2">
                 <NotificationSyncMinimal />
                 <CallControlsMinimal />
                 <GalaxyBudsManager />
@@ -546,12 +515,12 @@ export default function Hub() {
 
             {/* No Device Warning */}
             {!isLoading && devices.length === 0 && (
-              <Card className="border-border/40">
+              <Card className="border-border/20 bg-card/50">
                 <CardContent className="p-6 text-center">
-                  <WifiOff className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-                  <h3 className="font-medium mb-1">No PC Connected</h3>
-                  <p className="text-sm text-muted-foreground mb-4">Run the Python agent on your PC</p>
-                  <code className="block p-3 bg-muted rounded-lg text-xs font-mono text-left overflow-x-auto">
+                  <Wifi className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                  <h3 className="font-medium text-sm mb-1">No PC Connected</h3>
+                  <p className="text-xs text-muted-foreground mb-3">Run the Python agent on your PC</p>
+                  <code className="block p-2 bg-secondary/50 rounded-md text-[10px] font-mono">
                     python jarvis_agent.py
                   </code>
                 </CardContent>

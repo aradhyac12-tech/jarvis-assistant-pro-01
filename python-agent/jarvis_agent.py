@@ -4649,7 +4649,7 @@ class SystemTray:
 
 # ============== NATIVE GUI (TKINTER) ==============
 class JarvisGUI:
-    """Ultra-minimal JARVIS Agent GUI - clean, elegant, dark theme."""
+    """Ultra-minimal JARVIS Agent GUI - True Black, File Transfer Support."""
     
     def __init__(self):
         self.root = None
@@ -4668,13 +4668,19 @@ class JarvisGUI:
         self.log_text = None
         self.last_log_count = 0
         
-        # Colors - Modern dark theme
+        # File transfer
+        self.save_path_var = None
+        self.file_list = None
+        self.transfer_progress = None
+        self.transfer_status = None
+        
+        # Colors - TRUE BLACK theme
         self.colors = {
-            "bg": "#09090b",
-            "card": "#18181b",
-            "border": "#27272a",
+            "bg": "#000000",          # Pure black
+            "card": "#0a0a0a",         # Near black for cards
+            "border": "#1a1a1a",       # Dark border
             "text": "#fafafa",
-            "muted": "#71717a",
+            "muted": "#666666",
             "primary": "#3b82f6",
             "success": "#22c55e",
             "warning": "#eab308",
@@ -4691,14 +4697,15 @@ class JarvisGUI:
         self.running = True
         self.root = tk.Tk()
         self.root.title("JARVIS")
-        self.root.geometry("460x680")
+        self.root.geometry("480x780")
         self.root.configure(bg=self.colors["bg"])
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(420, 600)
         
         # Center window
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - 460) // 2
-        y = (self.root.winfo_screenheight() - 680) // 2
+        x = (self.root.winfo_screenwidth() - 480) // 2
+        y = (self.root.winfo_screenheight() - 780) // 2
         self.root.geometry(f"+{x}+{y}")
         
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -4779,102 +4786,160 @@ class JarvisGUI:
         style.configure("Stat.Horizontal.TProgressbar", background=c["primary"], troughcolor=c["border"], thickness=4)
     
     def _build_ui(self):
-        """Build minimal, elegant UI."""
+        """Build minimal, elegant UI with file transfer."""
         c = self.colors
         
-        # Main container
+        # Make window taller for file transfer section
+        self.root.geometry("480x780")
+        x = (self.root.winfo_screenwidth() - 480) // 2
+        y = (self.root.winfo_screenheight() - 780) // 2
+        self.root.geometry(f"+{x}+{y}")
+        
+        # Main container with notebook for tabs
         main = tk.Frame(self.root, bg=c["bg"])
-        main.pack(fill=tk.BOTH, expand=True, padx=24, pady=24)
+        main.pack(fill=tk.BOTH, expand=True, padx=20, pady=16)
         
-        # Header row
+        # Header row - Minimal
         header = tk.Frame(main, bg=c["bg"])
-        header.pack(fill=tk.X, pady=(0, 20))
+        header.pack(fill=tk.X, pady=(0, 12))
         
-        title = tk.Label(header, text="JARVIS", font=("Segoe UI", 20, "bold"), fg=c["text"], bg=c["bg"])
+        title = tk.Label(header, text="JARVIS", font=("Segoe UI", 18, "bold"), fg=c["text"], bg=c["bg"])
         title.pack(side=tk.LEFT)
         
         # Status indicator
         status_frame = tk.Frame(header, bg=c["bg"])
         status_frame.pack(side=tk.RIGHT)
         
-        self.status_dot = tk.Canvas(status_frame, width=10, height=10, bg=c["bg"], highlightthickness=0)
-        self.status_dot.pack(side=tk.LEFT, padx=(0, 6))
-        self.status_dot.create_oval(2, 2, 8, 8, fill=c["muted"], outline="")
+        self.status_dot = tk.Canvas(status_frame, width=8, height=8, bg=c["bg"], highlightthickness=0)
+        self.status_dot.pack(side=tk.LEFT, padx=(0, 5))
+        self.status_dot.create_oval(1, 1, 7, 7, fill=c["muted"], outline="")
         
-        self.status_text = tk.Label(status_frame, text="Connecting", font=("Segoe UI", 10), fg=c["muted"], bg=c["bg"])
+        self.status_text = tk.Label(status_frame, text="Connecting", font=("Segoe UI", 9), fg=c["muted"], bg=c["bg"])
         self.status_text.pack(side=tk.LEFT)
         
-        # Pairing card - Hero section
+        # Pairing card - Compact hero
         pairing_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        pairing_card.pack(fill=tk.X, pady=(0, 20), ipady=20)
+        pairing_card.pack(fill=tk.X, pady=(0, 12), ipady=12)
         
-        tk.Label(pairing_card, text="PAIRING CODE", font=("Segoe UI", 9, "bold"), fg=c["muted"], bg=c["card"]).pack(pady=(16, 4))
+        tk.Label(pairing_card, text="PAIRING CODE", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(pady=(10, 2))
         
-        self.pairing_label = tk.Label(pairing_card, text="------", font=("JetBrains Mono", 40, "bold"), fg=c["primary"], bg=c["card"])
+        self.pairing_label = tk.Label(pairing_card, text="------", font=("JetBrains Mono", 32, "bold"), fg=c["primary"], bg=c["card"])
         self.pairing_label.pack()
         
-        tk.Label(pairing_card, text="Enter this code in the mobile app", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(pady=(4, 16))
+        tk.Label(pairing_card, text="Enter in mobile app", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(pady=(2, 10))
         
-        # Stats row - CPU & Memory only
+        # Stats row - Ultra compact
         stats_row = tk.Frame(main, bg=c["bg"])
-        stats_row.pack(fill=tk.X, pady=(0, 16))
+        stats_row.pack(fill=tk.X, pady=(0, 10))
         
         for i in range(2):
             stats_row.columnconfigure(i, weight=1)
         
         # CPU
         cpu_frame = tk.Frame(stats_row, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        cpu_frame.grid(row=0, column=0, padx=(0, 8), sticky="nsew")
-        tk.Label(cpu_frame, text="CPU", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=12, pady=(10, 4))
+        cpu_frame.grid(row=0, column=0, padx=(0, 4), sticky="nsew")
+        tk.Label(cpu_frame, text="CPU", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=10, pady=(8, 2))
         self.cpu_bar = ttk.Progressbar(cpu_frame, style="Stat.Horizontal.TProgressbar", length=160, mode='determinate')
-        self.cpu_bar.pack(fill=tk.X, padx=12, pady=(0, 10))
+        self.cpu_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
         
         # Memory
         mem_frame = tk.Frame(stats_row, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        mem_frame.grid(row=0, column=1, padx=(8, 0), sticky="nsew")
-        tk.Label(mem_frame, text="MEMORY", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=12, pady=(10, 4))
+        mem_frame.grid(row=0, column=1, padx=(4, 0), sticky="nsew")
+        tk.Label(mem_frame, text="MEM", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=10, pady=(8, 2))
         self.mem_bar = ttk.Progressbar(mem_frame, style="Stat.Horizontal.TProgressbar", length=160, mode='determinate')
-        self.mem_bar.pack(fill=tk.X, padx=12, pady=(0, 10))
+        self.mem_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
         
-        # Stream status - Simple horizontal indicators
+        # ============ FILE TRANSFER SECTION ============
+        file_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
+        file_card.pack(fill=tk.X, pady=(0, 10))
+        
+        # File Transfer Header
+        file_header = tk.Frame(file_card, bg=c["card"])
+        file_header.pack(fill=tk.X, padx=12, pady=(10, 6))
+        
+        tk.Label(file_header, text="📁 FILE TRANSFER", font=("Segoe UI", 9, "bold"), fg=c["text"], bg=c["card"]).pack(side=tk.LEFT)
+        
+        # Save path row
+        path_row = tk.Frame(file_card, bg=c["card"])
+        path_row.pack(fill=tk.X, padx=12, pady=(0, 6))
+        
+        tk.Label(path_row, text="Save to:", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
+        
+        default_save = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
+        self.save_path_var = tk.StringVar(value=default_save)
+        
+        path_entry = tk.Entry(path_row, textvariable=self.save_path_var, font=("JetBrains Mono", 8), 
+                             bg=c["bg"], fg=c["text"], insertbackground=c["text"], bd=0, highlightthickness=1,
+                             highlightbackground=c["border"], highlightcolor=c["primary"])
+        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 4))
+        
+        browse_btn = tk.Label(path_row, text="📂", font=("Segoe UI", 10), fg=c["primary"], bg=c["card"], cursor="hand2")
+        browse_btn.pack(side=tk.RIGHT)
+        browse_btn.bind("<Button-1>", self._browse_save_folder)
+        
+        # Action buttons row
+        btn_row = tk.Frame(file_card, bg=c["card"])
+        btn_row.pack(fill=tk.X, padx=12, pady=(0, 8))
+        
+        # Send File button
+        send_btn = tk.Frame(btn_row, bg=c["primary"], cursor="hand2")
+        send_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
+        send_label = tk.Label(send_btn, text="📤 Send File", font=("Segoe UI", 9, "bold"), fg="#000000", bg=c["primary"], pady=6)
+        send_label.pack()
+        send_btn.bind("<Button-1>", self._send_file_dialog)
+        send_label.bind("<Button-1>", self._send_file_dialog)
+        
+        # Open Folder button  
+        open_btn = tk.Frame(btn_row, bg=c["border"], cursor="hand2")
+        open_btn.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(4, 0))
+        open_label = tk.Label(open_btn, text="📂 Open Folder", font=("Segoe UI", 9), fg=c["text"], bg=c["border"], pady=6)
+        open_label.pack()
+        open_btn.bind("<Button-1>", self._open_save_folder)
+        open_label.bind("<Button-1>", self._open_save_folder)
+        
+        # Transfer status
+        self.transfer_status = tk.Label(file_card, text="Ready to receive files", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"])
+        self.transfer_status.pack(pady=(0, 8))
+        
+        # Stream status - Compact horizontal
         stream_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        stream_card.pack(fill=tk.X, pady=(0, 16), ipady=12)
+        stream_card.pack(fill=tk.X, pady=(0, 10), ipady=8)
         
-        tk.Label(stream_card, text="STREAMS", font=("Segoe UI", 9, "bold"), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=16, pady=(12, 8))
+        tk.Label(stream_card, text="STREAMS", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=12, pady=(8, 4))
         
         indicators_row = tk.Frame(stream_card, bg=c["card"])
-        indicators_row.pack(fill=tk.X, padx=16, pady=(0, 12))
+        indicators_row.pack(fill=tk.X, padx=12, pady=(0, 8))
         
         for name, icon in [("Audio", "🔊"), ("Camera", "📷"), ("Screen", "🖥")]:
             frame = tk.Frame(indicators_row, bg=c["card"])
-            frame.pack(side=tk.LEFT, padx=(0, 24))
+            frame.pack(side=tk.LEFT, padx=(0, 16))
             
-            dot = tk.Canvas(frame, width=8, height=8, bg=c["card"], highlightthickness=0)
-            dot.pack(side=tk.LEFT, padx=(0, 6))
-            dot.create_oval(1, 1, 7, 7, fill=c["muted"], outline="", tags="dot")
+            dot = tk.Canvas(frame, width=6, height=6, bg=c["card"], highlightthickness=0)
+            dot.pack(side=tk.LEFT, padx=(0, 4))
+            dot.create_oval(1, 1, 5, 5, fill=c["muted"], outline="", tags="dot")
             
-            tk.Label(frame, text=name, font=("Segoe UI", 9), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
+            tk.Label(frame, text=name, font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
             
             self.stream_indicators[name.lower()] = dot
         
-        # Activity log
+        # Activity log - Compact
         log_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
         log_card.pack(fill=tk.BOTH, expand=True)
         
         log_header = tk.Frame(log_card, bg=c["card"])
-        log_header.pack(fill=tk.X, padx=16, pady=(12, 8))
+        log_header.pack(fill=tk.X, padx=12, pady=(8, 4))
         
-        tk.Label(log_header, text="ACTIVITY", font=("Segoe UI", 9, "bold"), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
+        tk.Label(log_header, text="ACTIVITY", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
         
-        clear_btn = tk.Label(log_header, text="Clear", font=("Segoe UI", 9), fg=c["muted"], bg=c["card"], cursor="hand2")
+        clear_btn = tk.Label(log_header, text="Clear", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"], cursor="hand2")
         clear_btn.pack(side=tk.RIGHT)
         clear_btn.bind("<Button-1>", lambda e: self._clear_logs())
         
         self.log_text = scrolledtext.ScrolledText(
-            log_card, bg="#0c0c0e", fg=c["text"], font=("JetBrains Mono", 9), 
-            wrap=tk.WORD, bd=0, highlightthickness=0, height=12, insertbackground=c["text"]
+            log_card, bg="#050505", fg=c["text"], font=("JetBrains Mono", 8), 
+            wrap=tk.WORD, bd=0, highlightthickness=0, height=8, insertbackground=c["text"]
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.log_text.configure(state=tk.DISABLED)
         
         # Log tags
@@ -4882,7 +4947,59 @@ class JarvisGUI:
         self.log_text.tag_configure("warn", foreground=c["warning"])
         self.log_text.tag_configure("info", foreground=c["primary"])
         self.log_text.tag_configure("voice", foreground=c["success"])
+        self.log_text.tag_configure("file", foreground=c["accent"])
         self.log_text.tag_configure("time", foreground=c["muted"])
+    
+    def _browse_save_folder(self, event=None):
+        """Open folder browser for save path."""
+        from tkinter import filedialog
+        folder = filedialog.askdirectory(
+            title="Select folder to save received files",
+            initialdir=self.save_path_var.get()
+        )
+        if folder:
+            self.save_path_var.set(folder)
+            add_log("info", f"Save path changed: {folder}", category="file")
+    
+    def _send_file_dialog(self, event=None):
+        """Open file dialog to select files to send to phone."""
+        from tkinter import filedialog
+        files = filedialog.askopenfilenames(
+            title="Select files to send to phone",
+            filetypes=[
+                ("All files", "*.*"),
+                ("Images", "*.jpg *.jpeg *.png *.gif *.webp"),
+                ("Documents", "*.pdf *.doc *.docx *.txt"),
+                ("Videos", "*.mp4 *.mkv *.avi *.mov"),
+            ]
+        )
+        if files:
+            for f in files:
+                filename = os.path.basename(f)
+                add_log("info", f"Queued for send: {filename}", category="file")
+                self._update_transfer_status(f"Sending: {filename}")
+                # Note: Actual sending would be handled by the web app requesting chunks
+                notification_manager.notify("File Ready", f"{filename} ready to send to phone")
+    
+    def _open_save_folder(self, event=None):
+        """Open the save folder in file explorer."""
+        folder = self.save_path_var.get()
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if platform.system() == "Windows":
+                os.startfile(folder)
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", folder])
+            else:
+                subprocess.run(["xdg-open", folder])
+            add_log("info", f"Opened folder: {folder}", category="file")
+        except Exception as e:
+            add_log("error", f"Failed to open folder: {e}", category="file")
+    
+    def _update_transfer_status(self, message: str):
+        """Update transfer status label."""
+        if self.transfer_status:
+            self.transfer_status.configure(text=message)
 
     def _update_ui(self):
         """Update UI with current status."""
