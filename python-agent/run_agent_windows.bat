@@ -1,22 +1,27 @@
 @echo off
 setlocal
 
-REM JARVIS PC Agent v3.0 - Windows One-Click Runner
-REM - Installs dependencies from requirements.txt
-REM - Runs the agent (GUI mode by default)
+REM JARVIS PC Agent - Windows One-Click Runner
+REM - installs dependencies from requirements.txt
+REM - sets backend URL/key for this agent session
+REM - runs the agent
 
 cd /d "%~dp0"
 
 echo ================================================
-echo   JARVIS Agent v3.0 - Setup + Run
+echo   JARVIS Agent - Setup + Run
 echo ================================================
 echo.
+
+REM Backend connection:
+REM - jarvis_agent.py ships with a default backend for this project.
+REM - To override, set JARVIS_SUPABASE_URL and JARVIS_SUPABASE_KEY before running this .bat.
 
 echo Using Python:
 where python
 if errorlevel 1 (
   echo.
-  echo X Python not found in PATH.
+  echo ❌ Python not found in PATH.
   echo Install Python 3.10-3.12 from https://python.org and re-run.
   pause
   exit /b 1
@@ -24,23 +29,17 @@ if errorlevel 1 (
 
 echo.
 echo Installing dependencies...
-python -m pip install -r requirements.txt --quiet
+python -m pip install -r requirements.txt
 if errorlevel 1 (
   echo.
-  echo X Dependency install failed.
-  echo If you're on Python 3.13/3.14, install Python 3.10-3.12.
+  echo ❌ Dependency install failed.
+  echo If you're on Python 3.13/3.14, install Python 3.10-3.12 and recreate your venv.
   pause
   exit /b 1
 )
 
 echo.
 echo Starting agent...
-REM Use .pyw for silent window-less operation, or .py for console
-if exist jarvis_agent.pyw (
-  start "" pythonw jarvis_agent.pyw
-) else (
-  python jarvis_agent.py
-)
+python jarvis_agent.py
 
-echo Agent started! You can close this window.
-timeout /t 3
+pause

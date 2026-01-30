@@ -500,7 +500,7 @@ export default function Hub() {
             {/* Remote Tab - Trackpad + Keyboard + Clipboard */}
             {activeTab === "remote" && (
               <div className="space-y-3">
-                {/* P2P Connection Manager with IP Display */}
+                {/* P2P Connection Manager */}
                 <SmartP2PManager
                   connectionMode={connectionMode}
                   latency={p2pLatency}

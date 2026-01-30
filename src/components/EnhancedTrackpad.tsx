@@ -109,14 +109,14 @@ export const EnhancedTrackpad = memo(function EnhancedTrackpad({
       </CardHeader>
 
       <CardContent className="p-4 pt-0 space-y-3">
-        {/* Trackpad Area - Responsive height based on screen */}
+        {/* Large Trackpad Area */}
         <div
-          className="w-full h-[45vh] min-h-[280px] max-h-[450px] bg-muted/20 rounded-xl border border-dashed border-border/40 cursor-crosshair flex flex-col items-center justify-center select-none touch-none relative overflow-hidden"
+          className="aspect-[4/3] min-h-[200px] bg-muted/20 rounded-xl border border-dashed border-border/40 cursor-crosshair flex flex-col items-center justify-center select-none touch-none relative overflow-hidden"
           {...gestureInput.touchHandlers}
           {...gestureInput.mouseHandlers}
           onWheel={gestureInput.wheelHandler}
         >
-          <Mouse className="w-10 h-10 text-muted-foreground/15" />
+          <Mouse className="w-8 h-8 text-muted-foreground/20" />
           <div className="absolute bottom-3 left-3 right-3">
             <div className="flex items-center justify-center gap-1.5 text-[10px] text-muted-foreground/60 bg-background/30 backdrop-blur-sm rounded-lg py-1.5 px-2">
               <Hand className="w-3 h-3" />
