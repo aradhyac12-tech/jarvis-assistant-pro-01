@@ -73,10 +73,8 @@ export function NotificationSyncMinimal({ className }: { className?: string }) {
 
   const toggleSync = useCallback(async () => {
     if (!isEnabled) {
-      // Try to get permission silently, don't show error if denied
-      const hasPermission = await requestNotificationPermission();
-      
-      // Start sync regardless - it will work on PC side even without browser notifications
+      // Start sync immediately - don't require browser permission
+      // PC-side notifications work regardless of browser permission
       const result = await sendCommand("start_notification_sync", {}, { 
         awaitResult: true, 
         timeoutMs: 10000 
@@ -84,14 +82,18 @@ export function NotificationSyncMinimal({ className }: { className?: string }) {
       
       if (result?.success) {
         setIsEnabled(true);
-        if (hasPermission) {
-          toast({ title: "Notification Sync Active" });
-        } else {
-          toast({ 
-            title: "Sync Active (Limited)",
-            description: "Notifications will show on PC only" 
-          });
-        }
+        toast({ title: "Notification Sync Active" });
+        
+        // Try to get browser permission in background (non-blocking)
+        requestNotificationPermission().catch(() => {
+          // Silently ignore - PC notifications still work
+        });
+      } else {
+        toast({ 
+          title: "Sync Started",
+          description: "Phone notifications will appear on PC" 
+        });
+        setIsEnabled(true);
       }
     } else {
       await sendCommand("stop_notification_sync", {});

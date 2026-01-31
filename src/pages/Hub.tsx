@@ -49,7 +49,7 @@ import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
 import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
 import { EnhancedTrackpad } from "@/components/EnhancedTrackpad";
-import { KDEKeyboard } from "@/components/KDEKeyboard";
+import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 
 type Tab = "control" | "remote" | "media" | "tools";
@@ -528,10 +528,14 @@ export default function Hub() {
                   isConnected={isConnected}
                 />
 
-                {/* Full Keyboard */}
+                {/* Mobile Keyboard - KDE Connect style */}
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
-                    <KDEKeyboard onKeyPress={fireKey} disabled={!isConnected} />
+                    <MobileKeyboard 
+                      onKeyPress={fireKey} 
+                      onTypeText={handleTypeText}
+                      disabled={!isConnected} 
+                    />
                   </CardContent>
                 </Card>
 

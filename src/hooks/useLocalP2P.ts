@@ -53,38 +53,56 @@ export function useLocalP2P() {
     });
   }, []);
 
-  // Try to discover local P2P server by probing common network IPs
+  // Try to discover local P2P server by probing network IPs
   const discoverLocalServer = useCallback(async (networkPrefix: string): Promise<string | null> => {
     if (!networkPrefix) return null;
 
-    // First try common PC IPs in the network
-    const commonSuffixes = [".1", ".2", ".100", ".101", ".10", ".50", ".200"];
+    console.log(`[LocalP2P] Discovering server on network ${networkPrefix}.*`);
+
+    // Common PC IPs to try first (most likely)
+    const prioritySuffixes = [".1", ".2", ".100", ".101", ".10", ".50", ".200", ".150", ".5"];
     
-    // Try all in parallel for speed
-    const probes = commonSuffixes.map(async (suffix) => {
+    // Try priority IPs first in parallel
+    const priorityProbes = prioritySuffixes.map(async (suffix) => {
       const ip = networkPrefix + suffix;
       const available = await probeLocalServer(ip);
       return available ? ip : null;
     });
 
-    const results = await Promise.all(probes);
-    const found = results.find((ip) => ip !== null);
+    const priorityResults = await Promise.all(priorityProbes);
+    const foundPriority = priorityResults.find((ip) => ip !== null);
     
-    if (found) {
-      console.log(`[LocalP2P] Found server at ${found}`);
-      return found;
+    if (foundPriority) {
+      console.log(`[LocalP2P] Found server at ${foundPriority}`);
+      return foundPriority;
     }
 
-    // Fallback: scan remaining IPs (1-20)
-    for (let i = 1; i <= 20; i++) {
-      if (commonSuffixes.includes(`.${i}`)) continue;
-      const ip = `${networkPrefix}.${i}`;
-      if (await probeLocalServer(ip)) {
-        console.log(`[LocalP2P] Found server at ${ip}`);
-        return ip;
+    // Extended scan - probe more IPs (2-254, excluding already tried)
+    const triedSuffixes = new Set(prioritySuffixes.map(s => parseInt(s.slice(1))));
+    
+    // Scan in batches of 10 to avoid overwhelming network
+    for (let batch = 0; batch < 5; batch++) {
+      const start = batch * 10 + 1;
+      const end = start + 10;
+      const batchProbes: Promise<string | null>[] = [];
+      
+      for (let i = start; i < end && i <= 50; i++) {
+        if (triedSuffixes.has(i)) continue;
+        const ip = `${networkPrefix}.${i}`;
+        batchProbes.push(
+          probeLocalServer(ip).then(available => available ? ip : null)
+        );
+      }
+      
+      const batchResults = await Promise.all(batchProbes);
+      const foundBatch = batchResults.find((ip) => ip !== null);
+      if (foundBatch) {
+        console.log(`[LocalP2P] Found server at ${foundBatch}`);
+        return foundBatch;
       }
     }
 
+    console.log("[LocalP2P] No server found on network");
     return null;
   }, [probeLocalServer]);
 
