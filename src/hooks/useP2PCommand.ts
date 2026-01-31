@@ -310,16 +310,30 @@ export function useP2PCommand() {
     if (!autoLocalP2PRef.current) return;
     
     const pcInfo = networkMonitor.networkState.pc;
-    const sameNetwork = networkMonitor.networkState.sameNetwork;
-    if (!sameNetwork) return;
-    if (!pcInfo?.localIp && !pcInfo?.networkPrefix) return;
+    const phoneInfo = networkMonitor.networkState.phone;
     
-    console.log("[LocalP2P] Attempting local P2P connection...");
+    // Check if we're on the same network by comparing prefixes
+    const phonePrefix = phoneInfo?.networkPrefix || "";
+    const pcPrefix = pcInfo?.networkPrefix || "";
+    const sameNetwork = !!(phonePrefix && pcPrefix && phonePrefix === pcPrefix);
     
-    // Try known PC IP first, then discover
+    if (!sameNetwork && !pcInfo?.localIp) {
+      // Also try if we have PC IP directly (from system info)
+      if (!pcInfo?.localIp) return;
+    }
+    
+    console.log("[LocalP2P] Attempting local P2P connection...", {
+      phonePrefix,
+      pcPrefix,
+      sameNetwork,
+      pcIp: pcInfo?.localIp
+    });
+    
+    // Try known PC IP first, then discover based on phone's network prefix
+    const targetPrefix = pcPrefix || phonePrefix;
     await localP2P.checkAndConnect(
-      pcInfo.networkPrefix || "",
-      pcInfo.localIp || undefined
+      targetPrefix,
+      pcInfo?.localIp || undefined
     );
     
     if (localP2P.isReady) {
@@ -327,7 +341,7 @@ export function useP2PCommand() {
       setConnectionMode("local_p2p");
       setLatency(localP2P.state.latency);
     }
-  }, [localP2P, networkMonitor.networkState.pc, networkMonitor.networkState.sameNetwork]);
+  }, [localP2P, networkMonitor.networkState.pc, networkMonitor.networkState.phone]);
 
   // Handle network changes - auto-switch between modes
   // Register callback once, use refs for latest state
