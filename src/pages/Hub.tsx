@@ -77,6 +77,7 @@ export default function Hub() {
     forceLocalP2P,
     networkState,
     localP2PState,
+    inputSessionId,
     fireMouse,
     fireKey,
     fireScroll,
@@ -96,6 +97,7 @@ export default function Hub() {
   
   const [cmdInput, setCmdInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isBoosting, setIsBoosting] = useState(false);
 
   const volumeCommitRef = useRef<number | null>(null);
   const brightnessCommitRef = useRef<number | null>(null);
@@ -255,6 +257,42 @@ export default function Hub() {
     await sendCommand(action, {});
     toast({ title: `${action.charAt(0).toUpperCase() + action.slice(1)} initiated` });
   }, [sendCommand, toast]);
+
+  // Quick boost (one-tap) – runs the same underlying commands as BoostPC
+  const handleQuickBoost = useCallback(async () => {
+    if (!isConnected || isBoosting) return;
+    setIsBoosting(true);
+    try {
+      toast({ title: "Boost started" });
+      await sendCommand("boost_ram", {}, { awaitResult: true, timeoutMs: 30000 });
+      await sendCommand("clear_temp_files", {}, { awaitResult: true, timeoutMs: 60000 });
+      await sendCommand("set_power_plan", { plan: "high_performance" }, { awaitResult: true, timeoutMs: 15000 });
+      toast({ title: "Boost complete" });
+    } catch (e) {
+      toast({ title: "Boost failed", variant: "destructive" });
+    } finally {
+      setIsBoosting(false);
+    }
+  }, [isBoosting, isConnected, sendCommand, toast]);
+
+  // Remote input safety: only allow mouse/keyboard execution while Remote tab is open
+  useEffect(() => {
+    if (!isConnected || activeTab !== "remote") return;
+
+    let timer: number | null = null;
+    const enable = () => {
+      // keepalive extends the agent-side window; also binds the input session id
+      sendCommand("remote_input_enable", { session: inputSessionId, ttl_ms: 12000 });
+    };
+
+    enable();
+    timer = window.setInterval(enable, 5000);
+
+    return () => {
+      if (timer) window.clearInterval(timer);
+      sendCommand("remote_input_disable", { session: inputSessionId });
+    };
+  }, [activeTab, inputSessionId, isConnected, sendCommand]);
 
   // Command execution
   const handleCommand = async () => {
@@ -446,12 +484,13 @@ export default function Hub() {
                 {/* Power Controls */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-5 gap-2">
                       {[
                         { icon: Lock, action: handleLock, label: "Lock" },
                         { icon: Moon, action: () => handlePower("sleep"), label: "Sleep" },
                         { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart" },
                         { icon: Power, action: () => handlePower("shutdown"), label: "Shutdown", danger: true },
+                        { icon: Zap, action: handleQuickBoost, label: "Boost" },
                       ].map((btn) => (
                         <Tooltip key={btn.label}>
                           <TooltipTrigger asChild>
@@ -460,10 +499,11 @@ export default function Hub() {
                               size="icon" 
                               className={cn(
                                 "h-10 w-full border-border/20",
-                                btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30"
+                                btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30",
+                                btn.label === "Boost" && "hover:border-primary/30"
                               )}
                               onClick={btn.action} 
-                              disabled={!isConnected}
+                              disabled={!isConnected || (btn.label === "Boost" && isBoosting)}
                             >
                               <btn.icon className="w-4 h-4" />
                             </Button>
@@ -582,7 +622,7 @@ export default function Hub() {
                   <h3 className="font-medium text-sm mb-1">No PC Connected</h3>
                   <p className="text-xs text-muted-foreground mb-3">Run the Python agent on your PC</p>
                   <code className="block p-2 bg-secondary/50 rounded-md text-[10px] font-mono">
-                    python jarvis_agent.py
+                    pythonw jarvis_agent.pyw
                   </code>
                 </CardContent>
               </Card>
