@@ -9,6 +9,12 @@ export interface LocalP2PState {
   latency: number;
 }
 
+type PendingRequest = {
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+  timeoutId: number;
+};
+
 const LOCAL_P2P_PORT = 9876;
 const PROBE_TIMEOUT_MS = 500; // Very short timeout for local network
 
@@ -30,6 +36,7 @@ export function useLocalP2P() {
   const probeTimeoutRef = useRef<number | null>(null);
   const lastPingRef = useRef<number>(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const pendingRef = useRef<Map<string, PendingRequest>>(new Map());
 
   // Probe a specific IP for local P2P server
   const probeLocalServer = useCallback(async (ip: string): Promise<boolean> => {
@@ -77,23 +84,21 @@ export function useLocalP2P() {
       return foundPriority;
     }
 
-    // Extended scan - probe more IPs (2-254, excluding already tried)
-    const triedSuffixes = new Set(prioritySuffixes.map(s => parseInt(s.slice(1))));
-    
-    // Scan in batches of 10 to avoid overwhelming network
-    for (let batch = 0; batch < 5; batch++) {
-      const start = batch * 10 + 1;
-      const end = start + 10;
+    // Extended scan - probe more IPs (1-254, excluding already tried)
+    const triedSuffixes = new Set(prioritySuffixes.map((s) => parseInt(s.slice(1), 10)));
+    const BATCH_SIZE = 25;
+    const MAX_IP = 254;
+
+    for (let start = 1; start <= MAX_IP; start += BATCH_SIZE) {
+      const end = Math.min(start + BATCH_SIZE - 1, MAX_IP);
       const batchProbes: Promise<string | null>[] = [];
-      
-      for (let i = start; i < end && i <= 50; i++) {
+
+      for (let i = start; i <= end; i++) {
         if (triedSuffixes.has(i)) continue;
         const ip = `${networkPrefix}.${i}`;
-        batchProbes.push(
-          probeLocalServer(ip).then(available => available ? ip : null)
-        );
+        batchProbes.push(probeLocalServer(ip).then((available) => (available ? ip : null)));
       }
-      
+
       const batchResults = await Promise.all(batchProbes);
       const foundBatch = batchResults.find((ip) => ip !== null);
       if (foundBatch) {
@@ -140,12 +145,26 @@ export function useLocalP2P() {
           if (msg.type === "pong") {
             const latency = Date.now() - lastPingRef.current;
             setState((prev) => ({ ...prev, latency }));
+          } else if ((msg.type === "command_result" || msg.type === "command_error") && msg.requestId) {
+            const pending = pendingRef.current.get(String(msg.requestId));
+            if (pending) {
+              clearTimeout(pending.timeoutId);
+              pendingRef.current.delete(String(msg.requestId));
+              if (msg.type === "command_error") pending.reject(new Error(msg.error || "Command failed"));
+              else pending.resolve(msg.result);
+            }
           }
         } catch {}
       };
 
       ws.onclose = () => {
         wsRef.current = null;
+        // Reject any pending requests
+        for (const [id, pending] of pendingRef.current.entries()) {
+          clearTimeout(pending.timeoutId);
+          pending.reject(new Error("Local P2P disconnected"));
+          pendingRef.current.delete(id);
+        }
         setState((prev) => ({
           ...prev,
           isConnected: false,
@@ -170,6 +189,13 @@ export function useLocalP2P() {
       wsRef.current.close();
       wsRef.current = null;
     }
+
+    for (const [id, pending] of pendingRef.current.entries()) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(new Error("Local P2P disconnected"));
+      pendingRef.current.delete(id);
+    }
+
     setState((prev) => ({
       ...prev,
       isConnected: false,
@@ -193,6 +219,37 @@ export function useLocalP2P() {
       return false;
     }
   }, []);
+
+  // Request/response style command invocation (needed for file transfer speed)
+  const invokeCommand = useCallback(
+    async (commandType: string, payload: Record<string, unknown> = {}, timeoutMs = 30000) => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        throw new Error("Local P2P not connected");
+      }
+
+      const requestId = crypto.randomUUID();
+      const promise = new Promise<any>((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+          pendingRef.current.delete(requestId);
+          reject(new Error("Local P2P command timeout"));
+        }, timeoutMs);
+
+        pendingRef.current.set(requestId, { resolve, reject, timeoutId });
+      });
+
+      wsRef.current.send(
+        JSON.stringify({
+          type: "command",
+          requestId,
+          commandType,
+          payload,
+        })
+      );
+
+      return promise;
+    },
+    []
+  );
 
   // Send ping for latency measurement
   const sendPing = useCallback(() => {
@@ -246,6 +303,7 @@ export function useLocalP2P() {
     connect,
     disconnect,
     sendCommand,
+    invokeCommand,
     sendPing,
     checkAndConnect,
     discoverLocalServer,

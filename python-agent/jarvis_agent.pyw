@@ -38,6 +38,9 @@ import traceback
 # ============== VERSION ==============
 AGENT_VERSION = "3.0.0"
 
+# Remote input safety window (prevents "ghost" input)
+INPUT_SESSION_TTL_SECONDS = 12
+
 # Native GUI
 try:
     import tkinter as tk
@@ -307,9 +310,13 @@ class LocalP2PServer:
     
     async def _process_message(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         msg_type = data.get("type", "")
+        request_id = data.get("requestId")
         
         if msg_type == "ping":
-            return {"type": "pong", "t": data.get("t", 0), "server_time": datetime.now().isoformat()}
+            resp: Dict[str, Any] = {"type": "pong", "t": data.get("t", 0), "server_time": datetime.now().isoformat()}
+            if request_id:
+                resp["requestId"] = request_id
+            return resp
         
         elif msg_type == "command":
             command_type = data.get("commandType", "")
@@ -324,6 +331,7 @@ class LocalP2PServer:
                     
                     return {
                         "type": "command_result",
+                        "requestId": request_id,
                         "commandType": command_type,
                         "result": result,
                     }
@@ -331,6 +339,7 @@ class LocalP2PServer:
                     add_log("error", f"Command '{command_type}' failed: {e}", category="p2p")
                     return {
                         "type": "command_error",
+                        "requestId": request_id,
                         "commandType": command_type,
                         "error": str(e),
                     }
@@ -539,6 +548,8 @@ class JarvisAgent:
         self.pairing_expires_at: Optional[datetime] = None
         self.is_locked = False
         self.running = True
+        self._active_input_session: Optional[str] = None
+        self._input_session_expires_at: float = 0.0
         self.last_heartbeat = 0
         
         # Connection recovery
@@ -928,6 +939,59 @@ class JarvisAgent:
         """Execute a command and return result. Never silently fails."""
         try:
             cmd = command_type.lower().strip()
+
+            # Normalize legacy command names from the web app
+            if cmd == "lock":
+                cmd = "lock_screen"
+            if cmd == "unlock":
+                cmd = "smart_unlock"
+            if cmd == "press_key":
+                cmd = "key_press"
+            if cmd == "mouse_scroll":
+                cmd = "scroll"
+            if cmd == "pinch_zoom":
+                cmd = "zoom"
+
+            # Remote input gating commands
+            if cmd == "remote_input_enable":
+                session = str(payload.get("session", "") or "")
+                ttl_ms = int(payload.get("ttl_ms", INPUT_SESSION_TTL_SECONDS * 1000) or (INPUT_SESSION_TTL_SECONDS * 1000))
+                if not session:
+                    return {"success": False, "error": "Missing session"}
+                self._active_input_session = session
+                self._input_session_expires_at = time.time() + max(1, ttl_ms / 1000.0)
+                return {"success": True, "enabled": True}
+
+            if cmd == "remote_input_disable":
+                session = str(payload.get("session", "") or "")
+                if session and session == self._active_input_session:
+                    self._active_input_session = None
+                    self._input_session_expires_at = 0.0
+                    return {"success": True, "enabled": False}
+                return {"success": True, "enabled": False}
+
+            # Reject remote input unless enabled recently (prevents accidental/queued execution)
+            if cmd in {
+                "mouse_move",
+                "mouse_click",
+                "key_press",
+                "press_key",
+                "key_combo",
+                "type_text",
+                "scroll",
+                "mouse_scroll",
+                "pinch_zoom",
+                "zoom",
+                "gesture_3_finger",
+                "gesture_4_finger",
+            }:
+                incoming_session = str(payload.get("input_session", "") or "")
+                if (
+                    not self._active_input_session
+                    or incoming_session != self._active_input_session
+                    or time.time() > self._input_session_expires_at
+                ):
+                    return {"success": False, "error": "Remote input not enabled"}
             
             # System status commands
             if cmd == "get_system_stats":
@@ -957,10 +1021,34 @@ class JarvisAgent:
                 )
             elif cmd == "key_press":
                 return self._key_press(payload.get("key", ""))
+            elif cmd == "key_combo":
+                keys = payload.get("keys", []) or []
+                if not isinstance(keys, list) or not keys:
+                    return {"success": False, "error": "Missing keys"}
+                return self._key_press("+".join([str(k) for k in keys]))
             elif cmd == "type_text":
                 return self._type_text(payload.get("text", ""))
             elif cmd == "scroll":
-                return self._scroll(payload.get("delta", 0))
+                # Web uses {amount}
+                return self._scroll(int(payload.get("delta", payload.get("amount", 0)) or 0))
+            elif cmd == "zoom":
+                # Web uses {direction, steps}
+                direction = str(payload.get("direction", "in")).lower()
+                steps = int(payload.get("steps", 1) or 1)
+                steps = max(1, min(steps, 10))
+                try:
+                    pyautogui.keyDown("ctrl")
+                    for _ in range(steps):
+                        # Ctrl+= for zoom in, Ctrl+- for zoom out
+                        pyautogui.press("=" if direction == "in" else "-")
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+                finally:
+                    try:
+                        pyautogui.keyUp("ctrl")
+                    except Exception:
+                        pass
             
             # Screen control
             elif cmd == "lock_screen":
@@ -972,7 +1060,9 @@ class JarvisAgent:
             elif cmd == "get_clipboard":
                 return self._get_clipboard()
             elif cmd == "set_clipboard":
-                return self._set_clipboard(payload.get("text", ""))
+                # Web sends {content}; keep backward-compat with {text}
+                text = payload.get("content", payload.get("text", ""))
+                return self._set_clipboard(text)
             
             # Media
             elif cmd == "media_control":
