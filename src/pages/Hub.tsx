@@ -48,6 +48,7 @@ import { MediaSyncPanel } from "@/components/MediaSyncPanel";
 import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
 import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
+import { P2PDiagnostics } from "@/components/P2PDiagnostics";
 import { EnhancedTrackpad } from "@/components/EnhancedTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
@@ -540,6 +541,14 @@ export default function Hub() {
             {/* Remote Tab - Trackpad + Keyboard + Clipboard */}
             {activeTab === "remote" && (
               <div className="space-y-3">
+                {/* P2P Diagnostics */}
+                <P2PDiagnostics
+                  connectionMode={connectionMode}
+                  networkState={networkState}
+                  localP2PState={localP2PState}
+                  onForceLocalP2P={forceLocalP2P}
+                />
+
                 {/* P2P Connection Manager */}
                 <SmartP2PManager
                   connectionMode={connectionMode}
