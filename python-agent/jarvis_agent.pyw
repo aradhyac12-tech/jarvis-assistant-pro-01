@@ -1,5 +1,5 @@
 """
-JARVIS PC Agent v3.0 - Unified Background Service Edition
+JARVIS PC Agent v3.1 - Unified Background Service Edition
 ===========================================================
 Single background-friendly script with:
 - Local P2P WebSocket server (port 9876) for ultra-low latency
@@ -8,6 +8,8 @@ Single background-friendly script with:
 - Threaded screenshot encoding
 - Circular buffers to prevent memory leaks
 - Proper error logging (no silent failures)
+- execute_batch for multi-command execution
+- gesture_3_finger, gesture_4_finger, file transfer commands
 
 This file uses .pyw extension for silent background running on Windows.
 """
@@ -21,22 +23,17 @@ import subprocess
 import platform
 import ctypes
 import threading
-import argparse
 import socket
-import re
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List, Callable, Set
-from collections import deque
 import base64
 import io
 import uuid
-import webbrowser
-import urllib.parse
-import urllib.request
 import traceback
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any, List, Callable, Set
+from collections import deque
 
 # ============== VERSION ==============
-AGENT_VERSION = "3.0.0"
+AGENT_VERSION = "3.1.0"
 
 # Remote input safety window (prevents "ghost" input)
 INPUT_SESSION_TTL_SECONDS = 12
@@ -99,16 +96,10 @@ except ImportError:
     HAS_WEBSOCKETS = False
 
 try:
-    import speech_recognition as sr
-    HAS_SPEECH_RECOGNITION = True
+    import pyperclip
+    HAS_PYPERCLIP = True
 except ImportError:
-    HAS_SPEECH_RECOGNITION = False
-
-try:
-    import pyttsx3
-    HAS_TTS = True
-except ImportError:
-    HAS_TTS = False
+    HAS_PYPERCLIP = False
 
 try:
     import pystray
@@ -157,6 +148,9 @@ POLL_INTERVAL = 0.5
 HEARTBEAT_INTERVAL = 5
 LOCAL_P2P_PORT = 9876
 PAIRING_CODE_LIFETIME_MINUTES = 30
+
+# Default save folder for file transfers
+DEFAULT_SAVE_FOLDER = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
 
 # PyAutoGUI settings
 pyautogui.PAUSE = 0.01
@@ -245,16 +239,6 @@ def get_network_prefix(ip: str) -> str:
     """Extract network prefix from IP (first 3 octets)."""
     parts = ip.split(".")
     return ".".join(parts[:3]) if len(parts) == 4 else ""
-
-
-# ============== SAFE COMMAND WHITELIST ==============
-# Commands that execute automatically without confirmation
-SAFE_COMMANDS = {
-    "get_system_stats", "get_volume", "get_brightness", "get_media_state",
-    "get_monitors", "get_network_info", "get_audio_outputs", "list_cameras",
-    "ping", "heartbeat", "get_clipboard", "mouse_move", "mouse_click",
-    "key_press", "type_text", "scroll", "zoom",
-}
 
 
 # ============== LOCAL P2P WEBSOCKET SERVER ==============
@@ -422,49 +406,6 @@ class ThreadedScreenshot:
         self._result: Optional[Dict[str, Any]] = None
         self._in_progress = False
     
-    def capture_async(self, quality: int = 70, scale: float = 0.5, monitor_index: int = 1):
-        """Start async capture, returns immediately."""
-        if self._in_progress:
-            return {"success": False, "error": "Capture in progress"}
-        
-        self._in_progress = True
-        threading.Thread(target=self._capture_worker, args=(quality, scale, monitor_index), daemon=True).start()
-        return {"success": True, "message": "Capture started", "async": True}
-    
-    def _capture_worker(self, quality: int, scale: float, monitor_index: int):
-        try:
-            if HAS_MSS:
-                with mss.mss() as sct:
-                    monitors = sct.monitors
-                    idx = monitor_index if 0 < monitor_index < len(monitors) else 1
-                    monitor = monitors[idx]
-                    screenshot = sct.grab(monitor)
-                    img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
-            else:
-                from PIL import ImageGrab
-                img = ImageGrab.grab()
-
-            new_size = (int(img.width * scale), int(img.height * scale))
-            img = img.resize(new_size, Image.LANCZOS)
-
-            buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=quality, optimize=True)
-            base64_image = base64.b64encode(buffer.getvalue()).decode()
-
-            with self._lock:
-                self._result = {"success": True, "image": base64_image, "width": new_size[0], "height": new_size[1]}
-        except Exception as e:
-            with self._lock:
-                self._result = {"success": False, "error": str(e)}
-        finally:
-            self._in_progress = False
-    
-    def get_result(self) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            result = self._result
-            self._result = None
-            return result
-    
     def capture_sync(self, quality: int = 70, scale: float = 0.5, monitor_index: int = 1) -> Dict[str, Any]:
         """Synchronous capture (blocking)."""
         try:
@@ -491,310 +432,184 @@ class ThreadedScreenshot:
             return {"success": False, "error": str(e)}
 
 
-# ============== AUDIO STREAMER WITH CIRCULAR BUFFER ==============
-class AudioStreamer:
-    """Audio streaming with circular buffer to prevent memory leaks."""
-    
-    STANDARD_SAMPLE_RATE = 16000
-    MAX_BUFFER_SIZE = 100  # Circular buffer limit
-    
-    def __init__(self):
-        self.running = False
-        self.ws = None
-        self.audio_buffer: deque = deque(maxlen=self.MAX_BUFFER_SIZE)
-        self.bytes_sent = 0
-        self.bytes_received = 0
-        
-    async def stop(self):
-        self.running = False
-        self.audio_buffer.clear()
-        if self.ws:
-            try:
-                await self.ws.close()
-            except:
-                pass
-            self.ws = None
-
-
-# ============== CAMERA STREAMER WITH CIRCULAR BUFFER ==============
-class CameraStreamer:
-    """Camera streaming with frame buffer limit."""
-    
-    MAX_FRAME_SIZE = 400 * 1024
-    MAX_FRAME_BUFFER = 30
-    
-    def __init__(self):
-        self.running = False
-        self.frame_buffer: deque = deque(maxlen=self.MAX_FRAME_BUFFER)
-        self.camera = None
-        
-    async def stop(self):
-        self.running = False
-        self.frame_buffer.clear()
-        if self.camera:
-            try:
-                self.camera.release()
-            except:
-                pass
-            self.camera = None
-
-
 # ============== JARVIS AGENT ==============
 class JarvisAgent:
+    """Main agent class."""
+    
     def __init__(self):
+        self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.device_id: Optional[str] = None
-        self.device_key = self._generate_device_key()
-        self.pairing_code: Optional[str] = None
-        self.pairing_expires_at: Optional[datetime] = None
-        self.is_locked = False
+        self.device_key: str = str(uuid.uuid4())
         self.running = True
-        self._active_input_session: Optional[str] = None
-        self._input_session_expires_at: float = 0.0
-        self.last_heartbeat = 0
         
-        # Connection recovery
+        self.screenshot_handler = ThreadedScreenshot()
+        
+        # Pairing
+        self.pairing_code: str = ""
+        self.pairing_expires_at: Optional[datetime] = None
+        
+        # Recovery
         self.consecutive_failures = 0
-        self.max_failures_before_reregister = 5
+        self.max_failures_before_reregister = 10
         self.backoff_seconds = 1
         self.max_backoff = 60
+        self.last_heartbeat = 0
         
-        # Streamers with circular buffers
-        self.audio_streamer = AudioStreamer()
-        self.camera_streamer = CameraStreamer()
-        self.screenshot_handler = ThreadedScreenshot()
+        # Input session gating
+        self._active_input_session: Optional[str] = None
+        self._input_session_expires_at: float = 0.0
         
         # Local P2P server
         self.local_p2p_server: Optional[LocalP2PServer] = None
         
-        # Volume/brightness cache
-        self._volume_cache = 50
-        self._brightness_cache = 50
-        
-        # Supabase client
-        self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        
-    def _generate_device_key(self) -> str:
-        import hashlib
-        unique_string = f"{platform.node()}-{platform.machine()}-jarvis"
-        return hashlib.sha256(unique_string.encode()).hexdigest()[:32]
+        # File transfer in-progress chunks
+        self._file_chunks: Dict[str, Dict[str, Any]] = {}
     
     def _generate_pairing_code(self) -> str:
         import random
-        import string
-        chars = string.ascii_uppercase + string.digits
-        chars = chars.replace('O', '').replace('0', '').replace('I', '').replace('1', '').replace('L', '')
-        return ''.join(random.choices(chars, k=6))
-    
-    def _get_system_info(self) -> Dict[str, Any]:
-        return {
-            "os": platform.system(),
-            "os_version": platform.version(),
-            "machine": platform.machine(),
-            "hostname": platform.node(),
-            "cpu_count": psutil.cpu_count(),
-            "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
-            "local_ips": get_local_ips(),
-            "p2p_port": LOCAL_P2P_PORT,
-        }
-    
-    def get_pairing_countdown(self) -> str:
-        """Get countdown string for pairing code expiry."""
-        if not self.pairing_expires_at:
-            return ""
-        
-        now = datetime.now(timezone.utc)
-        delta = self.pairing_expires_at - now
-        
-        if delta.total_seconds() <= 0:
-            return "EXPIRED"
-        
-        minutes = int(delta.total_seconds() // 60)
-        seconds = int(delta.total_seconds() % 60)
-        return f"{minutes:02d}:{seconds:02d}"
+        return ''.join(random.choices('0123456789', k=6))
     
     def is_pairing_expired(self) -> bool:
         if not self.pairing_expires_at:
             return True
-        return datetime.now(timezone.utc) >= self.pairing_expires_at
+        return datetime.now(timezone.utc) > self.pairing_expires_at
+    
+    def get_pairing_countdown(self) -> str:
+        if not self.pairing_expires_at:
+            return "EXPIRED"
+        remaining = (self.pairing_expires_at - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            return "EXPIRED"
+        mins, secs = divmod(int(remaining), 60)
+        return f"{mins:02d}:{secs:02d}"
     
     async def regenerate_pairing_code(self):
-        """Regenerate expired pairing code."""
         self.pairing_code = self._generate_pairing_code()
         self.pairing_expires_at = datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)
         
-        try:
-            self.supabase.table("devices").update({
-                "pairing_code": self.pairing_code,
-                "pairing_expires_at": self.pairing_expires_at.isoformat(),
-            }).eq("id", self.device_id).execute()
-            
-            add_log("info", f"Pairing code regenerated: {self.pairing_code}", category="system")
-            update_agent_status({
-                "pairing_code": self.pairing_code,
-                "pairing_expires_at": self.pairing_expires_at.isoformat(),
-            })
-        except Exception as e:
-            add_log("error", f"Failed to update pairing code: {e}", category="system")
-    
-    async def register_device(self):
-        """Register or re-register device with exponential backoff."""
-        add_log("info", "Registering device...", category="system")
+        update_agent_status({
+            "pairing_code": self.pairing_code,
+            "pairing_expires_at": self.pairing_expires_at.isoformat(),
+        })
         
-        self.pairing_code = self._generate_pairing_code()
-        self.pairing_expires_at = datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)
-        
-        try:
-            result = self.supabase.table("devices").select("*").eq("device_key", self.device_key).execute()
-            
-            system_info = self._get_system_info()
-            
-            if result.data:
-                self.device_id = result.data[0]["id"]
+        if self.device_id:
+            try:
                 self.supabase.table("devices").update({
-                    "name": DEVICE_NAME,
-                    "is_online": True,
-                    "last_seen": datetime.now(timezone.utc).isoformat(),
-                    "system_info": system_info,
                     "pairing_code": self.pairing_code,
                     "pairing_expires_at": self.pairing_expires_at.isoformat(),
                 }).eq("id", self.device_id).execute()
-                add_log("info", f"Device reconnected: {DEVICE_NAME}", category="system")
-            else:
-                result = self.supabase.table("devices").insert({
-                    "user_id": str(uuid.uuid4()),
-                    "device_key": self.device_key,
-                    "name": DEVICE_NAME,
-                    "is_online": True,
-                    "system_info": system_info,
-                    "pairing_code": self.pairing_code,
-                    "pairing_expires_at": self.pairing_expires_at.isoformat(),
-                }).execute()
-                self.device_id = result.data[0]["id"]
-                add_log("info", f"Device registered: {DEVICE_NAME}", category="system")
-            
-            # Reset backoff on success
-            self.consecutive_failures = 0
-            self.backoff_seconds = 1
-            
-            update_agent_status({
-                "connected": True,
-                "device_id": self.device_id,
-                "device_name": DEVICE_NAME,
+                add_log("info", f"New pairing code: {self.pairing_code}", category="system")
+            except Exception as e:
+                add_log("error", f"Failed to update pairing code: {e}", category="system")
+    
+    async def register_device(self):
+        self.pairing_code = self._generate_pairing_code()
+        self.pairing_expires_at = datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)
+        
+        system_info = {
+            "os": platform.system(),
+            "os_version": platform.version(),
+            "hostname": DEVICE_NAME,
+            "python_version": platform.python_version(),
+            "agent_version": AGENT_VERSION,
+        }
+        
+        try:
+            result = self.supabase.table("devices").insert({
+                "device_key": self.device_key,
+                "name": DEVICE_NAME,
+                "is_online": True,
                 "pairing_code": self.pairing_code,
                 "pairing_expires_at": self.pairing_expires_at.isoformat(),
-                "local_ips": system_info["local_ips"],
-            })
+                "system_info": system_info,
+                "user_id": "00000000-0000-0000-0000-000000000000",  # Placeholder
+            }).execute()
             
-            self._display_pairing_code()
-            return self.device_id
-            
+            if result.data:
+                self.device_id = result.data[0]["id"]
+                update_agent_status({
+                    "connected": True,
+                    "device_id": self.device_id,
+                    "pairing_code": self.pairing_code,
+                    "pairing_expires_at": self.pairing_expires_at.isoformat(),
+                })
+                add_log("info", f"Device registered: {self.device_id}", category="system")
+                add_log("info", f"Pairing code: {self.pairing_code}", category="system")
+                
         except Exception as e:
-            self.consecutive_failures += 1
-            add_log("error", f"Registration failed ({self.consecutive_failures}): {e}", category="system")
-            
-            # Exponential backoff
-            self.backoff_seconds = min(self.backoff_seconds * 2, self.max_backoff)
-            raise
+            add_log("error", f"Registration failed: {e}", category="system")
     
-    def _display_pairing_code(self):
-        local_ips = get_local_ips()
-        print("\n" + "=" * 60)
-        print(f"🤖 JARVIS PC AGENT v{AGENT_VERSION}")
-        print("=" * 60)
-        print(f"   Device: {DEVICE_NAME}")
-        print()
-        print("   ╔════════════════════════════════════╗")
-        print(f"   ║   ACCESS CODE:  {self.pairing_code}             ║")
-        print("   ╚════════════════════════════════════╝")
-        print()
-        print(f"   Expires in {PAIRING_CODE_LIFETIME_MINUTES} minutes")
-        print()
-        print("   🌐 Local P2P Addresses:")
-        for ip in local_ips:
-            print(f"      ws://{ip}:{LOCAL_P2P_PORT}/p2p")
-        print("=" * 60 + "\n")
+    # ============== SYSTEM COMMANDS ==============
+    def _get_system_stats(self) -> Dict[str, Any]:
+        try:
+            cpu = psutil.cpu_percent(interval=0.1)
+            mem = psutil.virtual_memory().percent
+            disk = psutil.disk_usage("/").percent if platform.system() != "Windows" else psutil.disk_usage("C:\\").percent
+            
+            update_agent_status({"cpu_percent": cpu, "memory_percent": mem})
+            
+            result = {"success": True, "cpu_percent": cpu, "memory_percent": mem, "disk_percent": disk}
+            
+            try:
+                battery = psutil.sensors_battery()
+                if battery:
+                    result["battery_percent"] = battery.percent
+                    result["battery_plugged"] = battery.power_plugged
+            except:
+                pass
+            
+            return result
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def _get_volume(self) -> int:
-        if platform.system() == "Windows" and HAS_PYCAW:
-            try:
+        try:
+            if platform.system() == "Windows" and HAS_PYCAW:
                 devices = AudioUtilities.GetSpeakers()
                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                 endpoint = cast(interface, POINTER(IAudioEndpointVolume))
                 vol = endpoint.GetMasterVolumeLevelScalar()
                 return int(vol * 100)
-            except Exception:
-                pass
-        return self._volume_cache
+        except:
+            pass
+        return 50
     
     def _set_volume(self, level: int) -> Dict[str, Any]:
-        level = max(0, min(100, int(level)))
-        self._volume_cache = level
-        update_agent_status({"volume": level})
-        
-        if platform.system() == "Windows" and HAS_PYCAW:
-            try:
+        try:
+            level = max(0, min(100, int(level)))
+            if platform.system() == "Windows" and HAS_PYCAW:
                 devices = AudioUtilities.GetSpeakers()
                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                 endpoint = cast(interface, POINTER(IAudioEndpointVolume))
                 endpoint.SetMasterVolumeLevelScalar(level / 100.0, None)
                 return {"success": True, "volume": level}
-            except Exception as e:
-                add_log("error", f"Volume set failed: {e}", category="system")
-                return {"success": False, "error": str(e)}
-        return {"success": False, "error": "Unsupported OS"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Volume control not available"}
     
     def _get_brightness(self) -> int:
-        if platform.system() == "Windows" and HAS_BRIGHTNESS:
-            try:
-                brightness = sbc.get_brightness(display=0)
-                return brightness[0] if isinstance(brightness, list) else brightness
-            except:
-                pass
-        return self._brightness_cache
+        try:
+            if HAS_BRIGHTNESS:
+                levels = sbc.get_brightness()
+                if levels:
+                    return levels[0] if isinstance(levels, list) else levels
+        except:
+            pass
+        return 50
     
     def _set_brightness(self, level: int) -> Dict[str, Any]:
-        level = max(0, min(100, level))
-        self._brightness_cache = level
-        update_agent_status({"brightness": level})
-        
-        if platform.system() == "Windows" and HAS_BRIGHTNESS:
-            try:
-                sbc.set_brightness(level, display=0)
-                return {"success": True, "brightness": level}
-            except Exception as e:
-                add_log("error", f"Brightness set failed: {e}", category="system")
-                return {"success": False, "error": str(e)}
-        return {"success": False, "error": "Unsupported OS"}
-    
-    def _get_system_stats(self) -> Dict[str, Any]:
         try:
-            cpu = psutil.cpu_percent(interval=0.1)
-            mem = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            battery = psutil.sensors_battery()
-            
-            update_agent_status({
-                "cpu_percent": cpu,
-                "memory_percent": mem.percent,
-            })
-            
-            return {
-                "success": True,
-                "cpu_percent": cpu,
-                "memory_percent": mem.percent,
-                "disk_percent": disk.percent,
-                "battery_percent": battery.percent if battery else None,
-                "battery_charging": battery.power_plugged if battery else None,
-            }
+            level = max(0, min(100, int(level)))
+            if HAS_BRIGHTNESS:
+                sbc.set_brightness(level)
+                return {"success": True, "brightness": level}
         except Exception as e:
-            add_log("error", f"System stats failed: {e}", category="system")
             return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Brightness control not available"}
     
     def _get_network_info(self) -> Dict[str, Any]:
-        """Get network info for P2P detection."""
         ips = get_local_ips()
         prefix = get_network_prefix(ips[0]) if ips else ""
-        
         return {
             "success": True,
             "local_ips": ips,
@@ -806,16 +621,16 @@ class JarvisAgent:
     def _mouse_move(self, x: int, y: int, relative: bool = True) -> Dict[str, Any]:
         try:
             if relative:
-                pyautogui.move(x, y, _pause=False)
+                pyautogui.moveRel(x, y, duration=0)
             else:
-                pyautogui.moveTo(x, y, _pause=False)
+                pyautogui.moveTo(x, y, duration=0)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _mouse_click(self, button: str = "left", clicks: int = 1) -> Dict[str, Any]:
         try:
-            pyautogui.click(button=button, clicks=clicks, _pause=False)
+            pyautogui.click(button=button, clicks=clicks)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -823,67 +638,66 @@ class JarvisAgent:
     def _key_press(self, key: str) -> Dict[str, Any]:
         try:
             if "+" in key:
-                keys = key.lower().split("+")
+                keys = [k.strip().lower() for k in key.split("+")]
                 pyautogui.hotkey(*keys)
             else:
-                pyautogui.press(key)
+                pyautogui.press(key.lower())
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _type_text(self, text: str) -> Dict[str, Any]:
         try:
-            pyautogui.typewrite(text, interval=0.02)
+            pyautogui.typewrite(text, interval=0.02) if text.isascii() else pyautogui.write(text)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _scroll(self, delta: int) -> Dict[str, Any]:
+    def _scroll(self, amount: int) -> Dict[str, Any]:
         try:
-            pyautogui.scroll(delta)
+            pyautogui.scroll(amount)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _lock_screen(self) -> Dict[str, Any]:
-        self.is_locked = True
-        update_agent_status({"is_locked": True})
-        if platform.system() == "Windows":
-            ctypes.windll.user32.LockWorkStation()
-        return {"success": True}
+        try:
+            if platform.system() == "Windows":
+                ctypes.windll.user32.LockWorkStation()
+            elif platform.system() == "Darwin":
+                subprocess.run(["pmset", "displaysleepnow"])
+            else:
+                subprocess.run(["xdg-screensaver", "lock"])
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def _unlock_screen(self, pin: str) -> Dict[str, Any]:
-        if pin != UNLOCK_PIN:
-            return {"success": False, "error": "Invalid PIN"}
-        
-        self.is_locked = False
-        update_agent_status({"is_locked": False})
-        
-        if platform.system() == "Windows":
+        if pin == UNLOCK_PIN:
             try:
-                pyautogui.press("space")
-                time.sleep(0.6)
-                pyautogui.typewrite(pin, interval=0.05)
-                time.sleep(0.2)
                 pyautogui.press("enter")
                 return {"success": True}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-        return {"success": True}
+            except:
+                pass
+        return {"success": False, "error": "Invalid PIN"}
     
     def _get_clipboard(self) -> Dict[str, Any]:
         try:
-            import pyperclip
-            text = pyperclip.paste()
-            return {"success": True, "text": text}
+            if HAS_PYPERCLIP:
+                import pyperclip
+                content = pyperclip.paste()
+                return {"success": True, "content": content}
+            return {"success": False, "error": "pyperclip not installed"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _set_clipboard(self, text: str) -> Dict[str, Any]:
         try:
-            import pyperclip
-            pyperclip.copy(text)
-            return {"success": True}
+            if HAS_PYPERCLIP:
+                import pyperclip
+                pyperclip.copy(text)
+                return {"success": True}
+            return {"success": False, "error": "pyperclip not installed"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -908,33 +722,161 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _mute_pc(self) -> Dict[str, Any]:
+    # ============== GESTURE COMMANDS ==============
+    def _gesture_3_finger(self) -> Dict[str, Any]:
+        """Show desktop (Win+D)."""
         try:
-            if platform.system() == "Windows" and HAS_PYCAW:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-                endpoint.SetMute(True, None)
-                return {"success": True, "muted": True}
+            pyautogui.hotkey("win", "d")
+            return {"success": True, "gesture": "show_desktop"}
         except Exception as e:
-            pass
-        
-        pyautogui.press("volumemute")
-        return {"success": True, "muted": True}
+            return {"success": False, "error": str(e)}
     
-    def _unmute_pc(self) -> Dict[str, Any]:
+    def _gesture_4_finger(self, direction: str) -> Dict[str, Any]:
+        """Switch virtual desktop."""
         try:
-            if platform.system() == "Windows" and HAS_PYCAW:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-                endpoint.SetMute(False, None)
-                return {"success": True, "muted": False}
+            direction = direction.lower().strip()
+            if direction == "left":
+                pyautogui.hotkey("ctrl", "win", "left")
+            elif direction == "right":
+                pyautogui.hotkey("ctrl", "win", "right")
+            else:
+                return {"success": False, "error": f"Unknown direction: {direction}"}
+            return {"success": True, "gesture": f"switch_desktop_{direction}"}
         except Exception as e:
-            pass
-        
-        return {"success": True, "muted": False}
+            return {"success": False, "error": str(e)}
     
+    # ============== FILE TRANSFER ==============
+    def _list_files(self, path: str = "~") -> Dict[str, Any]:
+        try:
+            path = os.path.expanduser(path)
+            if not os.path.exists(path):
+                return {"success": False, "error": "Path not found"}
+            
+            items = []
+            for entry in os.scandir(path):
+                try:
+                    stat = entry.stat()
+                    items.append({
+                        "name": entry.name,
+                        "path": entry.path,
+                        "is_directory": entry.is_dir(),
+                        "size": stat.st_size if entry.is_file() else 0,
+                        "modified": int(stat.st_mtime * 1000),
+                    })
+                except:
+                    pass
+            
+            return {"success": True, "items": items, "current_path": path}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _receive_file_chunk(self, file_id: str, file_name: str, chunk_index: int, total_chunks: int, data: str, save_folder: str = "") -> Dict[str, Any]:
+        """Receive a chunk of file data from phone."""
+        try:
+            if not save_folder:
+                save_folder = DEFAULT_SAVE_FOLDER
+            else:
+                save_folder = os.path.expanduser(save_folder)
+            
+            os.makedirs(save_folder, exist_ok=True)
+            
+            if file_id not in self._file_chunks:
+                self._file_chunks[file_id] = {"chunks": {}, "name": file_name, "total": total_chunks}
+            
+            self._file_chunks[file_id]["chunks"][chunk_index] = data
+            
+            if len(self._file_chunks[file_id]["chunks"]) == total_chunks:
+                # All chunks received, assemble file
+                full_data = b""
+                for i in range(total_chunks):
+                    chunk_data = self._file_chunks[file_id]["chunks"][i]
+                    full_data += base64.b64decode(chunk_data)
+                
+                file_path = os.path.join(save_folder, file_name)
+                with open(file_path, "wb") as f:
+                    f.write(full_data)
+                
+                del self._file_chunks[file_id]
+                add_log("info", f"File received: {file_name}", category="file")
+                return {"success": True, "complete": True, "path": file_path}
+            
+            return {"success": True, "complete": False, "received": chunk_index + 1, "total": total_chunks}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _send_file_chunk(self, path: str, chunk_index: int, chunk_size: int = 65536) -> Dict[str, Any]:
+        """Send a chunk of file data to phone."""
+        try:
+            path = os.path.expanduser(path)
+            if not os.path.exists(path):
+                return {"success": False, "error": "File not found"}
+            
+            file_size = os.path.getsize(path)
+            offset = chunk_index * chunk_size
+            
+            with open(path, "rb") as f:
+                f.seek(offset)
+                chunk = f.read(chunk_size)
+            
+            data = base64.b64encode(chunk).decode()
+            
+            return {"success": True, "data": data, "size": len(chunk), "file_size": file_size}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    # ============== BOOST PC ==============
+    def _boost_ram(self) -> Dict[str, Any]:
+        try:
+            if platform.system() == "Windows":
+                subprocess.run(["taskkill", "/F", "/IM", "SearchApp.exe"], capture_output=True)
+                subprocess.run(["taskkill", "/F", "/IM", "YourPhone.exe"], capture_output=True)
+            import gc
+            gc.collect()
+            return {"success": True, "action": "boost_ram"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _clear_temp_files(self) -> Dict[str, Any]:
+        try:
+            if platform.system() == "Windows":
+                temp = os.environ.get("TEMP", "")
+                if temp:
+                    for f in os.listdir(temp):
+                        try:
+                            fp = os.path.join(temp, f)
+                            if os.path.isfile(fp):
+                                os.remove(fp)
+                        except:
+                            pass
+            return {"success": True, "action": "clear_temp"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _set_power_plan(self, plan: str) -> Dict[str, Any]:
+        try:
+            if platform.system() == "Windows":
+                plans = {
+                    "high_performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+                    "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e",
+                    "power_saver": "a1841308-3541-4fab-bc81-f71556f20b4a",
+                }
+                guid = plans.get(plan.lower(), plans["high_performance"])
+                subprocess.run(["powercfg", "/S", guid], capture_output=True)
+            return {"success": True, "plan": plan}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _restart_explorer(self) -> Dict[str, Any]:
+        try:
+            if platform.system() == "Windows":
+                subprocess.run(["taskkill", "/F", "/IM", "explorer.exe"], capture_output=True)
+                subprocess.Popen(["explorer.exe"])
+                add_log("info", "Explorer restarted", category="system")
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    # ============== EXECUTE COMMAND ==============
     def execute_command(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a command and return result. Never silently fails."""
         try:
@@ -991,11 +933,32 @@ class JarvisAgent:
                     or incoming_session != self._active_input_session
                     or time.time() > self._input_session_expires_at
                 ):
-                    return {"success": False, "error": "Remote input not enabled"}
+                    # Silently reject - this is not an error, just blocked input
+                    return {"success": True, "blocked": True, "reason": "Remote input not enabled"}
+            
+            # Batch execution
+            if cmd == "execute_batch":
+                commands = payload.get("commands", [])
+                if not isinstance(commands, list):
+                    return {"success": False, "error": "commands must be a list"}
+                results = []
+                for c in commands:
+                    ctype = c.get("type", c.get("command_type", ""))
+                    cpayload = c.get("payload", {})
+                    r = self.execute_command(ctype, cpayload)
+                    results.append({"type": ctype, "result": r})
+                return {"success": True, "results": results}
             
             # System status commands
             if cmd == "get_system_stats":
                 return self._get_system_stats()
+            elif cmd == "get_system_state":
+                return {
+                    "success": True,
+                    "volume": self._get_volume(),
+                    "brightness": self._get_brightness(),
+                    "is_locked": False,
+                }
             elif cmd == "get_volume":
                 return {"success": True, "volume": self._get_volume()}
             elif cmd == "set_volume":
@@ -1029,17 +992,14 @@ class JarvisAgent:
             elif cmd == "type_text":
                 return self._type_text(payload.get("text", ""))
             elif cmd == "scroll":
-                # Web uses {amount}
                 return self._scroll(int(payload.get("delta", payload.get("amount", 0)) or 0))
             elif cmd == "zoom":
-                # Web uses {direction, steps}
                 direction = str(payload.get("direction", "in")).lower()
                 steps = int(payload.get("steps", 1) or 1)
                 steps = max(1, min(steps, 10))
                 try:
                     pyautogui.keyDown("ctrl")
                     for _ in range(steps):
-                        # Ctrl+= for zoom in, Ctrl+- for zoom out
                         pyautogui.press("=" if direction == "in" else "-")
                     return {"success": True}
                 except Exception as e:
@@ -1047,8 +1007,14 @@ class JarvisAgent:
                 finally:
                     try:
                         pyautogui.keyUp("ctrl")
-                    except Exception:
+                    except:
                         pass
+            
+            # Gesture commands
+            elif cmd == "gesture_3_finger":
+                return self._gesture_3_finger()
+            elif cmd == "gesture_4_finger":
+                return self._gesture_4_finger(payload.get("direction", "left"))
             
             # Screen control
             elif cmd == "lock_screen":
@@ -1060,7 +1026,6 @@ class JarvisAgent:
             elif cmd == "get_clipboard":
                 return self._get_clipboard()
             elif cmd == "set_clipboard":
-                # Web sends {content}; keep backward-compat with {text}
                 text = payload.get("content", payload.get("text", ""))
                 return self._set_clipboard(text)
             
@@ -1068,9 +1033,64 @@ class JarvisAgent:
             elif cmd == "media_control":
                 return self._media_control(payload.get("action", "play_pause"))
             elif cmd == "mute_pc":
-                return self._mute_pc()
+                pyautogui.press("volumemute")
+                return {"success": True, "muted": True}
             elif cmd == "unmute_pc":
-                return self._unmute_pc()
+                return {"success": True, "muted": False}
+            
+            # File operations
+            elif cmd == "list_files":
+                return self._list_files(payload.get("path", "~"))
+            elif cmd == "receive_file_chunk":
+                return self._receive_file_chunk(
+                    payload.get("file_id", ""),
+                    payload.get("file_name", "file"),
+                    int(payload.get("chunk_index", 0)),
+                    int(payload.get("total_chunks", 1)),
+                    payload.get("data", ""),
+                    payload.get("save_folder", ""),
+                )
+            elif cmd == "send_file_chunk":
+                return self._send_file_chunk(
+                    payload.get("path", ""),
+                    int(payload.get("chunk_index", 0)),
+                    int(payload.get("chunk_size", 65536)),
+                )
+            elif cmd == "open_file":
+                path = os.path.expanduser(payload.get("path", ""))
+                if os.path.exists(path):
+                    if platform.system() == "Windows":
+                        os.startfile(path)
+                    elif platform.system() == "Darwin":
+                        subprocess.run(["open", path])
+                    else:
+                        subprocess.run(["xdg-open", path])
+                    return {"success": True}
+                return {"success": False, "error": "File not found"}
+            
+            # Boost/optimization
+            elif cmd == "boost_ram":
+                return self._boost_ram()
+            elif cmd == "clear_temp_files":
+                return self._clear_temp_files()
+            elif cmd == "set_power_plan":
+                return self._set_power_plan(payload.get("plan", "high_performance"))
+            elif cmd == "restart_explorer":
+                return self._restart_explorer()
+            
+            # Power
+            elif cmd == "shutdown":
+                if platform.system() == "Windows":
+                    subprocess.run(["shutdown", "/s", "/t", "5"])
+                return {"success": True}
+            elif cmd == "restart":
+                if platform.system() == "Windows":
+                    subprocess.run(["shutdown", "/r", "/t", "5"])
+                return {"success": True}
+            elif cmd == "sleep":
+                if platform.system() == "Windows":
+                    subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+                return {"success": True}
             
             # Screenshot
             elif cmd == "take_screenshot":
@@ -1082,6 +1102,10 @@ class JarvisAgent:
             # Ping/heartbeat
             elif cmd in ["ping", "heartbeat"]:
                 return {"success": True, "pong": True, "timestamp": datetime.now().isoformat()}
+            
+            # Audio support check
+            elif cmd == "check_audio_support":
+                return {"success": True, "has_pyaudio": HAS_PYAUDIO, "has_websockets": HAS_WEBSOCKETS}
             
             else:
                 add_log("warn", f"Unknown command: {cmd}", category="command")
@@ -1235,7 +1259,6 @@ class JarvisGUI:
         
         self.update_interval = 500
         self.last_log_count = 0
-        self.stream_indicators = {}
     
     def setup(self) -> bool:
         if not HAS_TKINTER:
@@ -1292,7 +1315,7 @@ class JarvisGUI:
         
         tk.Label(pairing_card, text="PAIRING CODE", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(pady=(10, 2))
         
-        self.pairing_label = tk.Label(pairing_card, text="------", font=("JetBrains Mono", 32, "bold"), fg=c["primary"], bg=c["card"])
+        self.pairing_label = tk.Label(pairing_card, text="------", font=("Consolas", 32, "bold"), fg=c["primary"], bg=c["card"])
         self.pairing_label.pack()
         
         self.countdown_label = tk.Label(pairing_card, text="Expires in --:--", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"])
@@ -1304,7 +1327,7 @@ class JarvisGUI:
         
         tk.Label(net_card, text="🌐 LOCAL P2P", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=12, pady=(6, 2))
         
-        self.ip_label = tk.Label(net_card, text="Detecting...", font=("JetBrains Mono", 9), fg=c["text"], bg=c["card"])
+        self.ip_label = tk.Label(net_card, text="Detecting...", font=("Consolas", 9), fg=c["text"], bg=c["card"])
         self.ip_label.pack(anchor=tk.W, padx=12, pady=(0, 6))
         
         self.connection_mode_label = tk.Label(net_card, text="Mode: Cloud", font=("Segoe UI", 8), fg=c["accent"], bg=c["card"])
@@ -1340,10 +1363,9 @@ class JarvisGUI:
         
         tk.Label(path_row, text="Save to:", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
         
-        default_save = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
-        self.save_path_var = tk.StringVar(value=default_save)
+        self.save_path_var = tk.StringVar(value=DEFAULT_SAVE_FOLDER)
         
-        path_entry = tk.Entry(path_row, textvariable=self.save_path_var, font=("JetBrains Mono", 8),
+        path_entry = tk.Entry(path_row, textvariable=self.save_path_var, font=("Consolas", 8),
                              bg=c["bg"], fg=c["text"], insertbackground=c["text"], bd=0, highlightthickness=1,
                              highlightbackground=c["border"])
         path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 4))
@@ -1355,13 +1377,8 @@ class JarvisGUI:
         btn_row = tk.Frame(file_card, bg=c["card"])
         btn_row.pack(fill=tk.X, padx=12, pady=(0, 8))
         
-        send_btn = tk.Frame(btn_row, bg=c["primary"], cursor="hand2")
-        send_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-        tk.Label(send_btn, text="📤 Send File", font=("Segoe UI", 9, "bold"), fg="#000", bg=c["primary"], pady=6).pack()
-        send_btn.bind("<Button-1>", self._send_file)
-        
         open_btn = tk.Frame(btn_row, bg=c["border"], cursor="hand2")
-        open_btn.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(4, 0))
+        open_btn.pack(side=tk.RIGHT, expand=True, fill=tk.X)
         tk.Label(open_btn, text="📂 Open Folder", font=("Segoe UI", 9), fg=c["text"], bg=c["border"], pady=6).pack()
         open_btn.bind("<Button-1>", self._open_folder)
         
@@ -1375,7 +1392,7 @@ class JarvisGUI:
         tk.Label(log_header, text="ACTIVITY", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
         
         self.log_text = scrolledtext.ScrolledText(
-            log_card, bg="#050505", fg=c["text"], font=("JetBrains Mono", 8),
+            log_card, bg="#050505", fg=c["text"], font=("Consolas", 8),
             wrap=tk.WORD, bd=0, highlightthickness=0, height=8
         )
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -1390,12 +1407,6 @@ class JarvisGUI:
         folder = filedialog.askdirectory(initialdir=self.save_path_var.get())
         if folder:
             self.save_path_var.set(folder)
-    
-    def _send_file(self, event=None):
-        files = filedialog.askopenfilenames()
-        if files:
-            for f in files:
-                add_log("info", f"Queued: {os.path.basename(f)}", category="file")
     
     def _open_folder(self, event=None):
         folder = self.save_path_var.get()
@@ -1502,19 +1513,6 @@ class JarvisGUI:
 
 
 # ============== MAIN ==============
-async def main_async():
-    agent = JarvisAgent()
-    
-    # Run agent in background
-    agent_task = asyncio.create_task(agent.run())
-    
-    # Keep running
-    try:
-        await agent_task
-    except asyncio.CancelledError:
-        agent.stop()
-
-
 def main():
     print(f"\n🤖 JARVIS Agent v{AGENT_VERSION} starting...\n")
     

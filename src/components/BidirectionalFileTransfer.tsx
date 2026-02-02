@@ -29,6 +29,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
+import { useLocalP2P } from "@/hooks/useLocalP2P";
 
 interface FileTransferItem {
   id: string;
