@@ -24,6 +24,9 @@ websockets>=12.0         # WS streaming (audio/camera)
 pyaudio>=0.2.14          # Microphone/system audio capture
 opencv-python>=4.9.0.80  # PC camera capture
 
+# WebRTC (Local P2P over HTTPS)
+aiortc>=1.7.0
+
 # QR Code for pairing
 qrcode>=7.4.2            # QR code generation for terminal display
 

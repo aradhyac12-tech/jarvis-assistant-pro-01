@@ -90,6 +90,7 @@ export default function Hub() {
   const { toast } = useToast();
 
   const [activeTab, setActiveTab] = useState<Tab>("control");
+  const [remoteArmed, setRemoteArmed] = useState(false);
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   
   const [volume, setVolume] = useState(50);
@@ -265,9 +266,17 @@ export default function Hub() {
     setIsBoosting(true);
     try {
       toast({ title: "Boost started" });
-      await sendCommand("boost_ram", {}, { awaitResult: true, timeoutMs: 30000 });
-      await sendCommand("clear_temp_files", {}, { awaitResult: true, timeoutMs: 60000 });
-      await sendCommand("set_power_plan", { plan: "high_performance" }, { awaitResult: true, timeoutMs: 15000 });
+      await sendCommand(
+        "execute_batch",
+        {
+          commands: [
+            { type: "boost_ram", payload: {} },
+            { type: "clear_temp_files", payload: {} },
+            { type: "set_power_plan", payload: { plan: "high_performance" } },
+          ],
+        },
+        { awaitResult: true, timeoutMs: 90000 }
+      );
       toast({ title: "Boost complete" });
     } catch (e) {
       toast({ title: "Boost failed", variant: "destructive" });
@@ -278,7 +287,7 @@ export default function Hub() {
 
   // Remote input safety: only allow mouse/keyboard execution while Remote tab is open
   useEffect(() => {
-    if (!isConnected || activeTab !== "remote") return;
+    if (!isConnected || activeTab !== "remote" || !remoteArmed) return;
 
     let timer: number | null = null;
     const enable = () => {
@@ -293,7 +302,12 @@ export default function Hub() {
       if (timer) window.clearInterval(timer);
       sendCommand("remote_input_disable", { session: inputSessionId });
     };
-  }, [activeTab, inputSessionId, isConnected, sendCommand]);
+  }, [activeTab, inputSessionId, isConnected, remoteArmed, sendCommand]);
+
+  // Disarm remote control when leaving the Remote tab
+  useEffect(() => {
+    if (activeTab !== "remote" && remoteArmed) setRemoteArmed(false);
+  }, [activeTab, remoteArmed]);
 
   // Command execution
   const handleCommand = async () => {
@@ -331,9 +345,10 @@ export default function Hub() {
 
   // Type text handler for trackpad
   const handleTypeText = useCallback((text: string) => {
+    if (!remoteArmed) return;
     sendCommand("type_text", { text });
     toast({ title: "Text sent" });
-  }, [sendCommand, toast]);
+  }, [remoteArmed, sendCommand, toast]);
 
   const quickLinks = [
     { title: "Voice", icon: Mic, href: "/voice" },
@@ -541,6 +556,26 @@ export default function Hub() {
             {/* Remote Tab - Trackpad + Keyboard + Clipboard */}
             {activeTab === "remote" && (
               <div className="space-y-3">
+                {/* Arm/Disarm Remote Control */}
+                <Card className="border-border/30 bg-card/50">
+                  <CardContent className="p-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">Remote control</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {remoteArmed ? "Armed (inputs will move/click your PC)" : "Disarmed (no mouse/keyboard commands sent)"}
+                      </p>
+                    </div>
+                    <Button
+                      variant={remoteArmed ? "destructive" : "default"}
+                      size="sm"
+                      onClick={() => setRemoteArmed((v) => !v)}
+                      disabled={!isConnected}
+                    >
+                      {remoteArmed ? "Disarm" : "Arm"}
+                    </Button>
+                  </CardContent>
+                </Card>
+
                 {/* P2P Diagnostics */}
                 <P2PDiagnostics
                   connectionMode={connectionMode}
@@ -565,12 +600,12 @@ export default function Hub() {
 
                 {/* Large Trackpad */}
                 <EnhancedTrackpad
-                  onMouseMove={fireMouse}
-                  onScroll={fireScroll}
-                  onZoom={fireZoom}
-                  onGesture3Finger={fireGesture3Finger}
-                  onGesture4Finger={fireGesture4Finger}
-                  onClick={fireClick}
+                  onMouseMove={(x, y) => remoteArmed && fireMouse(x, y)}
+                  onScroll={(y) => remoteArmed && fireScroll(y)}
+                  onZoom={(d) => remoteArmed && fireZoom(d)}
+                  onGesture3Finger={() => remoteArmed && fireGesture3Finger()}
+                  onGesture4Finger={(dir) => remoteArmed && fireGesture4Finger(dir)}
+                  onClick={(btn) => remoteArmed && fireClick(btn)}
                   onTypeText={handleTypeText}
                   connectionMode={connectionMode}
                   latency={p2pLatency}
@@ -581,9 +616,9 @@ export default function Hub() {
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
                     <MobileKeyboard 
-                      onKeyPress={fireKey} 
+                      onKeyPress={(k) => remoteArmed && fireKey(k)} 
                       onTypeText={handleTypeText}
-                      disabled={!isConnected} 
+                      disabled={!isConnected || !remoteArmed} 
                     />
                   </CardContent>
                 </Card>
@@ -631,7 +666,7 @@ export default function Hub() {
                   <h3 className="font-medium text-sm mb-1">No PC Connected</h3>
                   <p className="text-xs text-muted-foreground mb-3">Run the Python agent on your PC</p>
                   <code className="block p-2 bg-secondary/50 rounded-md text-[10px] font-mono">
-                    pythonw jarvis_agent.pyw
+                    python jarvis_agent.py
                   </code>
                 </CardContent>
               </Card>
