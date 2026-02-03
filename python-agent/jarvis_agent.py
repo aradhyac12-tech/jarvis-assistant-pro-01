@@ -11,7 +11,7 @@ Single background-friendly script with:
 - execute_batch for multi-command execution
 - gesture_3_finger, gesture_4_finger, file transfer commands
 
-This file uses .pyw extension for silent background running on Windows.
+Single-file agent entrypoint: jarvis_agent.py
 """
 
 import os
@@ -28,6 +28,8 @@ import base64
 import io
 import uuid
 import traceback
+import webbrowser
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Callable, Set
 from collections import deque
@@ -94,6 +96,13 @@ try:
     HAS_WEBSOCKETS = True
 except ImportError:
     HAS_WEBSOCKETS = False
+
+# WebRTC (for Local P2P over HTTPS)
+try:
+    from aiortc import RTCPeerConnection, RTCSessionDescription  # type: ignore
+    HAS_AIORTC = True
+except Exception:
+    HAS_AIORTC = False
 
 try:
     import pyperclip
@@ -308,10 +317,9 @@ class LocalP2PServer:
             
             if self.command_handler:
                 try:
-                    if asyncio.iscoroutinefunction(self.command_handler):
-                        result = await self.command_handler(command_type, payload)
-                    else:
-                        result = self.command_handler(command_type, payload)
+                    result = self.command_handler(command_type, payload)
+                    if asyncio.iscoroutine(result):
+                        result = await result
                     
                     return {
                         "type": "command_result",
@@ -458,6 +466,10 @@ class JarvisAgent:
         # Input session gating
         self._active_input_session: Optional[str] = None
         self._input_session_expires_at: float = 0.0
+
+        # WebRTC Local P2P (optional)
+        self._webrtc_pc = None
+        self._webrtc_channel = None
         
         # Local P2P server
         self.local_p2p_server: Optional[LocalP2PServer] = None
@@ -875,24 +887,177 @@ class JarvisAgent:
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ============== APP / WEB HELPERS ==============
+    def _open_app(self, app_name: str) -> Dict[str, Any]:
+        """Best-effort app open without relying on platform-specific app IDs."""
+        try:
+            app_name = (app_name or "").strip()
+            if not app_name:
+                return {"success": False, "error": "Missing app_name"}
+
+            if platform.system() == "Windows":
+                # cmd /c start can open executables in PATH and also URLs
+                subprocess.Popen(f'start "" "{app_name}"', shell=True)
+                return {"success": True}
+
+            if platform.system() == "Darwin":
+                subprocess.Popen(["open", "-a", app_name])
+                return {"success": True}
+
+            subprocess.Popen([app_name])
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _search_web(self, query: str, engine: str = "google") -> Dict[str, Any]:
+        try:
+            query = (query or "").strip()
+            if not query:
+                return {"success": False, "error": "Missing query"}
+
+            q = urllib.parse.quote_plus(query)
+            engine = (engine or "google").lower().strip()
+
+            if engine in {"google", "g"}:
+                url = f"https://www.google.com/search?q={q}"
+            elif engine in {"wikipedia", "wiki"}:
+                url = f"https://en.wikipedia.org/wiki/Special:Search?search={q}"
+            else:
+                url = f"https://www.google.com/search?q={q}"
+
+            webbrowser.open(url)
+            return {"success": True, "url": url}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _play_music(self, query: str, service: str = "youtube") -> Dict[str, Any]:
+        try:
+            query = (query or "").strip()
+            if not query:
+                return {"success": False, "error": "Missing query"}
+
+            q = urllib.parse.quote_plus(query)
+            service = (service or "youtube").lower().strip()
+            if service in {"youtube", "yt"}:
+                url = f"https://www.youtube.com/results?search_query={q}"
+            else:
+                url = f"https://www.google.com/search?q={q}+music"
+
+            webbrowser.open(url)
+            return {"success": True, "url": url}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ============== WEBRTC LOCAL P2P ==============
+    async def _await_ice_complete(self, pc: Any, timeout_s: float = 6.0) -> None:
+        started = time.time()
+        while pc.iceGatheringState != "complete":
+            if time.time() - started > timeout_s:
+                return
+            await asyncio.sleep(0.05)
+
+    async def _handle_webrtc_offer(self, offer: Any) -> Dict[str, Any]:
+        """Create a WebRTC answer for a browser offer (signaled via cloud command)."""
+        if not HAS_AIORTC:
+            return {"success": False, "error": "WebRTC not available (install aiortc)"}
+        if not isinstance(offer, dict) or not offer.get("sdp"):
+            return {"success": False, "error": "Invalid offer"}
+
+        try:
+            # Close previous PC if any
+            if self._webrtc_pc is not None:
+                try:
+                    await self._webrtc_pc.close()
+                except Exception:
+                    pass
+
+            pc = RTCPeerConnection()
+            self._webrtc_pc = pc
+
+            @pc.on("datachannel")
+            def on_datachannel(channel):
+                self._webrtc_channel = channel
+                add_log("info", "WebRTC datachannel connected", category="p2p")
+                update_agent_status({"connection_mode": "local_p2p"})
+
+                @channel.on("close")
+                def on_close():
+                    add_log("info", "WebRTC datachannel closed", category="p2p")
+                    update_agent_status({"connection_mode": "cloud"})
+
+                @channel.on("message")
+                def on_message(message):
+                    # Schedule async handler on the running event loop
+                    try:
+                        asyncio.get_event_loop().create_task(self._handle_webrtc_message(channel, message))
+                    except Exception:
+                        pass
+
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=str(offer.get("sdp")), type=str(offer.get("type", "offer"))))
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            await self._await_ice_complete(pc)
+
+            desc = pc.localDescription
+            return {
+                "success": True,
+                "answer": {"type": desc.type, "sdp": desc.sdp},
+            }
+        except Exception as e:
+            add_log("error", f"WebRTC offer handling failed: {e}", details=traceback.format_exc(), category="p2p")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_webrtc_message(self, channel, message: Any) -> None:
+        """Handle messages from browser over WebRTC datachannel."""
+        try:
+            if isinstance(message, bytes):
+                message = message.decode("utf-8", errors="ignore")
+            if not isinstance(message, str):
+                return
+
+            data = json.loads(message)
+            msg_type = data.get("type")
+            request_id = data.get("requestId")
+
+            if msg_type == "ping":
+                resp = {"type": "pong", "t": data.get("t", 0), "server_time": datetime.now().isoformat()}
+                if request_id:
+                    resp["requestId"] = request_id
+                channel.send(json.dumps(resp))
+                return
+
+            if msg_type == "command":
+                ctype = str(data.get("commandType", "") or "")
+                payload = data.get("payload", {}) or {}
+                result = await self.execute_command(ctype, payload)
+
+                if request_id:
+                    channel.send(json.dumps({
+                        "type": "command_result" if result.get("success", True) else "command_error",
+                        "requestId": request_id,
+                        "commandType": ctype,
+                        "result": result,
+                        "error": result.get("error"),
+                    }))
+        except Exception as e:
+            add_log("warn", f"WebRTC message parse error: {e}", category="p2p")
     
     # ============== EXECUTE COMMAND ==============
-    def execute_command(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_command(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a command and return result. Never silently fails."""
         try:
             cmd = command_type.lower().strip()
 
-            # Normalize legacy command names from the web app
-            if cmd == "lock":
-                cmd = "lock_screen"
-            if cmd == "unlock":
-                cmd = "smart_unlock"
-            if cmd == "press_key":
-                cmd = "key_press"
-            if cmd == "mouse_scroll":
-                cmd = "scroll"
-            if cmd == "pinch_zoom":
-                cmd = "zoom"
+            # Normalize/alias legacy command names from the web app
+            alias_map = {
+                "lock": "lock_screen",
+                "unlock": "smart_unlock",
+                "press_key": "key_press",
+                "mouse_scroll": "scroll",
+                "pinch_zoom": "zoom",
+            }
+            cmd = alias_map.get(cmd, cmd)
 
             # Remote input gating commands
             if cmd == "remote_input_enable":
@@ -945,9 +1110,14 @@ class JarvisAgent:
                 for c in commands:
                     ctype = c.get("type", c.get("command_type", ""))
                     cpayload = c.get("payload", {})
-                    r = self.execute_command(ctype, cpayload)
+                    r = await self.execute_command(ctype, cpayload)
                     results.append({"type": ctype, "result": r})
                 return {"success": True, "results": results}
+
+            # WebRTC signaling (cloud-assisted, local transport after connect)
+            if cmd == "webrtc_offer":
+                offer = payload.get("offer")
+                return await self._handle_webrtc_offer(offer)
             
             # System status commands
             if cmd == "get_system_stats":
@@ -1037,6 +1207,30 @@ class JarvisAgent:
                 return {"success": True, "muted": True}
             elif cmd == "unmute_pc":
                 return {"success": True, "muted": False}
+
+            # App + web helpers (used by Hub command box)
+            elif cmd == "open_app":
+                return self._open_app(str(payload.get("app_name", "") or ""))
+            elif cmd == "search_web":
+                return self._search_web(str(payload.get("query", "") or ""), str(payload.get("engine", "google") or "google"))
+            elif cmd == "play_music":
+                return self._play_music(str(payload.get("query", "") or ""), str(payload.get("service", "youtube") or "youtube"))
+
+            # Capability discovery (prevents "unknown command" errors)
+            elif cmd in {
+                "list_audio_outputs",
+                "set_audio_output",
+                "get_audio_devices",
+                "get_media_state",
+                "start_notification_sync",
+                "stop_notification_sync",
+                "call_mute",
+                "answer_call",
+                "decline_call",
+                "end_call",
+                "list_cameras",
+            }:
+                return {"success": False, "error": f"Not supported by this PC agent: {cmd}"}
             
             # File operations
             elif cmd == "list_files":
@@ -1137,10 +1331,14 @@ class JarvisAgent:
                 cmd_type = cmd.get("command_type", "")
                 payload = cmd.get("payload", {}) or {}
                 
-                add_log("info", f"Executing: {cmd_type}", category="command")
-                
                 # Execute command
-                result_data = self.execute_command(cmd_type, payload)
+                result_data = await self.execute_command(cmd_type, payload)
+
+                # Avoid noisy logs for blocked remote input (looks like ghost commands)
+                if result_data.get("blocked") is True:
+                    add_log("info", f"Blocked remote input: {cmd_type}", category="command")
+                else:
+                    add_log("info", f"Executing: {cmd_type}", category="command")
                 
                 # Mark as completed
                 try:

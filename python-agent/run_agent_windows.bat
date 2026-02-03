@@ -35,7 +35,7 @@ if errorlevel 1 (
 
 echo.
 echo Starting agent...
-pythonw jarvis_agent.pyw
+python jarvis_agent.py
 
 echo.
 echo Agent started in background. You can close this window.
