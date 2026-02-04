@@ -203,26 +203,22 @@ export function SmartP2PManager({
           </div>
         </div>
 
+        {/* P2P Diagnostics */}
+        {connectionMode === "fallback" && networkState.sameNetwork && (
+          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 space-y-1.5">
+            <p className="text-xs font-medium text-amber-600">Why Local P2P isn't active:</p>
+            <ul className="text-[10px] text-muted-foreground space-y-0.5 list-disc list-inside">
+              <li>HTTPS blocks ws:// connections (mixed content)</li>
+              <li>Use the <strong>Capacitor APK</strong> for local P2P</li>
+              <li>PC IP: {localP2PState.pcIp || networkState.pc?.localIp || "unknown"}</li>
+              <li>Port 9876 must be open on PC firewall</li>
+            </ul>
+          </div>
+        )}
+
         {/* Connection Hierarchy */}
         <div className="text-xs text-muted-foreground pt-2 border-t border-border/50">
-          <p className="font-medium mb-1.5">Connection Priority:</p>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {["Local P2P", "WebRTC", "WebSocket", "Cloud"].map((mode, i) => (
-              <span key={mode} className="flex items-center gap-1">
-                <span className={cn(
-                  "px-1.5 py-0.5 rounded text-[10px]",
-                  i === 0 && connectionMode === "local_p2p" ? "bg-emerald-500/20 text-emerald-600" :
-                  i === 1 && connectionMode === "p2p" ? "bg-primary/20 text-primary" :
-                  i === 2 && connectionMode === "websocket" ? "bg-blue-500/20 text-blue-600" :
-                  i === 3 && connectionMode === "fallback" ? "bg-amber-500/20 text-amber-600" :
-                  "bg-muted text-muted-foreground"
-                )}>
-                  {mode}
-                </span>
-                {i < 3 && <span className="text-muted-foreground/50">→</span>}
-              </span>
-            ))}
-          </div>
+          <p className="font-medium mb-1.5">Priority: Local → WebRTC → WS → Cloud</p>
         </div>
       </CardContent>
     </Card>
