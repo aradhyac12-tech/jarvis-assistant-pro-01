@@ -44,8 +44,8 @@ const SCROLL_THRESHOLD = 4;
 const PINCH_THRESHOLD = 0.04;
 const SWIPE_THRESHOLD = 80;
 const GESTURE_3_THRESHOLD = 60;
-const TAP_MAX_TIME = 150;
-const TAP_MAX_MOVE = 6;
+const TAP_MAX_TIME = 180;
+const TAP_MAX_MOVE = 12;
 
 export function useGestureInput(callbacks: GestureCallbacks) {
   const haptics = useHapticFeedback();
