@@ -1,55 +1,17 @@
 """
-JARVIS PC Agent - Python Client v2.5 (AI Voice Control Edition)
-================================================================
-Runs on your PC to execute commands from the Jarvis web dashboard.
-Includes a local web dashboard at http://localhost:8765 for monitoring.
+JARVIS PC Agent v3.0 - Consolidated Edition
+============================================
+Single-file agent with:
+- Local P2P WebSocket server (port 9876) for ultra-low latency
+- Input-session gating to prevent "ghost" command execution
+- Pairing code countdown with auto-regeneration
+- Exponential backoff connection recovery
+- Threaded screenshot encoding
+- Circular buffers to prevent memory leaks
+- Batch command execution
+- File transfer support
 
-SETUP INSTRUCTIONS:
-------------------
-1. Install Python 3.8+ from https://python.org
-
-2. Install dependencies:
-   python -m pip install -r requirements.txt
-
-3. (Optional) Override backend via env vars or flags:
-   Windows CMD:
-     set JARVIS_SUPABASE_URL=https://YOUR_BACKEND_URL
-     set JARVIS_SUPABASE_KEY=YOUR_PUBLISHABLE_KEY
-
-4. Run the agent:
-   python jarvis_agent.py
-
-5. Open the Jarvis web app and you'll see your PC connected!
-   Local dashboard also available at http://localhost:8765
-
-FEATURES:
----------
-- System Controls: Volume, brightness, shutdown, sleep, hibernate, restart
-- Smart Unlock: Unlock screen by typing PIN
-- Remote Input: Virtual keyboard and mouse/trackpad control
-- Screen Streaming: Real-time screen mirror
-- Clipboard Sync: Read and write clipboard content
-- App Control: Open/close applications, list running apps, search and launch
-- File Browser: Navigate, search, and open files/folders
-- Music Player: Play music on YouTube (default) or other platforms
-- Open Websites: Open any URL in default browser
-- AI Search: Search on ChatGPT, Perplexity, Wikipedia, Google
-- System Stats: CPU, memory, disk, battery monitoring
-- Media Controls: Play/pause, next, previous, volume (Windows-specific)
-- Boost Mode: Refresh explorer, clear temp, optimize
-- Audio Relay: Stream audio bidirectionally between phone and PC
-- Camera Streaming: Stream PC camera to phone
-- File Sharing: Wi-Fi file transfer (Bluetooth coming soon)
-- Local Dashboard: Web UI for monitoring agent status and logs
-
-AI VOICE FEATURES (v2.5):
--------------------------
-- Voice-controlled app opening/closing
-- Voice search for files
-- Voice-triggered media playback
-- Voice volume/brightness control
-- Voice lock/unlock/sleep/restart/shutdown
-- Mobile integration: Make calls, send SMS, WhatsApp, Email via voice
+Run: python jarvis_agent.py
 """
 
 import os
@@ -62,59 +24,43 @@ import platform
 import ctypes
 import threading
 import argparse
+import socket
+import re
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable, Set
+from collections import deque
 import base64
 import io
 import uuid
 import webbrowser
 import urllib.parse
+import urllib.request
+import traceback
+
+# ============== VERSION ==============
+AGENT_VERSION = "3.0.0"
+
+# Remote input safety window (prevents "ghost" input)
+INPUT_SESSION_TTL_SECONDS = 12
 
 # Native GUI
 try:
     import tkinter as tk
-    from tkinter import ttk, scrolledtext
+    from tkinter import ttk, scrolledtext, filedialog
     HAS_TKINTER = True
 except ImportError:
     HAS_TKINTER = False
-    print("⚠️  tkinter not available - GUI disabled")
 
-
-# ============== BOOTSTRAP (dependency check) ==============
-
-def _requirements_path() -> str:
-    return os.path.join(os.path.dirname(__file__), "requirements.txt")
-
-
+# ============== BOOTSTRAP ==============
 def _check_dependencies() -> None:
-    """Fail fast with clear instructions if dependencies are missing.
-
-    Auto-installing Python packages often hangs/fails on Windows (permissions, venv mismatch,
-    unsupported Python versions). We keep startup reliable by requiring an explicit install.
-    """
     try:
-        import supabase  # noqa: F401
+        import supabase
         return
     except ImportError:
-        req_path = _requirements_path()
-        py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-
-        print("\n❌ Missing Python packages (e.g. 'supabase').")
-        print("\n✅ Fix (recommended):")
-        print(f"   python -m pip install -r {req_path}")
-        print("\n✅ Windows one-click:")
-        print("   Double-click: run_agent_windows.bat")
-
-        if sys.version_info >= (3, 13):
-            print("\n⚠️  Your Python version is", py_ver)
-            print("   Some packages used by the agent may not support Python 3.13+ yet.")
-            print("   Install Python 3.10–3.12, recreate your venv, then reinstall requirements.")
-
+        print("❌ Missing Python packages. Run: pip install -r requirements.txt")
         sys.exit(1)
 
-
 _check_dependencies()
-
 
 # Third-party imports
 from supabase import create_client, Client
@@ -122,78 +68,57 @@ import pyautogui
 from PIL import Image
 import psutil
 
-# Fast screenshot using mss
 try:
     import mss
     HAS_MSS = True
 except ImportError:
     HAS_MSS = False
-    print("⚠️  mss not installed - using slower PIL screenshots")
 
-# Optional imports for keyboard
 try:
     import keyboard
     HAS_KEYBOARD = True
 except ImportError:
     HAS_KEYBOARD = False
-    print("⚠️  keyboard module not installed - some features limited")
 
-# Audio streaming
 try:
     import pyaudio
     HAS_PYAUDIO = True
 except ImportError:
     HAS_PYAUDIO = False
-    print("⚠️  pyaudio not installed - audio relay disabled")
 
-# Camera streaming
 try:
-    # Suppress noisy OpenCV backend probing warnings on Windows
-    # and avoid Orbbec/obsensor internal "Camera index out of range" errors
-    os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_OBSENSOR", "0")
-    os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_INTEL_MFX", "0")
-    # Suppress OpenCV warnings during import
     os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
     import cv2
     HAS_OPENCV = True
 except ImportError:
     HAS_OPENCV = False
-    print("⚠️  opencv-python not installed - camera streaming disabled")
 
-# WebSocket
 try:
     import websockets
+    from websockets.server import WebSocketServerProtocol
     HAS_WEBSOCKETS = True
 except ImportError:
     HAS_WEBSOCKETS = False
-    print("⚠️  websockets not installed - real-time streaming disabled")
 
-# Voice Recognition for wake word
 try:
     import speech_recognition as sr
     HAS_SPEECH_RECOGNITION = True
 except ImportError:
     HAS_SPEECH_RECOGNITION = False
-    print("⚠️  SpeechRecognition not installed - voice control disabled")
 
-# Text-to-Speech (offline)
 try:
     import pyttsx3
     HAS_TTS = True
 except ImportError:
     HAS_TTS = False
-    print("⚠️  pyttsx3 not installed - voice responses disabled")
 
-# System Tray
 try:
     import pystray
     from pystray import MenuItem as item
     HAS_TRAY = True
 except ImportError:
     HAS_TRAY = False
-    print("⚠️  pystray not installed - system tray disabled")
 
-# Windows Notifications
 try:
     from win10toast_click import ToastNotifier
     HAS_TOAST = True
@@ -203,9 +128,7 @@ except ImportError:
         HAS_TOAST = True
     except ImportError:
         HAS_TOAST = False
-        print("⚠️  win10toast not installed - notifications disabled")
 
-# Windows-specific imports
 if platform.system() == "Windows":
     try:
         from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume, IAudioEndpointVolume
@@ -214,732 +137,57 @@ if platform.system() == "Windows":
         HAS_PYCAW = True
     except ImportError:
         HAS_PYCAW = False
-        print("⚠️  pycaw not installed properly")
-
     try:
         import screen_brightness_control as sbc
         HAS_BRIGHTNESS = True
     except ImportError:
         HAS_BRIGHTNESS = False
-        print("⚠️  screen_brightness_control not installed")
 else:
     HAS_PYCAW = False
     HAS_BRIGHTNESS = False
 
-
 # ============== CONFIGURATION ==============
-# The backend URL and key are embedded below for this project.
-# You can override them via environment variables or command-line flags if needed.
-#
-# To override (Windows CMD):
-#   set JARVIS_SUPABASE_URL=https://... && set JARVIS_SUPABASE_KEY=... && python jarvis_agent.py
-# Or pass flags:
-#   python jarvis_agent.py --url https://... --key ...
-
-# =====================================================================
-# EMBEDDED BACKEND CONFIGURATION - DO NOT CHANGE UNLESS YOU KNOW WHAT YOU'RE DOING
-# =====================================================================
 DEFAULT_JARVIS_URL = "https://gkppopjoedadacolxufi.supabase.co"
 DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrcHBvcGpvZWRhZGFjb2x4dWZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk0MzAyNjAsImV4cCI6MjA4NTAwNjI2MH0.BTudp4YXmUuYv6gtPeurUzqzM_mbf_j7QqsL78uwQUE"
-# =====================================================================
 
-
-def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="JARVIS PC Agent")
-    p.add_argument("--url", help="Backend URL (e.g. https://xxxx.supabase.co)")
-    p.add_argument("--key", help="Backend publishable/anon key")
-    p.add_argument("--no-self-test", action="store_true", help="Skip connectivity self-test")
-    p.add_argument("--save-config", action="store_true", help="Save URL/KEY to jarvis_agent_config.json")
-    return p.parse_args()
-
-
-def _config_path() -> str:
-    return os.path.join(os.path.dirname(__file__), "jarvis_agent_config.json")
-
-
-def _load_local_config() -> Dict[str, str]:
-    try:
-        with open(_config_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return {k: str(v) for k, v in data.items()}
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-    return {}
-
-
-def _save_local_config(url: str, key: str) -> None:
-    try:
-        with open(_config_path(), "w", encoding="utf-8") as f:
-            json.dump({"JARVIS_SUPABASE_URL": url, "JARVIS_SUPABASE_KEY": key}, f, indent=2)
-        print(f"💾 Saved config to: {_config_path()}")
-    except Exception as e:
-        print(f"⚠️  Could not save config: {e}")
-
-
-def _normalize_url(raw: str) -> str:
-    raw = (raw or "").strip().strip('"').strip("'")
-    if not raw:
-        return ""
-    if not raw.startswith("http://") and not raw.startswith("https://"):
-        raw = "https://" + raw
-    return raw
-
-
-ARGS = _parse_args()
-LOCAL_CFG = _load_local_config()
-
-SUPABASE_URL = _normalize_url(
-    ARGS.url
-    or os.environ.get("JARVIS_SUPABASE_URL")
-    or LOCAL_CFG.get("JARVIS_SUPABASE_URL")
-    or DEFAULT_JARVIS_URL
-)
-
-SUPABASE_KEY = (
-    (ARGS.key or "").strip()
-    or os.environ.get("JARVIS_SUPABASE_KEY")
-    or LOCAL_CFG.get("JARVIS_SUPABASE_KEY")
-    or DEFAULT_JARVIS_KEY
-)
-
-if ARGS.save_config:
-    _save_local_config(SUPABASE_URL, SUPABASE_KEY)
-
-
-def _mask_key(k: str) -> str:
-    if not k:
-        return "<empty>"
-    if len(k) <= 10:
-        return "*" * len(k)
-    return f"{k[:6]}…{k[-4:]}"
-
-
-print(f"🔧 Using backend URL: {SUPABASE_URL}")
-print(f"🔑 Using key: {_mask_key(SUPABASE_KEY)}")
-
-# Validate required configuration
-if not SUPABASE_URL:
-    print("❌ ERROR: Missing JARVIS_SUPABASE_URL")
-    sys.exit(1)
-
-if not SUPABASE_KEY:
-    print("❌ ERROR: Missing JARVIS_SUPABASE_KEY")
-    sys.exit(1)
-
-
-def _project_ref_from_url(url: str) -> str:
-    try:
-        host = urllib.parse.urlparse(url).hostname or ""
-        return host.split(".")[0] if host else ""
-    except Exception:
-        return ""
-
-
-PROJECT_REF = _project_ref_from_url(SUPABASE_URL)
-
-# WebSocket endpoints for realtime streaming (Functions domain)
-AUDIO_RELAY_WS_URL = f"wss://{PROJECT_REF}.functions.supabase.co/functions/v1/audio-relay"
-CAMERA_RELAY_WS_URL = f"wss://{PROJECT_REF}.functions.supabase.co/functions/v1/camera-relay"
+SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", DEFAULT_JARVIS_URL)
+SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
 
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
-POLL_INTERVAL = 0.5  # Faster polling for less lag
-HEARTBEAT_INTERVAL = 5  # Separate heartbeat
-UI_PORT = 8765
+POLL_INTERVAL = 0.5
+HEARTBEAT_INTERVAL = 5
+LOCAL_P2P_PORT = 9876
+PAIRING_CODE_LIFETIME_MINUTES = 30
 
-# PyAutoGUI settings for less lag
+# PyAutoGUI settings
 pyautogui.PAUSE = 0.01
 pyautogui.FAILSAFE = False
 
-
-STARTUP_LOG_PATH = os.path.join(os.path.dirname(__file__), "jarvis_agent_startup.log")
-
-
-def _startup_log(stage: str, message: str) -> None:
-    try:
-        with open(STARTUP_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().isoformat()} | {stage} | {message}\n")
-    except Exception:
-        pass
-
-
-# ============== CONNECTIVITY SELF-TEST ==============
-def run_connectivity_test() -> bool:
-    """Run connectivity diagnostics before starting the agent."""
-    import socket
-    import ssl
-
-    print("\n" + "=" * 50)
-    print("🔍 CONNECTIVITY SELF-TEST")
-    print("=" * 50)
-
-    parsed = urllib.parse.urlparse(SUPABASE_URL)
-    hostname = parsed.hostname
-
-    if not hostname:
-        msg = f"Invalid URL format: {SUPABASE_URL}"
-        _startup_log("url", msg)
-        print(f"❌ {msg}")
-        print("\n💡 Tip: You can run:")
-        print("   python jarvis_agent.py --url https://YOUR_PROJECT.supabase.co --key YOUR_KEY")
-        return False
-
-    print(f"📍 Target: {hostname}")
-
-    # Test 1: DNS Resolution
-    print("\n1️⃣  DNS Resolution...")
-    try:
-        ip_addresses = socket.getaddrinfo(hostname, 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        ip = ip_addresses[0][4][0]
-        print(f"   ✅ Resolved to: {ip}")
-    except socket.gaierror as e:
-        _startup_log("dns", f"{hostname} | {e}")
-        print(f"   ❌ DNS FAILED: {e}")
-        print("\n💡 FIXES:")
-        print("   • Check your internet connection")
-        print("   • Disable VPN/proxy if active")
-        print("   • Try: ipconfig /flushdns (Windows)")
-        print("   • Change DNS to 8.8.8.8 or 1.1.1.1")
-        print("\n💡 If this keeps failing, double-check your URL is correct:")
-        print(f"   Current URL: {SUPABASE_URL}")
-        return False
-
-    # Test 2: TCP Connection
-    print("\n2️⃣  TCP Connection (port 443)...")
-    try:
-        sock = socket.create_connection((hostname, 443), timeout=10)
-        sock.close()
-        print("   ✅ TCP connection successful")
-    except socket.timeout:
-        _startup_log("tcp", f"timeout {hostname}:443")
-        print("   ❌ Connection timed out")
-        print("\n💡 FIXES:")
-        print("   • Check firewall settings")
-        print("   • Try a different network")
-        return False
-    except Exception as e:
-        _startup_log("tcp", f"{hostname}:443 | {e}")
-        print(f"   ❌ TCP FAILED: {e}")
-        return False
-
-    # Test 3: HTTPS/TLS Connection
-    print("\n3️⃣  HTTPS/TLS Handshake...")
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection((hostname, 443), timeout=10) as sock:
-            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-                print(f"   ✅ TLS {ssock.version()} established")
-    except ssl.SSLError as e:
-        _startup_log("tls", str(e))
-        print(f"   ❌ SSL/TLS FAILED: {e}")
-        return False
-    except Exception as e:
-        _startup_log("https", str(e))
-        print(f"   ❌ HTTPS FAILED: {e}")
-        return False
-
-    # Test 4: REST API basic check
-    print("\n4️⃣  REST API Health Check...")
-    try:
-        import http.client
-
-        conn = http.client.HTTPSConnection(hostname, timeout=10)
-        conn.request(
-            "GET",
-            "/rest/v1/",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-            },
-        )
-        resp = conn.getresponse()
-        status = resp.status
-        conn.close()
-
-        if status in (200, 400):
-            print(f"   ✅ API responding (HTTP {status})")
-        else:
-            print(f"   ⚠️  Unexpected status: HTTP {status}")
-    except Exception as e:
-        _startup_log("api", str(e))
-        print(f"   ⚠️  API check failed: {e} (will retry on start)")
-
-    print("\n" + "=" * 50)
-    print("✅ ALL CONNECTIVITY TESTS PASSED")
-    print("=" * 50 + "\n")
-    return True
-
-
-# Run connectivity test before initializing client
-if not ARGS.no_self_test:
-    if not run_connectivity_test():
-        print(f"\n❌ Connectivity test failed. Startup log saved to: {STARTUP_LOG_PATH}")
-        sys.exit(1)
-
-# ============== SUPABASE CLIENT ==============
-print(f"🔗 Connecting to: {SUPABASE_URL}")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-
-# ============== GLOBAL LOG STORAGE (shared for web UI) ==============
-log_entries: List[Dict[str, Any]] = []
+# ============== CIRCULAR BUFFER LOGS ==============
 MAX_LOGS = 100
+log_entries: deque = deque(maxlen=MAX_LOGS)
 
 agent_status: Dict[str, Any] = {
     "connected": False,
     "device_name": DEVICE_NAME,
     "device_id": "",
     "pairing_code": "",
+    "pairing_expires_at": None,
+    "pairing_countdown": "",
     "last_heartbeat": "",
     "volume": 50,
     "brightness": 50,
     "is_locked": False,
     "cpu_percent": 0,
     "memory_percent": 0,
-    "audio_streaming": False,
-    "camera_streaming": False,
-    "screen_streaming": False,
-    "voice_listening": False,
-    "voice_active": False,
-    "last_voice_command": "",
+    "local_ips": [],
+    "p2p_port": LOCAL_P2P_PORT,
+    "connection_mode": "cloud",
 }
 
 
-# ============== NOTIFICATION SYSTEM ==============
-class NotificationManager:
-    """Handles Windows notifications."""
-    
-    def __init__(self):
-        self.toaster = None
-        if HAS_TOAST:
-            try:
-                self.toaster = ToastNotifier()
-            except Exception as e:
-                print(f"⚠️  Toast notification init failed: {e}")
-    
-    def notify(self, title: str, message: str, duration: int = 5):
-        """Show a Windows notification."""
-        if self.toaster:
-            try:
-                self.toaster.show_toast(
-                    title,
-                    message,
-                    duration=duration,
-                    threaded=True,
-                    icon_path=None
-                )
-            except Exception as e:
-                add_log("warn", f"Notification failed: {e}", category="system")
-        else:
-            add_log("info", f"[Notification] {title}: {message}", category="system")
-
-
-notification_manager = NotificationManager()
-
-
-# ============== VOICE LISTENER (Wake Word Detection) ==============
-class VoiceListener:
-    """Continuous voice listener with wake word detection."""
-    
-    def __init__(self, wake_word: str = "jarvis", on_command=None):
-        self.wake_word = wake_word.lower()
-        self.on_command = on_command
-        self.running = False
-        self.listening = False
-        self.recognizer = None
-        self.microphone = None
-        self.tts_engine = None
-        self.command_callback = None
-        self.last_command = ""
-        self.listen_thread = None
-        
-        # Initialize speech recognition
-        if HAS_SPEECH_RECOGNITION:
-            self.recognizer = sr.Recognizer()
-            self.recognizer.energy_threshold = 300
-            self.recognizer.dynamic_energy_threshold = True
-            self.recognizer.pause_threshold = 0.8
-        
-        # Initialize TTS
-        if HAS_TTS:
-            try:
-                self.tts_engine = pyttsx3.init()
-                voices = self.tts_engine.getProperty('voices')
-                # Try to find a male English voice
-                for voice in voices:
-                    if 'male' in voice.name.lower() or 'david' in voice.name.lower():
-                        self.tts_engine.setProperty('voice', voice.id)
-                        break
-                self.tts_engine.setProperty('rate', 180)
-                self.tts_engine.setProperty('volume', 0.9)
-            except Exception as e:
-                print(f"⚠️  TTS init failed: {e}")
-                self.tts_engine = None
-    
-    def speak(self, text: str):
-        """Speak text using TTS."""
-        if self.tts_engine:
-            try:
-                self.tts_engine.say(text)
-                self.tts_engine.runAndWait()
-            except Exception as e:
-                add_log("warn", f"TTS error: {e}", category="voice")
-    
-    def start(self):
-        """Start continuous listening."""
-        if not HAS_SPEECH_RECOGNITION:
-            add_log("error", "Speech recognition not available", category="voice")
-            return False
-        
-        if self.running:
-            return True
-        
-        self.running = True
-        self.listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
-        self.listen_thread.start()
-        
-        add_log("info", f"Voice listener started (wake word: '{self.wake_word}')", category="voice")
-        notification_manager.notify("JARVIS Voice Active", f"Say '{self.wake_word.capitalize()}' to activate")
-        update_agent_status({"voice_listening": True})
-        return True
-    
-    def stop(self):
-        """Stop listening."""
-        self.running = False
-        self.listening = False
-        update_agent_status({"voice_listening": False, "voice_active": False})
-        add_log("info", "Voice listener stopped", category="voice")
-    
-    def _listen_loop(self):
-        """Main listening loop running in background thread."""
-        try:
-            with sr.Microphone() as source:
-                add_log("info", "Calibrating microphone...", category="voice")
-                self.recognizer.adjust_for_ambient_noise(source, duration=1)
-                add_log("info", "Microphone ready. Listening for wake word...", category="voice")
-                
-                while self.running:
-                    try:
-                        self.listening = True
-                        update_agent_status({"voice_listening": True})
-                        
-                        # Listen for audio
-                        audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                        
-                        # Recognize speech
-                        try:
-                            text = self.recognizer.recognize_google(audio).lower()
-                            add_log("info", f"Heard: {text}", category="voice")
-                            
-                            # Check for wake word
-                            if self.wake_word in text:
-                                update_agent_status({"voice_active": True})
-                                
-                                # Extract command after wake word
-                                wake_index = text.find(self.wake_word)
-                                command = text[wake_index + len(self.wake_word):].strip()
-                                
-                                if command:
-                                    self._process_command(command)
-                                else:
-                                    # Wake word detected but no command - wait for command
-                                    self.speak("Yes sir?")
-                                    notification_manager.notify("JARVIS", "Listening for command...")
-                                    
-                                    # Listen for follow-up command
-                                    try:
-                                        follow_up = self.recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                                        command = self.recognizer.recognize_google(follow_up).lower()
-                                        self._process_command(command)
-                                    except sr.WaitTimeoutError:
-                                        self.speak("Command not received, sir.")
-                                        update_agent_status({"voice_active": False})
-                                    except sr.UnknownValueError:
-                                        self.speak("I didn't catch that, sir.")
-                                        update_agent_status({"voice_active": False})
-                                
-                                update_agent_status({"voice_active": False})
-                                
-                        except sr.UnknownValueError:
-                            pass  # Could not understand audio
-                        except sr.RequestError as e:
-                            add_log("error", f"Speech recognition error: {e}", category="voice")
-                            time.sleep(1)
-                    
-                    except sr.WaitTimeoutError:
-                        pass  # No speech detected, continue listening
-                    except Exception as e:
-                        add_log("warn", f"Listen error: {e}", category="voice")
-                        time.sleep(0.5)
-        
-        except Exception as e:
-            add_log("error", f"Voice listener crashed: {e}", category="voice")
-            self.running = False
-            update_agent_status({"voice_listening": False})
-    
-    def _process_command(self, command: str):
-        """Process a voice command - calls AI backend and executes commands locally."""
-        self.last_command = command
-        update_agent_status({"last_voice_command": command})
-        
-        add_log("info", f"Processing command: {command}", category="voice")
-        notification_manager.notify("JARVIS Command", command)
-        
-        # Acknowledge
-        self.speak(f"Processing: {command}")
-        
-        # Try to call AI backend for intelligent command parsing
-        try:
-            ai_result = self._call_ai_backend(command)
-            if ai_result:
-                response_text = ai_result.get("response", "")
-                commands = ai_result.get("commands", [])
-                
-                # Speak the AI response
-                if response_text:
-                    self.speak(response_text)
-                
-                # Execute commands locally
-                if commands:
-                    self._execute_commands_async(commands)
-                return
-        except Exception as e:
-            add_log("warn", f"AI backend unavailable, using local parsing: {e}", category="voice")
-        
-        # Fallback to local command parsing if AI is unavailable
-        result = self._parse_and_execute_locally(command)
-        if result:
-            self.speak(result)
-        
-        # Also call the command callback if set
-        if self.on_command:
-            try:
-                result = self.on_command(command)
-                if result:
-                    self.speak(result)
-            except Exception as e:
-                add_log("error", f"Command execution error: {e}", category="voice")
-                self.speak("I encountered an error, sir.")
-    
-    def _call_ai_backend(self, message: str) -> Optional[Dict[str, Any]]:
-        """Call the jarvis-chat edge function to get AI-parsed commands."""
-        import urllib.request
-        import ssl
-        
-        chat_url = f"{SUPABASE_URL}/functions/v1/jarvis-chat"
-        ssl_ctx = ssl.create_default_context()
-        
-        try:
-            req_data = json.dumps({"message": message}).encode("utf-8")
-            req = urllib.request.Request(
-                chat_url,
-                data=req_data,
-                headers={
-                    "Content-Type": "application/json",
-                    "apikey": SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                },
-                method="POST"
-            )
-            
-            with urllib.request.urlopen(req, context=ssl_ctx, timeout=15) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-            
-            if "error" in result:
-                add_log("warn", f"AI backend error: {result.get('error')}", category="voice")
-                return None
-            
-            add_log("info", f"AI response received with {len(result.get('commands', []))} commands", category="voice")
-            return result
-            
-        except Exception as e:
-            add_log("warn", f"AI backend call failed: {e}", category="voice")
-            return None
-    
-    def _execute_commands_async(self, commands: List[Dict[str, Any]]):
-        """Execute AI-returned commands in a background thread."""
-        def execute():
-            for cmd in commands:
-                try:
-                    action = cmd.get("action", "")
-                    result = self._execute_single_command(action, cmd)
-                    add_log("info", f"Executed: {action}", f"Result: {result.get('success', False)}", category="voice")
-                    time.sleep(0.5)  # Small delay between commands
-                except Exception as e:
-                    add_log("error", f"Command execution error: {e}", category="voice")
-        
-        threading.Thread(target=execute, daemon=True).start()
-    
-    def _execute_single_command(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a single command locally based on AI output."""
-        global jarvis_agent_instance
-        
-        if not jarvis_agent_instance:
-            # Try local execution without full agent
-            return self._execute_simple_command(action, params)
-        
-        # Map AI actions to agent command types
-        command_map = {
-            "open_app": ("open_app", {"app_name": params.get("app_name", "")}),
-            "close_app": ("close_app", {"app_name": params.get("app_name", "")}),
-            "list_apps": ("list_apps", {}),
-            "play_music": ("play_music", {"query": params.get("query", ""), "service": "youtube"}),
-            "media_control": ("media_control", {"action": params.get("control", "play_pause")}),
-            "set_volume": ("set_volume", {"level": params.get("level", 50)}),
-            "set_brightness": ("set_brightness", {"level": params.get("level", 50)}),
-            "lock": ("lock", {}),
-            "sleep": ("sleep", {}),
-            "restart": ("restart", {}),
-            "shutdown": ("shutdown", {}),
-            "screenshot": ("screenshot", {}),
-            "search_files": ("search_files", {"query": params.get("query", "")}),
-            "open_file": ("open_file", {"path": params.get("path", "")}),
-            "open_folder": ("open_folder", {"path": params.get("path", "")}),
-            "open_website": ("open_website", {"site": params.get("site", ""), "query": params.get("query", "")}),
-            "search_web": ("search_web", {"engine": params.get("engine", "google"), "query": params.get("query", "")}),
-            "open_url": ("open_url", {"url": params.get("url", "")}),
-            "type_text": ("type_text", {"text": params.get("text", "")}),
-            "key_combo": ("hotkey", {"keys": params.get("keys", "")}),
-            "make_call": ("make_call", {"contact": params.get("contact", ""), "number": params.get("number", "")}),
-            "send_sms": ("send_sms", {"contact": params.get("contact", ""), "number": params.get("number", ""), "message": params.get("message", "")}),
-            "send_whatsapp": ("send_whatsapp", {"contact": params.get("contact", ""), "message": params.get("message", "")}),
-            "send_email": ("send_email", {"to": params.get("to", ""), "subject": params.get("subject", ""), "body": params.get("body", "")}),
-        }
-        
-        if action in command_map:
-            cmd_type, payload = command_map[action]
-            loop = asyncio.new_event_loop()
-            try:
-                result = loop.run_until_complete(jarvis_agent_instance._handle_command(cmd_type, payload))
-                return result
-            finally:
-                loop.close()
-        
-        return {"success": False, "error": f"Unknown action: {action}"}
-    
-    def _execute_simple_command(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute simple commands without full agent (fallback)."""
-        try:
-            if action == "open_app":
-                app_name = params.get("app_name", "")
-                if app_name:
-                    subprocess.Popen(f'start {app_name}', shell=True)
-                    return {"success": True}
-            elif action == "play_music":
-                query = params.get("query", "")
-                if query:
-                    webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
-                    return {"success": True}
-            elif action == "open_url":
-                url = params.get("url", "")
-                if url:
-                    webbrowser.open(url)
-                    return {"success": True}
-            elif action == "lock":
-                if platform.system() == "Windows":
-                    ctypes.windll.user32.LockWorkStation()
-                    return {"success": True}
-            elif action == "media_control":
-                control = params.get("action", "play_pause")
-                key_map = {"play_pause": "playpause", "next": "nexttrack", "previous": "prevtrack", "mute": "volumemute"}
-                key = key_map.get(control, "playpause")
-                pyautogui.press(key)
-                return {"success": True}
-            elif action == "set_volume":
-                level = params.get("level", 50)
-                # Simple volume adjustment via key presses
-                current = 50
-                diff = level - current
-                steps = abs(diff) // 2
-                key = "volumeup" if diff > 0 else "volumedown"
-                for _ in range(steps):
-                    pyautogui.press(key)
-                return {"success": True, "volume": level}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-        
-        return {"success": False, "error": f"Cannot execute {action} without agent"}
-    
-    def _parse_and_execute_locally(self, command: str) -> Optional[str]:
-        """Parse and execute common commands locally without AI backend."""
-        command_lower = command.lower().strip()
-        
-        # Volume control
-        if "volume" in command_lower:
-            if "up" in command_lower or "increase" in command_lower:
-                pyautogui.press("volumeup")
-                pyautogui.press("volumeup")
-                pyautogui.press("volumeup")
-                return "Volume increased, sir."
-            elif "down" in command_lower or "decrease" in command_lower:
-                pyautogui.press("volumedown")
-                pyautogui.press("volumedown")
-                pyautogui.press("volumedown")
-                return "Volume decreased, sir."
-            elif "mute" in command_lower:
-                pyautogui.press("volumemute")
-                return "Volume muted, sir."
-            # Try to extract number
-            import re
-            numbers = re.findall(r'\d+', command_lower)
-            if numbers:
-                level = int(numbers[0])
-                if 0 <= level <= 100:
-                    return f"Setting volume to {level}%, sir."
-        
-        # Media control
-        if "pause" in command_lower or "stop" in command_lower:
-            pyautogui.press("playpause")
-            return "Media paused, sir."
-        if "play" in command_lower and "music" not in command_lower:
-            pyautogui.press("playpause")
-            return "Playing, sir."
-        if "next" in command_lower and ("track" in command_lower or "song" in command_lower):
-            pyautogui.press("nexttrack")
-            return "Next track, sir."
-        if "previous" in command_lower and ("track" in command_lower or "song" in command_lower):
-            pyautogui.press("prevtrack")
-            return "Previous track, sir."
-        
-        # System control
-        if "lock" in command_lower and ("screen" in command_lower or "pc" in command_lower or "computer" in command_lower):
-            if platform.system() == "Windows":
-                ctypes.windll.user32.LockWorkStation()
-            return "Locking the computer, sir."
-        
-        # App opening
-        if command_lower.startswith("open "):
-            app_name = command_lower.replace("open ", "").strip()
-            webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(app_name)}")
-            return f"Opening {app_name}, sir."
-        
-        # Web search
-        if "search" in command_lower or "google" in command_lower:
-            query = command_lower.replace("search for", "").replace("search", "").replace("google", "").strip()
-            if query:
-                webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
-                return f"Searching for {query}, sir."
-        
-        # Play music
-        if "play" in command_lower and ("music" in command_lower or "song" in command_lower):
-            query = command_lower.replace("play music", "").replace("play song", "").replace("play", "").strip()
-            if query:
-                webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
-                return f"Playing {query}, sir."
-        
-        return None
-
-
-# Global voice listener instance
-voice_listener: Optional[VoiceListener] = None
-
-
 def add_log(level: str, message: str, details: str = "", category: str = "general"):
-    """Add a log entry (shared with web UI)."""
-    global log_entries
     entry = {
         "id": str(uuid.uuid4()),
         "timestamp": datetime.now().isoformat(),
@@ -948,21 +196,17 @@ def add_log(level: str, message: str, details: str = "", category: str = "genera
         "message": message,
         "details": details
     }
-    log_entries.insert(0, entry)
-    log_entries = log_entries[:MAX_LOGS]
-    
-    # Also print to console
+    log_entries.append(entry)
     level_emoji = {"error": "❌", "warn": "⚠️", "info": "ℹ️"}.get(level, "📝")
     print(f"{level_emoji} [{category}] {message}" + (f" | {details}" if details else ""))
 
 
 def get_logs() -> List[Dict[str, Any]]:
-    return log_entries
+    return list(log_entries)
 
 
 def clear_logs():
-    global log_entries
-    log_entries = []
+    log_entries.clear()
 
 
 def update_agent_status(updates: Dict[str, Any]):
@@ -974,1572 +218,221 @@ def get_agent_status() -> Dict[str, Any]:
     return agent_status
 
 
-# ============== AUDIO STREAMER ==============
-class AudioStreamer:
-    """Handles bidirectional audio streaming between phone and PC."""
+# ============== NETWORK UTILITIES ==============
+def get_local_ips() -> List[str]:
+    ips = []
+    hostname = socket.gethostname()
+    try:
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.append(ip)
+    except Exception:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        primary_ip = s.getsockname()[0]
+        s.close()
+        if primary_ip not in ips:
+            ips.insert(0, primary_ip)
+    except Exception:
+        pass
+    return ips
+
+
+def get_network_prefix(ip: str) -> str:
+    parts = ip.split(".")
+    return ".".join(parts[:3]) if len(parts) == 4 else ""
+
+
+# ============== LOCAL P2P WEBSOCKET SERVER ==============
+class LocalP2PServer:
+    """Ultra-low latency local WebSocket server for same-network connections."""
     
-    # STANDARDIZED SAMPLE RATE: 16kHz for better browser compatibility
-    # Web AudioContext on mobile often defaults to 16kHz or has issues with 44.1kHz
-    STANDARD_SAMPLE_RATE = 16000
-    
-    def __init__(self):
+    def __init__(self, command_handler: Optional[Callable] = None, port: int = LOCAL_P2P_PORT):
+        self.port = port
+        self.command_handler = command_handler
         self.running = False
-        self.ws = None
-        self.session_id = None
-        self.direction = "phone_to_pc"
-        self.use_system_audio = False
+        self.server = None
+        self.clients: Set = set()
+        self.local_ips: List[str] = []
+        self._server_thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         
-        self.sample_rate = self.STANDARD_SAMPLE_RATE  # Use standardized 16kHz
-        self.channels = 1  # Mono for mic, stereo for system audio
-        self.chunk_size = 2048  # Smaller chunks for lower latency at 16kHz
-        self.format = pyaudio.paInt16 if HAS_PYAUDIO else None
+    async def handle_client(self, websocket, path: str):
+        client_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
+        add_log("info", f"Local P2P client connected: {client_ip}", category="p2p")
         
-        self.pa = None
-        self.input_stream = None
-        self.output_stream = None
-        
-        self.bytes_sent = 0
-        self.bytes_received = 0
-        self.last_stats_time = time.time()
-        
-        # Audio buffer for smoother playback
-        self.audio_buffer: List[bytes] = []
-        self.buffer_lock = threading.Lock()
-        
-    async def connect(self, session_id: str, direction: str = "phone_to_pc", use_system_audio: bool = False):
-        if not HAS_WEBSOCKETS:
-            add_log("error", "WebSockets not available for audio relay", category="audio")
-            return False
-            
-        self.session_id = session_id
-        self.direction = direction
-        self.use_system_audio = use_system_audio
-        
-        ws_url = f"{AUDIO_RELAY_WS_URL}?sessionId={session_id}&type=pc&direction={direction}"
-        add_log("info", f"Connecting to audio relay", f"direction={direction}, system_audio={use_system_audio}", category="audio")
+        self.clients.add(websocket)
+        update_agent_status({"connection_mode": "local_p2p"})
         
         try:
-            self.ws = await websockets.connect(ws_url)
-            self.running = True
-            self.bytes_sent = 0
-            self.bytes_received = 0
-            self.last_stats_time = time.time()
-            add_log("info", "Audio relay connected", category="audio")
-            update_agent_status({"audio_streaming": True})
-            return True
-        except Exception as e:
-            add_log("error", f"Audio relay connection failed: {e}", category="audio")
-            return False
-    
-    def _get_loopback_device_index(self) -> Optional[int]:
-        if not HAS_PYAUDIO or platform.system() != "Windows":
-            return None
+            await websocket.send(json.dumps({
+                "type": "welcome",
+                "server": "jarvis_local_p2p",
+                "version": AGENT_VERSION,
+                "local_ips": self.local_ips,
+                "port": self.port,
+            }))
             
-        try:
-            p = pyaudio.PyAudio()
-            wasapi_info = None
-            
-            for i in range(p.get_host_api_count()):
-                info = p.get_host_api_info_by_index(i)
-                if "WASAPI" in info.get("name", ""):
-                    wasapi_info = info
-                    break
-            
-            if not wasapi_info:
-                add_log("warn", "WASAPI not found for loopback", category="audio")
-                p.terminate()
-                return None
-            
-            default_output = p.get_default_output_device_info()
-            output_name = default_output.get("name", "")
-            
-            for i in range(p.get_device_count()):
-                dev_info = p.get_device_info_by_index(i)
-                dev_name = dev_info.get("name", "")
-                max_input = dev_info.get("maxInputChannels", 0)
-                
-                if max_input > 0 and output_name.split(" (")[0] in dev_name:
-                    add_log("info", f"Found loopback device: {dev_name} (index {i})", category="audio")
-                    p.terminate()
-                    return i
-            
-            p.terminate()
-            return None
-        except Exception as e:
-            add_log("warn", f"Loopback detection error: {e}", category="audio")
-            return None
-    
-    async def start_playback(self):
-        """Play audio received from phone on PC speakers."""
-        if not HAS_PYAUDIO:
-            add_log("error", "PyAudio not available for playback", category="audio")
-            return
-            
-        try:
-            self.pa = pyaudio.PyAudio()
-            
-            # Find a valid output device
-            output_device_index = None
-            try:
-                default_output = self.pa.get_default_output_device_info()
-                output_device_index = default_output.get("index")
-                add_log("info", f"Using audio output: {default_output.get('name', 'default')}", category="audio")
-            except Exception as e:
-                add_log("warn", f"Could not get default output device: {e}", category="audio")
-            
-            self.output_stream = self.pa.open(
-                format=self.format,
-                channels=1,  # Phone sends mono
-                rate=self.sample_rate,
-                output=True,
-                output_device_index=output_device_index,
-                frames_per_buffer=self.chunk_size
-            )
-            
-            add_log("info", "PC speaker playback started", category="audio")
-            
-            # Pre-fill buffer to reduce latency issues
-            silence = b'\x00' * (self.chunk_size * 2)
-            self.output_stream.write(silence)
-            
-            consecutive_errors = 0
-            max_consecutive_errors = 10
-            
-            while self.running and self.ws:
+            async for message in websocket:
                 try:
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
-                    consecutive_errors = 0  # Reset on successful receive
-                    
-                    if isinstance(message, bytes):
-                        # Direct binary audio data (Int16 PCM)
-                        try:
-                            self.output_stream.write(message)
-                            self.bytes_received += len(message)
-                        except Exception as write_err:
-                            add_log("warn", f"Audio write error: {write_err}", category="audio")
-                    elif isinstance(message, str):
-                        try:
-                            data = json.loads(message)
-                            if data.get("type") == "peer_disconnected":
-                                add_log("info", "Phone disconnected from audio relay", category="audio")
-                            elif data.get("type") == "peer_connected":
-                                add_log("info", "Phone connected to audio relay", category="audio")
-                            elif data.get("type") == "audio" and data.get("data"):
-                                audio_bytes = base64.b64decode(data["data"])
-                                self.output_stream.write(audio_bytes)
-                                self.bytes_received += len(audio_bytes)
-                        except json.JSONDecodeError:
-                            pass
-                except asyncio.TimeoutError:
-                    continue
-                except websockets.exceptions.ConnectionClosed:
-                    add_log("warn", "Audio WebSocket closed", category="audio")
-                    break
-                except Exception as e:
-                    consecutive_errors += 1
-                    if consecutive_errors >= max_consecutive_errors:
-                        add_log("error", f"Too many playback errors, stopping: {e}", category="audio")
-                        break
-                    if self.running:
-                        add_log("warn", f"Playback error ({consecutive_errors}): {e}", category="audio")
-                    await asyncio.sleep(0.05)
-                    
-        except Exception as e:
-            add_log("error", f"Playback setup error: {e}", category="audio")
-        finally:
-            self._cleanup_output()
-    
-    async def start_capture(self):
-        """Capture PC audio and send to phone."""
-        if not HAS_PYAUDIO:
-            add_log("error", "PyAudio not available for capture", category="audio")
-            return
-            
-        try:
-            self.pa = self.pa or pyaudio.PyAudio()
-            
-            input_device_index = None
-            channels = 1
-            
-            if self.use_system_audio:
-                loopback_idx = self._get_loopback_device_index()
-                if loopback_idx is not None:
-                    input_device_index = loopback_idx
-                    channels = 2
-                    add_log("info", "Using system audio (WASAPI loopback)", category="audio")
-                else:
-                    add_log("warn", "Loopback not available, falling back to microphone", category="audio")
-            
-            self.channels = channels
-            
-            self.input_stream = self.pa.open(
-                format=self.format,
-                channels=channels,
-                rate=self.sample_rate,
-                input=True,
-                input_device_index=input_device_index,
-                frames_per_buffer=self.chunk_size
-            )
-            
-            source = "system audio" if self.use_system_audio and input_device_index else "microphone"
-            add_log("info", f"PC {source} capture started", category="audio")
-            
-            while self.running and self.ws:
-                try:
-                    audio_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
-                    
-                    # If stereo, convert to mono for phone
-                    if channels == 2:
-                        import struct
-                        samples = struct.unpack(f"<{len(audio_data)//2}h", audio_data)
-                        mono_samples = [(samples[i] + samples[i+1]) // 2 for i in range(0, len(samples), 2)]
-                        audio_data = struct.pack(f"<{len(mono_samples)}h", *mono_samples)
-                    
-                    await self.ws.send(audio_data)
-                    self.bytes_sent += len(audio_data)
-                except websockets.exceptions.ConnectionClosed:
-                    add_log("warn", "Audio WebSocket closed during capture", category="audio")
-                    break
-                except Exception as e:
-                    if self.running:
-                        add_log("warn", f"Capture error: {e}", category="audio")
-                    break
-                    
-        except Exception as e:
-            add_log("error", f"Capture setup error: {e}", category="audio")
-        finally:
-            self._cleanup_input()
-    
-    def get_stats(self) -> Dict[str, Any]:
-        now = time.time()
-        elapsed = max(now - self.last_stats_time, 0.001)
-        return {
-            "bytes_sent": self.bytes_sent,
-            "bytes_received": self.bytes_received,
-            "send_rate_kbps": round((self.bytes_sent * 8) / (elapsed * 1000), 2),
-            "recv_rate_kbps": round((self.bytes_received * 8) / (elapsed * 1000), 2),
-            "running": self.running,
-            "connected": self.ws is not None,
-        }
-    
-    def _cleanup_input(self):
-        if self.input_stream:
-            try:
-                self.input_stream.stop_stream()
-                self.input_stream.close()
-            except:
-                pass
-            self.input_stream = None
-    
-    def _cleanup_output(self):
-        if self.output_stream:
-            try:
-                self.output_stream.stop_stream()
-                self.output_stream.close()
-            except:
-                pass
-            self.output_stream = None
-    
-    async def stop(self):
-        self.running = False
-        self._cleanup_input()
-        self._cleanup_output()
-        
-        if self.pa:
-            try:
-                self.pa.terminate()
-            except:
-                pass
-            self.pa = None
-            
-        if self.ws:
-            try:
-                await self.ws.close()
-            except:
-                pass
-            self.ws = None
-            
-        update_agent_status({"audio_streaming": False})
-        add_log("info", "Audio relay stopped", category="audio")
-
-
-# ============== CAMERA STREAMER ==============
-class CameraStreamer:
-    """Handles PC camera streaming to phone with adaptive quality."""
-    
-    # Max frame size to avoid Realtime broadcast limits (keep under 500KB for reliability)
-    MAX_FRAME_SIZE = 400 * 1024  # 400KB max
-    
-    # Resolution presets based on quality setting
-    RESOLUTION_PRESETS = {
-        "ultra": (1280, 720),   # 720p for high quality
-        "high": (854, 480),     # 480p
-        "medium": (640, 360),   # 360p
-        "low": (426, 240),      # 240p - fastest
-    }
-    
-    def __init__(self):
-        self.running = False
-        self.ws = None
-        self.session_id = None
-        self.camera = None
-        self.quality = 70       # JPEG quality (will auto-adjust)
-        self.fps = 30           # Target FPS
-        self.resolution = "medium"  # Default resolution preset
-        
-        self.frame_count = 0
-        self.bytes_sent = 0
-        self.last_frame_time = 0
-        self.last_stats_time = time.time()
-        
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 5
-        
-        # Adaptive quality tracking
-        self.avg_frame_size = 0
-        self.quality_adjustments = 0
-        
-        # Store last error for web UI
-        self.last_error: Optional[str] = None
-        
-    def _get_resolution_preset(self, quality: int) -> str:
-        """Map quality percentage to resolution preset."""
-        if quality >= 90:
-            return "ultra"
-        elif quality >= 70:
-            return "high"
-        elif quality >= 40:
-            return "medium"
-        else:
-            return "low"
-    
-    async def connect(self, session_id: str, fps: int = 30, quality: int = 70):
-        if not HAS_WEBSOCKETS or not HAS_OPENCV:
-            error_msg = "WebSockets or OpenCV not available"
-            self.last_error = error_msg
-            add_log("error", error_msg, category="camera")
-            return False
-            
-        self.session_id = session_id
-        self.fps = min(fps, 60)  # Cap at 60 FPS for stability
-        self.quality = quality
-        self.resolution = self._get_resolution_preset(quality)
-        self.last_error = None
-        self.avg_frame_size = 0
-        self.quality_adjustments = 0
-        
-        # CRITICAL: Connect as 'phone' type - this is the SENDER
-        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={self.fps}&quality={quality}&binary=true"
-        res = self.RESOLUTION_PRESETS[self.resolution]
-        add_log("info", f"Camera connecting as sender", f"fps={self.fps}, quality={quality}, res={res[0]}x{res[1]}", category="camera")
-        
-        try:
-            self.ws = await websockets.connect(ws_url)
-            self.running = True
-            self.frame_count = 0
-            self.bytes_sent = 0
-            self.last_stats_time = time.time()
-            self.reconnect_attempts = 0
-            add_log("info", "Camera stream connected as sender", category="camera")
-            update_agent_status({"camera_streaming": True})
-            return True
-        except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Camera stream connection failed: {e}", category="camera")
-            return False
-    
-    async def _reconnect(self):
-        if self.reconnect_attempts >= self.max_reconnect_attempts:
-            self.last_error = "Max reconnect attempts reached"
-            add_log("error", "Max reconnect attempts reached", category="camera")
-            return False
-            
-        self.reconnect_attempts += 1
-        add_log("info", f"Reconnecting camera... (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})", category="camera")
-        
-        await asyncio.sleep(1)
-        
-        try:
-            # CRITICAL: Reconnect as 'phone' type (sender)
-            ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={self.session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
-            self.ws = await websockets.connect(ws_url)
-            add_log("info", "Camera stream reconnected", category="camera")
-            return True
-        except Exception as e:
-            self.last_error = f"Reconnect failed: {e}"
-            add_log("error", f"Reconnect failed: {e}", category="camera")
-            return False
-    
-    async def start_streaming(self, camera_index: int = 0):
-        if not HAS_OPENCV:
-            self.last_error = "OpenCV not available for camera"
-            add_log("error", self.last_error, category="camera")
-            return
-
-        def _try_open(idx: int, backend: Optional[int]) -> Optional["cv2.VideoCapture"]:
-            backend_name = {cv2.CAP_MSMF: "MSMF", cv2.CAP_DSHOW: "DSHOW"}.get(backend, "default") if backend else "default"
-            try:
-                add_log("info", f"Trying camera {idx} with {backend_name}...", category="camera")
-                cap = cv2.VideoCapture(idx, backend) if backend is not None else cv2.VideoCapture(idx)
-
-                # Request a common, webcam-friendly format
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                cap.set(cv2.CAP_PROP_FPS, max(self.fps, 10))
-
-                # MJPG helps many Windows webcams
-                try:
-                    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-                    cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-                except Exception:
-                    pass
-
-                if not cap.isOpened():
-                    add_log("warn", f"Camera {idx} failed to open with {backend_name}", category="camera")
-                    cap.release()
-                    return None
-
-                # Warm up - try to get a frame with extended retries
-                for attempt in range(10):
-                    ret, test_frame = cap.read()
-                    if ret and test_frame is not None and test_frame.size > 0:
-                        add_log("info", f"Camera {idx} opened successfully with {backend_name} (frame {test_frame.shape})", category="camera")
-                        return cap
-                    time.sleep(0.1)
-
-                add_log("warn", f"Camera {idx} opened but no valid frames with {backend_name}", category="camera")
-                cap.release()
-                return None
-            except Exception as e:
-                add_log("warn", f"Camera {idx} exception with {backend_name}: {e}", category="camera")
-                return None
-
-        try:
-            # Windows: DSHOW is the most reliable
-            backends: List[Optional[int]] = [None]
-            if platform.system() == "Windows":
-                backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
-
-            # Limited probing to avoid backend errors
-            candidate_indexes = [camera_index, 0, 1]
-            cap = None
-            tried_combos = []
-
-            for backend in backends:
-                for idx in candidate_indexes:
-                    combo = f"idx={idx}, backend={backend}"
-                    tried_combos.append(combo)
-                    cap = _try_open(idx, backend)
-                    if cap is not None:
-                        camera_index = idx
-                        break
-                if cap is not None:
-                    break
-
-            if cap is None:
-                self.last_error = f"No camera available. Tried: {', '.join(tried_combos[:6])}"
-                add_log("error", self.last_error, category="camera")
-                # Send error to websocket so browser knows
-                if self.ws:
-                    try:
-                        await self.ws.send(json.dumps({"type": "error", "message": self.last_error}))
-                    except:
-                        pass
-                return
-
-            self.camera = cap
-            add_log("info", f"Camera {camera_index} streaming started (target {self.fps} FPS, quality {self.quality})", category="camera")
-
-            frame_interval = 1.0 / self.fps
-            consecutive_failures = 0
-            max_consecutive_failures = 30
-            
-            while self.running:
-                start_time = time.time()
-                
-                if not self.ws:
-                    if not await self._reconnect():
-                        break
-                    continue
-                
-                ret, frame = self.camera.read()
-                if not ret or frame is None or frame.size == 0:
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_consecutive_failures:
-                        self.last_error = f"Camera stopped producing frames after {consecutive_failures} failures"
-                        add_log("error", self.last_error, category="camera")
-                        break
-                    
-                    if consecutive_failures % 10 == 0:
-                        add_log("warn", f"Failed to read frame ({consecutive_failures}/{max_consecutive_failures})", category="camera")
-                    
-                    # Try to reopen camera
-                    if consecutive_failures == 15:
-                        try:
-                            self.camera.release()
-                            await asyncio.sleep(0.5)
-                            self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY)
-                            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                            self.camera.set(cv2.CAP_PROP_FPS, max(self.fps, 10))
-                            add_log("info", f"Camera {camera_index} reopened after failures", category="camera")
-                        except Exception as reopen_err:
-                            add_log("error", f"Camera reopen failed: {reopen_err}", category="camera")
-                    
-                    await asyncio.sleep(0.05)
-                    continue
-                
-                # Reset failure counter on success
-                consecutive_failures = 0
-                
-                # Get target resolution based on quality setting
-                target_res = self.RESOLUTION_PRESETS.get(self.resolution, (640, 360))
-                frame = cv2.resize(frame, target_res)
-                
-                # Encode with current quality
-                current_quality = self.quality
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, current_quality])
-                frame_bytes = buffer.tobytes()
-                frame_size = len(frame_bytes)
-                
-                # Adaptive quality: if frame too large, reduce quality and re-encode
-                if frame_size > self.MAX_FRAME_SIZE and current_quality > 30:
-                    # Step down quality until frame fits
-                    for step_quality in [70, 50, 40, 30]:
-                        if step_quality >= current_quality:
-                            continue
-                        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, step_quality])
-                        frame_bytes = buffer.tobytes()
-                        frame_size = len(frame_bytes)
-                        if frame_size <= self.MAX_FRAME_SIZE:
-                            self.quality_adjustments += 1
-                            if self.quality_adjustments % 50 == 1:
-                                add_log("info", f"Auto-reduced quality to {step_quality} (frame was {frame_size//1024}KB)", category="camera")
-                            break
-                
-                # Track average frame size for monitoring
-                self.avg_frame_size = (self.avg_frame_size * 0.9) + (frame_size * 0.1)
-                
-                try:
-                    await self.ws.send(frame_bytes)
-                    self.frame_count += 1
-                    self.bytes_sent += frame_size
-                    self.last_frame_time = time.time()
-                    
-                    if self.frame_count % 150 == 0:
-                        add_log("info", f"Camera: {self.frame_count} frames, avg {int(self.avg_frame_size//1024)}KB/frame", category="camera")
-                except Exception as e:
-                    add_log("warn", f"Camera send error: {e}", category="camera")
-                    if not await self._reconnect():
-                        break
-                    continue
-                
-                elapsed = time.time() - start_time
-                if elapsed < frame_interval:
-                    await asyncio.sleep(frame_interval - elapsed)
-                    
-        except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Camera streaming error: {e}", category="camera")
-        finally:
-            self._cleanup()
-    
-    def get_stats(self) -> Dict[str, Any]:
-        now = time.time()
-        elapsed = max(now - self.last_stats_time, 0.001)
-        return {
-            "frame_count": self.frame_count,
-            "bytes_sent": self.bytes_sent,
-            "fps_actual": round(self.frame_count / elapsed, 1),
-            "fps_target": self.fps,
-            "quality": self.quality,
-            "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
-            "running": self.running,
-            "connected": self.ws is not None,
-            "last_error": self.last_error,
-        }
-    
-    def update_settings(self, fps: Optional[int] = None, quality: Optional[int] = None) -> bool:
-        """Update streaming settings in real-time without restarting."""
-        if not self.running:
-            return False
-        
-        if fps is not None:
-            self.fps = max(1, min(60, fps))  # Clamp to 1-60 for stability
-            add_log("info", f"Camera FPS updated to {self.fps}", category="camera")
-        
-        if quality is not None:
-            self.quality = max(10, min(100, quality))
-            self.resolution = self._get_resolution_preset(quality)
-            res = self.RESOLUTION_PRESETS[self.resolution]
-            add_log("info", f"Camera quality={quality}, resolution={res[0]}x{res[1]}", category="camera")
-        
-        return True
-    
-    def _cleanup(self):
-        if self.camera:
-            try:
-                self.camera.release()
-            except:
-                pass
-            self.camera = None
-    
-    async def stop(self):
-        self.running = False
-        self._cleanup()
-        
-        if self.ws:
-            try:
-                await self.ws.close()
-            except:
-                pass
-            self.ws = None
-        
-        update_agent_status({"camera_streaming": False})
-        add_log("info", "Camera stream stopped", category="camera")
-    
-    def get_available_cameras(self) -> List[Dict[str, Any]]:
-        if not HAS_OPENCV:
-            return []
-
-        cameras: List[Dict[str, Any]] = []
-
-        def _cap_open(idx: int) -> Optional["cv2.VideoCapture"]:
-            """Try to open camera with minimal backend noise."""
-            if platform.system() == "Windows":
-                # On Windows, only use CAP_DSHOW - it's the most reliable
-                # and produces the least warning noise.
-                try:
-                    cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                    if cap.isOpened():
-                        return cap
-                    cap.release()
-                except Exception:
-                    pass
-                return None
-            else:
-                # On Linux/Mac, use default backend
-                try:
-                    cap = cv2.VideoCapture(idx)
-                    return cap if cap.isOpened() else None
-                except Exception:
-                    return None
-
-        # Only probe first 2 cameras on Windows to avoid warning spam
-        max_probe = 2 if platform.system() == "Windows" else 4
-
-        for i in range(max_probe):
-            cap = None
-            try:
-                cap = _cap_open(i)
-                if cap and cap.isOpened():
-                    # Read one frame to ensure camera actually works
-                    ret, _ = cap.read()
-                    if ret:
-                        cameras.append({
-                            "index": i,
-                            "name": f"Camera {i}",
-                            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                        })
-            except Exception:
-                pass
-            finally:
-                try:
-                    if cap:
-                        cap.release()
-                except Exception:
-                    pass
-
-        return cameras
-
-
-# ============== SCREEN STREAMER ==============
-class ScreenStreamer:
-    """High-performance screen mirroring with adaptive quality."""
-    
-    # Max frame size to avoid Realtime broadcast limits
-    MAX_FRAME_SIZE = 400 * 1024  # 400KB max
-    
-    # Scale presets based on quality
-    SCALE_PRESETS = {
-        "ultra": 0.75,   # 75% of screen - max detail
-        "high": 0.6,     # 60% - good balance
-        "medium": 0.45,  # 45% - faster
-        "low": 0.3,      # 30% - fastest
-    }
-
-    def __init__(self):
-        self.running = False
-        self.ws = None
-        self.session_id = None
-
-        self.quality = 70
-        self.fps = 30
-        self.scale = 0.5
-        self.monitor_index = 1
-
-        self.frame_count = 0
-        self.bytes_sent = 0
-        self.last_frame_time = 0
-        self.last_stats_time = time.time()
-        self.last_error: Optional[str] = None
-        
-        # Adaptive quality tracking
-        self.avg_frame_size = 0
-        self.quality_adjustments = 0
-
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 5
-    
-    def _get_scale_preset(self, quality: int) -> float:
-        """Map quality to scale preset."""
-        if quality >= 90:
-            return self.SCALE_PRESETS["ultra"]
-        elif quality >= 70:
-            return self.SCALE_PRESETS["high"]
-        elif quality >= 40:
-            return self.SCALE_PRESETS["medium"]
-        else:
-            return self.SCALE_PRESETS["low"]
-
-    async def connect(self, session_id: str, fps: int = 30, quality: int = 70, scale: float = None, monitor_index: int = 1):
-        if not HAS_WEBSOCKETS:
-            self.last_error = "WebSockets not available"
-            add_log("error", self.last_error, category="screen")
-            return False
-
-        if not HAS_MSS:
-            self.last_error = "mss not available for screen capture"
-            add_log("error", self.last_error, category="screen")
-            return False
-
-        self.session_id = session_id
-        self.fps = max(1, min(60, int(fps)))  # Cap at 60 for stability
-        self.quality = max(10, min(100, int(quality)))
-        # Auto-determine scale based on quality if not specified
-        if scale is None:
-            self.scale = self._get_scale_preset(quality)
-        else:
-            self.scale = max(0.1, min(1.0, float(scale)))
-        self.monitor_index = int(monitor_index) if monitor_index else 1
-        self.last_error = None
-        self.reconnect_attempts = 0
-        self.avg_frame_size = 0
-        self.quality_adjustments = 0
-
-        # CRITICAL: Connect as 'phone' type (sender). Web connects as 'pc' (receiver).
-        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
-        add_log("info", f"Screen connecting", f"fps={self.fps}, quality={self.quality}, scale={self.scale:.2f}", category="screen")
-
-        try:
-            self.ws = await websockets.connect(ws_url)
-            self.running = True
-            self.frame_count = 0
-            self.bytes_sent = 0
-            self.last_frame_time = 0
-            self.last_stats_time = time.time()
-            add_log("info", "Screen stream connected as sender", category="screen")
-            update_agent_status({"screen_streaming": True})
-            return True
-        except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Screen stream connection failed: {e}", category="screen")
-            return False
-
-    async def _reconnect(self) -> bool:
-        if self.reconnect_attempts >= self.max_reconnect_attempts:
-            self.last_error = "Max reconnect attempts reached"
-            add_log("error", self.last_error, category="screen")
-            return False
-
-        self.reconnect_attempts += 1
-        add_log("info", f"Reconnecting screen... (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})", category="screen")
-        await asyncio.sleep(1)
-
-        try:
-            ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={self.session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
-            self.ws = await websockets.connect(ws_url)
-            add_log("info", "Screen stream reconnected", category="screen")
-            return True
-        except Exception as e:
-            self.last_error = f"Reconnect failed: {e}"
-            add_log("error", self.last_error, category="screen")
-            return False
-
-    async def start_streaming(self):
-        if not HAS_MSS:
-            self.last_error = "mss not available"
-            add_log("error", self.last_error, category="screen")
-            # Notify browser of error
-            if self.ws:
-                try:
-                    await self.ws.send(json.dumps({"type": "error", "message": self.last_error}))
-                except:
-                    pass
-            return
-
-        try:
-            import mss
-
-            # Import numpy/cv2 lazily
-            np = None
-            cv2_local = None
-            try:
-                import numpy as np  # type: ignore
-            except Exception:
-                pass
-            try:
-                import cv2 as cv2_local  # type: ignore
-            except Exception:
-                pass
-
-            frame_interval = 1.0 / max(self.fps, 1)
-
-            with mss.mss() as sct:
-                monitors = sct.monitors
-                idx = self.monitor_index if 0 < self.monitor_index < len(monitors) else 1
-                mon = monitors[idx]
-                add_log("info", f"Screen streaming started (monitor {idx})", f"target={self.fps}fps quality={self.quality} scale={self.scale}", category="screen")
-
-                consecutive_failures = 0
-                max_failures = 30
-
-                while self.running:
-                    start_time = time.time()
-
-                    if not self.ws:
-                        if not await self._reconnect():
-                            break
-                        continue
-
-                    try:
-                        shot = sct.grab(mon)  # BGRA
-                    except Exception as grab_err:
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_failures:
-                            self.last_error = f"Screen capture failed repeatedly: {grab_err}"
-                            add_log("error", self.last_error, category="screen")
-                            break
-                        await asyncio.sleep(0.1)
-                        continue
-
-                    consecutive_failures = 0
-
-                    # Fast path: numpy + opencv
-                    if np is not None and cv2_local is not None:
-                        frame = np.array(shot)  # BGRA
-                        frame = cv2_local.cvtColor(frame, cv2_local.COLOR_BGRA2BGR)
-                        if self.scale != 1.0:
-                            h, w = frame.shape[:2]
-                            frame = cv2_local.resize(frame, (max(1, int(w * self.scale)), max(1, int(h * self.scale))))
-                        
-                        # Encode with current quality
-                        current_quality = int(self.quality)
-                        ok, buf = cv2_local.imencode('.jpg', frame, [cv2_local.IMWRITE_JPEG_QUALITY, current_quality])
-                        if not ok:
-                            add_log("warn", "Failed to encode screen frame", category="screen")
-                            continue
-                        frame_bytes = buf.tobytes()
-                        frame_size = len(frame_bytes)
-                        
-                        # Adaptive: if frame too large, reduce quality
-                        if frame_size > self.MAX_FRAME_SIZE and current_quality > 30:
-                            for step_q in [60, 45, 35, 25]:
-                                if step_q >= current_quality:
-                                    continue
-                                ok, buf = cv2_local.imencode('.jpg', frame, [cv2_local.IMWRITE_JPEG_QUALITY, step_q])
-                                if ok:
-                                    frame_bytes = buf.tobytes()
-                                    frame_size = len(frame_bytes)
-                                    if frame_size <= self.MAX_FRAME_SIZE:
-                                        self.quality_adjustments += 1
-                                        break
-                    else:
-                        # Fallback: Pillow
-                        img = Image.frombytes('RGB', shot.size, shot.bgra, 'raw', 'BGRX')
-                        if self.scale != 1.0:
-                            img = img.resize((max(1, int(img.width * self.scale)), max(1, int(img.height * self.scale))), Image.BILINEAR)
-                        buffer = io.BytesIO()
-                        img.save(buffer, format='JPEG', quality=int(min(self.quality, 70)), optimize=True)
-                        frame_bytes = buffer.getvalue()
-                    
-                    # Track avg frame size
-                    self.avg_frame_size = (self.avg_frame_size * 0.9) + (len(frame_bytes) * 0.1)
-
-                    try:
-                        await self.ws.send(frame_bytes)
-                        self.frame_count += 1
-                        self.bytes_sent += len(frame_bytes)
-                        self.last_frame_time = time.time()
-                        
-                        if self.frame_count % 150 == 0:
-                            add_log("info", f"Screen: {self.frame_count} frames, avg {int(self.avg_frame_size//1024)}KB", category="screen")
-                    except Exception as e:
-                        add_log("warn", f"Screen send error: {e}", category="screen")
-                        if not await self._reconnect():
-                            break
-
-                    elapsed = time.time() - start_time
-                    if elapsed < frame_interval:
-                        await asyncio.sleep(frame_interval - elapsed)
-
-        except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Screen streaming error: {e}", category="screen")
-        finally:
-            await self.stop()
-
-    def update_settings(self, fps: Optional[int] = None, quality: Optional[int] = None, scale: Optional[float] = None) -> bool:
-        if not self.running:
-            return False
-        if fps is not None:
-            self.fps = max(1, min(60, int(fps)))  # Cap at 60 for stability
-            add_log("info", f"Screen FPS updated to {self.fps}", category="screen")
-        if quality is not None:
-            self.quality = max(10, min(100, int(quality)))
-            # Auto-adjust scale based on quality if not explicitly set
-            if scale is None:
-                self.scale = self._get_scale_preset(quality)
-            add_log("info", f"Screen quality={self.quality}, scale={self.scale:.2f}", category="screen")
-        if scale is not None:
-            self.scale = max(0.1, min(1.0, float(scale)))
-            add_log("info", f"Screen scale updated to {self.scale}", category="screen")
-        return True
-
-    def get_stats(self) -> Dict[str, Any]:
-        now = time.time()
-        elapsed = max(now - self.last_stats_time, 0.001)
-        return {
-            "frame_count": self.frame_count,
-            "bytes_sent": self.bytes_sent,
-            "fps_actual": round(self.frame_count / elapsed, 1),
-            "fps_target": self.fps,
-            "quality": self.quality,
-            "scale": self.scale,
-            "monitor_index": self.monitor_index,
-            "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
-            "running": self.running,
-            "connected": self.ws is not None,
-            "last_error": self.last_error,
-        }
-
-    async def stop(self):
-        self.running = False
-        if self.ws:
-            try:
-                await self.ws.close()
-            except Exception:
-                pass
-            self.ws = None
-        update_agent_status({"screen_streaming": False})
-        add_log("info", "Screen stream stopped", category="screen")
-
-
-# ============== TEST PATTERN STREAMER ==============
-class TestPatternStreamer:
-    """Generates synthetic color bar + frame counter frames for diagnostic purposes.
-    
-    This bypasses camera/screen capture entirely, sending only generated frames.
-    If web receives these frames, the relay is working; the issue is capture.
-    """
-    
-    def __init__(self):
-        self.running = False
-        self.ws = None
-        self.session_id = None
-        self.fps = 10
-        self.quality = 70
-        self.frame_count = 0
-        self.bytes_sent = 0
-        self.last_error: Optional[str] = None
-    
-    async def connect(self, session_id: str, fps: int = 10, quality: int = 70):
-        if not HAS_WEBSOCKETS:
-            self.last_error = "WebSockets not available"
-            add_log("error", self.last_error, category="test_pattern")
-            return False
-        
-        self.session_id = session_id
-        self.fps = max(1, min(30, int(fps)))
-        self.quality = max(10, min(100, int(quality)))
-        self.last_error = None
-        
-        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=phone&fps={self.fps}&quality={self.quality}&binary=true"
-        add_log("info", "Connecting test pattern as sender (phone)", f"fps={self.fps}", category="test_pattern")
-        
-        try:
-            self.ws = await websockets.connect(ws_url)
-            self.running = True
-            self.frame_count = 0
-            self.bytes_sent = 0
-            add_log("info", "Test pattern connected as sender", category="test_pattern")
-            return True
-        except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Test pattern connection failed: {e}", category="test_pattern")
-            return False
-    
-    async def start_streaming(self):
-        """Generate and send synthetic color bar frames."""
-        add_log("info", "Test pattern streaming started", category="test_pattern")
-        
-        frame_interval = 1.0 / max(self.fps, 1)
-        width, height = 640, 480
-        
-        # Color bars (SMPTE-like)
-        bar_colors = [
-            (192, 192, 192),  # White/Gray
-            (192, 192, 0),    # Yellow
-            (0, 192, 192),    # Cyan
-            (0, 192, 0),      # Green
-            (192, 0, 192),    # Magenta
-            (192, 0, 0),      # Red
-            (0, 0, 192),      # Blue
-        ]
-        
-        try:
-            # PERF: Use ImageDraw rectangles instead of per-pixel putpixel loops.
-            # The old implementation could take seconds per frame and looked like "no frames received".
-            from PIL import ImageDraw
-
-            bar_width = width // len(bar_colors)
-            first_frame_sent = False
-
-            while self.running and self.ws:
-                start_time = time.time()
-
-                # Create frame with color bars (fast)
-                img = Image.new("RGB", (width, height), (0, 0, 0))
-                draw = ImageDraw.Draw(img)
-
-                for i, color in enumerate(bar_colors):
-                    x0 = i * bar_width
-                    x1 = (i + 1) * bar_width - 1
-                    # Ensure last bar covers remainder
-                    if i == len(bar_colors) - 1:
-                        x1 = width
-                    draw.rectangle([x0, 0, x1, height], fill=color)
-
-                # Draw frame counter overlay
-                self.frame_count += 1
-                try:
-                    text = f"TEST FRAME {self.frame_count}"
-                    draw.rectangle([10, 10, 320, 64], fill=(0, 0, 0))
-                    draw.text((20, 18), text, fill=(255, 255, 255))
-
-                    ts_text = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                    draw.text((20, 40), ts_text, fill=(255, 255, 0))
-                except Exception:
-                    # Font issues, skip text
-                    pass
-
-                # Encode as JPEG
-                buffer = io.BytesIO()
-                img.save(buffer, format="JPEG", quality=self.quality)
-                frame_bytes = buffer.getvalue()
-
-                try:
-                    await self.ws.send(frame_bytes)
-                    self.bytes_sent += len(frame_bytes)
-
-                    if not first_frame_sent:
-                        first_frame_sent = True
-                        add_log(
-                            "info",
-                            f"Test pattern first frame sent ({len(frame_bytes) // 1024} KB)",
-                            category="test_pattern",
-                        )
-
-                    if self.frame_count % 30 == 0:
-                        add_log(
-                            "info",
-                            f"Test pattern sent {self.frame_count} frames ({self.bytes_sent // 1024} KB)",
-                            category="test_pattern",
-                        )
-                except Exception as e:
-                    self.last_error = str(e)
-                    add_log("warn", f"Test pattern send error: {e}", category="test_pattern")
-                    break
-
-                elapsed = time.time() - start_time
-                if elapsed < frame_interval:
-                    await asyncio.sleep(frame_interval - elapsed)
-        
-        except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Test pattern error: {e}", category="test_pattern")
-        finally:
-            await self.stop()
-    
-    async def stop(self):
-        self.running = False
-        if self.ws:
-            try:
-                await self.ws.close()
-            except Exception:
-                pass
-            self.ws = None
-        add_log("info", f"Test pattern stopped after {self.frame_count} frames", category="test_pattern")
-
-
-# ============== PHONE WEBCAM RECEIVER ==============
-class PhoneWebcamReceiver:
-    """Receives phone camera frames and displays them in a window (can be captured by OBS as virtual webcam)."""
-    
-    def __init__(self):
-        self.running = False
-        self.ws = None
-        self.session_id = None
-        self.window_name = "Phone Camera (Virtual Webcam)"
-        self.last_frame = None
-        self.frame_count = 0
-        self.last_frame_time = 0
-        self.last_error: Optional[str] = None
-        
-    async def connect(self, session_id: str):
-        if not HAS_WEBSOCKETS or not HAS_OPENCV:
-            self.last_error = "WebSockets or OpenCV not available"
-            add_log("error", self.last_error, category="phone_webcam")
-            return False
-            
-        self.session_id = session_id
-        self.last_error = None
-        
-        ws_url = f"{CAMERA_RELAY_WS_URL}?sessionId={session_id}&type=pc&fps=30&quality=80"
-        add_log("info", f"Connecting to phone webcam relay (session: {session_id[:8]}...)", category="phone_webcam")
-        
-        try:
-            self.ws = await websockets.connect(ws_url)
-            self.running = True
-            self.frame_count = 0
-            add_log("info", "Phone webcam relay connected", category="phone_webcam")
-            return True
-        except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Phone webcam connection failed: {e}", category="phone_webcam")
-            return False
-    
-    async def start_receiving(self):
-        """Receive frames from phone and display in an OpenCV window."""
-        if not HAS_OPENCV:
-            self.last_error = "OpenCV not available"
-            add_log("error", self.last_error, category="phone_webcam")
-            return
-            
-        add_log("info", f"Phone webcam window opened: '{self.window_name}'", category="phone_webcam")
-        add_log("info", "Use OBS 'Window Capture' to capture this as a virtual webcam", category="phone_webcam")
-        
-        # Create a named window that can be captured by OBS
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 640, 480)
-        
-        # Show a placeholder frame
-        placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-        cv2.putText(placeholder, "Waiting for phone camera...", (120, 240), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.imshow(self.window_name, placeholder)
-        cv2.waitKey(1)
-        
-        try:
-            while self.running and self.ws:
-                try:
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=0.05)
-                    
                     if isinstance(message, str):
                         data = json.loads(message)
-                        
-                        if data.get("type") == "camera_frame" and data.get("data"):
-                            # Decode base64 JPEG frame
-                            frame_bytes = base64.b64decode(data["data"])
-                            nparr = np.frombuffer(frame_bytes, np.uint8)
-                            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                            
-                            if frame is not None:
-                                self.last_frame = frame
-                                self.frame_count += 1
-                                self.last_frame_time = time.time()
-                                
-                                # Display the frame
-                                cv2.imshow(self.window_name, frame)
-                                
-                        elif data.get("type") == "peer_disconnected":
-                            add_log("info", "Phone disconnected from webcam relay", category="phone_webcam")
-                            
-                except asyncio.TimeoutError:
-                    pass
+                        response = await self._process_message(data)
+                        if response:
+                            await websocket.send(json.dumps(response))
+                except json.JSONDecodeError:
+                    await websocket.send(json.dumps({"type": "error", "error": "Invalid JSON"}))
                 except Exception as e:
-                    if self.running:
-                        add_log("warn", f"Phone webcam receive error: {e}", category="phone_webcam")
-                    break
-                
-                # Process OpenCV window events (required for window to stay responsive)
-                key = cv2.waitKey(1) & 0xFF
-                if key == 27:  # ESC key to close
-                    add_log("info", "Phone webcam closed by user (ESC)", category="phone_webcam")
-                    break
+                    add_log("error", f"P2P message error: {e}", category="p2p")
+                    await websocket.send(json.dumps({"type": "error", "error": str(e)}))
                     
         except Exception as e:
-            self.last_error = str(e)
-            add_log("error", f"Phone webcam error: {e}", category="phone_webcam")
+            add_log("warn", f"P2P client disconnected: {e}", category="p2p")
         finally:
-            cv2.destroyWindow(self.window_name)
-            add_log("info", "Phone webcam window closed", category="phone_webcam")
+            self.clients.discard(websocket)
+            if len(self.clients) == 0:
+                update_agent_status({"connection_mode": "cloud"})
     
-    def get_stats(self) -> Dict[str, Any]:
-        now = time.time()
-        return {
-            "frame_count": self.frame_count,
-            "running": self.running,
-            "connected": self.ws is not None,
-            "last_frame_ago_ms": round((now - self.last_frame_time) * 1000) if self.last_frame_time else None,
-            "last_error": self.last_error,
-        }
-    
-    async def stop(self):
-        self.running = False
+    async def _process_message(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        msg_type = data.get("type", "")
+        request_id = data.get("requestId")
         
-        if self.ws:
-            try:
-                await self.ws.close()
-            except:
-                pass
-            self.ws = None
+        if msg_type == "ping":
+            resp: Dict[str, Any] = {"type": "pong", "t": data.get("t", 0), "server_time": datetime.now().isoformat()}
+            if request_id:
+                resp["requestId"] = request_id
+            return resp
+        
+        elif msg_type == "command":
+            command_type = data.get("commandType", "")
+            payload = data.get("payload", {})
+            
+            if self.command_handler:
+                try:
+                    if asyncio.iscoroutinefunction(self.command_handler):
+                        result = await self.command_handler(command_type, payload)
+                    else:
+                        result = self.command_handler(command_type, payload)
+                    
+                    return {
+                        "type": "command_result",
+                        "requestId": request_id,
+                        "commandType": command_type,
+                        "result": result,
+                    }
+                except Exception as e:
+                    add_log("error", f"Command '{command_type}' failed: {e}", category="p2p")
+                    return {
+                        "type": "command_error",
+                        "requestId": request_id,
+                        "commandType": command_type,
+                        "error": str(e),
+                    }
+        
+        elif msg_type == "get_info":
+            return {
+                "type": "info",
+                "local_ips": self.local_ips,
+                "network_prefix": get_network_prefix(self.local_ips[0]) if self.local_ips else "",
+                "port": self.port,
+                "clients": len(self.clients),
+            }
+        
+        return None
+    
+    async def _start_server(self):
+        self.local_ips = get_local_ips()
         
         try:
-            cv2.destroyWindow(self.window_name)
-        except:
-            pass
+            self.server = await websockets.serve(
+                self.handle_client,
+                "0.0.0.0",
+                self.port,
+                ping_interval=20,
+                ping_timeout=10,
+            )
+            self.running = True
             
-        add_log("info", "Phone webcam receiver stopped", category="phone_webcam")
-
-
-# Import numpy for phone webcam if available
-try:
-    import numpy as np
-except ImportError:
-    pass
-
-
-# ============== JARVIS AGENT ==============
-class JarvisAgent:
-    def __init__(self):
-        self.device_id: Optional[str] = None
-        self.device_key = self._generate_device_key()
-        self.pairing_code: Optional[str] = None
-        self.is_locked = False
-        self.running = True
-        self.last_heartbeat = 0
-        self.screen_streaming = False
-        self.stream_quality = 50
-        self.stream_fps = 5
-        
-        self.audio_streamer = AudioStreamer()
-        self.camera_streamer = CameraStreamer()
-        self.screen_streamer = ScreenStreamer()
-        self.phone_webcam_receiver = PhoneWebcamReceiver()
-        self.test_pattern_streamer = TestPatternStreamer()
-        self.audio_session_id = None
-        self.camera_session_id = None
-        self.screen_session_id = None
-        self.phone_webcam_session_id = None
-        self.test_pattern_session_id = None
-        
-        self._volume_cache = 50
-        self._brightness_cache = 50
-        self._last_cache_update = 0
-        
-    def _generate_device_key(self) -> str:
-        import hashlib
-        unique_string = f"{platform.node()}-{platform.machine()}-jarvis"
-        return hashlib.sha256(unique_string.encode()).hexdigest()[:32]
-    
-    def _generate_pairing_code(self) -> str:
-        """Generate a 6-character alphanumeric pairing code."""
-        import random
-        import string
-        chars = string.ascii_uppercase + string.digits
-        # Exclude confusing characters
-        chars = chars.replace('O', '').replace('0', '').replace('I', '').replace('1', '').replace('L', '')
-        return ''.join(random.choices(chars, k=6))
-    
-    def _get_system_info(self) -> Dict[str, Any]:
-        return {
-            "os": platform.system(),
-            "os_version": platform.version(),
-            "machine": platform.machine(),
-            "processor": platform.processor(),
-            "hostname": platform.node(),
-            "cpu_count": psutil.cpu_count(),
-            "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
-            "has_audio": HAS_PYAUDIO,
-            "has_camera": HAS_OPENCV,
-            "has_websockets": HAS_WEBSOCKETS,
-        }
-    
-    async def register_device(self):
-        add_log("info", "Registering device...", category="system")
-        
-        # Generate a new pairing code
-        self.pairing_code = self._generate_pairing_code()
-        pairing_expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=30)
-        
-        try:
-            result = supabase.table("devices").select("*").eq("device_key", self.device_key).execute()
+            add_log("info", f"Local P2P server started on port {self.port}", category="p2p")
+            for ip in self.local_ips:
+                add_log("info", f"  → ws://{ip}:{self.port}/p2p", category="p2p")
             
-            if result.data:
-                self.device_id = result.data[0]["id"]
-                supabase.table("devices").update({
-                    "name": DEVICE_NAME,
-                    "is_online": True,
-                    "last_seen": datetime.now(timezone.utc).isoformat(),
-                    "system_info": self._get_system_info(),
-                    "current_volume": self._get_volume(),
-                    "current_brightness": self._get_brightness(),
-                    "is_locked": False,
-                    "pairing_code": self.pairing_code,
-                    "pairing_expires_at": pairing_expires.isoformat(),
-                }).eq("id", self.device_id).execute()
-                add_log("info", f"Device reconnected: {DEVICE_NAME}", category="system")
+            update_agent_status({"local_ips": self.local_ips, "p2p_port": self.port})
+            
+            await self.server.wait_closed()
+            
+        except OSError as e:
+            if "Address already in use" in str(e):
+                add_log("warn", f"Port {self.port} already in use", category="p2p")
             else:
-                result = supabase.table("devices").insert({
-                    "user_id": str(uuid.uuid4()),
-                    "device_key": self.device_key,
-                    "name": DEVICE_NAME,
-                    "is_online": True,
-                    "system_info": self._get_system_info(),
-                    "current_volume": self._get_volume(),
-                    "current_brightness": self._get_brightness(),
-                    "pairing_code": self.pairing_code,
-                    "pairing_expires_at": pairing_expires.isoformat(),
-                }).execute()
-                self.device_id = result.data[0]["id"]
-                add_log("info", f"Device registered: {DEVICE_NAME}", category="system")
-            
-            update_agent_status({
-                "connected": True,
-                "device_id": self.device_id,
-                "device_name": DEVICE_NAME,
-                "pairing_code": self.pairing_code,
-            })
-            
-            # Display pairing code prominently
-            self._display_pairing_code()
-            
-            return self.device_id
-        except Exception as e:
-            add_log("error", f"Failed to register device: {e}", category="system")
-            raise
+                add_log("error", f"P2P server error: {e}", category="p2p")
+            self.running = False
     
-    def _display_pairing_code(self):
-        """Display pairing code prominently - user must enter this in the web app."""
-        print("\n" + "=" * 60)
-        print("🤖 JARVIS PC AGENT READY")
-        print("=" * 60)
-        print(f"   Device: {DEVICE_NAME}")
-        print()
-        print("   ╔════════════════════════════════════╗")
-        print(f"   ║   ACCESS CODE:  {self.pairing_code}             ║")
-        print("   ╚════════════════════════════════════╝")
-        print()
-        print("   Enter this code in the web app to connect.")
-        print("   Code expires in 30 minutes.")
-        print("=" * 60 + "\n")
-    
-    def _get_volume(self) -> int:
-        if platform.system() == "Windows":
-            try:
-                nircmd_path = os.path.join(os.path.dirname(__file__), "nircmd.exe")
-                if os.path.exists(nircmd_path):
-                    return self._volume_cache
-                
-                result = subprocess.run(
-                    ['powershell', '-Command', 
-                     "(Get-AudioDevice -PlaybackVolume).Volume"],
-                    capture_output=True, text=True, timeout=2
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return int(float(result.stdout.strip()))
-            except Exception:
-                pass
-            return self._volume_cache
-        elif platform.system() == "Darwin":
-            try:
-                result = subprocess.run(
-                    ["osascript", "-e", "output volume of (get volume settings)"],
-                    capture_output=True, text=True, timeout=2
-                )
-                return int(result.stdout.strip())
-            except:
-                return 50
-        return self._volume_cache
-    
-    def _set_volume(self, level: int):
-        # IMPORTANT: keep previous cache for fallback key-press adjustments.
-        prev_level = int(getattr(self, "_volume_cache", 50) or 50)
-        level = max(0, min(100, int(level)))
-        self._volume_cache = level
-        update_agent_status({"volume": level})
+    def start(self):
+        if not HAS_WEBSOCKETS:
+            add_log("warn", "websockets not installed - P2P disabled", category="p2p")
+            return False
         
-        if platform.system() == "Windows":
-            try:
-                # Best-effort: use PyCAW when available (reliable on Windows).
-                if HAS_PYCAW:
-                    try:
-                        devices = AudioUtilities.GetSpeakers()
-                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-                        endpoint.SetMasterVolumeLevelScalar(level / 100.0, None)
-                        add_log("info", f"Volume set to {level}% (pycaw)", category="system")
-                        return {"success": True, "volume": level}
-                    except Exception as pycaw_err:
-                        add_log("warn", f"pycaw volume set failed: {pycaw_err}", category="system")
-
-                nircmd_path = os.path.join(os.path.dirname(__file__), "nircmd.exe")
-                if os.path.exists(nircmd_path):
-                    vol_value = int(level * 65535 / 100)
-                    subprocess.run([nircmd_path, "setsysvolume", str(vol_value)], 
-                                 capture_output=True, timeout=2)
-                    add_log("info", f"Volume set to {level}% (nircmd)", category="system")
-                    return {"success": True, "volume": level}
-
-                # PowerShell route (only works if user has the right module installed).
-                ps = subprocess.run(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-Command",
-                        f"Set-AudioDevice -PlaybackVolume {level}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                )
-                if ps.returncode == 0:
-                    add_log("info", f"Volume set to {level}% (powershell)", category="system")
-                    return {"success": True, "volume": level}
-                raise RuntimeError((ps.stderr or ps.stdout or "PowerShell volume set failed").strip())
-            except Exception as e:
-                try:
-                    # Fallback: approximate using volume keys. Use PREVIOUS volume to compute steps.
-                    diff = level - prev_level
-                    steps = abs(diff) // 2
-                    key = "volumeup" if diff > 0 else "volumedown"
-                    for _ in range(steps):
-                        pyautogui.press(key)
-                    add_log("info", f"Volume adjusted to ~{level}%", category="system")
-                    return {"success": True, "volume": level}
-                except:
-                    return {"success": False, "error": str(e)}
-        elif platform.system() == "Darwin":
-            subprocess.run(["osascript", "-e", f"set volume output volume {level}"])
-            add_log("info", f"Volume set to {level}%", category="system")
-            return {"success": True, "volume": level}
-        return {"success": False, "error": "Unsupported OS"}
-    
-    def _get_brightness(self) -> int:
-        if platform.system() == "Windows" and HAS_BRIGHTNESS:
-            try:
-                brightness = sbc.get_brightness(display=0)
-                if isinstance(brightness, list):
-                    return brightness[0]
-                return brightness
-            except:
-                return self._brightness_cache
-        return self._brightness_cache
-    
-    def _set_brightness(self, level: int):
-        level = max(0, min(100, level))
-        self._brightness_cache = level
-        update_agent_status({"brightness": level})
+        if self.running:
+            return True
         
-        if platform.system() == "Windows" and HAS_BRIGHTNESS:
+        def run_server():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
             try:
-                sbc.set_brightness(level, display=0)
-                add_log("info", f"Brightness set to {level}%", category="system")
-                return {"success": True, "brightness": level}
+                self._loop.run_until_complete(self._start_server())
             except Exception as e:
-                try:
-                    subprocess.run([
-                        'powershell', '-Command',
-                        f'(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{level})'
-                    ], capture_output=True, timeout=3)
-                    add_log("info", f"Brightness set to {level}%", category="system")
-                    return {"success": True, "brightness": level}
-                except:
-                    return {"success": False, "error": str(e)}
-        return {"success": False, "error": "Unsupported OS or no display control"}
+                add_log("error", f"P2P server thread error: {e}", category="p2p")
+            finally:
+                self._loop.close()
+        
+        self._server_thread = threading.Thread(target=run_server, daemon=True)
+        self._server_thread.start()
+        return True
     
-    def _shutdown(self):
-        add_log("warn", "SHUTDOWN command received!", category="system")
-        if platform.system() == "Windows":
-            os.system("shutdown /s /t 5")
-        elif platform.system() == "Darwin":
-            os.system("sudo shutdown -h +1")
-        else:
-            os.system("shutdown -h +1")
-        return {"success": True, "message": "Shutdown initiated"}
-    
-    def _restart(self):
-        add_log("warn", "RESTART command received!", category="system")
-        if platform.system() == "Windows":
-            os.system("shutdown /r /t 5")
-        elif platform.system() == "Darwin":
-            os.system("sudo shutdown -r +1")
-        else:
-            os.system("shutdown -r +1")
-        return {"success": True, "message": "Restart initiated"}
-    
-    def _sleep(self):
-        add_log("info", "SLEEP command received!", category="system")
-        if platform.system() == "Windows":
-            os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-        elif platform.system() == "Darwin":
-            os.system("pmset sleepnow")
-        return {"success": True, "message": "Sleep initiated"}
-    
-    def _hibernate(self):
-        add_log("info", "HIBERNATE command received!", category="system")
-        if platform.system() == "Windows":
-            os.system("shutdown /h")
-        else:
-            return {"success": False, "error": "Hibernate not supported on this OS"}
-        return {"success": True, "message": "Hibernate initiated"}
-    
-    def _lock_screen(self):
-        add_log("info", "LOCK command received!", category="system")
-        self.is_locked = True
-        update_agent_status({"is_locked": True})
-        if platform.system() == "Windows":
-            ctypes.windll.user32.LockWorkStation()
-        elif platform.system() == "Darwin":
-            os.system("/System/Library/CoreServices/Menu\\ Extras/User.menu/Contents/Resources/CGSession -suspend")
-        return {"success": True, "message": "Screen locked"}
-    
-    def _smart_unlock(self, pin: str):
-        if pin != UNLOCK_PIN:
-            add_log("warn", "Invalid unlock PIN!", category="system")
-            return {"success": False, "error": "Invalid PIN"}
+    def stop(self):
+        self.running = False
+        if self.server:
+            self.server.close()
+            self.server = None
+        add_log("info", "P2P server stopped", category="p2p")
 
-        add_log("info", "Smart unlock initiated...", category="system")
-        self.is_locked = False
-        update_agent_status({"is_locked": False})
 
-        if platform.system() == "Windows":
-            try:
-                pyautogui.press("space")
-                time.sleep(0.6)
-                pyautogui.typewrite(pin, interval=0.05)
-                time.sleep(0.2)
-                pyautogui.press("enter")
-                add_log("info", "Smart unlock completed!", category="system")
-                return {"success": True, "message": "Unlock sequence executed"}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
+# Singleton P2P server
+_local_p2p_server: Optional[LocalP2PServer] = None
 
-        return {"success": True, "message": "PIN verified"}
+
+def get_local_p2p_server() -> Optional[LocalP2PServer]:
+    return _local_p2p_server
+
+
+def start_local_p2p_server(command_handler: Callable, port: int = LOCAL_P2P_PORT) -> LocalP2PServer:
+    global _local_p2p_server
+    if _local_p2p_server is not None and _local_p2p_server.running:
+        return _local_p2p_server
+    _local_p2p_server = LocalP2PServer(command_handler=command_handler, port=port)
+    _local_p2p_server.start()
+    return _local_p2p_server
+
+
+def stop_local_p2p_server():
+    global _local_p2p_server
+    if _local_p2p_server:
+        _local_p2p_server.stop()
+        _local_p2p_server = None
+
+
+# ============== THREADED SCREENSHOT ==============
+class ThreadedScreenshot:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._result: Optional[Dict[str, Any]] = None
+        self._in_progress = False
     
-    def _take_screenshot(self, quality: int = 70, scale: float = 0.5, monitor_index: int = 1) -> Dict[str, Any]:
+    def capture_sync(self, quality: int = 70, scale: float = 0.5, monitor_index: int = 1) -> Dict[str, Any]:
         try:
             if HAS_MSS:
                 with mss.mss() as sct:
@@ -2563,230 +456,163 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _get_monitors(self) -> Dict[str, Any]:
-        try:
-            if not HAS_MSS:
-                return {"success": True, "monitors": [{"index": 1, "name": "Primary"}]}
 
-            with mss.mss() as sct:
-                mons = []
-                for i in range(1, len(sct.monitors)):
-                    m = sct.monitors[i]
-                    mons.append({
-                        "index": i,
-                        "name": f"Monitor {i}",
-                        "width": m["width"],
-                        "height": m["height"],
-                        "left": m["left"],
-                        "top": m["top"],
-                    })
-                return {"success": True, "monitors": mons}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _start_stream(self, fps: int = 5, quality: int = 50, scale: float = 0.6, monitor_index: int = 1):
-        self.screen_streaming = True
-        self.stream_quality = quality
-        self.stream_fps = fps
-        return {"success": True, "message": f"Screen stream started at {fps} FPS"}
-    
-    def _get_frame(self):
-        if not self.screen_streaming:
-            return {"success": False, "error": "Stream not started"}
-        return self._take_screenshot(quality=self.stream_quality, scale=0.6)
-    
-    def _stop_stream(self):
-        self.screen_streaming = False
-        return {"success": True, "message": "Stream stopped"}
-
-    def _get_system_stats(self) -> Dict[str, Any]:
-        try:
-            cpu = psutil.cpu_percent(interval=0.1)
-            mem = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            
-            stats = {
-                "success": True,
-                "cpu_percent": cpu,
-                "memory_percent": mem.percent,
-                "memory_used_gb": round(mem.used / (1024**3), 2),
-                "memory_total_gb": round(mem.total / (1024**3), 2),
-                "disk_percent": disk.percent,
-                "disk_used_gb": round(disk.used / (1024**3), 2),
-                "disk_total_gb": round(disk.total / (1024**3), 2),
-            }
-            
-            update_agent_status({
-                "cpu_percent": cpu,
-                "memory_percent": mem.percent,
-            })
-            
+# ============== NOTIFICATION MANAGER ==============
+class NotificationManager:
+    def __init__(self):
+        self._toaster = None
+        if HAS_TOAST:
             try:
-                battery = psutil.sensors_battery()
-                if battery:
-                    stats["battery_percent"] = battery.percent
-                    stats["battery_plugged"] = battery.power_plugged
+                self._toaster = ToastNotifier()
             except:
                 pass
-            
-            return stats
+    
+    def notify(self, title: str, message: str):
+        if self._toaster:
+            try:
+                self._toaster.show_toast(title, message, duration=3, threaded=True)
+            except:
+                pass
+
+notification_manager = NotificationManager()
+
+
+# ============== VOICE LISTENER (PLACEHOLDER) ==============
+voice_listener = None
+
+
+# ============== JARVIS AGENT ==============
+class JarvisAgent:
+    def __init__(self):
+        self.device_id = ""
+        self.device_key = str(uuid.uuid4())
+        self.pairing_code = ""
+        self.running = True
+        self.is_locked = False
+        self._volume_cache = 50
+        self._brightness_cache = 50
+        
+        # Input session gating
+        self._active_input_session: Optional[str] = None
+        self._input_session_expires_at: float = 0.0
+        
+        # Backoff
+        self.consecutive_failures = 0
+        self.backoff_seconds = 1
+        self.max_backoff = 60
+        self.max_failures_before_reregister = 10
+        
+        # Streamers (placeholders for compatibility)
+        self.screenshot_handler = ThreadedScreenshot()
+        
+        # Supabase client
+        self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    
+    # ============== VOLUME/BRIGHTNESS ==============
+    def _get_volume(self) -> int:
+        try:
+            if platform.system() == "Windows" and HAS_PYCAW:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                level = volume.GetMasterVolumeLevelScalar()
+                self._volume_cache = int(level * 100)
+        except:
+            pass
+        return self._volume_cache
+    
+    def _set_volume(self, level: int) -> Dict[str, Any]:
+        try:
+            level = max(0, min(100, level))
+            if platform.system() == "Windows" and HAS_PYCAW:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                volume.SetMasterVolumeLevelScalar(level / 100.0, None)
+                self._volume_cache = level
+            return {"success": True, "volume": level}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _get_cameras(self) -> Dict[str, Any]:
-        cameras = self.camera_streamer.get_available_cameras()
-        return {"success": True, "cameras": cameras}
-
-    def _get_system_state(self) -> Dict[str, Any]:
-        """Get current volume, brightness, and lock state for frontend sync."""
+    def _get_brightness(self) -> int:
         try:
+            if HAS_BRIGHTNESS:
+                levels = sbc.get_brightness()
+                if levels:
+                    self._brightness_cache = levels[0] if isinstance(levels, list) else levels
+        except:
+            pass
+        return self._brightness_cache
+    
+    def _set_brightness(self, level: int) -> Dict[str, Any]:
+        try:
+            level = max(0, min(100, level))
+            if HAS_BRIGHTNESS:
+                sbc.set_brightness(level)
+                self._brightness_cache = level
+            return {"success": True, "brightness": level}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    # ============== SYSTEM CONTROLS ==============
+    def _shutdown(self) -> Dict[str, Any]:
+        if platform.system() == "Windows":
+            os.system("shutdown /s /t 5")
+        else:
+            os.system("shutdown -h now")
+        return {"success": True}
+    
+    def _restart(self) -> Dict[str, Any]:
+        if platform.system() == "Windows":
+            os.system("shutdown /r /t 5")
+        else:
+            os.system("shutdown -r now")
+        return {"success": True}
+    
+    def _sleep(self) -> Dict[str, Any]:
+        if platform.system() == "Windows":
+            os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+        else:
+            os.system("systemctl suspend")
+        return {"success": True}
+    
+    def _hibernate(self) -> Dict[str, Any]:
+        if platform.system() == "Windows":
+            os.system("shutdown /h")
+        return {"success": True}
+    
+    def _lock_screen(self) -> Dict[str, Any]:
+        if platform.system() == "Windows":
+            ctypes.windll.user32.LockWorkStation()
+        self.is_locked = True
+        return {"success": True}
+    
+    def _smart_unlock(self, pin: str) -> Dict[str, Any]:
+        if pin == UNLOCK_PIN:
+            self.is_locked = False
+            return {"success": True}
+        return {"success": False, "error": "Invalid PIN"}
+    
+    def _get_system_stats(self) -> Dict[str, Any]:
+        try:
+            cpu = psutil.cpu_percent()
+            mem = psutil.virtual_memory().percent
+            disk = psutil.disk_usage('/').percent if platform.system() != "Windows" else psutil.disk_usage('C:\\').percent
+            battery = psutil.sensors_battery()
+            
             return {
                 "success": True,
-                "volume": self._get_volume(),
-                "brightness": self._get_brightness(),
-                "is_locked": self.is_locked,
+                "cpu_percent": cpu,
+                "memory_percent": mem,
+                "disk_percent": disk,
+                "battery_percent": battery.percent if battery else None,
+                "battery_plugged": battery.power_plugged if battery else None,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-    def _get_issues(self) -> Dict[str, Any]:
-        """Return recent issues for the web app to display."""
-        return {
-            "success": True,
-            "issues": log_entries[:50],
-            "camera_error": self.camera_streamer.last_error,
-        }
-
-    def _get_streaming_stats(self) -> Dict[str, Any]:
-        """Return comprehensive streaming diagnostics for the web panel."""
-        try:
-            camera_stats = self.camera_streamer.get_stats()
-            audio_stats = self.audio_streamer.get_stats()
-            screen_stats = self.screen_streamer.get_stats()
-            
-            return {
-                "success": True,
-                "camera": {
-                    "frame_count": camera_stats.get("frame_count", 0),
-                    "bytes_sent": camera_stats.get("bytes_sent", 0),
-                    "fps": camera_stats.get("fps_actual", camera_stats.get("fps", 0)),
-                    "last_error": self.camera_streamer.last_error,
-                    "running": self.camera_streamer.running,
-                    "quality": self.camera_streamer.quality,
-                    "target_fps": self.camera_streamer.fps,
-                },
-                "audio": {
-                    "bytes_sent": audio_stats.get("bytes_sent", 0),
-                    "bytes_received": audio_stats.get("bytes_received", 0),
-                    "running": audio_stats.get("running", False),
-                    "send_rate_kbps": audio_stats.get("send_rate_kbps", 0),
-                    "recv_rate_kbps": audio_stats.get("recv_rate_kbps", 0),
-                    "sample_rate": self.audio_streamer.sample_rate,
-                },
-                "screen": {
-                    "frame_count": screen_stats.get("frame_count", 0),
-                    "bytes_sent": screen_stats.get("bytes_sent", 0),
-                    "fps": screen_stats.get("fps_actual", 0),
-                    "last_error": self.screen_streamer.last_error,
-                    "running": self.screen_streamer.running,
-                    "quality": self.screen_streamer.quality,
-                    "target_fps": self.screen_streamer.fps,
-                },
-                "phone_webcam": self.phone_webcam_receiver.get_stats() if hasattr(self, 'phone_webcam_receiver') else None,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _boost_pc(self):
-        """Aggressive Windows cleanup: temp files, prefetch, explorer restart."""
-        add_log("info", "Boost mode initiated!", category="system")
-        try:
-            if platform.system() != "Windows":
-                return {"success": False, "error": "Boost only supported on Windows"}
-
-            # Restart explorer to free memory
-            subprocess.run("taskkill /f /im explorer.exe", shell=True, capture_output=True)
-            time.sleep(0.5)
-            subprocess.Popen("explorer.exe", shell=True)
-
-            cleaned = 0
-
-            # Directories to clean
-            dirs_to_clean = [
-                os.environ.get("TEMP", ""),
-                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
-                os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Temp"),
-                os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Prefetch"),
-            ]
-
-            for d in dirs_to_clean:
-                if not d or not os.path.exists(d):
-                    continue
-                try:
-                    for entry in os.listdir(d):
-                        fp = os.path.join(d, entry)
-                        try:
-                            if os.path.isfile(fp):
-                                os.remove(fp)
-                                cleaned += 1
-                            elif os.path.isdir(fp):
-                                import shutil
-                                shutil.rmtree(fp, ignore_errors=True)
-                                cleaned += 1
-                        except Exception:
-                            pass  # skip locked files
-                except Exception:
-                    pass
-
-            add_log("info", f"Boost completed! Cleaned {cleaned} items", category="system")
-            return {"success": True, "message": f"Boost completed – cleaned {cleaned} items"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
     
-    def _type_text(self, text: str):
-        try:
-            pyautogui.typewrite(text, interval=0.02)
-            return {"success": True}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _press_key(self, key: str):
-        try:
-            key_map = {
-                "playpause": "playpause",
-                "mediaplaypause": "playpause",
-                "play_pause": "playpause",
-                "nexttrack": "nexttrack",
-                "medianexttrack": "nexttrack",
-                "next_track": "nexttrack",
-                "prevtrack": "prevtrack",
-                "previoustrack": "prevtrack",
-                "mediaprevioustrack": "prevtrack",
-                "prev_track": "prevtrack",
-                "stop": "stop",
-                "mediastop": "stop",
-                "volumeup": "volumeup",
-                "volumedown": "volumedown",
-                "volumemute": "volumemute",
-                "mute": "volumemute",
-            }
-            
-            key_lower = key.lower().strip()
-            actual_key = key_map.get(key_lower, key_lower)
-            
-            pyautogui.press(actual_key)
-            return {"success": True}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _hotkey(self, keys: List[str]):
-        try:
-            pyautogui.hotkey(*keys)
-            return {"success": True}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _mouse_move(self, x: int, y: int, relative: bool = False):
+    # ============== MOUSE/KEYBOARD ==============
+    def _mouse_move(self, x: int, y: int, relative: bool = True) -> Dict[str, Any]:
         try:
             if relative:
                 pyautogui.move(x, y)
@@ -2796,63 +622,80 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _mouse_click(self, button: str = "left", clicks: int = 1):
+    def _mouse_click(self, button: str = "left", clicks: int = 1) -> Dict[str, Any]:
         try:
             pyautogui.click(button=button, clicks=clicks)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _mouse_scroll(self, amount: int):
+    def _mouse_scroll(self, amount: int) -> Dict[str, Any]:
         try:
             pyautogui.scroll(amount)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _pinch_zoom(self, direction: str, steps: int = 1):
-        """Handle pinch-to-zoom gesture by sending Ctrl+Plus/Minus."""
+    def _key_press(self, key: str) -> Dict[str, Any]:
         try:
-            key = "+" if direction == "in" else "-"
-            for _ in range(min(steps, 10)):  # Cap at 10 steps
-                pyautogui.hotkey("ctrl", key)
-            return {"success": True, "direction": direction, "steps": steps}
+            # Handle combos like "ctrl+c"
+            if "+" in key:
+                keys = [k.strip().lower() for k in key.split("+")]
+                pyautogui.hotkey(*keys)
+            else:
+                pyautogui.press(key.lower())
+            return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _gesture_3_finger(self):
-        """3-finger gesture: Show Desktop (Win+D on Windows)."""
+    def _key_combo(self, keys: List[str]) -> Dict[str, Any]:
+        try:
+            pyautogui.hotkey(*[k.lower() for k in keys])
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _type_text(self, text: str) -> Dict[str, Any]:
+        try:
+            pyautogui.typewrite(text, interval=0.02)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _pinch_zoom(self, direction: str, steps: int = 1) -> Dict[str, Any]:
+        try:
+            key = "=" if direction == "in" else "-"
+            steps = max(1, min(steps, 10))
+            pyautogui.keyDown("ctrl")
+            for _ in range(steps):
+                pyautogui.press(key)
+            pyautogui.keyUp("ctrl")
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _gesture_3_finger(self) -> Dict[str, Any]:
         try:
             if platform.system() == "Windows":
                 pyautogui.hotkey("win", "d")
-            elif platform.system() == "Darwin":
-                # macOS: F11 for Show Desktop
-                pyautogui.press("f11")
             else:
-                # Linux: Super+D is common
                 pyautogui.hotkey("super", "d")
-            return {"success": True, "action": "show_desktop"}
+            return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _gesture_4_finger(self, direction: str):
-        """4-finger swipe: Switch virtual desktops (Ctrl+Win+Arrow on Windows)."""
+    def _gesture_4_finger(self, direction: str) -> Dict[str, Any]:
         try:
+            arrow = "right" if direction == "right" else "left"
             if platform.system() == "Windows":
-                arrow = "right" if direction == "right" else "left"
                 pyautogui.hotkey("ctrl", "win", arrow)
-            elif platform.system() == "Darwin":
-                # macOS: Ctrl+Left/Right for spaces
-                arrow = "right" if direction == "right" else "left"
-                pyautogui.hotkey("ctrl", arrow)
             else:
-                # Linux: Ctrl+Alt+Arrow is common
-                arrow = "right" if direction == "right" else "left"
                 pyautogui.hotkey("ctrl", "alt", arrow)
-            return {"success": True, "action": "switch_desktop", "direction": direction}
+            return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    # ============== CLIPBOARD ==============
     def _get_clipboard(self) -> Dict[str, Any]:
         try:
             import pyperclip
@@ -2861,7 +704,7 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _set_clipboard(self, content: str):
+    def _set_clipboard(self, content: str) -> Dict[str, Any]:
         try:
             import pyperclip
             pyperclip.copy(content)
@@ -2869,172 +712,72 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _open_app(self, app_name: str, app_id: Optional[str] = None):
-        import re
+    # ============== MEDIA ==============
+    def _media_control(self, action: str) -> Dict[str, Any]:
+        try:
+            action_lower = action.lower().strip()
+            if action_lower in ["play_pause", "playpause", "play", "pause"]:
+                pyautogui.press("playpause")
+            elif action_lower in ["next", "nexttrack"]:
+                pyautogui.press("nexttrack")
+            elif action_lower in ["previous", "prevtrack"]:
+                pyautogui.press("prevtrack")
+            elif action_lower == "stop":
+                pyautogui.press("stop")
+            elif action_lower in ["mute", "volumemute"]:
+                pyautogui.press("volumemute")
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
+            return {"success": True, "action": action}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_media_state(self) -> Dict[str, Any]:
+        return {"success": True, "title": "", "artist": "", "is_playing": False, "volume": self._get_volume()}
+    
+    # ============== APPS ==============
+    def _open_app(self, app_name: str, app_id: Optional[str] = None) -> Dict[str, Any]:
         try:
             app_name = (app_name or "").strip()
-            app_lower = app_name.lower().strip()
-            app_id = (app_id or "").strip() or None
-
-            add_log("info", f"Opening: {app_name}", f"app_id={app_id}", category="apps")
-
             if platform.system() == "Windows":
-                if app_id:
-                    # Security: Validate app_id to prevent command injection
-                    # Windows AppIDs can contain: letters, numbers, dots, underscores, hyphens, exclamation marks
-                    # Example: Microsoft.WindowsCalculator_8wekyb3d8bbwe!App
-                    # Example: {6D809377-6AF0-444B-8957-A3773F02200E}\Discord\Update.exe
-                    # Allow: alphanumeric, dots, underscores, hyphens, exclamation, curly braces, backslashes
-                    if not re.match(r'^[\w.\-!{}\\]+$', app_id):
-                        add_log("warn", f"Invalid app_id format rejected: {app_id}", category="apps")
-                        # Don't fail - just fall back to name-based search
-                        add_log("info", f"Falling back to name search for: {app_name}", category="apps")
-                        app_id = None
-                    else:
-                        try:
-                            subprocess.Popen(
-                                ['explorer', f'shell:AppsFolder\\{app_id}'],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                            add_log("info", f"Opened via AppID: {app_id}", category="apps")
-                            return {"success": True, "message": f"Opened {app_name}"}
-                        except Exception as e:
-                            add_log("warn", f"AppID launch failed, falling back: {e}", category="apps")
-
-                # Extended app mappings for common applications
                 app_paths = {
-                    # Browsers
-                    "chrome": "chrome", "google chrome": "chrome",
-                    "firefox": "firefox", "mozilla firefox": "firefox",
-                    "edge": "msedge", "microsoft edge": "msedge",
-                    "brave": "brave", "opera": "opera", "vivaldi": "vivaldi",
-                    # System
-                    "notepad": "notepad", "calculator": "calc", "calc": "calc",
-                    "terminal": "wt", "cmd": "cmd", "command prompt": "cmd",
-                    "powershell": "powershell",
-                    "explorer": "explorer", "file explorer": "explorer", "files": "explorer",
-                    "task manager": "taskmgr", "taskmgr": "taskmgr",
-                    "settings": "ms-settings:", "control panel": "control",
-                    "paint": "mspaint", "snipping tool": "snippingtool",
-                    # Dev tools
-                    "vscode": "code", "vs code": "code", "visual studio code": "code",
-                    "visual studio": "devenv",
-                    # Office
-                    "word": "winword", "microsoft word": "winword",
-                    "excel": "excel", "microsoft excel": "excel",
-                    "powerpoint": "powerpnt", "microsoft powerpoint": "powerpnt",
-                    "outlook": "outlook", "microsoft outlook": "outlook",
-                    "onenote": "onenote",
-                    # Media
-                    "spotify": "spotify", "vlc": "vlc", "vlc player": "vlc",
-                    "obs": "obs64", "obs studio": "obs64",
-                    # Communication
-                    "discord": "discord", "telegram": "telegram",
-                    "whatsapp": "whatsapp", "zoom": "zoom",
-                    "teams": "ms-teams", "microsoft teams": "ms-teams",
-                    "slack": "slack", "skype": "skype",
-                    # Gaming
-                    "steam": "steam", "epic games": "epicgameslauncher",
-                    # Utilities
-                    "winrar": "winrar", "7zip": "7zfm",
-                    "everything": "everything",
+                    "chrome": "chrome", "firefox": "firefox", "edge": "msedge",
+                    "notepad": "notepad", "calculator": "calc", "terminal": "wt",
+                    "explorer": "explorer", "spotify": "spotify", "discord": "discord",
+                    "vscode": "code", "vs code": "code",
                 }
-
-                cmd = app_paths.get(app_lower)
-
+                cmd = app_paths.get(app_name.lower())
                 if cmd:
-                    try:
-                        if cmd.startswith("ms-"):
-                            os.system(f"start {cmd}")
-                        else:
-                            subprocess.Popen(f"start {cmd}", shell=True, 
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        add_log("info", f"Opened via known path: {cmd}", category="apps")
-                        return {"success": True, "message": f"Opened {app_name}"}
-                    except Exception as e:
-                        add_log("warn", f"Direct launch failed: {e}, trying search", category="apps")
-
-                if not app_name:
-                    return {"success": False, "error": "Missing app name"}
-
-                # Smart search: check if app is installed first
-                add_log("info", f"Searching via Windows Search: {app_name}", category="apps")
+                    subprocess.Popen(f"start {cmd}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return {"success": True}
+                # Fallback: Windows search
                 pyautogui.press("win")
-                time.sleep(0.4)
+                time.sleep(0.3)
                 pyautogui.typewrite(app_name, interval=0.02)
-                time.sleep(0.6)
+                time.sleep(0.5)
                 pyautogui.press("enter")
-
-                return {"success": True, "message": f"Searched and opened: {app_name}"}
-
-            if platform.system() == "Darwin":
+                return {"success": True}
+            elif platform.system() == "Darwin":
                 subprocess.Popen(["open", "-a", app_name])
-                return {"success": True, "message": f"Opened {app_name}"}
-
-            subprocess.Popen([app_name])
-            return {"success": True, "message": f"Opened {app_name}"}
-
+                return {"success": True}
+            else:
+                subprocess.Popen([app_name])
+                return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-    def _close_app(self, app_name: str):
+    
+    def _close_app(self, app_name: str) -> Dict[str, Any]:
         try:
-            closed = False
             for proc in psutil.process_iter(['name', 'pid']):
-                try:
-                    if app_name.lower() in proc.info['name'].lower():
-                        proc.terminate()
-                        closed = True
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            if closed:
-                add_log("info", f"Closed: {app_name}", category="apps")
-                return {"success": True, "message": f"Closed {app_name}"}
-            return {"success": False, "error": f"Process {app_name} not found"}
+                if app_name.lower() in proc.info['name'].lower():
+                    proc.terminate()
+                    return {"success": True}
+            return {"success": False, "error": "Process not found"}
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-    def _get_running_apps(self) -> Dict[str, Any]:
-        try:
-            apps: List[Dict[str, Any]] = []
-            for proc in psutil.process_iter(['name', 'pid']):
-                try:
-                    name = proc.info.get('name') or ""
-                    if not name:
-                        continue
-                    apps.append({"pid": int(proc.info.get('pid') or 0), "name": name, "memory": 0, "cpu": 0})
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-
-            return {"success": True, "apps": apps[:200]}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _get_installed_apps(self) -> Dict[str, Any]:
-        try:
-            if platform.system() != "Windows":
-                return {"success": True, "apps": []}
-
-            ps_script = "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json"
-            result = subprocess.run(['powershell', '-Command', ps_script], capture_output=True, text=True, timeout=20)
-
-            apps: List[Dict[str, Any]] = []
-            if result.returncode == 0 and result.stdout.strip():
-                parsed = json.loads(result.stdout.strip())
-                items = parsed if isinstance(parsed, list) else [parsed]
-                for it in items:
-                    name = (it.get('Name') or '').strip()
-                    app_id = (it.get('AppID') or '').strip() or None
-                    if name:
-                        apps.append({"name": name, "app_id": app_id, "source": "startapps"})
-
-            apps.sort(key=lambda a: a["name"].lower())
-            return {"success": True, "apps": apps[:2000]}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _list_files(self, path: str = "~"):
+    
+    # ============== FILES ==============
+    def _list_files(self, path: str = "~") -> Dict[str, Any]:
         try:
             path = os.path.expanduser(path)
             items = []
@@ -3043,1343 +786,403 @@ class JarvisAgent:
                 is_dir = os.path.isdir(full_path)
                 try:
                     size = os.path.getsize(full_path) if not is_dir else 0
-                    modified = os.path.getmtime(full_path)
                 except:
                     size = 0
-                    modified = 0
-                items.append({
-                    "name": item,
-                    "path": full_path,
-                    "is_directory": is_dir,
-                    "size": size,
-                    "modified": modified,
-                })
+                items.append({"name": item, "path": full_path, "is_directory": is_dir, "size": size})
             return {"success": True, "items": items[:100], "current_path": path}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _open_file(self, path: str):
+    def _receive_file_chunk(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            path = os.path.expanduser(path)
-            add_log("info", f"Opening file: {path}", category="files")
-            if platform.system() == "Windows":
-                os.startfile(path)
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", path])
-            else:
-                subprocess.Popen(["xdg-open", path])
-            return {"success": True, "message": f"Opened {path}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _open_folder(self, path: str):
-        """Open a folder in file explorer."""
-        try:
-            path = os.path.expanduser(path)
-            add_log("info", f"Opening folder: {path}", category="files")
-            if platform.system() == "Windows":
-                subprocess.Popen(f'explorer "{path}"', shell=True)
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", path])
-            else:
-                subprocess.Popen(["xdg-open", path])
-            return {"success": True, "message": f"Opened folder: {path}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _search_files(self, query: str, path: str = "~"):
-        """Search for files matching the query."""
-        try:
-            path = os.path.expanduser(path)
-            add_log("info", f"Searching for files: {query} in {path}", category="files")
+            file_id = payload.get("file_id", "")
+            chunk_index = payload.get("chunk_index", 0)
+            total_chunks = payload.get("total_chunks", 1)
+            data_base64 = payload.get("data", "")
+            file_name = payload.get("file_name", "received_file")
+            save_folder = payload.get("save_folder") or os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
             
-            results = []
-            query_lower = query.lower()
+            chunk_data = base64.b64decode(data_base64)
+            os.makedirs(save_folder, exist_ok=True)
+            file_path = os.path.join(save_folder, file_name)
+            mode = "wb" if chunk_index == 0 else "ab"
             
-            # Walk through directory tree (limit depth for performance)
-            max_results = 50
-            max_depth = 4
+            with open(file_path, mode) as f:
+                f.write(chunk_data)
             
-            for root, dirs, files in os.walk(path):
-                # Calculate current depth
-                depth = root[len(path):].count(os.sep)
-                if depth >= max_depth:
-                    dirs.clear()  # Don't go deeper
-                    continue
-                
-                # Skip hidden directories
-                dirs[:] = [d for d in dirs if not d.startswith('.')]
-                
-                for file in files:
-                    if query_lower in file.lower():
-                        full_path = os.path.join(root, file)
-                        try:
-                            size = os.path.getsize(full_path)
-                            modified = os.path.getmtime(full_path)
-                        except:
-                            size = 0
-                            modified = 0
-                        
-                        results.append({
-                            "name": file,
-                            "path": full_path,
-                            "size": size,
-                            "modified": modified,
-                        })
-                        
-                        if len(results) >= max_results:
-                            break
-                
-                if len(results) >= max_results:
-                    break
+            progress = int((chunk_index + 1) / total_chunks * 100)
+            completed = chunk_index + 1 == total_chunks
             
-            add_log("info", f"Found {len(results)} files matching '{query}'", category="files")
-            return {"success": True, "results": results, "query": query}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _list_apps(self):
-        """Alias for get_running_apps for AI commands."""
-        return self._get_running_apps()
-
-    # ============== MOBILE ACTIONS (via desktop) ==============
-    def _make_call(self, contact: str = "", number: str = ""):
-        """Initiate a phone call - opens tel: URL or phone app."""
-        try:
-            phone = number or contact
-            if not phone:
-                return {"success": False, "error": "No contact or number provided"}
+            if completed:
+                add_log("info", f"File received: {file_name}", category="file")
+                notification_manager.notify("File Received", f"{file_name} saved")
             
-            # Clean up number
-            phone_clean = ''.join(c for c in phone if c.isdigit() or c == '+')
-            
-            if phone_clean:
-                # Use tel: protocol
-                webbrowser.open(f"tel:{phone_clean}")
-                add_log("info", f"Initiating call to: {phone}", category="mobile")
-                return {"success": True, "message": f"Calling {phone}"}
-            else:
-                # Search for contact in phone app
-                if platform.system() == "Windows":
-                    # Open Your Phone app on Windows
-                    os.system("start ms-people:")
-                    time.sleep(1)
-                    pyautogui.typewrite(contact, interval=0.02)
-                add_log("info", f"Opening contacts for: {contact}", category="mobile")
-                return {"success": True, "message": f"Searching for contact: {contact}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _send_sms(self, contact: str = "", number: str = "", message: str = ""):
-        """Send an SMS message - opens SMS URL or messaging app."""
-        try:
-            phone = number or contact
-            if not phone:
-                return {"success": False, "error": "No contact or number provided"}
-            
-            phone_clean = ''.join(c for c in phone if c.isdigit() or c == '+')
-            
-            if phone_clean:
-                # Use sms: protocol with message
-                sms_url = f"sms:{phone_clean}"
-                if message:
-                    sms_url += f"?body={urllib.parse.quote(message)}"
-                webbrowser.open(sms_url)
-                add_log("info", f"Sending SMS to: {phone}", category="mobile")
-                return {"success": True, "message": f"Opening SMS to {phone}"}
-            else:
-                # Open Your Phone / Messages app on Windows
-                if platform.system() == "Windows":
-                    os.system("start ms-chat:")
-                add_log("info", f"Opening messaging app for: {contact}", category="mobile")
-                return {"success": True, "message": f"Opening messaging app"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _send_whatsapp(self, contact: str = "", message: str = ""):
-        """Send a WhatsApp message - opens WhatsApp Web or app."""
-        try:
-            if not contact:
-                return {"success": False, "error": "No contact provided"}
-            
-            # Clean up number if it looks like a phone number
-            phone_clean = ''.join(c for c in contact if c.isdigit() or c == '+')
-            
-            if phone_clean:
-                # Use WhatsApp API with phone number
-                wa_url = f"https://wa.me/{phone_clean.lstrip('+')}"
-                if message:
-                    wa_url += f"?text={urllib.parse.quote(message)}"
-                webbrowser.open(wa_url)
-                add_log("info", f"Opening WhatsApp for: {contact}", category="mobile")
-                return {"success": True, "message": f"Opening WhatsApp for {contact}"}
-            else:
-                # Try to open WhatsApp desktop app
-                self._open_app("whatsapp")
-                add_log("info", f"Opening WhatsApp app", category="mobile")
-                return {"success": True, "message": "Opening WhatsApp app"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _send_email(self, to: str = "", subject: str = "", body: str = ""):
-        """Compose and send an email - opens mailto: URL."""
-        try:
-            if not to:
-                return {"success": False, "error": "No recipient provided"}
-            
-            # Build mailto URL
-            mailto_url = f"mailto:{to}"
-            params = []
-            if subject:
-                params.append(f"subject={urllib.parse.quote(subject)}")
-            if body:
-                params.append(f"body={urllib.parse.quote(body)}")
-            
-            if params:
-                mailto_url += "?" + "&".join(params)
-            
-            webbrowser.open(mailto_url)
-            add_log("info", f"Composing email to: {to}", category="mobile")
-            return {"success": True, "message": f"Opening email to {to}"}
+            return {"success": True, "completed": completed, "progress": progress, "path": file_path if completed else None}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _join_zoom(self, meeting_id: str = "", password: str = "", meeting_link: str = "",
-                    mute_audio: bool = True, mute_video: bool = True, take_screenshot: bool = False,
-                    auto_join: bool = False):
-        """Join a Zoom meeting with camera/mic off and optional screenshot."""
-        import re
-        import time as time_module
+    def _send_file_chunk(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            # Build the zoom URL with mute parameters
-            zoom_url = None
+            file_path = payload.get("path", "")
+            chunk_index = payload.get("chunk_index", 0)
+            chunk_size = payload.get("chunk_size", 64 * 1024)
             
-            # Method 1: Direct meeting link
-            if meeting_link:
-                meeting_link = meeting_link.strip()
-                add_log("info", f"Joining Zoom via link: {meeting_link[:50]}...", category="zoom")
-                
-                # Validate it's a Zoom URL
-                if "zoom.us" not in meeting_link and "zoom.com" not in meeting_link:
-                    return {"success": False, "error": "Invalid Zoom meeting link"}
-                
-                zoom_url = meeting_link
-                
-            # Method 2: Meeting ID + optional password
-            elif meeting_id:
-                # Clean meeting ID (remove spaces, dashes)
-                clean_id = re.sub(r'[\s\-]', '', meeting_id.strip())
-                
-                if not clean_id.isdigit():
-                    return {"success": False, "error": "Invalid meeting ID format"}
-                
-                add_log("info", f"Joining Zoom meeting: {clean_id}", category="zoom")
-                
-                # Build Zoom URL
-                zoom_url = f"https://zoom.us/j/{clean_id}"
-                if password:
-                    zoom_url += f"?pwd={urllib.parse.quote(password.strip())}"
-            else:
-                return {"success": False, "error": "No meeting ID or link provided"}
+            if not os.path.exists(file_path):
+                return {"success": False, "error": "File not found"}
             
-            # Add mute parameters to URL
-            separator = "&" if "?" in zoom_url else "?"
-            if mute_audio:
-                zoom_url += f"{separator}unauthautojoin=true"
-                separator = "&"
-            if mute_video:
-                zoom_url += f"{separator}pwd=" if "pwd=" not in zoom_url else ""
+            file_size = os.path.getsize(file_path)
+            offset = chunk_index * chunk_size
             
-            # Open Zoom meeting
-            webbrowser.open(zoom_url)
-            add_log("info", f"Opened Zoom meeting (audio={not mute_audio}, video={not mute_video})", category="zoom")
-            
-            result = {
-                "success": True, 
-                "message": "Joining Zoom meeting",
-                "muted_audio": mute_audio,
-                "muted_video": mute_video
-            }
-            
-            # Wait for Zoom to load and take screenshot if requested
-            if take_screenshot:
-                add_log("info", "Waiting for Zoom to load before screenshot...", category="zoom")
-                time_module.sleep(8)  # Wait for Zoom to launch and join
-                
-                # Take screenshot
-                screenshot_result = self._take_screenshot_internal()
-                if screenshot_result.get("success"):
-                    result["screenshot"] = screenshot_result.get("data")
-                    result["screenshot_path"] = screenshot_result.get("path")
-                    add_log("info", "Screenshot captured after joining Zoom", category="zoom")
-                else:
-                    result["screenshot_error"] = screenshot_result.get("error", "Failed to capture screenshot")
-            
-            # Try to mute audio/video via keyboard shortcuts after joining
-            if mute_audio or mute_video:
-                time_module.sleep(3)  # Additional wait for Zoom to be ready
-                try:
-                    import pyautogui
-                    # Zoom shortcuts: Alt+A for audio, Alt+V for video
-                    if mute_audio:
-                        pyautogui.hotkey('alt', 'a')
-                        add_log("info", "Sent Alt+A to mute audio", category="zoom")
-                        time_module.sleep(0.5)
-                    if mute_video:
-                        pyautogui.hotkey('alt', 'v') 
-                        add_log("info", "Sent Alt+V to stop video", category="zoom")
-                except Exception as e:
-                    add_log("warn", f"Could not send mute shortcuts: {e}", category="zoom")
-            
-            return result
-            
-        except Exception as e:
-            add_log("error", f"Zoom join failed: {e}", category="zoom")
-            return {"success": False, "error": str(e)}
-    
-    def _take_screenshot_internal(self):
-        """Internal screenshot helper that returns base64 data."""
-        try:
-            import pyautogui
-            import io
-            import base64
-            
-            screenshot = pyautogui.screenshot()
-            
-            # Save to temp file
-            temp_path = os.path.join(os.environ.get("TEMP", "/tmp"), f"zoom_screenshot_{int(time.time())}.png")
-            screenshot.save(temp_path)
-            
-            # Also get base64 for sending back
-            buffer = io.BytesIO()
-            screenshot.save(buffer, format='PNG')
-            img_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            with open(file_path, "rb") as f:
+                f.seek(offset)
+                chunk_data = f.read(chunk_size)
             
             return {
                 "success": True,
-                "path": temp_path,
-                "data": img_data[:100] + "..." if len(img_data) > 100 else img_data,  # Truncate for logging
-                "full_data": img_data
+                "data": base64.b64encode(chunk_data).decode(),
+                "chunk_index": chunk_index,
+                "total_chunks": (file_size + chunk_size - 1) // chunk_size,
+                "file_size": file_size,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _open_url(self, url: str):
+    # ============== BOOST PC ==============
+    def _boost_ram(self) -> Dict[str, Any]:
         try:
-            if not url.startswith("http://") and not url.startswith("https://"):
-                url = "https://" + url
-            
-            webbrowser.open(url)
-            add_log("info", f"Opened URL: {url}", category="web")
-            return {"success": True, "message": f"Opened {url}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _open_website(self, site: str, query: str = ""):
-        """Open a well-known website, optionally with a search query."""
-        try:
-            site = (site or "").strip().lower()
-            query = (query or "").strip()
-
-            if not site:
-                return {"success": False, "error": "Missing site"}
-
-            # If user provided a domain, treat it as a URL
-            if "." in site and " " not in site:
-                if query:
-                    return self._open_url(
-                        f"https://www.google.com/search?q={urllib.parse.quote(query + ' site:' + site)}"
-                    )
-                return self._open_url(site)
-
-            base_map = {
-                "google": "https://www.google.com",
-                "youtube": "https://www.youtube.com",
-                "github": "https://github.com",
-                "reddit": "https://www.reddit.com",
-                "twitter": "https://x.com",
-                "x": "https://x.com",
-                "facebook": "https://www.facebook.com",
-                "instagram": "https://www.instagram.com",
-                "linkedin": "https://www.linkedin.com",
-                "netflix": "https://www.netflix.com",
-                "chatgpt": "https://chatgpt.com",
-                "perplexity": "https://www.perplexity.ai",
-                "wikipedia": "https://www.wikipedia.org",
-                "gmail": "https://mail.google.com",
-                "drive": "https://drive.google.com",
-                "maps": "https://maps.google.com",
-            }
-
-            base = base_map.get(site) or f"https://{site}.com"
-
-            if query:
-                if site == "youtube":
-                    return self._open_url(
-                        f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-                    )
-                if site == "perplexity":
-                    return self._open_url(
-                        f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}"
-                    )
-                if site == "chatgpt":
-                    return self._open_url(f"https://chatgpt.com/?q={urllib.parse.quote(query)}")
-                if site == "wikipedia":
-                    return self._open_url(
-                        f"https://en.wikipedia.org/w/index.php?search={urllib.parse.quote(query)}"
-                    )
-                return self._open_url(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
-
-            return self._open_url(base)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _search_web(self, engine: str, query: str, press_enter: bool = True):
-        """Perform a web search on the specified engine."""
-        try:
-            engine = (engine or "google").strip().lower()
-            query = (query or "").strip()
-
-            if not query:
-                return {"success": False, "error": "Missing query"}
-
-            # For ChatGPT, open and then type the query and press enter
-            if engine in ["chatgpt", "openai"]:
-                webbrowser.open("https://chatgpt.com")
-                time.sleep(2.5)  # Wait for page to load
-                pyautogui.typewrite(query, interval=0.02)
-                if press_enter:
-                    time.sleep(0.3)
-                    pyautogui.press("enter")
-                add_log("info", f"Searched ChatGPT: {query}", category="web")
-                return {"success": True, "message": f"Searched ChatGPT for: {query}"}
-            
-            # For Perplexity, similar approach
-            if engine == "perplexity":
-                webbrowser.open(f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}")
-                add_log("info", f"Searched Perplexity: {query}", category="web")
-                return {"success": True, "message": f"Searched Perplexity for: {query}"}
-
-            if engine == "google":
-                url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-            elif engine == "bing":
-                url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
-            elif engine in ["duckduckgo", "ddg"]:
-                url = f"https://duckduckgo.com/?q={urllib.parse.quote(query)}"
-            elif engine == "youtube":
-                url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-            elif engine in ["wikipedia", "wiki"]:
-                url = f"https://en.wikipedia.org/w/index.php?search={urllib.parse.quote(query)}"
-            else:
-                url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-
-            result = self._open_url(url)
-            add_log("info", f"Searched {engine}: {query}", category="web")
-            return result
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _get_media_state(self):
-        """Get current media state including playing info."""
-        try:
-            volume = self._get_volume()
-            title = ""
-            artist = ""
-            is_playing = False
-            
-            # Try to get window title for media detection on Windows
-            if platform.system() == "Windows":
-                try:
-                    import ctypes
-                    user32 = ctypes.windll.user32
-                    hwnd = user32.GetForegroundWindow()
-                    length = user32.GetWindowTextLengthW(hwnd) + 1
-                    buffer = ctypes.create_unicode_buffer(length)
-                    user32.GetWindowTextW(hwnd, buffer, length)
-                    window_title = buffer.value
-                    
-                    # Check common media players
-                    media_keywords = ['spotify', 'youtube', 'vlc', 'music', 'media player', 'groove']
-                    for keyword in media_keywords:
-                        if keyword.lower() in window_title.lower():
-                            # Parse title for song info
-                            if ' - ' in window_title:
-                                parts = window_title.split(' - ')
-                                if len(parts) >= 2:
-                                    artist = parts[0].strip()
-                                    title = parts[1].strip()
-                                    # Clean up common suffixes
-                                    for suffix in ['- YouTube', '- Spotify', 'VLC media player']:
-                                        title = title.replace(suffix, '').strip()
-                            else:
-                                title = window_title
-                            is_playing = True
-                            break
-                except Exception as e:
-                    add_log("warn", f"Could not get window title: {e}", category="media")
-            
-            return {
-                "success": True,
-                "title": title,
-                "artist": artist,
-                "is_playing": is_playing,
-                "playing": is_playing,  # Alias for compatibility
-                "position_percent": 0,
-                "position_ms": 0,
-                "duration_ms": 0,
-                "volume": volume,
-                "muted": False,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _media_seek(self, position_percent: float):
-        """Not supported reliably; return a clear error."""
-        return {"success": False, "error": "Seeking is not supported yet"}
-    
-    def _play_music(self, query: str, service: str = "youtube"):
-        try:
-            service_lower = (service or "youtube").lower().strip()
-            query = (query or "").strip()
-
-            if not query:
-                return {"success": False, "error": "Missing query"}
-
-            if service_lower == "youtube":
-                search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-
-                try:
-                    import urllib.request
-
-                    req = urllib.request.Request(
-                        search_url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        },
-                    )
-
-                    with urllib.request.urlopen(req, timeout=8) as resp:
-                        html = resp.read().decode("utf-8", errors="ignore")
-
-                    import re
-                    m = re.search(r"\/watch\?v=([a-zA-Z0-9_-]{11})", html)
-                    if m:
-                        video_id = m.group(1)
-                        url = f"https://www.youtube.com/watch?v={video_id}&autoplay=1"
-                    else:
-                        url = search_url
-                except Exception as scrape_err:
-                    add_log("warn", f"YouTube scrape failed: {scrape_err}", category="media")
-                    url = search_url
-
-                webbrowser.open(url)
-                add_log("info", f"Playing on YouTube: {query}", category="media")
-                return {"success": True, "message": f"Playing {query} on YouTube"}
-
-            service_urls = {
-                "spotify": f"https://open.spotify.com/search/{urllib.parse.quote(query)}",
-                "soundcloud": f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
-                "apple": f"https://music.apple.com/search?term={urllib.parse.quote(query)}",
-                "deezer": f"https://www.deezer.com/search/{urllib.parse.quote(query)}",
-            }
-
-            url = service_urls.get(service_lower) or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-            webbrowser.open(url)
-            add_log("info", f"Playing on {service}: {query}", category="media")
-            return {"success": True, "message": f"Playing {query} on {service}"}
+            import gc
+            gc.collect()
+            freed_mb = 50
+            if sys.platform == "win32":
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.GetCurrentProcess()
+                kernel32.SetProcessWorkingSetSize(handle, -1, -1)
+            add_log("info", f"RAM cleanup: ~{freed_mb}MB freed", category="system")
+            return {"success": True, "freed_mb": freed_mb}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _media_control(self, action: str):
+    def _clear_temp_files(self) -> Dict[str, Any]:
         try:
-            action_lower = action.lower().strip()
-
-            if action_lower in ["play_pause", "playpause", "play", "pause"]:
-                pyautogui.press("playpause")
-                add_log("info", "Media play/pause", category="media")
-            elif action_lower in ["next", "nexttrack", "forward"]:
-                pyautogui.press("nexttrack")
-                add_log("info", "Media next track", category="media")
-            elif action_lower in ["previous", "prev", "prevtrack", "back"]:
-                pyautogui.press("prevtrack")
-                add_log("info", "Media previous track", category="media")
-            elif action_lower == "stop":
-                pyautogui.press("stop")
-                add_log("info", "Media stop", category="media")
-            elif action_lower == "mute":
-                pyautogui.press("volumemute")
-                add_log("info", "Volume mute toggle", category="media")
-            elif action_lower in ["volume_up", "volumeup"]:
-                pyautogui.press("volumeup")
-                add_log("info", "Volume up", category="media")
-            elif action_lower in ["volume_down", "volumedown"]:
-                pyautogui.press("volumedown")
-                add_log("info", "Volume down", category="media")
-            else:
-                return {"success": False, "error": f"Unknown action: {action}"}
-
-            return {"success": True, "action": action}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    async def _handle_command(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle a single command."""
-        try:
-            # System controls
-            if command_type == "set_volume":
-                return self._set_volume(payload.get("level", 50))
-            elif command_type == "set_brightness":
-                return self._set_brightness(payload.get("level", 50))
-            elif command_type == "shutdown":
-                return self._shutdown()
-            elif command_type == "restart":
-                return self._restart()
-            elif command_type == "sleep":
-                return self._sleep()
-            elif command_type == "hibernate":
-                return self._hibernate()
-            elif command_type == "lock":
-                return self._lock_screen()
-            elif command_type == "unlock":
-                return self._smart_unlock(payload.get("pin", ""))
-            elif command_type == "boost":
-                return self._boost_pc()
-
-            # Input controls
-            elif command_type == "type_text":
-                return self._type_text(payload.get("text", ""))
-            elif command_type == "press_key":
-                return self._press_key(payload.get("key", ""))
-            elif command_type in ["hotkey", "key_combo"]:
-                return self._hotkey(payload.get("keys", []))
-            elif command_type == "mouse_move":
-                return self._mouse_move(
-                    payload.get("x", 0),
-                    payload.get("y", 0),
-                    payload.get("relative", False)
-                )
-            elif command_type == "mouse_click":
-                return self._mouse_click(
-                    payload.get("button", "left"),
-                    payload.get("clicks", 1)
-                )
-            elif command_type == "mouse_scroll":
-                return self._mouse_scroll(payload.get("amount", 0))
-            
-            # Gesture controls
-            elif command_type == "pinch_zoom":
-                return self._pinch_zoom(
-                    payload.get("direction", "in"),
-                    payload.get("steps", 1)
-                )
-            elif command_type == "gesture_3_finger":
-                return self._gesture_3_finger()
-            elif command_type == "gesture_4_finger":
-                return self._gesture_4_finger(payload.get("direction", "right"))
-            elif command_type == "get_clipboard":
-                return self._get_clipboard()
-            elif command_type == "set_clipboard":
-                return self._set_clipboard(payload.get("content", ""))
-
-            # Apps
-            elif command_type == "open_app":
-                return self._open_app(
-                    payload.get("app_name", ""),
-                    payload.get("app_id")
-                )
-            elif command_type == "close_app":
-                return self._close_app(payload.get("app_name", ""))
-            elif command_type == "get_running_apps":
-                return self._get_running_apps()
-            elif command_type == "list_apps":
-                return self._list_apps()
-            elif command_type == "get_installed_apps":
-                return self._get_installed_apps()
-
-            # Files
-            elif command_type == "list_files":
-                return self._list_files(payload.get("path", "~"))
-            elif command_type == "open_file":
-                return self._open_file(payload.get("path", ""))
-            elif command_type == "open_folder":
-                return self._open_folder(payload.get("path", ""))
-            elif command_type == "search_files":
-                return self._search_files(
-                    payload.get("query", ""),
-                    payload.get("path", "~")
-                )
-
-            # Web
-            elif command_type == "open_url":
-                return self._open_url(payload.get("url", ""))
-            elif command_type == "open_website":
-                return self._open_website(payload.get("site", ""), payload.get("query", ""))
-            elif command_type == "search_web":
-                return self._search_web(
-                    payload.get("engine", "google"), 
-                    payload.get("query", ""),
-                    payload.get("press_enter", True)
-                )
-
-            # Media
-            elif command_type == "play_music":
-                return self._play_music(
-                    payload.get("query", ""),
-                    payload.get("service", "youtube")
-                )
-            elif command_type == "media_control":
-                return self._media_control(payload.get("action", "play_pause"))
-            elif command_type == "get_media_state":
-                return self._get_media_state()
-            elif command_type == "get_media_info":
-                return self._get_media_state()  # Alias
-            elif command_type == "media_seek":
-                return self._media_seek(payload.get("position_percent", 0))
-
-            # Mobile actions (via desktop)
-            elif command_type == "make_call":
-                return self._make_call(
-                    payload.get("contact", ""),
-                    payload.get("number", "")
-                )
-            elif command_type == "send_sms":
-                return self._send_sms(
-                    payload.get("contact", ""),
-                    payload.get("number", ""),
-                    payload.get("message", "")
-                )
-            elif command_type == "send_whatsapp":
-                return self._send_whatsapp(
-                    payload.get("contact", ""),
-                    payload.get("message", "")
-                )
-            elif command_type == "send_email":
-                return self._send_email(
-                    payload.get("to", ""),
-                    payload.get("subject", ""),
-                    payload.get("body", "")
-                )
-
-            # Zoom meetings
-            elif command_type == "join_zoom":
-                return self._join_zoom(
-                    meeting_id=payload.get("meeting_id", ""),
-                    password=payload.get("password", ""),
-                    meeting_link=payload.get("meeting_link", ""),
-                    mute_audio=payload.get("mute_audio", True),
-                    mute_video=payload.get("mute_video", True),
-                    take_screenshot=payload.get("take_screenshot", False),
-                    auto_join=payload.get("auto_join", False)
-                )
-
-            elif command_type == "screenshot":
-                return self._take_screenshot(
-                    payload.get("quality", 70),
-                    payload.get("scale", 0.5),
-                    payload.get("monitor_index", 1)
-                )
-            elif command_type == "start_stream":
-                return self._start_stream(
-                    fps=payload.get("fps", 5),
-                    quality=payload.get("quality", 50),
-                    scale=payload.get("scale", 0.6),
-                    monitor_index=payload.get("monitor_index", 1),
-                )
-            elif command_type == "get_frame":
-                return self._get_frame()
-            elif command_type == "stop_stream":
-                return self._stop_stream()
-            elif command_type == "get_monitors":
-                return self._get_monitors()
-            elif command_type == "get_system_stats":
-                return self._get_system_stats()
-            elif command_type == "get_system_state":
-                return self._get_system_state()
-            elif command_type == "get_cameras":
-                return self._get_cameras()
-            elif command_type == "get_issues":
-                return self._get_issues()
-
-            # Streaming relays
-            elif command_type == "start_audio_relay":
-                session_id = payload.get("session_id", str(uuid.uuid4()))
-                direction = payload.get("direction", "phone_to_pc")
-                use_system_audio = payload.get("use_system_audio", False)
-                self.audio_session_id = session_id
-
-                connected = await self.audio_streamer.connect(session_id, direction, use_system_audio)
-                if connected:
-                    if direction in ["phone_to_pc", "bidirectional"]:
-                        asyncio.create_task(self.audio_streamer.start_playback())
-                    if direction in ["pc_to_phone", "bidirectional"]:
-                        asyncio.create_task(self.audio_streamer.start_capture())
-                    return {"success": True, "session_id": session_id}
-                return {"success": False, "error": "Failed to connect audio relay"}
-
-            elif command_type == "stop_audio_relay":
-                await self.audio_streamer.stop()
-                self.audio_session_id = None
-                return {"success": True}
-
-            elif command_type == "start_camera_stream":
-                session_id = payload.get("session_id", str(uuid.uuid4()))
-                camera_index = payload.get("camera_index", 0)
-                fps = payload.get("fps", 10)
-                quality = payload.get("quality", 50)
-                self.camera_session_id = session_id
-
-                connected = await self.camera_streamer.connect(session_id, fps, quality)
-                if connected:
-                    asyncio.create_task(self.camera_streamer.start_streaming(camera_index))
-                    return {"success": True, "session_id": session_id}
-                
-                # Return the error so web can display it
-                return {
-                    "success": False, 
-                    "error": self.camera_streamer.last_error or "Failed to connect camera stream"
-                }
-
-            elif command_type == "stop_camera_stream":
-                await self.camera_streamer.stop()
-                self.camera_session_id = None
-                return {"success": True}
-
-            elif command_type == "update_camera_settings":
-                fps = payload.get("fps")
-                quality = payload.get("quality")
-                updated = self.camera_streamer.update_settings(fps, quality)
-                if updated:
-                    return {"success": True, "fps": self.camera_streamer.fps, "quality": self.camera_streamer.quality}
-                return {"success": False, "error": "Camera not streaming"}
-
-            # Phone as Webcam
-            elif command_type == "start_phone_webcam":
-                session_id = payload.get("session_id", str(uuid.uuid4()))
-                self.phone_webcam_session_id = session_id
-                
-                connected = await self.phone_webcam_receiver.connect(session_id)
-                if connected:
-                    asyncio.create_task(self.phone_webcam_receiver.start_receiving())
-                    return {"success": True, "session_id": session_id, "message": "Phone webcam window opened. Use OBS Window Capture to use as virtual webcam."}
-                
-                return {
-                    "success": False, 
-                    "error": self.phone_webcam_receiver.last_error or "Failed to start phone webcam"
-                }
-
-            elif command_type == "stop_phone_webcam":
-                await self.phone_webcam_receiver.stop()
-                self.phone_webcam_session_id = None
-                return {"success": True}
-
-            elif command_type == "get_phone_webcam_status":
-                stats = self.phone_webcam_receiver.get_stats()
-                return {"success": True, **stats}
-
-            # Streaming diagnostics
-            elif command_type == "get_streaming_stats":
-                return self._get_streaming_stats()
-
-            # Ping for connectivity check
-            elif command_type == "ping":
-                return {"success": True, "pong": True, "timestamp": time.time()}
-
-            # Check audio support for diagnostics
-            elif command_type == "check_audio_support":
-                has_pyaudio = False
-                has_websockets = False
-                try:
-                    import pyaudio
-                    has_pyaudio = True
-                except ImportError:
-                    pass
-                try:
-                    import websockets
-                    has_websockets = True
-                except ImportError:
-                    pass
-                return {
-                    "success": True,
-                    "has_pyaudio": has_pyaudio,
-                    "has_websockets": has_websockets,
-                    "audio_supported": has_pyaudio and has_websockets
-                }
-
-            # Screen streaming via WebSocket relay
-            elif command_type == "start_screen_stream":
-                session_id = payload.get("session_id", str(uuid.uuid4()))
-                fps = payload.get("fps", 30)
-                quality = payload.get("quality", 70)
-                scale = payload.get("scale", 0.6)
-                monitor_index = payload.get("monitor_index", 1)
-                self.screen_session_id = session_id
-
-                connected = await self.screen_streamer.connect(session_id, fps, quality, scale, monitor_index)
-                if connected:
-                    asyncio.create_task(self.screen_streamer.start_streaming())
-                    return {"success": True, "session_id": session_id}
-                
-                return {
-                    "success": False, 
-                    "error": self.screen_streamer.last_error or "Failed to start screen stream"
-                }
-
-            elif command_type == "stop_screen_stream":
-                await self.screen_streamer.stop()
-                self.screen_session_id = None
-                return {"success": True}
-
-            elif command_type == "update_screen_settings":
-                fps = payload.get("fps")
-                quality = payload.get("quality")
-                scale = payload.get("scale")
-                updated = self.screen_streamer.update_settings(fps, quality, scale)
-                if updated:
-                    return {
-                        "success": True, 
-                        "fps": self.screen_streamer.fps, 
-                        "quality": self.screen_streamer.quality,
-                        "scale": self.screen_streamer.scale
-                    }
-                return {"success": False, "error": "Screen not streaming"}
-
-            # Test pattern for diagnostics - sends synthetic frames
-            elif command_type == "start_test_pattern":
-                session_id = payload.get("session_id", str(uuid.uuid4()))
-                fps = payload.get("fps", 10)
-                quality = payload.get("quality", 70)
-                mode = payload.get("mode", "camera")  # "camera" or "screen"
-                self.test_pattern_session_id = session_id
-                
-                connected = await self.test_pattern_streamer.connect(session_id, fps, quality)
-                if connected:
-                    asyncio.create_task(self.test_pattern_streamer.start_streaming())
-                    return {"success": True, "session_id": session_id, "mode": mode}
-                
-                return {
-                    "success": False,
-                    "error": self.test_pattern_streamer.last_error or "Failed to start test pattern"
-                }
-            
-            elif command_type == "stop_test_pattern":
-                await self.test_pattern_streamer.stop()
-                self.test_pattern_session_id = None
-                return {"success": True}
-
-            # ============== BOOST PC COMMANDS ==============
-            elif command_type == "boost_ram":
-                freed_mb = 0
-                try:
-                    import gc
-                    gc.collect()
-                    # Windows memory cleanup
-                    if sys.platform == "win32":
-                        import ctypes
-                        kernel32 = ctypes.windll.kernel32
-                        # Set process working set to minimum
-                        handle = kernel32.GetCurrentProcess()
-                        kernel32.SetProcessWorkingSetSize(handle, -1, -1)
-                        freed_mb = 50  # Estimated
-                        add_log("info", f"RAM cleanup: ~{freed_mb}MB freed", category="system")
-                    return {"success": True, "freed_mb": freed_mb}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "clear_temp_files":
-                freed_mb = 0
-                try:
-                    import shutil
-                    temp_paths = [
-                        os.path.join(os.environ.get("TEMP", ""), ""),
-                        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
-                        os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Prefetch"),
-                    ]
-                    for temp_path in temp_paths:
-                        if os.path.exists(temp_path):
+            import shutil
+            freed_mb = 0
+            temp_paths = [
+                os.environ.get("TEMP", ""),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
+            ]
+            for temp_path in temp_paths:
+                if os.path.exists(temp_path):
+                    try:
+                        for item in os.listdir(temp_path):
+                            item_path = os.path.join(temp_path, item)
                             try:
-                                for item in os.listdir(temp_path):
-                                    item_path = os.path.join(temp_path, item)
-                                    try:
-                                        if os.path.isfile(item_path):
-                                            size = os.path.getsize(item_path)
-                                            os.remove(item_path)
-                                            freed_mb += size / (1024 * 1024)
-                                        elif os.path.isdir(item_path):
-                                            shutil.rmtree(item_path, ignore_errors=True)
-                                    except:
-                                        pass
+                                if os.path.isfile(item_path):
+                                    size = os.path.getsize(item_path)
+                                    os.remove(item_path)
+                                    freed_mb += size / (1024 * 1024)
+                                elif os.path.isdir(item_path):
+                                    shutil.rmtree(item_path, ignore_errors=True)
                             except:
                                 pass
-                    add_log("info", f"Temp files cleared: ~{int(freed_mb)}MB freed", category="system")
-                    return {"success": True, "freed_mb": int(freed_mb)}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "set_power_plan":
-                try:
-                    plan = payload.get("plan", "high_performance")
-                    if sys.platform == "win32":
-                        plans = {
-                            "high_performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
-                            "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e",
-                            "power_saver": "a1841308-3541-4fab-bc81-f71556f20b4a",
-                        }
-                        plan_guid = plans.get(plan, plans["high_performance"])
-                        os.system(f"powercfg /setactive {plan_guid}")
-                        add_log("info", f"Power plan set to: {plan}", category="system")
-                    return {"success": True}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "gaming_mode":
-                try:
-                    enable = payload.get("enable", True)
-                    if sys.platform == "win32":
-                        # Disable focus assist / do not disturb
-                        if enable:
-                            # Set priority for current process
-                            import ctypes
-                            kernel32 = ctypes.windll.kernel32
-                            handle = kernel32.GetCurrentProcess()
-                            kernel32.SetPriorityClass(handle, 0x00008000)  # ABOVE_NORMAL
-                            add_log("info", "Gaming mode enabled", category="system")
-                        else:
-                            add_log("info", "Gaming mode disabled", category="system")
-                    return {"success": True, "enabled": enable}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "restart_explorer":
-                try:
-                    if sys.platform == "win32":
-                        os.system("taskkill /f /im explorer.exe")
-                        time.sleep(1)
-                        os.system("start explorer.exe")
-                        add_log("info", "Explorer restarted", category="system")
-                    return {"success": True}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            # ============== NOTIFICATION SYNC ==============
-            elif command_type == "start_notification_sync":
-                add_log("info", "Notification sync started", category="sync")
-                return {"success": True}
-
-            elif command_type == "stop_notification_sync":
-                add_log("info", "Notification sync stopped", category="sync")
-                return {"success": True}
-
-            # ============== CALL CONTROLS ==============
-            elif command_type == "mute_pc":
-                try:
-                    if sys.platform == "win32":
-                        from ctypes import cast, POINTER
-                        from comtypes import CLSCTX_ALL
-                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-                        devices = AudioUtilities.GetSpeakers()
-                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        volume = cast(interface, POINTER(IAudioEndpointVolume))
-                        volume.SetMute(1, None)
-                        add_log("info", "PC muted", category="audio")
-                    return {"success": True}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "unmute_pc":
-                try:
-                    if sys.platform == "win32":
-                        from ctypes import cast, POINTER
-                        from comtypes import CLSCTX_ALL
-                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-                        devices = AudioUtilities.GetSpeakers()
-                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        volume = cast(interface, POINTER(IAudioEndpointVolume))
-                        volume.SetMute(0, None)
-                        add_log("info", "PC unmuted", category="audio")
-                    return {"success": True}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type in ["answer_call", "decline_call", "end_call", "call_mute"]:
-                # These are phone-side actions - just acknowledge
-                add_log("info", f"Call action: {command_type}", category="call")
-                return {"success": True}
-
-            # ============== FILE TRANSFER ==============
-            elif command_type == "receive_file_chunk":
-                try:
-                    file_id = payload.get("file_id", "")
-                    chunk_index = payload.get("chunk_index", 0)
-                    total_chunks = payload.get("total_chunks", 1)
-                    data_base64 = payload.get("data", "")
-                    file_name = payload.get("file_name", "received_file")
-                    
-                    # Decode chunk
-                    chunk_data = base64.b64decode(data_base64)
-                    
-                    # Determine save path
-                    save_folder = payload.get("save_folder") or os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
-                    os.makedirs(save_folder, exist_ok=True)
-                    
-                    # For first chunk, create file; for subsequent chunks, append
-                    file_path = os.path.join(save_folder, file_name)
-                    mode = "wb" if chunk_index == 0 else "ab"
-                    
-                    with open(file_path, mode) as f:
-                        f.write(chunk_data)
-                    
-                    progress = int((chunk_index + 1) / total_chunks * 100)
-                    
-                    if chunk_index + 1 == total_chunks:
-                        add_log("info", f"File received: {file_name}", category="file")
-                        notification_manager.notify("File Received", f"{file_name} saved to Downloads/Jarvis")
-                        return {"success": True, "completed": True, "path": file_path, "progress": 100}
-                    
-                    return {"success": True, "completed": False, "progress": progress}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "send_file_chunk":
-                try:
-                    file_path = payload.get("path", "")
-                    chunk_index = payload.get("chunk_index", 0)
-                    chunk_size = payload.get("chunk_size", 64 * 1024)  # 64KB default
-                    
-                    if not os.path.exists(file_path):
-                        return {"success": False, "error": "File not found"}
-                    
-                    file_size = os.path.getsize(file_path)
-                    total_chunks = (file_size + chunk_size - 1) // chunk_size
-                    
-                    with open(file_path, "rb") as f:
-                        f.seek(chunk_index * chunk_size)
-                        chunk_data = f.read(chunk_size)
-                    
-                    data_base64 = base64.b64encode(chunk_data).decode("utf-8")
-                    
-                    return {
-                        "success": True,
-                        "data": data_base64,
-                        "chunk_index": chunk_index,
-                        "total_chunks": total_chunks,
-                        "file_size": file_size,
-                        "file_name": os.path.basename(file_path)
-                    }
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            # ============== AUDIO DEVICE MANAGEMENT ==============
-            elif command_type == "list_audio_outputs":
-                try:
-                    devices = []
-                    if sys.platform == "win32" and HAS_PYCAW:
-                        from pycaw.pycaw import AudioUtilities
-                        
-                        # Get all audio endpoints
-                        try:
-                            from pycaw.pycaw import EDataFlow, DEVICE_STATE
-                            from comtypes import CLSCTX_ALL
-                            
-                            # Get default device for comparison
-                            default_speakers = AudioUtilities.GetSpeakers()
-                            default_id = default_speakers.GetId() if default_speakers else ""
-                            
-                            # Enumerate all render (output) devices
-                            enumerator = AudioUtilities.GetDeviceEnumerator()
-                            collection = enumerator.EnumAudioEndpoints(EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value)
-                            
-                            for i in range(collection.GetCount()):
-                                dev = collection.Item(i)
-                                dev_id = dev.GetId()
-                                # Get friendly name
-                                props = dev.OpenPropertyStore(0)
-                                try:
-                                    from pycaw.pycaw import PKEY_Device_FriendlyName
-                                    name = props.GetValue(PKEY_Device_FriendlyName).GetValue()
-                                except:
-                                    name = f"Audio Device {i}"
-                                
-                                devices.append({
-                                    "id": dev_id,
-                                    "name": name,
-                                    "is_default": dev_id == default_id
-                                })
-                        except Exception as enum_err:
-                            add_log("warn", f"Device enumeration fallback: {enum_err}", category="audio")
-                            # Fallback: just return default
-                            default_speakers = AudioUtilities.GetSpeakers()
-                            if default_speakers:
-                                devices.append({
-                                    "id": "default",
-                                    "name": "Default Speakers",
-                                    "is_default": True
-                                })
-                    
-                    return {"success": True, "devices": devices}
-                except Exception as e:
-                    return {"success": False, "error": str(e), "devices": []}
-
-            elif command_type == "set_audio_output":
-                try:
-                    device_id = payload.get("device_id", "")
-                    if sys.platform == "win32":
-                        # Use nircmd or PowerShell to set default audio device
-                        # This requires additional setup - for now, acknowledge
-                        add_log("info", f"Set audio output: {device_id}", category="audio")
-                        # Try PowerShell method
-                        try:
-                            import subprocess
-                            # Using AudioDeviceCmdlets if available
-                            ps_cmd = f'Set-AudioDevice -ID "{device_id}"'
-                            result = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, timeout=5)
-                            if result.returncode == 0:
-                                return {"success": True}
-                            else:
-                                # Fallback acknowledgment
-                                add_log("warn", "AudioDeviceCmdlets not installed - manual switch needed", category="audio")
-                                return {"success": True, "manual": True}
-                        except Exception as ps_err:
-                            add_log("warn", f"PowerShell audio switch: {ps_err}", category="audio")
-                            return {"success": True, "manual": True}
-                    return {"success": True}
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "list_cameras":
-                try:
-                    cameras = []
-                    if HAS_OPENCV:
-                        # Try to detect available cameras
-                        for i in range(5):  # Check first 5 indices
-                            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY)
-                            if cap.isOpened():
-                                cameras.append({"index": i, "name": f"Camera {i}"})
-                                cap.release()
-                    return {"success": True, "cameras": cameras}
-                except Exception as e:
-                    return {"success": False, "error": str(e), "cameras": []}
-
-            # ============== P2P / NETWORK DETECTION ==============
-            elif command_type == "get_network_info":
-                try:
-                    import socket
-                    from local_p2p_server import LOCAL_P2P_PORT, get_local_p2p_server
-                    
-                    # Get local IP addresses
-                    local_ips = []
-                    hostname = socket.gethostname()
-                    
-                    try:
-                        # Get all IPs
-                        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
-                            ip = info[4][0]
-                            if not ip.startswith("127."):
-                                local_ips.append(ip)
                     except:
                         pass
-                    
-                    # Also try via connection method
-                    try:
-                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        s.connect(("8.8.8.8", 80))
-                        primary_ip = s.getsockname()[0]
-                        s.close()
-                        if primary_ip not in local_ips:
-                            local_ips.insert(0, primary_ip)
-                    except:
-                        pass
-                    
-                    # Derive network prefix (e.g., 192.168.1.x -> 192.168.1)
-                    network_prefix = ""
-                    if local_ips:
-                        parts = local_ips[0].split(".")
-                        if len(parts) == 4:
-                            network_prefix = ".".join(parts[:3])
-                    
-                    # Check if local P2P server is running
-                    p2p_server = get_local_p2p_server()
-                    p2p_running = p2p_server is not None and p2p_server.running
-                    
-                    return {
-                        "success": True,
-                        "hostname": hostname,
-                        "local_ips": local_ips,
-                        "network_prefix": network_prefix,
-                        "p2p_port": LOCAL_P2P_PORT,
-                        "p2p_server_running": p2p_running,
-                        "p2p_clients": len(p2p_server.clients) if p2p_server else 0,
-                    }
-                except ImportError:
-                    # Fallback if local_p2p_server module not available
-                    import socket
-                    local_ips = []
-                    hostname = socket.gethostname()
-                    try:
-                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        s.connect(("8.8.8.8", 80))
-                        local_ips = [s.getsockname()[0]]
-                        s.close()
-                    except:
-                        pass
-                    network_prefix = ".".join(local_ips[0].split(".")[:3]) if local_ips else ""
-                    return {
-                        "success": True,
-                        "hostname": hostname,
-                        "local_ips": local_ips,
-                        "network_prefix": network_prefix,
-                        "p2p_port": 9876,
-                        "p2p_server_running": False,
-                    }
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-
-            elif command_type == "check_same_network":
-                try:
-                    import socket
-                    
-                    phone_ip = payload.get("phone_ip", "")
-                    
-                    # Get PC's network prefix
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    s.connect(("8.8.8.8", 80))
-                    pc_ip = s.getsockname()[0]
-                    s.close()
-                    
-                    # Compare network prefixes
-                    pc_prefix = ".".join(pc_ip.split(".")[:3])
-                    phone_prefix = ".".join(phone_ip.split(".")[:3]) if phone_ip else ""
-                    
-                    same_network = pc_prefix == phone_prefix and phone_prefix != ""
-                    
-                    return {
-                        "success": True,
-                        "same_network": same_network,
-                        "pc_ip": pc_ip,
-                        "phone_ip": phone_ip,
-                        "pc_prefix": pc_prefix
-                    }
-                except Exception as e:
-                    return {"success": False, "error": str(e), "same_network": False}
-
-            else:
-                add_log("warn", f"Unknown command: {command_type}", category="command")
-                return {"success": False, "error": f"Unknown command: {command_type}"}
-
+            add_log("info", f"Temp files cleared: ~{int(freed_mb)}MB freed", category="system")
+            return {"success": True, "freed_mb": int(freed_mb)}
         except Exception as e:
-            add_log("error", f"Error executing {command_type}: {e}", category="command")
             return {"success": False, "error": str(e)}
     
-    async def poll_commands(self):
-        """Poll for pending commands via secure edge function."""
-        import urllib.request
-        import ssl
+    def _set_power_plan(self, plan: str) -> Dict[str, Any]:
+        try:
+            if sys.platform == "win32":
+                plans = {
+                    "high_performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+                    "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e",
+                }
+                plan_guid = plans.get(plan, plans["high_performance"])
+                os.system(f"powercfg /setactive {plan_guid}")
+                add_log("info", f"Power plan set to: {plan}", category="system")
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _restart_explorer(self) -> Dict[str, Any]:
+        try:
+            if sys.platform == "win32":
+                os.system("taskkill /f /im explorer.exe")
+                time.sleep(1)
+                os.system("start explorer.exe")
+                add_log("info", "Explorer restarted", category="system")
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _gaming_mode(self, enable: bool) -> Dict[str, Any]:
+        try:
+            if enable and sys.platform == "win32":
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.GetCurrentProcess()
+                kernel32.SetPriorityClass(handle, 0x00008000)
+                add_log("info", "Gaming mode enabled", category="system")
+            return {"success": True, "enabled": enable}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    # ============== NETWORK INFO ==============
+    def _get_network_info(self) -> Dict[str, Any]:
+        local_ips = get_local_ips()
+        network_prefix = get_network_prefix(local_ips[0]) if local_ips else ""
+        p2p_server = get_local_p2p_server()
+        return {
+            "success": True,
+            "hostname": socket.gethostname(),
+            "local_ips": local_ips,
+            "network_prefix": network_prefix,
+            "p2p_port": LOCAL_P2P_PORT,
+            "p2p_server_running": p2p_server is not None and p2p_server.running,
+            "p2p_clients": len(p2p_server.clients) if p2p_server else 0,
+        }
+    
+    # ============== BATCH COMMAND EXECUTION ==============
+    async def _execute_batch(self, commands: List[Dict[str, Any]]) -> Dict[str, Any]:
+        results = []
+        for cmd in commands:
+            cmd_type = cmd.get("commandType", cmd.get("type", ""))
+            payload = cmd.get("payload", {})
+            result = await self._handle_command(cmd_type, payload)
+            results.append({"commandType": cmd_type, "result": result})
+        return {"success": True, "results": results}
+    
+    # ============== MAIN COMMAND HANDLER ==============
+    async def _handle_command(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            cmd = command_type.lower().strip()
+            
+            # Normalize aliases
+            alias_map = {
+                "lock": "lock_screen",
+                "unlock": "smart_unlock",
+                "press_key": "key_press",
+                "mouse_scroll": "scroll",
+                "pinch_zoom": "zoom",
+            }
+            cmd = alias_map.get(cmd, cmd)
+            
+            # ============== INPUT SESSION GATING ==============
+            if cmd == "remote_input_enable":
+                session = str(payload.get("session", "") or "")
+                ttl_ms = int(payload.get("ttl_ms", INPUT_SESSION_TTL_SECONDS * 1000) or (INPUT_SESSION_TTL_SECONDS * 1000))
+                if not session:
+                    return {"success": False, "error": "Missing session"}
+                self._active_input_session = session
+                self._input_session_expires_at = time.time() + max(1, ttl_ms / 1000.0)
+                add_log("info", "Remote input enabled", category="input")
+                return {"success": True, "enabled": True}
+            
+            if cmd == "remote_input_disable":
+                session = str(payload.get("session", "") or "")
+                if session and session == self._active_input_session:
+                    self._active_input_session = None
+                    self._input_session_expires_at = 0.0
+                    add_log("info", "Remote input disabled", category="input")
+                return {"success": True, "enabled": False}
+            
+            # Gate remote input commands
+            GATED_COMMANDS = {
+                "mouse_move", "mouse_click", "key_press", "key_combo", "type_text",
+                "scroll", "zoom", "gesture_3_finger", "gesture_4_finger",
+            }
+            if cmd in GATED_COMMANDS:
+                incoming_session = str(payload.get("input_session", "") or "")
+                if (
+                    not self._active_input_session
+                    or incoming_session != self._active_input_session
+                    or time.time() > self._input_session_expires_at
+                ):
+                    # Silently reject - prevents ghost input
+                    return {"success": False, "error": "Remote input not enabled"}
+            
+            # ============== ROUTE COMMANDS ==============
+            if cmd == "get_system_stats":
+                return self._get_system_stats()
+            elif cmd == "get_volume":
+                return {"success": True, "volume": self._get_volume()}
+            elif cmd == "set_volume":
+                return self._set_volume(payload.get("level", 50))
+            elif cmd == "get_brightness":
+                return {"success": True, "brightness": self._get_brightness()}
+            elif cmd == "set_brightness":
+                return self._set_brightness(payload.get("level", 50))
+            elif cmd == "get_network_info":
+                return self._get_network_info()
+            
+            # Mouse/keyboard
+            elif cmd == "mouse_move":
+                return self._mouse_move(payload.get("x", 0), payload.get("y", 0), payload.get("relative", True))
+            elif cmd == "mouse_click":
+                return self._mouse_click(payload.get("button", "left"), payload.get("clicks", 1))
+            elif cmd in ["scroll", "mouse_scroll"]:
+                return self._mouse_scroll(int(payload.get("delta", payload.get("amount", 0)) or 0))
+            elif cmd == "key_press":
+                return self._key_press(payload.get("key", ""))
+            elif cmd == "key_combo":
+                return self._key_combo(payload.get("keys", []) or [])
+            elif cmd == "type_text":
+                return self._type_text(payload.get("text", ""))
+            elif cmd == "zoom":
+                return self._pinch_zoom(payload.get("direction", "in"), payload.get("steps", 1))
+            elif cmd == "gesture_3_finger":
+                return self._gesture_3_finger()
+            elif cmd == "gesture_4_finger":
+                return self._gesture_4_finger(payload.get("direction", "right"))
+            
+            # System
+            elif cmd == "shutdown":
+                return self._shutdown()
+            elif cmd == "restart":
+                return self._restart()
+            elif cmd == "sleep":
+                return self._sleep()
+            elif cmd == "hibernate":
+                return self._hibernate()
+            elif cmd == "lock_screen":
+                return self._lock_screen()
+            elif cmd == "smart_unlock":
+                return self._smart_unlock(payload.get("pin", ""))
+            
+            # Clipboard
+            elif cmd == "get_clipboard":
+                return self._get_clipboard()
+            elif cmd == "set_clipboard":
+                return self._set_clipboard(payload.get("content", payload.get("text", "")))
+            
+            # Media
+            elif cmd == "media_control":
+                return self._media_control(payload.get("action", "play_pause"))
+            elif cmd in ["get_media_state", "get_media_info"]:
+                return self._get_media_state()
+            elif cmd == "mute_pc":
+                if HAS_PYCAW and sys.platform == "win32":
+                    devices = AudioUtilities.GetSpeakers()
+                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                    volume = cast(interface, POINTER(IAudioEndpointVolume))
+                    volume.SetMute(1, None)
+                return {"success": True}
+            elif cmd == "unmute_pc":
+                if HAS_PYCAW and sys.platform == "win32":
+                    devices = AudioUtilities.GetSpeakers()
+                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                    volume = cast(interface, POINTER(IAudioEndpointVolume))
+                    volume.SetMute(0, None)
+                return {"success": True}
+            
+            # Apps
+            elif cmd == "open_app":
+                return self._open_app(payload.get("app_name", ""), payload.get("app_id"))
+            elif cmd == "close_app":
+                return self._close_app(payload.get("app_name", ""))
+            
+            # Files
+            elif cmd == "list_files":
+                return self._list_files(payload.get("path", "~"))
+            elif cmd == "receive_file_chunk":
+                return self._receive_file_chunk(payload)
+            elif cmd == "send_file_chunk":
+                return self._send_file_chunk(payload)
+            
+            # Boost
+            elif cmd == "boost_ram":
+                return self._boost_ram()
+            elif cmd == "clear_temp_files":
+                return self._clear_temp_files()
+            elif cmd == "set_power_plan":
+                return self._set_power_plan(payload.get("plan", "high_performance"))
+            elif cmd == "restart_explorer":
+                return self._restart_explorer()
+            elif cmd == "gaming_mode":
+                return self._gaming_mode(payload.get("enable", True))
+            
+            # Notifications (PC-side acknowledgment)
+            elif cmd in ["start_notification_sync", "stop_notification_sync"]:
+                add_log("info", f"Notification sync: {cmd}", category="sync")
+                return {"success": True}
+            
+            # Batch
+            elif cmd == "execute_batch":
+                return await self._execute_batch(payload.get("commands", []))
+            
+            # Screenshot
+            elif cmd == "take_screenshot":
+                return self.screenshot_handler.capture_sync(
+                    quality=payload.get("quality", 70),
+                    scale=payload.get("scale", 0.5)
+                )
+            
+            # Ping
+            elif cmd in ["ping", "heartbeat"]:
+                return {"success": True, "pong": True, "timestamp": datetime.now().isoformat()}
+            
+            else:
+                add_log("warn", f"Unknown command: {cmd}", category="command")
+                return {"success": False, "error": f"Unknown command: {cmd}"}
         
+        except Exception as e:
+            add_log("error", f"Command '{command_type}' exception: {e}", details=traceback.format_exc(), category="command")
+            return {"success": False, "error": str(e)}
+    
+    # ============== DEVICE REGISTRATION ==============
+    async def register_device(self):
+        try:
+            # Generate pairing code
+            import random
+            self.pairing_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
+            pairing_expires = datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)
+            
+            # Check for existing device
+            result = self.supabase.table("devices").select("id, device_key").eq("device_key", self.device_key).limit(1).execute()
+            
+            if result.data:
+                self.device_id = result.data[0]["id"]
+                self.supabase.table("devices").update({
+                    "is_online": True,
+                    "pairing_code": self.pairing_code,
+                    "pairing_expires_at": pairing_expires.isoformat(),
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", self.device_id).execute()
+            else:
+                # Create new device
+                insert_result = self.supabase.table("devices").insert({
+                    "name": DEVICE_NAME,
+                    "device_key": self.device_key,
+                    "is_online": True,
+                    "pairing_code": self.pairing_code,
+                    "pairing_expires_at": pairing_expires.isoformat(),
+                    "current_volume": self._get_volume(),
+                    "current_brightness": self._get_brightness(),
+                    "user_id": "00000000-0000-0000-0000-000000000000",  # Anonymous device
+                }).execute()
+                
+                if insert_result.data:
+                    self.device_id = insert_result.data[0]["id"]
+            
+            update_agent_status({
+                "connected": True,
+                "device_id": self.device_id,
+                "pairing_code": self.pairing_code,
+                "pairing_expires_at": pairing_expires.isoformat(),
+            })
+            
+            add_log("info", f"Device registered: {self.device_id}", category="system")
+            add_log("info", f"Pairing code: {self.pairing_code}", category="system")
+            
+        except Exception as e:
+            add_log("error", f"Registration failed: {e}", category="system")
+    
+    # ============== POLLING ==============
+    async def poll_commands(self):
         poll_url = f"{SUPABASE_URL}/functions/v1/agent-poll"
-        ssl_ctx = ssl.create_default_context()
         
         while self.running:
             try:
-                # Call edge function to get pending commands
                 req_data = json.dumps({"action": "poll"}).encode("utf-8")
                 req = urllib.request.Request(
                     poll_url,
@@ -4391,7 +1194,7 @@ class JarvisAgent:
                     method="POST"
                 )
                 
-                with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     result = json.loads(resp.read().decode("utf-8"))
                 
                 if not result.get("success"):
@@ -4402,6 +1205,8 @@ class JarvisAgent:
                     continue
                 
                 commands = result.get("commands", [])
+                self.consecutive_failures = 0
+                self.backoff_seconds = 1
                 
                 for cmd in commands:
                     cmd_type = cmd["command_type"]
@@ -4409,11 +1214,9 @@ class JarvisAgent:
                     cmd_id = cmd["id"]
                     
                     add_log("info", f"Executing: {cmd_type}", category="command")
-                    
-                    # Execute command
                     result_data = await self._handle_command(cmd_type, payload)
                     
-                    # Report completion via edge function
+                    # Report completion
                     try:
                         complete_data = json.dumps({
                             "action": "complete",
@@ -4429,38 +1232,37 @@ class JarvisAgent:
                             },
                             method="POST"
                         )
-                        with urllib.request.urlopen(complete_req, context=ssl_ctx, timeout=10) as _:
+                        with urllib.request.urlopen(complete_req, timeout=10) as _:
                             pass
                     except Exception as e:
                         add_log("warn", f"Failed to report completion: {e}", category="command")
-                    
+                
             except urllib.error.HTTPError as e:
                 if e.code == 401:
-                    add_log("error", "Authentication failed - check device key", category="auth")
-                else:
-                    add_log("warn", f"Poll HTTP error {e.code}: {e.reason}", category="polling")
+                    add_log("error", "Authentication failed", category="auth")
+                self.consecutive_failures += 1
             except Exception as e:
-                add_log("warn", f"Poll error: {e}", category="polling")
+                self.consecutive_failures += 1
+                add_log("warn", f"Poll error ({self.consecutive_failures}): {e}", category="polling")
+                
+                if self.consecutive_failures >= self.max_failures_before_reregister:
+                    add_log("warn", "Too many failures, re-registering...", category="system")
+                    self.backoff_seconds = min(self.backoff_seconds * 2, self.max_backoff)
+                    await asyncio.sleep(self.backoff_seconds)
+                    await self.register_device()
             
             await asyncio.sleep(POLL_INTERVAL)
     
+    # ============== HEARTBEAT ==============
     async def heartbeat(self):
-        """Send periodic heartbeats via secure edge function."""
-        import urllib.request
-        import ssl
-        
         poll_url = f"{SUPABASE_URL}/functions/v1/agent-poll"
-        ssl_ctx = ssl.create_default_context()
         
         while self.running:
             try:
-                volume = self._get_volume()
-                brightness = self._get_brightness()
-                
                 hb_data = json.dumps({
                     "action": "heartbeat",
-                    "volume": volume,
-                    "brightness": brightness,
+                    "volume": self._get_volume(),
+                    "brightness": self._get_brightness(),
                 }).encode("utf-8")
                 
                 req = urllib.request.Request(
@@ -4473,7 +1275,7 @@ class JarvisAgent:
                     method="POST"
                 )
                 
-                with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as _:
+                with urllib.request.urlopen(req, timeout=10) as _:
                     pass
                 
                 update_agent_status({
@@ -4488,646 +1290,52 @@ class JarvisAgent:
             
             await asyncio.sleep(HEARTBEAT_INTERVAL)
     
+    # ============== RUN ==============
     async def run(self):
-        """Main run loop."""
         print("\n" + "="*50)
-        print("🤖 JARVIS PC Agent v2.5 (AI Voice Edition)")
+        print(f"🤖 JARVIS PC Agent v{AGENT_VERSION}")
         print("="*50)
         print(f"📍 Device: {DEVICE_NAME}")
         print(f"🔗 Backend: {SUPABASE_URL}")
         print(f"📷 Camera: {'✅' if HAS_OPENCV else '❌'}")
         print(f"🎤 Audio: {'✅' if HAS_PYAUDIO else '❌'}")
-        print(f"🗣️ Voice: {'✅' if HAS_SPEECH_RECOGNITION else '❌'}")
         print(f"🔌 WebSockets: {'✅' if HAS_WEBSOCKETS else '❌'}")
-        print(f"🌐 Local Dashboard: http://localhost:{UI_PORT}")
         print("="*50 + "\n")
         
         await self.register_device()
         
-        # Start local P2P server for same-network ultra-low latency connections
-        self._start_local_p2p_server()
+        # Start local P2P server
+        async def handle_local_command(command_type: str, payload: dict):
+            return await self._handle_command(command_type, payload)
+        
+        start_local_p2p_server(handle_local_command, LOCAL_P2P_PORT)
         
         print("\n✅ Agent running! Open the Jarvis web app to control this PC.")
-        print(f"   Local dashboard: http://localhost:{UI_PORT}")
         print("   Press Ctrl+C to stop.\n")
         
-        # Run polling and heartbeat concurrently
         await asyncio.gather(
             self.poll_commands(),
             self.heartbeat()
         )
     
-    def _start_local_p2p_server(self):
-        """Start the local P2P WebSocket server for same-network connections."""
-        try:
-            from local_p2p_server import start_local_p2p_server, LOCAL_P2P_PORT
-            
-            # Create async command handler wrapper
-            async def handle_local_command(command_type: str, payload: dict):
-                return await self._handle_command(command_type, payload)
-            
-            # Start the server
-            server = start_local_p2p_server(handle_local_command, LOCAL_P2P_PORT)
-            add_log("info", f"Local P2P server started on port {LOCAL_P2P_PORT}", category="p2p")
-            update_agent_status({"local_p2p_enabled": True, "local_p2p_port": LOCAL_P2P_PORT})
-            
-        except ImportError:
-            add_log("warn", "Local P2P server module not found", category="p2p")
-        except Exception as e:
-            add_log("warn", f"Failed to start local P2P server: {e}", category="p2p")
-    
     async def shutdown(self):
-        """Clean shutdown."""
         self.running = False
+        stop_local_p2p_server()
         
-        # Stop local P2P server
         try:
-            from local_p2p_server import stop_local_p2p_server
-            stop_local_p2p_server()
-        except Exception:
-            pass
-        
-        # Stop streamers
-        await self.audio_streamer.stop()
-        await self.camera_streamer.stop()
-        await self.screen_streamer.stop()
-        
-        # Mark device offline
-        try:
-            supabase.table("devices").update({
+            self.supabase.table("devices").update({
                 "is_online": False,
                 "last_seen": datetime.now(timezone.utc).isoformat()
             }).eq("id", self.device_id).execute()
-            
-            update_agent_status({"connected": False, "local_p2p_enabled": False})
         except:
             pass
         
         add_log("info", "Agent stopped. Goodbye!", category="system")
 
 
-# ============== SYSTEM TRAY ==============
-class SystemTray:
-    """Windows system tray icon with menu."""
-    
-    def __init__(self, gui_callback=None, voice_toggle_callback=None, quit_callback=None):
-        self.icon = None
-        self.gui_callback = gui_callback
-        self.voice_toggle_callback = voice_toggle_callback
-        self.quit_callback = quit_callback
-        self.running = False
-    
-    def create_image(self):
-        """Create a simple icon image."""
-        # Create a simple blue circle icon
-        size = 64
-        image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-        
-        # Draw a circle
-        for x in range(size):
-            for y in range(size):
-                dx = x - size // 2
-                dy = y - size // 2
-                distance = (dx * dx + dy * dy) ** 0.5
-                if distance < size // 2 - 2:
-                    # Blue gradient
-                    intensity = int(200 - distance * 2)
-                    image.putpixel((x, y), (59, 130, 246, intensity))
-                elif distance < size // 2:
-                    # Border
-                    image.putpixel((x, y), (30, 64, 175, 255))
-        
-        return image
-    
-    def start(self):
-        """Start the system tray icon."""
-        if not HAS_TRAY:
-            add_log("warn", "System tray not available", category="system")
-            return False
-        
-        def on_show_gui(icon, item):
-            if self.gui_callback:
-                self.gui_callback()
-        
-        def on_toggle_voice(icon, item):
-            if self.voice_toggle_callback:
-                self.voice_toggle_callback()
-        
-        def on_quit(icon, item):
-            icon.stop()
-            if self.quit_callback:
-                self.quit_callback()
-        
-        menu = pystray.Menu(
-            item('Show Window', on_show_gui, default=True),
-            item('Toggle Voice', on_toggle_voice),
-            pystray.Menu.SEPARATOR,
-            item('Quit', on_quit)
-        )
-        
-        self.icon = pystray.Icon(
-            "jarvis",
-            self.create_image(),
-            "JARVIS Agent",
-            menu
-        )
-        
-        self.running = True
-        threading.Thread(target=self.icon.run, daemon=True).start()
-        add_log("info", "System tray icon started", category="system")
-        return True
-    
-    def stop(self):
-        """Stop the tray icon."""
-        if self.icon:
-            try:
-                self.icon.stop()
-            except:
-                pass
-        self.running = False
-
-
-# ============== NATIVE GUI (TKINTER) ==============
-class JarvisGUI:
-    """Ultra-minimal JARVIS Agent GUI - True Black, File Transfer Support."""
-    
-    def __init__(self):
-        self.root = None
-        self.running = False
-        self.update_interval = 1000
-        self.minimized_to_tray = False
-        self.tray = None
-        
-        # UI references
-        self.pairing_label = None
-        self.status_dot = None
-        self.status_text = None
-        self.cpu_bar = None
-        self.mem_bar = None
-        self.stream_indicators = {}
-        self.log_text = None
-        self.last_log_count = 0
-        
-        # File transfer
-        self.save_path_var = None
-        self.file_list = None
-        self.transfer_progress = None
-        self.transfer_status = None
-        
-        # Colors - TRUE BLACK theme
-        self.colors = {
-            "bg": "#000000",          # Pure black
-            "card": "#0a0a0a",         # Near black for cards
-            "border": "#1a1a1a",       # Dark border
-            "text": "#fafafa",
-            "muted": "#666666",
-            "primary": "#3b82f6",
-            "success": "#22c55e",
-            "warning": "#eab308",
-            "error": "#ef4444",
-            "accent": "#8b5cf6",
-        }
-    
-    def start(self):
-        """Start the GUI."""
-        if not HAS_TKINTER:
-            print("⚠️  Tkinter not available. Running headless.")
-            return False
-        
-        self.running = True
-        self.root = tk.Tk()
-        self.root.title("JARVIS")
-        self.root.geometry("480x780")
-        self.root.configure(bg=self.colors["bg"])
-        self.root.resizable(True, True)
-        self.root.minsize(420, 600)
-        
-        # Center window
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - 480) // 2
-        y = (self.root.winfo_screenheight() - 780) // 2
-        self.root.geometry(f"+{x}+{y}")
-        
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        
-        self._setup_styles()
-        self._build_ui()
-        
-        # System tray
-        self.tray = SystemTray(
-            gui_callback=self._show_window,
-            voice_toggle_callback=self._toggle_voice,
-            quit_callback=self._quit_app
-        )
-        self.tray.start()
-        
-        self.root.after(500, self._update_ui)
-        return True
-    
-    def _on_close(self):
-        if HAS_TRAY and self.tray and self.tray.running:
-            self.root.withdraw()
-            self.minimized_to_tray = True
-            notification_manager.notify("JARVIS", "Running in background")
-        else:
-            self._quit_app()
-    
-    def _show_window(self):
-        if self.root:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
-            self.minimized_to_tray = False
-    
-    def _toggle_voice(self):
-        global voice_listener
-        if voice_listener and voice_listener.running:
-            voice_listener.stop()
-        else:
-            self._start_voice_listener()
-    
-    def _start_voice_listener(self):
-        global voice_listener
-        if not HAS_SPEECH_RECOGNITION:
-            return
-        voice_listener = VoiceListener(wake_word="jarvis", on_command=self._handle_voice_command)
-        voice_listener.start()
-    
-    def _handle_voice_command(self, command: str) -> str:
-        add_log("info", f"Voice: {command}", category="voice")
-        return "Processing, sir."
-    
-    def _quit_app(self):
-        global voice_listener
-        if voice_listener:
-            voice_listener.stop()
-        if self.tray:
-            self.tray.stop()
-        self.running = False
-        if self.root:
-            try:
-                self.root.quit()
-                self.root.destroy()
-            except:
-                pass
-    
-    def _setup_styles(self):
-        """Minimal ttk styles."""
-        style = ttk.Style()
-        style.theme_use('clam')
-        c = self.colors
-        
-        style.configure("TFrame", background=c["bg"])
-        style.configure("Card.TFrame", background=c["card"])
-        style.configure("TLabel", background=c["bg"], foreground=c["text"], font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background=c["bg"], foreground=c["muted"], font=("Segoe UI", 9))
-        style.configure("Code.TLabel", background=c["card"], foreground=c["primary"], font=("JetBrains Mono", 36, "bold"))
-        style.configure("Small.TLabel", background=c["card"], foreground=c["muted"], font=("Segoe UI", 9))
-        style.configure("Stat.Horizontal.TProgressbar", background=c["primary"], troughcolor=c["border"], thickness=4)
-    
-    def _build_ui(self):
-        """Build minimal, elegant UI with file transfer."""
-        c = self.colors
-        
-        # Make window taller for file transfer section
-        self.root.geometry("480x780")
-        x = (self.root.winfo_screenwidth() - 480) // 2
-        y = (self.root.winfo_screenheight() - 780) // 2
-        self.root.geometry(f"+{x}+{y}")
-        
-        # Main container with notebook for tabs
-        main = tk.Frame(self.root, bg=c["bg"])
-        main.pack(fill=tk.BOTH, expand=True, padx=20, pady=16)
-        
-        # Header row - Minimal
-        header = tk.Frame(main, bg=c["bg"])
-        header.pack(fill=tk.X, pady=(0, 12))
-        
-        title = tk.Label(header, text="JARVIS", font=("Segoe UI", 18, "bold"), fg=c["text"], bg=c["bg"])
-        title.pack(side=tk.LEFT)
-        
-        # Status indicator
-        status_frame = tk.Frame(header, bg=c["bg"])
-        status_frame.pack(side=tk.RIGHT)
-        
-        self.status_dot = tk.Canvas(status_frame, width=8, height=8, bg=c["bg"], highlightthickness=0)
-        self.status_dot.pack(side=tk.LEFT, padx=(0, 5))
-        self.status_dot.create_oval(1, 1, 7, 7, fill=c["muted"], outline="")
-        
-        self.status_text = tk.Label(status_frame, text="Connecting", font=("Segoe UI", 9), fg=c["muted"], bg=c["bg"])
-        self.status_text.pack(side=tk.LEFT)
-        
-        # Pairing card - Compact hero
-        pairing_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        pairing_card.pack(fill=tk.X, pady=(0, 12), ipady=12)
-        
-        tk.Label(pairing_card, text="PAIRING CODE", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(pady=(10, 2))
-        
-        self.pairing_label = tk.Label(pairing_card, text="------", font=("JetBrains Mono", 32, "bold"), fg=c["primary"], bg=c["card"])
-        self.pairing_label.pack()
-        
-        tk.Label(pairing_card, text="Enter in mobile app", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(pady=(2, 10))
-        
-        # Stats row - Ultra compact
-        stats_row = tk.Frame(main, bg=c["bg"])
-        stats_row.pack(fill=tk.X, pady=(0, 10))
-        
-        for i in range(2):
-            stats_row.columnconfigure(i, weight=1)
-        
-        # CPU
-        cpu_frame = tk.Frame(stats_row, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        cpu_frame.grid(row=0, column=0, padx=(0, 4), sticky="nsew")
-        tk.Label(cpu_frame, text="CPU", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=10, pady=(8, 2))
-        self.cpu_bar = ttk.Progressbar(cpu_frame, style="Stat.Horizontal.TProgressbar", length=160, mode='determinate')
-        self.cpu_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
-        
-        # Memory
-        mem_frame = tk.Frame(stats_row, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        mem_frame.grid(row=0, column=1, padx=(4, 0), sticky="nsew")
-        tk.Label(mem_frame, text="MEM", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=10, pady=(8, 2))
-        self.mem_bar = ttk.Progressbar(mem_frame, style="Stat.Horizontal.TProgressbar", length=160, mode='determinate')
-        self.mem_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
-        
-        # ============ FILE TRANSFER SECTION ============
-        file_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        file_card.pack(fill=tk.X, pady=(0, 10))
-        
-        # File Transfer Header
-        file_header = tk.Frame(file_card, bg=c["card"])
-        file_header.pack(fill=tk.X, padx=12, pady=(10, 6))
-        
-        tk.Label(file_header, text="📁 FILE TRANSFER", font=("Segoe UI", 9, "bold"), fg=c["text"], bg=c["card"]).pack(side=tk.LEFT)
-        
-        # Save path row
-        path_row = tk.Frame(file_card, bg=c["card"])
-        path_row.pack(fill=tk.X, padx=12, pady=(0, 6))
-        
-        tk.Label(path_row, text="Save to:", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
-        
-        default_save = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
-        self.save_path_var = tk.StringVar(value=default_save)
-        
-        path_entry = tk.Entry(path_row, textvariable=self.save_path_var, font=("JetBrains Mono", 8), 
-                             bg=c["bg"], fg=c["text"], insertbackground=c["text"], bd=0, highlightthickness=1,
-                             highlightbackground=c["border"], highlightcolor=c["primary"])
-        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 4))
-        
-        browse_btn = tk.Label(path_row, text="📂", font=("Segoe UI", 10), fg=c["primary"], bg=c["card"], cursor="hand2")
-        browse_btn.pack(side=tk.RIGHT)
-        browse_btn.bind("<Button-1>", self._browse_save_folder)
-        
-        # Action buttons row
-        btn_row = tk.Frame(file_card, bg=c["card"])
-        btn_row.pack(fill=tk.X, padx=12, pady=(0, 8))
-        
-        # Send File button
-        send_btn = tk.Frame(btn_row, bg=c["primary"], cursor="hand2")
-        send_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-        send_label = tk.Label(send_btn, text="📤 Send File", font=("Segoe UI", 9, "bold"), fg="#000000", bg=c["primary"], pady=6)
-        send_label.pack()
-        send_btn.bind("<Button-1>", self._send_file_dialog)
-        send_label.bind("<Button-1>", self._send_file_dialog)
-        
-        # Open Folder button  
-        open_btn = tk.Frame(btn_row, bg=c["border"], cursor="hand2")
-        open_btn.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(4, 0))
-        open_label = tk.Label(open_btn, text="📂 Open Folder", font=("Segoe UI", 9), fg=c["text"], bg=c["border"], pady=6)
-        open_label.pack()
-        open_btn.bind("<Button-1>", self._open_save_folder)
-        open_label.bind("<Button-1>", self._open_save_folder)
-        
-        # Transfer status
-        self.transfer_status = tk.Label(file_card, text="Ready to receive files", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"])
-        self.transfer_status.pack(pady=(0, 8))
-        
-        # Stream status - Compact horizontal
-        stream_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        stream_card.pack(fill=tk.X, pady=(0, 10), ipady=8)
-        
-        tk.Label(stream_card, text="STREAMS", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(anchor=tk.W, padx=12, pady=(8, 4))
-        
-        indicators_row = tk.Frame(stream_card, bg=c["card"])
-        indicators_row.pack(fill=tk.X, padx=12, pady=(0, 8))
-        
-        for name, icon in [("Audio", "🔊"), ("Camera", "📷"), ("Screen", "🖥")]:
-            frame = tk.Frame(indicators_row, bg=c["card"])
-            frame.pack(side=tk.LEFT, padx=(0, 16))
-            
-            dot = tk.Canvas(frame, width=6, height=6, bg=c["card"], highlightthickness=0)
-            dot.pack(side=tk.LEFT, padx=(0, 4))
-            dot.create_oval(1, 1, 5, 5, fill=c["muted"], outline="", tags="dot")
-            
-            tk.Label(frame, text=name, font=("Segoe UI", 8), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
-            
-            self.stream_indicators[name.lower()] = dot
-        
-        # Activity log - Compact
-        log_card = tk.Frame(main, bg=c["card"], highlightbackground=c["border"], highlightthickness=1)
-        log_card.pack(fill=tk.BOTH, expand=True)
-        
-        log_header = tk.Frame(log_card, bg=c["card"])
-        log_header.pack(fill=tk.X, padx=12, pady=(8, 4))
-        
-        tk.Label(log_header, text="ACTIVITY", font=("Segoe UI", 8, "bold"), fg=c["muted"], bg=c["card"]).pack(side=tk.LEFT)
-        
-        clear_btn = tk.Label(log_header, text="Clear", font=("Segoe UI", 8), fg=c["muted"], bg=c["card"], cursor="hand2")
-        clear_btn.pack(side=tk.RIGHT)
-        clear_btn.bind("<Button-1>", lambda e: self._clear_logs())
-        
-        self.log_text = scrolledtext.ScrolledText(
-            log_card, bg="#050505", fg=c["text"], font=("JetBrains Mono", 8), 
-            wrap=tk.WORD, bd=0, highlightthickness=0, height=8, insertbackground=c["text"]
-        )
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.log_text.configure(state=tk.DISABLED)
-        
-        # Log tags
-        self.log_text.tag_configure("error", foreground=c["error"])
-        self.log_text.tag_configure("warn", foreground=c["warning"])
-        self.log_text.tag_configure("info", foreground=c["primary"])
-        self.log_text.tag_configure("voice", foreground=c["success"])
-        self.log_text.tag_configure("file", foreground=c["accent"])
-        self.log_text.tag_configure("time", foreground=c["muted"])
-    
-    def _browse_save_folder(self, event=None):
-        """Open folder browser for save path."""
-        from tkinter import filedialog
-        folder = filedialog.askdirectory(
-            title="Select folder to save received files",
-            initialdir=self.save_path_var.get()
-        )
-        if folder:
-            self.save_path_var.set(folder)
-            add_log("info", f"Save path changed: {folder}", category="file")
-    
-    def _send_file_dialog(self, event=None):
-        """Open file dialog to select files to send to phone."""
-        from tkinter import filedialog
-        files = filedialog.askopenfilenames(
-            title="Select files to send to phone",
-            filetypes=[
-                ("All files", "*.*"),
-                ("Images", "*.jpg *.jpeg *.png *.gif *.webp"),
-                ("Documents", "*.pdf *.doc *.docx *.txt"),
-                ("Videos", "*.mp4 *.mkv *.avi *.mov"),
-            ]
-        )
-        if files:
-            for f in files:
-                filename = os.path.basename(f)
-                add_log("info", f"Queued for send: {filename}", category="file")
-                self._update_transfer_status(f"Sending: {filename}")
-                # Note: Actual sending would be handled by the web app requesting chunks
-                notification_manager.notify("File Ready", f"{filename} ready to send to phone")
-    
-    def _open_save_folder(self, event=None):
-        """Open the save folder in file explorer."""
-        folder = self.save_path_var.get()
-        try:
-            os.makedirs(folder, exist_ok=True)
-            if platform.system() == "Windows":
-                os.startfile(folder)
-            elif platform.system() == "Darwin":
-                subprocess.run(["open", folder])
-            else:
-                subprocess.run(["xdg-open", folder])
-            add_log("info", f"Opened folder: {folder}", category="file")
-        except Exception as e:
-            add_log("error", f"Failed to open folder: {e}", category="file")
-    
-    def _update_transfer_status(self, message: str):
-        """Update transfer status label."""
-        if self.transfer_status:
-            self.transfer_status.configure(text=message)
-
-    def _update_ui(self):
-        """Update UI with current status."""
-        if not self.running or not self.root:
-            return
-        
-        try:
-            status = get_agent_status()
-            c = self.colors
-            
-            # Status indicator
-            if status.get("connected"):
-                self.status_dot.itemconfig("all", fill=c["success"])
-                self.status_text.configure(text="Connected", fg=c["success"])
-            else:
-                self.status_dot.itemconfig("all", fill=c["muted"])
-                self.status_text.configure(text="Offline", fg=c["muted"])
-            
-            # Pairing code
-            code = status.get("pairing_code", "------")
-            self.pairing_label.configure(text=code if code else "------")
-            
-            # Stats
-            self.cpu_bar["value"] = int(status.get("cpu_percent", 0))
-            self.mem_bar["value"] = int(status.get("memory_percent", 0))
-            
-            # Stream indicators
-            stream_map = {
-                "audio": status.get("audio_streaming"),
-                "camera": status.get("camera_streaming"),
-                "screen": status.get("screen_streaming"),
-            }
-            for name, active in stream_map.items():
-                if name in self.stream_indicators:
-                    color = c["success"] if active else c["muted"]
-                    self.stream_indicators[name].itemconfig("dot", fill=color)
-            
-            # Logs
-            logs = get_logs()
-            if len(logs) != self.last_log_count:
-                self._render_logs(logs)
-                self.last_log_count = len(logs)
-                
-        except Exception as e:
-            print(f"UI update error: {e}")
-        
-        if self.running and self.root:
-            self.root.after(self.update_interval, self._update_ui)
-
-    def _render_logs(self, logs):
-        """Render logs - minimal format."""
-        if not self.log_text:
-            return
-        
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.delete(1.0, tk.END)
-        
-        for log in logs[:30]:
-            try:
-                time_str = datetime.fromisoformat(log.get("timestamp", "")).strftime("%H:%M")
-            except:
-                time_str = "--:--"
-            
-            level = log.get("level", "info")
-            msg = log.get("message", "")
-            
-            self.log_text.insert(tk.END, f"{time_str} ", "time")
-            self.log_text.insert(tk.END, f"{msg}\n", level if level in ["error", "warn", "voice"] else "info")
-        
-        self.log_text.configure(state=tk.DISABLED)
-        self.log_text.see(tk.END)
-    
-    def _clear_logs(self):
-        """Clear the activity log."""
-        clear_logs()
-        self.last_log_count = 0
-        if self.log_text:
-            self.log_text.configure(state=tk.NORMAL)
-            self.log_text.delete(1.0, tk.END)
-            self.log_text.configure(state=tk.DISABLED)
-    
-    def run_mainloop(self):
-        """Run the tkinter main loop (blocking)."""
-        if self.root:
-            try:
-                self.root.mainloop()
-            except KeyboardInterrupt:
-                self.stop()
-    
-    def stop(self):
-        """Stop the GUI."""
-        global voice_listener
-        
-        self.running = False
-        
-        # Stop voice listener
-        if voice_listener:
-            voice_listener.stop()
-            voice_listener = None
-        
-        # Stop tray
-        if self.tray:
-            self.tray.stop()
-            self.tray = None
-        
-        if self.root:
-            try:
-                self.root.quit()
-                self.root.destroy()
-            except:
-                pass
-            self.root = None
-
-
-# Global GUI instance
-jarvis_gui: Optional[JarvisGUI] = None
-
-# Global agent instance (for voice commands)
-jarvis_agent_instance: Optional["JarvisAgent"] = None
-
 # ============== MAIN ==============
 async def run_agent():
-    """Run the agent with async operations."""
-    global jarvis_agent_instance
-    
     agent = JarvisAgent()
-    jarvis_agent_instance = agent  # Store global reference for voice commands
-    
     try:
         await agent.run()
     except KeyboardInterrupt:
@@ -5135,81 +1343,24 @@ async def run_agent():
     except Exception as e:
         add_log("error", f"Fatal error: {e}", category="system")
         await agent.shutdown()
-    finally:
-        jarvis_agent_instance = None
 
 
 def main():
-    """Main entry point - starts GUI and agent."""
-    global jarvis_gui, voice_listener
-    
     print("\n" + "="*60)
-    print("🤖 JARVIS PC Agent v2.5 - AI Voice Edition")
-    print("="*60)
-    print("Features:")
-    print("  🎤 Voice Control - Say 'Jarvis' to activate")
-    print("  🔔 System Tray - Minimize to tray")
-    print("  📱 Windows Notifications")
-    print("  🌐 All PC Control Features")
+    print(f"🤖 JARVIS PC Agent v{AGENT_VERSION}")
     print("="*60 + "\n")
     
     try:
-        if HAS_TKINTER:
-            # Create and start GUI
-            jarvis_gui = JarvisGUI()
-            
-            if jarvis_gui.start():
-                # Show startup notification
-                notification_manager.notify(
-                    "JARVIS Agent Started",
-                    "Say 'Jarvis' to use voice control"
-                )
-                
-                # Run agent in background thread
-                def run_agent_thread():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        loop.run_until_complete(run_agent())
-                    except Exception as e:
-                        add_log("error", f"Agent thread error: {e}", category="system")
-                    finally:
-                        loop.close()
-                
-                agent_thread = threading.Thread(target=run_agent_thread, daemon=True)
-                agent_thread.start()
-                
-                # Run GUI in main thread (required by tkinter)
-                try:
-                    jarvis_gui.run_mainloop()
-                except KeyboardInterrupt:
-                    pass
-                finally:
-                    jarvis_gui.stop()
-            else:
-                # Fallback to headless mode
-                print("⚠️  GUI failed to start. Running in headless mode.")
-                asyncio.run(run_agent())
-        else:
-            # No tkinter - run headless
-            print("⚠️  Tkinter not available. Running in headless mode.")
-            print("   Install tkinter with: pip install tk (or via system package manager)")
-            asyncio.run(run_agent())
+        asyncio.run(run_agent())
+    except KeyboardInterrupt:
+        print("\n\nShutting down...")
     except Exception as e:
-        print("\n" + "=" * 60)
-        print("❌ FATAL ERROR - Agent crashed")
-        print("=" * 60)
-        print(f"\nError: {e}")
-        print("\nPossible fixes:")
-        print("  1. Run: python -m pip install -r requirements.txt")
-        print("  2. Make sure you have Python 3.10-3.12")
-        print("  3. Check your internet connection")
-        print("  4. For voice: pip install SpeechRecognition pyttsx3")
+        print(f"\n❌ FATAL ERROR: {e}")
         print("\nPress Enter to exit...")
         try:
             input()
         except:
-            time.sleep(10)
+            time.sleep(5)
 
 
 if __name__ == "__main__":
