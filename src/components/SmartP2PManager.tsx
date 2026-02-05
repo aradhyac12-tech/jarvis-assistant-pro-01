@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { ConnectionMode } from "@/hooks/useP2PCommand";
 import { NetworkState } from "@/hooks/useNetworkMonitor";
 import { LocalP2PState } from "@/hooks/useLocalP2P";
+import { P2PDiagnosticsPanel } from "@/components/network/P2PDiagnosticsPanel";
 
 interface SmartP2PManagerProps {
   connectionMode: ConnectionMode;
@@ -183,6 +184,13 @@ export function SmartP2PManager({
             </Button>
           )}
         </div>
+
+        {/* Detailed Local P2P diagnostics (inside connection card) */}
+        <P2PDiagnosticsPanel
+          connectionMode={connectionMode}
+          networkState={networkState}
+          localP2PState={localP2PState}
+        />
 
         {/* Auto-Switch Settings */}
         <div className="space-y-3 pt-2 border-t border-border/50">

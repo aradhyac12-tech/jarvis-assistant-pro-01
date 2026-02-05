@@ -40,6 +40,24 @@ if errorlevel 1 (
 
 echo.
 echo Starting agent...
-python jarvis_agent.py
+
+echo.
+echo Choose mode:
+echo   [1] GUI (recommended)
+echo   [2] Console
+set /p JARVIS_MODE="Enter 1 or 2: "
+
+if "%JARVIS_MODE%"=="2" (
+  python jarvis_agent.py
+) else (
+  where pythonw >nul 2>nul
+  if errorlevel 1 (
+    echo.
+    echo ⚠️ pythonw.exe not found - starting GUI with python.exe
+    python jarvis_agent.py --gui
+  ) else (
+    pythonw jarvis_agent.py --gui
+  )
+)
 
 pause
