@@ -150,6 +150,9 @@ else:
 DEFAULT_JARVIS_URL = "https://gkppopjoedadacolxufi.supabase.co"
 DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrcHBvcGpvZWRhZGFjb2x4dWZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk0MzAyNjAsImV4cCI6MjA4NTAwNjI2MH0.BTudp4YXmUuYv6gtPeurUzqzM_mbf_j7QqsL78uwQUE"
 
+# Optional: where the "Open Web App" button should navigate.
+DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://aradhya-jarvis.lovable.app")
+
 SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", DEFAULT_JARVIS_URL)
 SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
 
@@ -610,6 +613,183 @@ class JarvisAgent:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _get_system_state(self) -> Dict[str, Any]:
+        """Lightweight snapshot used by the Hub to sync sliders + lock state."""
+        try:
+            return {
+                "success": True,
+                "volume": self._get_volume(),
+                "brightness": self._get_brightness(),
+                "is_locked": bool(self.is_locked),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_cameras(self) -> Dict[str, Any]:
+        """Enumerate basic camera indices for PC camera streaming."""
+        try:
+            cameras: List[Dict[str, Any]] = []
+
+            if not HAS_OPENCV:
+                return {
+                    "success": True,
+                    "cameras": [],
+                    "note": "OpenCV not installed; camera enumeration disabled.",
+                }
+
+            max_test = 6
+            for idx in range(0, max_test):
+                cap = None
+                try:
+                    # CAP_DSHOW improves reliability on Windows
+                    if platform.system() == "Windows":
+                        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                    else:
+                        cap = cv2.VideoCapture(idx)
+
+                    if cap is not None and cap.isOpened():
+                        cameras.append({"index": idx, "name": f"Camera {idx}"})
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if cap is not None:
+                            cap.release()
+                    except Exception:
+                        pass
+
+            return {"success": True, "cameras": cameras}
+        except Exception as e:
+            return {"success": False, "error": str(e), "cameras": []}
+
+    def _get_audio_devices(self) -> Dict[str, Any]:
+        """Return output devices + master volume/mute.
+
+        Note: full endpoint enumeration is OS-specific; we return the default endpoint
+        for now so the UI works without 'unknown command' errors.
+        """
+        try:
+            master_volume = self._get_volume()
+            is_muted = False
+
+            if platform.system() == "Windows" and HAS_PYCAW:
+                try:
+                    devices = AudioUtilities.GetSpeakers()
+                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                    endpoint = cast(interface, POINTER(IAudioEndpointVolume))
+                    is_muted = bool(endpoint.GetMute())
+                except Exception:
+                    pass
+
+            devices_out = [
+                {
+                    "id": "default",
+                    "name": "Default Output",
+                    "type": "default",
+                    "volume": int(master_volume),
+                    "isMuted": bool(is_muted),
+                    "isDefault": True,
+                }
+            ]
+
+            return {
+                "success": True,
+                "devices": devices_out,
+                "master_volume": int(master_volume),
+                "is_muted": bool(is_muted),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _set_audio_output(self, device_id: str) -> Dict[str, Any]:
+        """Best-effort audio output switching.
+
+        We keep this as a safe no-op for non-default ids to avoid breaking the UI.
+        """
+        try:
+            device_id = (device_id or "").strip() or "default"
+            if device_id != "default":
+                return {
+                    "success": True,
+                    "device_id": device_id,
+                    "note": "Only the default output endpoint is supported in this build.",
+                }
+            return {"success": True, "device_id": "default"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _toggle_mute(self) -> Dict[str, Any]:
+        try:
+            if platform.system() == "Windows" and HAS_PYCAW:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                endpoint = cast(interface, POINTER(IAudioEndpointVolume))
+                current = bool(endpoint.GetMute())
+                endpoint.SetMute(0 if current else 1, None)
+                return {"success": True, "is_muted": (not current)}
+
+            # Fallback: media key
+            pyautogui.press("volumemute")
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _join_zoom(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Join a Zoom meeting and apply privacy toggles.
+
+        This is intentionally best-effort (Zoom focus can vary), but avoids unknown-command errors.
+        """
+        try:
+            meeting_link = str(payload.get("meeting_link") or "").strip()
+            meeting_id = str(payload.get("meeting_id") or "").strip()
+            password = str(payload.get("password") or "").strip()
+
+            mute_audio = bool(payload.get("mute_audio", True))
+            mute_video = bool(payload.get("mute_video", True))
+            take_screenshot = bool(payload.get("take_screenshot", False))
+
+            link = meeting_link
+            if not link and meeting_id:
+                mid = re.sub(r"[^0-9]", "", meeting_id)
+                link = f"https://zoom.us/j/{mid}"
+                if password:
+                    link += f"?pwd={urllib.parse.quote(password)}"
+
+            if not link:
+                return {"success": False, "error": "Missing meeting_link or meeting_id"}
+
+            add_log("info", "Opening Zoom meeting", details=link[:140], category="zoom")
+            webbrowser.open(link)
+
+            # Give Zoom time to open and focus
+            await asyncio.sleep(8)
+
+            # Privacy toggles (Windows Zoom hotkeys)
+            if platform.system() == "Windows":
+                if mute_audio:
+                    pyautogui.hotkey("alt", "a")
+                if mute_video:
+                    pyautogui.hotkey("alt", "v")
+
+            screenshot_path = None
+            if take_screenshot:
+                shot = self.screenshot_handler.capture_sync(quality=70, scale=0.5)
+                if shot.get("success") and shot.get("image"):
+                    os.makedirs("screenshots", exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    screenshot_path = os.path.abspath(os.path.join("screenshots", f"zoom_{ts}.jpg"))
+                    with open(screenshot_path, "wb") as f:
+                        f.write(base64.b64decode(shot["image"]))
+
+            return {
+                "success": True,
+                "muted_audio": mute_audio,
+                "muted_video": mute_video,
+                "screenshot_path": screenshot_path,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     # ============== MOUSE/KEYBOARD ==============
     def _mouse_move(self, x: int, y: int, relative: bool = True) -> Dict[str, Any]:
@@ -964,6 +1144,9 @@ class JarvisAgent:
                 "press_key": "key_press",
                 "mouse_scroll": "scroll",
                 "pinch_zoom": "zoom",
+                "get_system_state": "system_state",
+                "get_cameras": "list_cameras",
+                "get_audio_devices": "audio_devices",
             }
             cmd = alias_map.get(cmd, cmd)
             
@@ -1004,6 +1187,8 @@ class JarvisAgent:
             # ============== ROUTE COMMANDS ==============
             if cmd == "get_system_stats":
                 return self._get_system_stats()
+            elif cmd == "system_state":
+                return self._get_system_state()
             elif cmd == "get_volume":
                 return {"success": True, "volume": self._get_volume()}
             elif cmd == "set_volume":
@@ -1014,6 +1199,14 @@ class JarvisAgent:
                 return self._set_brightness(payload.get("level", 50))
             elif cmd == "get_network_info":
                 return self._get_network_info()
+            elif cmd == "list_cameras":
+                return self._get_cameras()
+            elif cmd == "audio_devices":
+                return self._get_audio_devices()
+            elif cmd == "set_audio_output":
+                return self._set_audio_output(str(payload.get("device_id") or ""))
+            elif cmd == "toggle_mute":
+                return self._toggle_mute()
             
             # Mouse/keyboard
             elif cmd == "mouse_move":
@@ -1060,6 +1253,8 @@ class JarvisAgent:
                 return self._media_control(payload.get("action", "play_pause"))
             elif cmd in ["get_media_state", "get_media_info"]:
                 return self._get_media_state()
+            elif cmd == "join_zoom":
+                return await self._join_zoom(payload)
             elif cmd == "mute_pc":
                 if HAS_PYCAW and sys.platform == "win32":
                     devices = AudioUtilities.GetSpeakers()
@@ -1346,10 +1541,199 @@ async def run_agent():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="JARVIS PC Agent")
+    parser.add_argument("--gui", action="store_true", help="Run with a native desktop GUI")
+    args = parser.parse_args()
+
     print("\n" + "="*60)
     print(f"🤖 JARVIS PC Agent v{AGENT_VERSION}")
     print("="*60 + "\n")
-    
+
+    if args.gui and not HAS_TKINTER:
+        print("⚠️ Tkinter not available on this Python install. Starting in console mode.")
+
+    if args.gui and HAS_TKINTER:
+        # Run agent in a background thread; keep UI responsive.
+        class AgentThreadRunner:
+            def __init__(self):
+                self.loop: Optional[asyncio.AbstractEventLoop] = None
+                self.thread: Optional[threading.Thread] = None
+                self.agent: Optional[JarvisAgent] = None
+
+            def start(self):
+                def _run():
+                    self.loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(self.loop)
+                    self.agent = JarvisAgent()
+                    try:
+                        self.loop.run_until_complete(self.agent.run())
+                    except Exception as e:
+                        add_log("error", f"Agent crashed: {e}", details=traceback.format_exc(), category="system")
+                    finally:
+                        try:
+                            stop_local_p2p_server()
+                        except Exception:
+                            pass
+
+                self.thread = threading.Thread(target=_run, daemon=True)
+                self.thread.start()
+
+            def stop(self):
+                try:
+                    if self.agent:
+                        self.agent.running = False
+                    if self.loop and self.agent:
+                        fut = asyncio.run_coroutine_threadsafe(self.agent.shutdown(), self.loop)
+                        try:
+                            fut.result(timeout=6)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        class JarvisAgentGUI:
+            def __init__(self):
+                self.runner = AgentThreadRunner()
+                self.runner.start()
+
+                self.root = tk.Tk()
+                self.root.title(f"JARVIS PC Agent v{AGENT_VERSION}")
+                self.root.geometry("520x760")
+                self.root.minsize(480, 680)
+
+                # Dark-ish styling (simple + stable across Windows builds)
+                self.root.configure(bg="#0b0b0f")
+                style = ttk.Style()
+                try:
+                    style.theme_use("clam")
+                except Exception:
+                    pass
+
+                style.configure("TFrame", background="#0b0b0f")
+                style.configure("TLabel", background="#0b0b0f", foreground="#e5e7eb")
+                style.configure("TButton", padding=6)
+                style.configure("TLabelframe", background="#0b0b0f", foreground="#e5e7eb")
+                style.configure("TLabelframe.Label", background="#0b0b0f", foreground="#e5e7eb")
+
+                self._build_ui()
+                self._last_log_ids: Set[str] = set()
+                self._tick()
+                self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+                self.root.mainloop()
+
+            def _build_ui(self):
+                container = ttk.Frame(self.root)
+                container.pack(fill="both", expand=True, padx=12, pady=12)
+
+                header = ttk.Frame(container)
+                header.pack(fill="x")
+
+                ttk.Label(header, text="JARVIS Agent", font=("Segoe UI", 16, "bold")).pack(side="left")
+                self.mode_label = ttk.Label(header, text="Starting...", font=("Segoe UI", 10))
+                self.mode_label.pack(side="right")
+
+                status_box = ttk.Labelframe(container, text="Status")
+                status_box.pack(fill="x", pady=(12, 0))
+
+                grid = ttk.Frame(status_box)
+                grid.pack(fill="x", padx=10, pady=10)
+
+                self.pairing_value = ttk.Label(grid, text="—", font=("Consolas", 14, "bold"))
+                self.device_value = ttk.Label(grid, text="—")
+                self.ip_value = ttk.Label(grid, text="—")
+                self.heartbeat_value = ttk.Label(grid, text="—")
+
+                ttk.Label(grid, text="Pairing code:").grid(row=0, column=0, sticky="w")
+                self.pairing_value.grid(row=0, column=1, sticky="w")
+
+                ttk.Label(grid, text="Device:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+                self.device_value.grid(row=1, column=1, sticky="w", pady=(6, 0))
+
+                ttk.Label(grid, text="Local IPs:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+                self.ip_value.grid(row=2, column=1, sticky="w", pady=(6, 0))
+
+                ttk.Label(grid, text="Last heartbeat:").grid(row=3, column=0, sticky="w", pady=(6, 0))
+                self.heartbeat_value.grid(row=3, column=1, sticky="w", pady=(6, 0))
+
+                for c in (0, 1):
+                    grid.grid_columnconfigure(c, weight=1)
+
+                actions = ttk.Frame(status_box)
+                actions.pack(fill="x", padx=10, pady=(0, 10))
+
+                ttk.Button(actions, text="Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL))\
+                    .pack(side="left")
+                ttk.Button(actions, text="Copy Pairing Code", command=self._copy_pairing).pack(side="left", padx=(8, 0))
+                ttk.Button(actions, text="Quit", command=self._on_close).pack(side="right")
+
+                logs_box = ttk.Labelframe(container, text="Live Logs")
+                logs_box.pack(fill="both", expand=True, pady=(12, 0))
+
+                self.log_text = scrolledtext.ScrolledText(
+                    logs_box,
+                    height=18,
+                    bg="#0f172a",
+                    fg="#e5e7eb",
+                    insertbackground="#e5e7eb",
+                    font=("Consolas", 10),
+                )
+                self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
+                self.log_text.configure(state="disabled")
+
+            def _copy_pairing(self):
+                try:
+                    code = str(get_agent_status().get("pairing_code") or "")
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(code)
+                except Exception:
+                    pass
+
+            def _append_log(self, line: str):
+                try:
+                    self.log_text.configure(state="normal")
+                    self.log_text.insert("end", line + "\n")
+                    self.log_text.see("end")
+                    self.log_text.configure(state="disabled")
+                except Exception:
+                    pass
+
+            def _tick(self):
+                st = get_agent_status()
+                mode = st.get("connection_mode", "cloud")
+                self.mode_label.configure(text=f"Mode: {mode}")
+
+                self.pairing_value.configure(text=str(st.get("pairing_code") or "—"))
+                self.device_value.configure(text=str(st.get("device_name") or DEVICE_NAME))
+
+                ips = st.get("local_ips") or []
+                self.ip_value.configure(text=", ".join(ips) if ips else "—")
+                self.heartbeat_value.configure(text=str(st.get("last_heartbeat") or "—"))
+
+                # Append new logs
+                for entry in get_logs():
+                    eid = str(entry.get("id"))
+                    if eid in self._last_log_ids:
+                        continue
+                    self._last_log_ids.add(eid)
+                    ts = str(entry.get("timestamp", ""))[-8:]
+                    cat = str(entry.get("category", "general"))
+                    lvl = str(entry.get("level", "info")).upper()
+                    msg = str(entry.get("message", ""))
+                    self._append_log(f"{ts} [{lvl}] {cat}: {msg}")
+
+                self.root.after(500, self._tick)
+
+            def _on_close(self):
+                self.runner.stop()
+                try:
+                    self.root.destroy()
+                except Exception:
+                    pass
+
+        JarvisAgentGUI()
+        return
+
+    # Console mode
     try:
         asyncio.run(run_agent())
     except KeyboardInterrupt:
