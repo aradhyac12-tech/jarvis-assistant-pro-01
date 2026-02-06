@@ -51,5 +51,14 @@ def get_skill_registry() -> SkillRegistry:
         _registry = SkillRegistry()
         # Register built-in skills
         from .memory_skill import MemorySkill
+        from .file_search_skill import FileSearchSkill
+        from .app_launcher_skill import AppLauncherSkill
+        from .web_fetch_skill import WebFetchSkill
+        from .automation_skill import AutomationSkill
+
         _registry.register(MemorySkill())
+        _registry.register(FileSearchSkill())
+        _registry.register(AppLauncherSkill())
+        _registry.register(WebFetchSkill())
+        _registry.register(AutomationSkill())
     return _registry
