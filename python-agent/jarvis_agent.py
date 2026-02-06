@@ -38,7 +38,14 @@ import urllib.request
 import traceback
 
 # ============== VERSION ==============
-AGENT_VERSION = "3.0.0"
+AGENT_VERSION = "3.1.0"
+
+# Skill registry
+try:
+    from skills.registry import get_skill_registry
+    HAS_SKILLS = True
+except ImportError:
+    HAS_SKILLS = False
 
 # Remote input safety window (prevents "ghost" input)
 INPUT_SESSION_TTL_SECONDS = 12
@@ -494,6 +501,9 @@ class JarvisAgent:
         self.is_locked = False
         self._volume_cache = 50
         self._brightness_cache = 50
+
+        # User id (set after pairing verification)
+        self.current_user_id: Optional[str] = None
         
         # Input session gating
         self._active_input_session: Optional[str] = None
@@ -1184,6 +1194,17 @@ class JarvisAgent:
                     # Silently reject - prevents ghost input
                     return {"success": False, "error": "Remote input not enabled"}
             
+            # ============== SKILLS DISPATCH ==============
+            if HAS_SKILLS:
+                registry = get_skill_registry()
+                if registry.can_dispatch(cmd):
+                    ctx = {
+                        "supabase": self.supabase,
+                        "user_id": self.current_user_id,
+                        "device_id": self.device_id,
+                    }
+                    return await registry.dispatch(cmd, payload, ctx)
+
             # ============== ROUTE COMMANDS ==============
             if cmd == "get_system_stats":
                 return self._get_system_stats()
@@ -1399,6 +1420,10 @@ class JarvisAgent:
                     await asyncio.sleep(POLL_INTERVAL)
                     continue
                 
+                # Update user_id if returned (needed for skills)
+                if result.get("user_id"):
+                    self.current_user_id = result.get("user_id")
+
                 commands = result.get("commands", [])
                 self.consecutive_failures = 0
                 self.backoff_seconds = 1
@@ -1625,15 +1650,16 @@ def main():
                 container = ttk.Frame(self.root)
                 container.pack(fill="both", expand=True, padx=12, pady=12)
 
-                header = ttk.Frame(container)
-                header.pack(fill="x")
+                # Notebook for tabs
+                notebook = ttk.Notebook(container)
+                notebook.pack(fill="both", expand=True)
 
-                ttk.Label(header, text="JARVIS Agent", font=("Segoe UI", 16, "bold")).pack(side="left")
-                self.mode_label = ttk.Label(header, text="Starting...", font=("Segoe UI", 10))
-                self.mode_label.pack(side="right")
+                # ============ Tab 1: Status ============
+                status_tab = ttk.Frame(notebook)
+                notebook.add(status_tab, text="Status")
 
-                status_box = ttk.Labelframe(container, text="Status")
-                status_box.pack(fill="x", pady=(12, 0))
+                status_box = ttk.Labelframe(status_tab, text="Status")
+                status_box.pack(fill="x", padx=8, pady=(8, 0))
 
                 grid = ttk.Frame(status_box)
                 grid.pack(fill="x", padx=10, pady=10)
@@ -1642,18 +1668,20 @@ def main():
                 self.device_value = ttk.Label(grid, text="—")
                 self.ip_value = ttk.Label(grid, text="—")
                 self.heartbeat_value = ttk.Label(grid, text="—")
+                self.mode_label = ttk.Label(grid, text="—")
+                self.cpu_label = ttk.Label(grid, text="—")
 
-                ttk.Label(grid, text="Pairing code:").grid(row=0, column=0, sticky="w")
-                self.pairing_value.grid(row=0, column=1, sticky="w")
-
-                ttk.Label(grid, text="Device:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-                self.device_value.grid(row=1, column=1, sticky="w", pady=(6, 0))
-
-                ttk.Label(grid, text="Local IPs:").grid(row=2, column=0, sticky="w", pady=(6, 0))
-                self.ip_value.grid(row=2, column=1, sticky="w", pady=(6, 0))
-
-                ttk.Label(grid, text="Last heartbeat:").grid(row=3, column=0, sticky="w", pady=(6, 0))
-                self.heartbeat_value.grid(row=3, column=1, sticky="w", pady=(6, 0))
+                labels_1 = [
+                    ("Pairing code:", self.pairing_value),
+                    ("Device:", self.device_value),
+                    ("Local IPs:", self.ip_value),
+                    ("Heartbeat:", self.heartbeat_value),
+                    ("Mode:", self.mode_label),
+                    ("CPU / RAM:", self.cpu_label),
+                ]
+                for i, (lbl_text, value_widget) in enumerate(labels_1):
+                    ttk.Label(grid, text=lbl_text).grid(row=i, column=0, sticky="w", pady=(4, 0))
+                    value_widget.grid(row=i, column=1, sticky="w", pady=(4, 0))
 
                 for c in (0, 1):
                     grid.grid_columnconfigure(c, weight=1)
@@ -1661,17 +1689,16 @@ def main():
                 actions = ttk.Frame(status_box)
                 actions.pack(fill="x", padx=10, pady=(0, 10))
 
-                ttk.Button(actions, text="Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL))\
-                    .pack(side="left")
+                ttk.Button(actions, text="Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL)).pack(side="left")
                 ttk.Button(actions, text="Copy Pairing Code", command=self._copy_pairing).pack(side="left", padx=(8, 0))
                 ttk.Button(actions, text="Quit", command=self._on_close).pack(side="right")
 
-                logs_box = ttk.Labelframe(container, text="Live Logs")
-                logs_box.pack(fill="both", expand=True, pady=(12, 0))
+                logs_box = ttk.Labelframe(status_tab, text="Live Logs")
+                logs_box.pack(fill="both", expand=True, padx=8, pady=(12, 8))
 
                 self.log_text = scrolledtext.ScrolledText(
                     logs_box,
-                    height=18,
+                    height=12,
                     bg="#0f172a",
                     fg="#e5e7eb",
                     insertbackground="#e5e7eb",
@@ -1679,6 +1706,165 @@ def main():
                 )
                 self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
                 self.log_text.configure(state="disabled")
+
+                # ============ Tab 2: Quick Actions ============
+                actions_tab = ttk.Frame(notebook)
+                notebook.add(actions_tab, text="Actions")
+
+                quick_box = ttk.Labelframe(actions_tab, text="Quick Actions")
+                quick_box.pack(fill="x", padx=8, pady=8)
+
+                qb = ttk.Frame(quick_box)
+                qb.pack(fill="x", padx=10, pady=10)
+
+                ttk.Button(qb, text="Lock Screen", command=self._action_lock).grid(row=0, column=0, padx=4, pady=4)
+                ttk.Button(qb, text="Sleep", command=self._action_sleep).grid(row=0, column=1, padx=4, pady=4)
+                ttk.Button(qb, text="Restart", command=self._action_restart).grid(row=0, column=2, padx=4, pady=4)
+                ttk.Button(qb, text="Restart Explorer", command=self._action_explorer).grid(row=0, column=3, padx=4, pady=4)
+                ttk.Button(qb, text="Mute", command=self._action_mute).grid(row=1, column=0, padx=4, pady=4)
+                ttk.Button(qb, text="Unmute", command=self._action_unmute).grid(row=1, column=1, padx=4, pady=4)
+                ttk.Button(qb, text="Clear Temp Files", command=self._action_clear_temp).grid(row=1, column=2, padx=4, pady=4)
+                ttk.Button(qb, text="High Performance", command=self._action_highperf).grid(row=1, column=3, padx=4, pady=4)
+
+                for c in range(4):
+                    qb.grid_columnconfigure(c, weight=1)
+
+                diagnostics_box = ttk.Labelframe(actions_tab, text="Diagnostics")
+                diagnostics_box.pack(fill="x", padx=8, pady=8)
+
+                diag_frame = ttk.Frame(diagnostics_box)
+                diag_frame.pack(fill="x", padx=10, pady=10)
+
+                ttk.Label(diag_frame, text="P2P Port:").grid(row=0, column=0, sticky="w")
+                self.port_entry = ttk.Entry(diag_frame, width=8)
+                self.port_entry.insert(0, str(LOCAL_P2P_PORT))
+                self.port_entry.config(state="readonly")
+                self.port_entry.grid(row=0, column=1, sticky="w", padx=(4, 0))
+
+                self.p2p_status_label = ttk.Label(diag_frame, text="—")
+                self.p2p_status_label.grid(row=0, column=2, sticky="w", padx=(16, 0))
+
+                ttk.Button(diag_frame, text="Test Firewall Port", command=self._action_test_firewall).grid(row=0, column=3, sticky="e")
+
+                for c in range(4):
+                    diag_frame.grid_columnconfigure(c, weight=1)
+
+                # ============ Tab 3: Settings ============
+                settings_tab = ttk.Frame(notebook)
+                notebook.add(settings_tab, text="Settings")
+
+                settings_box = ttk.Labelframe(settings_tab, text="Agent Settings")
+                settings_box.pack(fill="x", padx=8, pady=8)
+
+                sf = ttk.Frame(settings_box)
+                sf.pack(fill="x", padx=10, pady=10)
+
+                ttk.Label(sf, text="Auto-start with Windows:").grid(row=0, column=0, sticky="w")
+                self.autostart_var = tk.BooleanVar()
+                ttk.Checkbutton(sf, variable=self.autostart_var, command=self._toggle_autostart).grid(row=0, column=1, sticky="w")
+
+                ttk.Label(sf, text="Device Name:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+                self.device_name_entry = ttk.Entry(sf, width=24)
+                self.device_name_entry.insert(0, DEVICE_NAME)
+                self.device_name_entry.grid(row=1, column=1, sticky="w", pady=(8, 0))
+
+                ttk.Label(sf, text="Supabase URL:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+                self.url_entry = ttk.Entry(sf, width=40)
+                self.url_entry.insert(0, SUPABASE_URL)
+                self.url_entry.config(state="readonly")
+                self.url_entry.grid(row=2, column=1, sticky="w", pady=(8, 0))
+
+                ttk.Label(sf, text="Export logs:").grid(row=3, column=0, sticky="w", pady=(8, 0))
+                ttk.Button(sf, text="Export to JSON", command=self._export_logs).grid(row=3, column=1, sticky="w", pady=(8, 0))
+
+            # ================ ACTION HELPERS ================
+            def _action_lock(self):
+                if sys.platform == "win32":
+                    ctypes.windll.user32.LockWorkStation()
+
+            def _action_sleep(self):
+                if sys.platform == "win32":
+                    os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+
+            def _action_restart(self):
+                if sys.platform == "win32":
+                    os.system("shutdown /r /t 10")
+
+            def _action_explorer(self):
+                if sys.platform == "win32":
+                    os.system("taskkill /f /im explorer.exe")
+                    time.sleep(1)
+                    os.system("start explorer.exe")
+
+            def _action_mute(self):
+                if sys.platform == "win32" and HAS_PYCAW:
+                    try:
+                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        volume = cast(interface, POINTER(IAudioEndpointVolume))
+                        volume.SetMute(1, None)
+                    except Exception:
+                        pass
+
+            def _action_unmute(self):
+                if sys.platform == "win32" and HAS_PYCAW:
+                    try:
+                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        volume = cast(interface, POINTER(IAudioEndpointVolume))
+                        volume.SetMute(0, None)
+                    except Exception:
+                        pass
+
+            def _action_clear_temp(self):
+                if sys.platform == "win32":
+                    try:
+                        temp_path = os.environ.get("TEMP", "")
+                        if temp_path and os.path.isdir(temp_path):
+                            import shutil
+                            for item in os.listdir(temp_path):
+                                item_path = os.path.join(temp_path, item)
+                                try:
+                                    if os.path.isdir(item_path):
+                                        shutil.rmtree(item_path, ignore_errors=True)
+                                    else:
+                                        os.unlink(item_path)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+            def _action_highperf(self):
+                if sys.platform == "win32":
+                    os.system("powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c")
+
+            def _action_test_firewall(self):
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(2)
+                    result = sock.connect_ex(("127.0.0.1", LOCAL_P2P_PORT))
+                    sock.close()
+                    if result == 0:
+                        self.p2p_status_label.configure(text="Port OPEN ✓")
+                    else:
+                        self.p2p_status_label.configure(text="Port CLOSED ✗")
+                except Exception as e:
+                    self.p2p_status_label.configure(text=f"Error: {e}")
+
+            def _toggle_autostart(self):
+                # Placeholder: would set a registry key or scheduled task
+                pass
+
+            def _export_logs(self):
+                try:
+                    path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+                    if path:
+                        with open(path, "w", encoding="utf-8") as f:
+                            json.dump(get_logs(), f, indent=2, default=str)
+                except Exception:
+                    pass
 
             def _copy_pairing(self):
                 try:
@@ -1700,7 +1886,7 @@ def main():
             def _tick(self):
                 st = get_agent_status()
                 mode = st.get("connection_mode", "cloud")
-                self.mode_label.configure(text=f"Mode: {mode}")
+                self.mode_label.configure(text=str(mode))
 
                 self.pairing_value.configure(text=str(st.get("pairing_code") or "—"))
                 self.device_value.configure(text=str(st.get("device_name") or DEVICE_NAME))
@@ -1708,6 +1894,14 @@ def main():
                 ips = st.get("local_ips") or []
                 self.ip_value.configure(text=", ".join(ips) if ips else "—")
                 self.heartbeat_value.configure(text=str(st.get("last_heartbeat") or "—"))
+                self.cpu_label.configure(text=f"{st.get('cpu_percent', 0):.0f}% / {st.get('memory_percent', 0):.0f}%")
+
+                # Update P2P status
+                p2p = get_local_p2p_server()
+                if p2p and p2p.running:
+                    self.p2p_status_label.configure(text=f"Running ({len(p2p.clients)} clients)")
+                else:
+                    self.p2p_status_label.configure(text="Stopped")
 
                 # Append new logs
                 for entry in get_logs():
