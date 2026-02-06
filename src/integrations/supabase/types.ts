@@ -14,6 +14,50 @@ export type Database = {
   }
   public: {
     Tables: {
+      assistant_memories: {
+        Row: {
+          category: string
+          created_at: string
+          device_id: string | null
+          expires_at: string | null
+          id: string
+          key: string
+          updated_at: string
+          user_id: string
+          value: Json
+        }
+        Insert: {
+          category?: string
+          created_at?: string
+          device_id?: string | null
+          expires_at?: string | null
+          id?: string
+          key: string
+          updated_at?: string
+          user_id: string
+          value?: Json
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          device_id?: string | null
+          expires_at?: string | null
+          id?: string
+          key?: string
+          updated_at?: string
+          user_id?: string
+          value?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assistant_memories_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "devices"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       chat_history: {
         Row: {
           audio_url: string | null
