@@ -335,6 +335,7 @@ export default function Hub() {
   }, [sendCommand, toast]);
 
   const quickLinks = [
+    { title: "AI", icon: Bot, href: "/assistant" },
     { title: "Voice", icon: Mic, href: "/voice" },
     { title: "Files", icon: FolderOpen, href: "/files" },
     { title: "Camera", icon: Camera, href: "/miccamera" },

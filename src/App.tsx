@@ -15,6 +15,7 @@ import React, { lazy, Suspense, forwardRef } from "react";
 const Pair = lazy(() => import("./pages/Pair"));
 const Hub = lazy(() => import("./pages/Hub"));
 const VoiceAI = lazy(() => import("./pages/VoiceAI"));
+const AIAssistant = lazy(() => import("./pages/AIAssistant"));
 const Apps = lazy(() => import("./pages/Apps"));
 const Files = lazy(() => import("./pages/Files"));
 const MicCamera = lazy(() => import("./pages/MicCamera"));
@@ -81,6 +82,14 @@ function AppRoutes() {
           <Route path="/remote" element={<Navigate to="/hub" replace />} />
           
           {/* Keep these as separate specialized pages */}
+          <Route
+            path="/assistant"
+            element={
+              <ProtectedRoute>
+                <AIAssistant />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="/voice"
             element={
