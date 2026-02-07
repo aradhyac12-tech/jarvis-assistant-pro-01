@@ -36,13 +36,51 @@ serve(async (req) => {
   // Handle WebSocket upgrade for camera streaming
   if (upgradeHeader.toLowerCase() === "websocket") {
     const url = new URL(req.url);
+    const sessionToken = url.searchParams.get("session_token");
     const sessionId = url.searchParams.get("sessionId") || crypto.randomUUID();
     const clientType = url.searchParams.get("type") || "phone"; // 'phone' (sender) or 'pc' (receiver)
     const targetFps = Math.min(parseInt(url.searchParams.get("fps") || "30", 10), 90);
     const quality = parseInt(url.searchParams.get("quality") || "50", 10);
     const useBinary = url.searchParams.get("binary") === "true";
 
-    console.log(`[camera-relay] WebSocket upgrade: session=${sessionId}, type=${clientType}, fps=${targetFps}, binary=${useBinary}`);
+    // Validate session token before upgrading WebSocket
+    if (!sessionToken) {
+      console.warn(`[camera-relay] Rejected: Missing session token for session=${sessionId}`);
+      return new Response("Unauthorized: Missing session token", { status: 401, headers: corsHeaders });
+    }
+
+    // Validate session token against database
+    const supabaseAuth = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    const { data: session, error: sessionError } = await supabaseAuth
+      .from("device_sessions")
+      .select("device_id, expires_at")
+      .eq("session_token", sessionToken)
+      .maybeSingle();
+
+    if (sessionError || !session) {
+      console.warn(`[camera-relay] Rejected: Invalid session token for session=${sessionId}`);
+      return new Response("Unauthorized: Invalid session", { status: 401, headers: corsHeaders });
+    }
+
+    // Check expiration
+    if (new Date(session.expires_at) < new Date()) {
+      console.warn(`[camera-relay] Rejected: Expired session for session=${sessionId}`);
+      return new Response("Unauthorized: Session expired", { status: 401, headers: corsHeaders });
+    }
+
+    // Verify device exists
+    const { data: device } = await supabaseAuth
+      .from("devices")
+      .select("user_id")
+      .eq("id", session.device_id)
+      .maybeSingle();
+
+    if (!device) {
+      console.warn(`[camera-relay] Rejected: Device not found for session=${sessionId}`);
+      return new Response("Unauthorized: Device not found", { status: 401, headers: corsHeaders });
+    }
+
+    console.log(`[camera-relay] Authenticated WebSocket upgrade: session=${sessionId}, type=${clientType}, device=${session.device_id}`);
 
     const { socket, response } = Deno.upgradeWebSocket(req);
     const connectionId = `${sessionId}:${clientType}:${crypto.randomUUID().slice(0, 8)}`;

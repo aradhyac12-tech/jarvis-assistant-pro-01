@@ -1,9 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 // Store active audio sessions
 const audioSessions = new Map<string, {
@@ -11,6 +15,7 @@ const audioSessions = new Map<string, {
   pcSocket: WebSocket | null;
   direction: 'phone_to_pc' | 'pc_to_phone' | 'bidirectional';
   lastActivity: number;
+  deviceId?: string;
 }>();
 
 serve(async (req) => {
@@ -25,11 +30,49 @@ serve(async (req) => {
   // Handle WebSocket upgrade for audio streaming
   if (upgradeHeader.toLowerCase() === "websocket") {
     const url = new URL(req.url);
+    const sessionToken = url.searchParams.get("session_token");
     const sessionId = url.searchParams.get("sessionId") || crypto.randomUUID();
     const clientType = url.searchParams.get("type") || "phone"; // 'phone' or 'pc'
     const direction = url.searchParams.get("direction") || "phone_to_pc";
 
-    console.log(`[audio-relay] WebSocket upgrade: session=${sessionId}, type=${clientType}, direction=${direction}`);
+    // Validate session token before upgrading WebSocket
+    if (!sessionToken) {
+      console.warn(`[audio-relay] Rejected: Missing session token for session=${sessionId}`);
+      return new Response("Unauthorized: Missing session token", { status: 401, headers: corsHeaders });
+    }
+
+    // Validate session token against database
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    const { data: session, error: sessionError } = await supabase
+      .from("device_sessions")
+      .select("device_id, expires_at")
+      .eq("session_token", sessionToken)
+      .maybeSingle();
+
+    if (sessionError || !session) {
+      console.warn(`[audio-relay] Rejected: Invalid session token for session=${sessionId}`);
+      return new Response("Unauthorized: Invalid session", { status: 401, headers: corsHeaders });
+    }
+
+    // Check expiration
+    if (new Date(session.expires_at) < new Date()) {
+      console.warn(`[audio-relay] Rejected: Expired session for session=${sessionId}`);
+      return new Response("Unauthorized: Session expired", { status: 401, headers: corsHeaders });
+    }
+
+    // Verify device exists
+    const { data: device } = await supabase
+      .from("devices")
+      .select("user_id")
+      .eq("id", session.device_id)
+      .maybeSingle();
+
+    if (!device) {
+      console.warn(`[audio-relay] Rejected: Device not found for session=${sessionId}`);
+      return new Response("Unauthorized: Device not found", { status: 401, headers: corsHeaders });
+    }
+
+    console.log(`[audio-relay] Authenticated WebSocket upgrade: session=${sessionId}, type=${clientType}, device=${session.device_id}`);
 
     const { socket, response } = Deno.upgradeWebSocket(req);
 
@@ -40,34 +83,35 @@ serve(async (req) => {
         pcSocket: null,
         direction: direction as 'phone_to_pc' | 'pc_to_phone' | 'bidirectional',
         lastActivity: Date.now(),
+        deviceId: session.device_id,
       });
     }
 
-    const session = audioSessions.get(sessionId)!;
+    const audioSession = audioSessions.get(sessionId)!;
 
     socket.onopen = () => {
       console.log(`[audio-relay] ${clientType} connected to session ${sessionId}`);
       
       if (clientType === 'phone') {
-        session.phoneSocket = socket;
+        audioSession.phoneSocket = socket;
       } else {
-        session.pcSocket = socket;
+        audioSession.pcSocket = socket;
       }
-      session.lastActivity = Date.now();
+      audioSession.lastActivity = Date.now();
 
       // Notify the other party
-      const otherSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
+      const otherSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
       if (otherSocket && otherSocket.readyState === WebSocket.OPEN) {
         otherSocket.send(JSON.stringify({ 
           type: 'peer_connected', 
           peer: clientType,
-          direction: session.direction 
+          direction: audioSession.direction 
         }));
       }
     };
 
     socket.onmessage = (event) => {
-      session.lastActivity = Date.now();
+      audioSession.lastActivity = Date.now();
       
       try {
         // Handle both binary (audio) and text (control) messages
@@ -81,9 +125,9 @@ serve(async (req) => {
           }
           
           if (msg.type === 'set_direction') {
-            session.direction = msg.direction;
+            audioSession.direction = msg.direction;
             // Notify both parties
-            [session.phoneSocket, session.pcSocket].forEach(s => {
+            [audioSession.phoneSocket, audioSession.pcSocket].forEach(s => {
               if (s && s.readyState === WebSocket.OPEN) {
                 s.send(JSON.stringify({ type: 'direction_changed', direction: msg.direction }));
               }
@@ -92,19 +136,19 @@ serve(async (req) => {
           }
 
           // Forward JSON messages to the appropriate peer
-          const targetSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
+          const targetSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
           if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
             targetSocket.send(event.data);
           }
         } else {
           // Binary audio data - forward based on direction
           const shouldForward = 
-            (session.direction === 'bidirectional') ||
-            (session.direction === 'phone_to_pc' && clientType === 'phone') ||
-            (session.direction === 'pc_to_phone' && clientType === 'pc');
+            (audioSession.direction === 'bidirectional') ||
+            (audioSession.direction === 'phone_to_pc' && clientType === 'phone') ||
+            (audioSession.direction === 'pc_to_phone' && clientType === 'pc');
 
           if (shouldForward) {
-            const targetSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
+            const targetSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
             if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
               targetSocket.send(event.data);
             }
@@ -119,19 +163,19 @@ serve(async (req) => {
       console.log(`[audio-relay] ${clientType} disconnected from session ${sessionId}`);
       
       if (clientType === 'phone') {
-        session.phoneSocket = null;
+        audioSession.phoneSocket = null;
       } else {
-        session.pcSocket = null;
+        audioSession.pcSocket = null;
       }
 
       // Notify the other party
-      const otherSocket = clientType === 'phone' ? session.pcSocket : session.phoneSocket;
+      const otherSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
       if (otherSocket && otherSocket.readyState === WebSocket.OPEN) {
         otherSocket.send(JSON.stringify({ type: 'peer_disconnected', peer: clientType }));
       }
 
       // Clean up empty sessions
-      if (!session.phoneSocket && !session.pcSocket) {
+      if (!audioSession.phoneSocket && !audioSession.pcSocket) {
         audioSessions.delete(sessionId);
         console.log(`[audio-relay] Session ${sessionId} cleaned up`);
       }

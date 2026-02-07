@@ -55,10 +55,18 @@ def get_skill_registry() -> SkillRegistry:
         from .app_launcher_skill import AppLauncherSkill
         from .web_fetch_skill import WebFetchSkill
         from .automation_skill import AutomationSkill
+        from .spotify_skill import SpotifySkill
+        from .system_control_skill import SystemControlSkill
+        from .calendar_skill import CalendarSkill
+        from .brightness_volume_skill import BrightnessVolumeSkill
 
         _registry.register(MemorySkill())
         _registry.register(FileSearchSkill())
         _registry.register(AppLauncherSkill())
         _registry.register(WebFetchSkill())
         _registry.register(AutomationSkill())
+        _registry.register(SpotifySkill())
+        _registry.register(SystemControlSkill())
+        _registry.register(CalendarSkill())
+        _registry.register(BrightnessVolumeSkill())
     return _registry

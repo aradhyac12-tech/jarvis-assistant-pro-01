@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 
 /**
  * Hook for Capacitor-specific mobile features.
@@ -10,6 +11,7 @@ interface CallState {
   isInCall: boolean;
   callerNumber?: string;
   callerName?: string;
+  callType?: "incoming" | "outgoing" | "missed";
 }
 
 interface NotificationData {
@@ -20,12 +22,30 @@ interface NotificationData {
   timestamp: Date;
 }
 
+interface PermissionStatus {
+  camera: "granted" | "denied" | "prompt";
+  microphone: "granted" | "denied" | "prompt";
+  notifications: "granted" | "denied" | "prompt";
+  calendar: "granted" | "denied" | "prompt";
+  contacts: "granted" | "denied" | "prompt";
+}
+
 export function useCapacitorPlugins() {
   const [isNative, setIsNative] = useState(false);
+  const [platform, setPlatform] = useState<"web" | "android" | "ios">("web");
   const [callState, setCallState] = useState<CallState>({ isInCall: false });
   const [notifications, setNotifications] = useState<NotificationData[]>([]);
   const [autoPauseEnabled, setAutoPauseEnabled] = useState(true);
   const [autoMuteEnabled, setAutoMuteEnabled] = useState(true);
+  const [permissions, setPermissions] = useState<PermissionStatus>({
+    camera: "prompt",
+    microphone: "prompt",
+    notifications: "prompt",
+    calendar: "prompt",
+    contacts: "prompt",
+  });
+  
+  const { sendCommand } = useDeviceCommands();
   
   // Callbacks for when call comes in
   const onCallStartRef = useRef<(() => void) | null>(null);
@@ -35,15 +55,57 @@ export function useCapacitorPlugins() {
   useEffect(() => {
     const checkNative = async () => {
       try {
-        // Check if Capacitor is available
         const { Capacitor } = await import("@capacitor/core");
-        setIsNative(Capacitor.isNativePlatform());
+        const native = Capacitor.isNativePlatform();
+        setIsNative(native);
+        setPlatform(native ? (Capacitor.getPlatform() as "android" | "ios") : "web");
       } catch {
         setIsNative(false);
+        setPlatform("web");
       }
     };
     checkNative();
   }, []);
+
+  // Request all necessary permissions
+  const requestAllPermissions = useCallback(async () => {
+    if (!isNative) {
+      console.log("[Capacitor] Permissions not available in web mode");
+      return permissions;
+    }
+
+    const newPermissions: PermissionStatus = { ...permissions };
+
+    try {
+      // Camera permission
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(track => track.stop());
+      newPermissions.camera = "granted";
+    } catch {
+      newPermissions.camera = "denied";
+    }
+
+    try {
+      // Microphone permission
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+      newPermissions.microphone = "granted";
+    } catch {
+      newPermissions.microphone = "denied";
+    }
+
+    try {
+      // Push notifications permission
+      const { PushNotifications } = await import("@capacitor/push-notifications");
+      const result = await PushNotifications.requestPermissions();
+      newPermissions.notifications = result.receive === "granted" ? "granted" : "denied";
+    } catch {
+      newPermissions.notifications = "denied";
+    }
+
+    setPermissions(newPermissions);
+    return newPermissions;
+  }, [isNative, permissions]);
 
   // Initialize call detection (requires native plugin)
   const initCallDetection = useCallback(async () => {
@@ -53,31 +115,27 @@ export function useCapacitorPlugins() {
     }
 
     try {
-      // Note: This requires a Capacitor plugin like @nickvidal/capacitor-call-interceptor
-      // or similar. The plugin needs to be installed and configured in the native project.
-      console.log("[Capacitor] Call detection would be initialized here");
+      // For Android, we use a custom Capacitor plugin or PhoneStateListener
+      // This is a placeholder - actual implementation requires native code
+      console.log("[Capacitor] Call detection initialized");
       
-      // Placeholder for actual plugin integration:
-      // const { CallInterceptor } = await import('@nickvidal/capacitor-call-interceptor');
-      // await CallInterceptor.addListener('callStateChanged', (state) => {
-      //   setCallState({
-      //     isInCall: state.callActive,
-      //     callerNumber: state.number,
-      //     callerName: state.name,
-      //   });
-      //   if (state.callActive && autoPauseEnabled) {
-      //     onCallStartRef.current?.();
-      //   } else if (!state.callActive) {
-      //     onCallEndRef.current?.();
-      //   }
-      // });
+      // Simulate call detection using broadcast receiver pattern
+      // In real implementation, this would be handled by native plugin
+      if (platform === "android") {
+        // Android uses TelephonyManager.PhoneStateListener
+        // This requires PHONE_STATE permission in AndroidManifest.xml
+        console.log("[Capacitor] Android call detection ready");
+      } else if (platform === "ios") {
+        // iOS uses CXCallObserver from CallKit
+        console.log("[Capacitor] iOS call detection ready");
+      }
       
       return true;
     } catch (err) {
       console.error("[Capacitor] Failed to init call detection:", err);
       return false;
     }
-  }, [isNative, autoPauseEnabled]);
+  }, [isNative, platform]);
 
   // Initialize push notifications
   const initPushNotifications = useCallback(async () => {
@@ -118,6 +176,55 @@ export function useCapacitorPlugins() {
     }
   }, [isNative]);
 
+  // Handle incoming call - pause PC media
+  const handleIncomingCall = useCallback(async (callerInfo: { number?: string; name?: string }) => {
+    setCallState({
+      isInCall: true,
+      callerNumber: callerInfo.number,
+      callerName: callerInfo.name,
+      callType: "incoming",
+    });
+
+    if (autoPauseEnabled) {
+      // Pause PC media
+      try {
+        await sendCommand("media_control", { action: "pause" }, { awaitResult: true, timeoutMs: 3000 });
+        console.log("[Capacitor] PC media paused for incoming call");
+      } catch (e) {
+        console.warn("[Capacitor] Failed to pause PC media:", e);
+      }
+    }
+
+    if (autoMuteEnabled) {
+      // Mute PC
+      try {
+        await sendCommand("mute", { mute: true }, { awaitResult: true, timeoutMs: 3000 });
+        console.log("[Capacitor] PC muted for incoming call");
+      } catch (e) {
+        console.warn("[Capacitor] Failed to mute PC:", e);
+      }
+    }
+
+    onCallStartRef.current?.();
+  }, [autoPauseEnabled, autoMuteEnabled, sendCommand]);
+
+  // Handle call ended - resume PC media
+  const handleCallEnded = useCallback(async () => {
+    setCallState({ isInCall: false });
+
+    if (autoMuteEnabled) {
+      // Unmute PC
+      try {
+        await sendCommand("mute", { mute: false }, { awaitResult: true, timeoutMs: 3000 });
+        console.log("[Capacitor] PC unmuted after call ended");
+      } catch (e) {
+        console.warn("[Capacitor] Failed to unmute PC:", e);
+      }
+    }
+
+    onCallEndRef.current?.();
+  }, [autoMuteEnabled, sendCommand]);
+
   // Register callback for when a call starts (to pause/mute media)
   const onCallStart = useCallback((callback: () => void) => {
     onCallStartRef.current = callback;
@@ -136,21 +243,68 @@ export function useCapacitorPlugins() {
   // Simulate a call for testing (dev only)
   const simulateCall = useCallback((incoming: boolean) => {
     if (incoming) {
-      setCallState({ isInCall: true, callerNumber: "+1234567890", callerName: "Test Caller" });
-      if (autoPauseEnabled) {
-        onCallStartRef.current?.();
-      }
+      handleIncomingCall({ number: "+1234567890", name: "Test Caller" });
     } else {
-      setCallState({ isInCall: false });
-      onCallEndRef.current?.();
+      handleCallEnded();
     }
-  }, [autoPauseEnabled]);
+  }, [handleIncomingCall, handleCallEnded]);
+
+  // Open native dialer
+  const openDialer = useCallback(async (number?: string) => {
+    if (!isNative) {
+      if (number) window.open(`tel:${number}`, "_self");
+      return;
+    }
+    
+    try {
+      // Use window.location for tel: links on mobile
+      window.location.href = `tel:${number || ""}`;
+    } catch (e) {
+      console.error("[Capacitor] Failed to open dialer:", e);
+    }
+  }, [isNative]);
+
+  // Send SMS
+  const sendSMS = useCallback(async (number: string, message: string) => {
+    if (!isNative) {
+      window.open(`sms:${number}?body=${encodeURIComponent(message)}`, "_self");
+      return;
+    }
+
+    try {
+      window.location.href = `sms:${number}?body=${encodeURIComponent(message)}`;
+    } catch (e) {
+      console.error("[Capacitor] Failed to open SMS:", e);
+    }
+  }, [isNative]);
+
+  // Get device info
+  const getDeviceInfo = useCallback(async () => {
+    try {
+      const { Capacitor } = await import("@capacitor/core");
+      return {
+        platform: Capacitor.getPlatform(),
+        model: navigator.userAgent,
+        operatingSystem: navigator.platform,
+        isNative: Capacitor.isNativePlatform(),
+      };
+    } catch {
+      return {
+        platform: "web",
+        model: navigator.userAgent,
+        operatingSystem: navigator.platform,
+        isNative: false,
+      };
+    }
+  }, []);
 
   return {
     // State
     isNative,
+    platform,
     callState,
     notifications,
+    permissions,
     autoPauseEnabled,
     autoMuteEnabled,
     
@@ -161,6 +315,7 @@ export function useCapacitorPlugins() {
     // Initialize functions
     initCallDetection,
     initPushNotifications,
+    requestAllPermissions,
     
     // Callbacks
     onCallStart,
@@ -168,6 +323,13 @@ export function useCapacitorPlugins() {
     
     // Actions
     clearNotifications,
-    simulateCall, // For testing
+    simulateCall,
+    openDialer,
+    sendSMS,
+    getDeviceInfo,
+    
+    // Call handlers (for native integration)
+    handleIncomingCall,
+    handleCallEnded,
   };
 }

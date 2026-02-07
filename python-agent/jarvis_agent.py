@@ -1157,6 +1157,26 @@ class JarvisAgent:
                 "get_system_state": "system_state",
                 "get_cameras": "list_cameras",
                 "get_audio_devices": "audio_devices",
+                # Skill aliases
+                "spotify": "spotify",
+                "spotify_control": "spotify",
+                "spotify_play": "spotify",
+                "spotify_pause": "spotify",
+                "spotify_next": "spotify",
+                "spotify_prev": "spotify",
+                "calendar": "calendar",
+                "notes": "calendar",
+                "reminders": "calendar",
+                "todo": "calendar",
+                "add_note": "calendar",
+                "get_notes": "calendar",
+                "brightness": "brightness_volume",
+                "volume": "brightness_volume",
+                "mute": "brightness_volume",
+                "unmute": "brightness_volume",
+                "system_control": "system_control",
+                "power": "system_control",
+                "boost": "system_control",
             }
             cmd = alias_map.get(cmd, cmd)
             
