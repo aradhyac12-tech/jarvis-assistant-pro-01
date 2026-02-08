@@ -61,32 +61,52 @@ export function useLocalP2P() {
   }, []);
 
   // Try to discover local P2P server by probing network IPs
+  // Enhanced: also tries common LAN prefixes if provided prefix is empty (APK fallback)
   const discoverLocalServer = useCallback(async (networkPrefix: string): Promise<string | null> => {
-    if (!networkPrefix) return null;
+    // Common LAN prefixes to try when we don't have the phone's prefix
+    const COMMON_LAN_PREFIXES = [
+      "192.168.1",
+      "192.168.0",
+      "192.168.2",
+      "10.0.0",
+      "10.0.1",
+      "172.16.0",
+    ];
 
-    console.log(`[LocalP2P] Discovering server on network ${networkPrefix}.*`);
+    // Prefixes to scan - if provided, use it; otherwise scan common ones
+    const prefixesToScan = networkPrefix ? [networkPrefix] : COMMON_LAN_PREFIXES;
+
+    console.log(`[LocalP2P] Discovering server on prefixes:`, prefixesToScan);
 
     // Common PC IPs to try first (most likely)
-    const prioritySuffixes = [".1", ".2", ".100", ".101", ".10", ".50", ".200", ".150", ".5"];
-    
-    // Try priority IPs first in parallel
-    const priorityProbes = prioritySuffixes.map(async (suffix) => {
-      const ip = networkPrefix + suffix;
-      const available = await probeLocalServer(ip);
-      return available ? ip : null;
-    });
+    const prioritySuffixes = [".1", ".2", ".100", ".101", ".10", ".50", ".200", ".150", ".5", ".254", ".3", ".4"];
 
-    const priorityResults = await Promise.all(priorityProbes);
-    const foundPriority = priorityResults.find((ip) => ip !== null);
-    
-    if (foundPriority) {
-      console.log(`[LocalP2P] Found server at ${foundPriority}`);
-      return foundPriority;
+    for (const prefix of prefixesToScan) {
+      // Try priority IPs first in parallel
+      const priorityProbes = prioritySuffixes.map(async (suffix) => {
+        const ip = prefix + suffix;
+        const available = await probeLocalServer(ip);
+        return available ? ip : null;
+      });
+
+      const priorityResults = await Promise.all(priorityProbes);
+      const foundPriority = priorityResults.find((ip) => ip !== null);
+      
+      if (foundPriority) {
+        console.log(`[LocalP2P] Found server at ${foundPriority}`);
+        return foundPriority;
+      }
     }
 
-    // Extended scan - probe more IPs (1-254, excluding already tried)
+    // Extended scan on the first prefix only (avoid too many probes)
+    const primaryPrefix = prefixesToScan[0];
+    if (!primaryPrefix) {
+      console.log("[LocalP2P] No prefix available for extended scan");
+      return null;
+    }
+
     const triedSuffixes = new Set(prioritySuffixes.map((s) => parseInt(s.slice(1), 10)));
-    const BATCH_SIZE = 25;
+    const BATCH_SIZE = 30;
     const MAX_IP = 254;
 
     for (let start = 1; start <= MAX_IP; start += BATCH_SIZE) {
@@ -95,7 +115,7 @@ export function useLocalP2P() {
 
       for (let i = start; i <= end; i++) {
         if (triedSuffixes.has(i)) continue;
-        const ip = `${networkPrefix}.${i}`;
+        const ip = `${primaryPrefix}.${i}`;
         batchProbes.push(probeLocalServer(ip).then((available) => (available ? ip : null)));
       }
 
@@ -107,7 +127,7 @@ export function useLocalP2P() {
       }
     }
 
-    console.log("[LocalP2P] No server found on network");
+    console.log("[LocalP2P] No server found on any network");
     return null;
   }, [probeLocalServer]);
 
