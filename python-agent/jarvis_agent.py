@@ -729,6 +729,10 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def _list_audio_outputs(self) -> Dict[str, Any]:
+        """Alias for get_audio_devices that returns a compatible structure."""
+        return self._get_audio_devices()
+
     def _toggle_mute(self) -> Dict[str, Any]:
         try:
             if platform.system() == "Windows" and HAS_PYCAW:
@@ -1296,20 +1300,60 @@ class JarvisAgent:
                 return self._get_media_state()
             elif cmd == "join_zoom":
                 return await self._join_zoom(payload)
-            elif cmd == "mute_pc":
+            elif cmd in ["mute_pc", "mute"]:
                 if HAS_PYCAW and sys.platform == "win32":
-                    devices = AudioUtilities.GetSpeakers()
-                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    volume = cast(interface, POINTER(IAudioEndpointVolume))
-                    volume.SetMute(1, None)
+                    try:
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        volume = cast(interface, POINTER(IAudioEndpointVolume))
+                        volume.SetMute(1, None)
+                    except Exception as e:
+                        add_log("warn", f"mute_pc failed: {e}", category="command")
                 return {"success": True}
-            elif cmd == "unmute_pc":
+            elif cmd in ["unmute_pc", "unmute"]:
                 if HAS_PYCAW and sys.platform == "win32":
-                    devices = AudioUtilities.GetSpeakers()
-                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    volume = cast(interface, POINTER(IAudioEndpointVolume))
-                    volume.SetMute(0, None)
+                    try:
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        volume = cast(interface, POINTER(IAudioEndpointVolume))
+                        volume.SetMute(0, None)
+                    except Exception as e:
+                        add_log("warn", f"unmute_pc failed: {e}", category="command")
                 return {"success": True}
+            
+            # Audio device listing alias
+            elif cmd in ["list_audio_outputs", "get_audio_outputs"]:
+                return self._list_audio_outputs()
+            
+            # Play music alias (open YouTube search)
+            elif cmd == "play_music":
+                query = payload.get("query", "")
+                service = payload.get("service", "youtube")
+                if service == "youtube":
+                    url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+                    webbrowser.open(url)
+                    return {"success": True, "message": f"Playing '{query}' on YouTube"}
+                return {"success": False, "error": f"Unsupported service: {service}"}
+            
+            # Web search alias
+            elif cmd == "search_web":
+                query = payload.get("query", "")
+                engine = payload.get("engine", "google").lower()
+                urls = {
+                    "google": f"https://www.google.com/search?q={query.replace(' ', '+')}",
+                    "bing": f"https://www.bing.com/search?q={query.replace(' ', '+')}",
+                    "duckduckgo": f"https://duckduckgo.com/?q={query.replace(' ', '+')}",
+                    "perplexity": f"https://www.perplexity.ai/search?q={query.replace(' ', '+')}",
+                    "chatgpt": f"https://chat.openai.com/?q={query.replace(' ', '+')}",
+                }
+                url = urls.get(engine, urls["google"])
+                webbrowser.open(url)
+                return {"success": True, "message": f"Searching '{query}' on {engine}"}
+            
+            # Call controls - these are mobile-side actions; agent just acknowledges
+            elif cmd in ["answer_call", "end_call", "decline_call", "call_mute"]:
+                add_log("info", f"Call control received: {cmd}", category="command")
+                return {"success": True, "message": f"{cmd} acknowledged (mobile-side action)"}
             
             # Apps
             elif cmd == "open_app":

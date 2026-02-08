@@ -5,10 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
   Phone,
-  PhoneOff,
   PhoneIncoming,
-  Mic,
-  MicOff,
   Volume2,
   Pause,
   Clock,
@@ -23,9 +20,13 @@ interface CallState {
   number: string;
   name: string;
   duration: number;
-  muted: boolean;
 }
 
+/**
+ * Detect-only call controls.
+ * Auto-mutes/pauses PC media when a call is detected; no answer/end buttons
+ * (true answer/end requires native Android plugin code).
+ */
 export function CallControlsMinimal({ className }: { className?: string }) {
   const { sendCommand } = useDeviceCommands();
   const { toast } = useToast();
@@ -38,7 +39,6 @@ export function CallControlsMinimal({ className }: { className?: string }) {
     number: "",
     name: "",
     duration: 0,
-    muted: false,
   });
 
   // Duration timer
@@ -58,71 +58,58 @@ export function CallControlsMinimal({ className }: { className?: string }) {
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const toggleMute = useCallback(async () => {
-    await sendCommand("call_mute", { mute: !callState.muted });
-    setCallState(prev => ({ ...prev, muted: !prev.muted }));
-  }, [callState.muted, sendCommand]);
+  // Handle call start - auto-mute/pause PC
+  const handleCallStart = useCallback(async (info: { number?: string; name?: string } = {}) => {
+    setCallState({
+      active: true,
+      incoming: false,
+      number: info.number || "",
+      name: info.name || "",
+      duration: 0,
+    });
+    
+    if (autoMute) {
+      try {
+        await sendCommand("mute_pc", {});
+        toast({ title: "PC Muted", description: "Call detected" });
+      } catch {}
+    }
+    if (autoPause) {
+      try {
+        await sendCommand("media_control", { action: "pause" });
+      } catch {}
+    }
+  }, [autoMute, autoPause, sendCommand, toast]);
 
-  const endCall = useCallback(async () => {
-    await sendCommand("end_call", {});
+  // Handle call end - unmute/resume PC
+  const handleCallEnd = useCallback(async () => {
     setCallState({
       active: false,
       incoming: false,
       number: "",
       name: "",
       duration: 0,
-      muted: false,
     });
     
-    if (autoPause) {
-      await sendCommand("media_control", { action: "play_pause" });
-    }
     if (autoMute) {
-      await sendCommand("unmute_pc", {});
+      try {
+        await sendCommand("unmute_pc", {});
+        toast({ title: "PC Unmuted", description: "Call ended" });
+      } catch {}
     }
-    
-    toast({ title: "Call Ended" });
-  }, [sendCommand, autoPause, autoMute, toast]);
+    // We don't auto-resume playback to avoid unexpected audio
+  }, [autoMute, sendCommand, toast]);
 
-  const answerCall = useCallback(async () => {
-    if (autoMute) {
-      await sendCommand("mute_pc", {});
-    }
-    if (autoPause) {
-      await sendCommand("media_control", { action: "pause" });
-    }
-    
-    await sendCommand("answer_call", {});
-    setCallState(prev => ({ ...prev, active: true, incoming: false }));
-    toast({ title: "Call Answered" });
-  }, [sendCommand, autoMute, autoPause, toast]);
-
-  const declineCall = useCallback(async () => {
-    await sendCommand("decline_call", {});
-    setCallState({
-      active: false,
-      incoming: false,
-      number: "",
-      name: "",
-      duration: 0,
-      muted: false,
-    });
-    toast({ title: "Call Declined" });
-  }, [sendCommand, toast]);
-
-  // Demo simulation
+  // Demo simulation - still useful for testing auto-mute/pause
   const simulateCall = () => {
-    setCallState({
-      active: false,
-      incoming: true,
-      number: "+1 (555) 123-4567",
-      name: "John Doe",
-      duration: 0,
-      muted: false,
-    });
+    handleCallStart({ number: "+1 (555) 123-4567", name: "Test Caller" });
   };
 
-  const hasCall = callState.incoming || callState.active;
+  const simulateEndCall = () => {
+    handleCallEnd();
+  };
+
+  const hasCall = callState.active;
 
   return (
     <Card className={cn("border-border/50 overflow-hidden", className)}>
@@ -138,10 +125,10 @@ export function CallControlsMinimal({ className }: { className?: string }) {
                 hasCall ? "text-primary" : "text-muted-foreground"
               )} />
             </div>
-            Calls
+            Call Detection
           </CardTitle>
           
-          {hasCall && callState.active && (
+          {hasCall && (
             <Badge variant="outline" className="font-mono text-xs gap-1">
               <Clock className="h-3 w-3" />
               {formatDuration(callState.duration)}
@@ -188,90 +175,39 @@ export function CallControlsMinimal({ className }: { className?: string }) {
           </div>
         </div>
 
-        {/* Call UI */}
+        {/* Call status UI */}
         {hasCall ? (
-          <div className={cn(
-            "p-4 rounded-xl border-2 transition-all",
-            callState.incoming 
-              ? "bg-primary/5 border-primary animate-pulse" 
-              : "bg-muted/30 border-border/50"
-          )}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className={cn(
-                "p-3 rounded-full",
-                callState.incoming ? "bg-primary text-primary-foreground" : "bg-muted"
-              )}>
-                {callState.incoming ? (
-                  <PhoneIncoming className="h-5 w-5" />
-                ) : (
-                  <Phone className="h-5 w-5" />
-                )}
+          <div className="p-4 rounded-xl bg-primary/5 border-2 border-primary/30">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-3 rounded-full bg-primary text-primary-foreground">
+                <Phone className="h-5 w-5" />
               </div>
               <div className="flex-1 min-w-0">
                 <p className="font-medium truncate">
-                  {callState.name || callState.number}
+                  {callState.name || callState.number || "Call in progress"}
                 </p>
-                {callState.name && (
+                {callState.name && callState.number && (
                   <p className="text-xs text-muted-foreground">{callState.number}</p>
                 )}
               </div>
             </div>
-
-            {callState.incoming ? (
-              <div className="flex gap-2">
-                <Button
-                  onClick={declineCall}
-                  variant="destructive"
-                  size="sm"
-                  className="flex-1"
-                >
-                  <PhoneOff className="h-4 w-4 mr-1.5" />
-                  Decline
-                </Button>
-                <Button
-                  onClick={answerCall}
-                  size="sm"
-                  className="flex-1 bg-primary hover:bg-primary/90"
-                >
-                  <Phone className="h-4 w-4 mr-1.5" />
-                  Answer
-                </Button>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <Button
-                  onClick={toggleMute}
-                  variant={callState.muted ? "default" : "outline"}
-                  size="sm"
-                  className="flex-1"
-                >
-                  {callState.muted ? (
-                    <><MicOff className="h-4 w-4 mr-1.5" /> Unmute</>
-                  ) : (
-                    <><Mic className="h-4 w-4 mr-1.5" /> Mute</>
-                  )}
-                </Button>
-                <Button
-                  onClick={endCall}
-                  variant="destructive"
-                  size="sm"
-                  className="flex-1"
-                >
-                  <PhoneOff className="h-4 w-4 mr-1.5" />
-                  End
-                </Button>
-              </div>
-            )}
+            
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>PC media paused/muted automatically</span>
+              <Button variant="outline" size="sm" onClick={simulateEndCall}>
+                End Test
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="p-4 rounded-xl bg-muted/30 flex flex-col items-center text-center">
             <Phone className="h-8 w-8 text-muted-foreground/50 mb-2" />
             <p className="text-xs text-muted-foreground mb-3">
-              PC media will pause when you receive a call
+              PC media will pause & mute when you receive a call
             </p>
             <Button variant="outline" size="sm" onClick={simulateCall}>
               <PhoneIncoming className="h-4 w-4 mr-1.5" />
-              Test Call
+              Test Detection
             </Button>
           </div>
         )}
