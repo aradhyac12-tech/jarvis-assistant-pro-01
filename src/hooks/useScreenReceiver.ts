@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { getFunctionsWsBase } from "@/lib/relay";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useToast } from "@/hooks/use-toast";
 import { addLog } from "@/components/IssueLog";
 
@@ -26,6 +27,7 @@ export interface ScreenReceiverOptions {
 
 export function useScreenReceiver() {
   const { sendCommand } = useDeviceCommands();
+  const { session } = useDeviceSession();
   const { toast } = useToast();
 
   const [state, setState] = useState<ScreenReceiverState>({
@@ -80,15 +82,23 @@ export function useScreenReceiver() {
     async (options: ScreenReceiverOptions = {}) => {
       const { fps = 30, quality = 70, scale = 0.5, monitorIndex = 1, testPattern = false } = options;
 
+      // Check for session token
+      if (!session?.session_token) {
+        const errorMsg = "Not paired. Please connect your PC first.";
+        setState((prev) => ({ ...prev, error: errorMsg }));
+        toast({ title: "Screen Error", description: errorMsg, variant: "destructive" });
+        return false;
+      }
+
       cleanup();
 
       const sessionId = crypto.randomUUID();
       setState((prev) => ({ ...prev, sessionId, error: null }));
       addLog("info", "web", `Starting screen receiver (session: ${sessionId.slice(0, 8)}...)`);
 
-      // 1) Connect receiver FIRST
+      // 1) Connect receiver FIRST with session_token for authentication
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${fps}&quality=${quality}&binary=true`
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${fps}&quality=${quality}&binary=true&session_token=${session.session_token}`
       );
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";

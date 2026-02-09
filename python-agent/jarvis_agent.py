@@ -1041,6 +1041,285 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    # ============== CAMERA/SCREEN STREAMING ==============
+    _camera_streamer = None
+    _screen_streamer = None
+    _camera_ws = None
+    _screen_ws = None
+    
+    async def _start_camera_stream(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Start streaming camera frames to the relay."""
+        try:
+            if not HAS_OPENCV:
+                return {"success": False, "error": "OpenCV not installed"}
+            
+            session_id = payload.get("session_id", "")
+            camera_index = int(payload.get("camera_index", 0))
+            fps = int(payload.get("fps", 30))
+            quality = int(payload.get("quality", 70))
+            
+            if not session_id:
+                return {"success": False, "error": "Missing session_id"}
+            
+            # Stop existing stream
+            self._stop_camera_stream()
+            
+            # Open camera with DirectShow on Windows for reliability
+            if platform.system() == "Windows":
+                cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            else:
+                cap = cv2.VideoCapture(camera_index)
+            
+            if not cap.isOpened():
+                return {"success": False, "error": f"Failed to open camera {camera_index}"}
+            
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+            
+            # Store for later cleanup
+            self._camera_streamer = {
+                "cap": cap,
+                "session_id": session_id,
+                "fps": fps,
+                "quality": quality,
+                "running": True,
+            }
+            
+            # Start streaming in background thread
+            def stream_camera():
+                import websockets.sync.client as ws_client
+                
+                # Build WebSocket URL with session token
+                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
+                
+                try:
+                    with ws_client.connect(ws_url) as ws:
+                        self._camera_ws = ws
+                        add_log("info", f"Camera stream connected: session={session_id[:8]}...", category="camera")
+                        
+                        interval = 1.0 / max(1, fps)
+                        while self._camera_streamer and self._camera_streamer.get("running"):
+                            ret, frame = cap.read()
+                            if not ret:
+                                continue
+                            
+                            # Encode to JPEG
+                            encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._camera_streamer.get("quality", quality)]
+                            _, buffer = cv2.imencode(".jpg", frame, encode_params)
+                            
+                            # Send binary frame
+                            ws.send(buffer.tobytes())
+                            time.sleep(interval)
+                            
+                except Exception as e:
+                    add_log("error", f"Camera stream error: {e}", category="camera")
+                finally:
+                    cap.release()
+                    add_log("info", "Camera stream ended", category="camera")
+            
+            threading.Thread(target=stream_camera, daemon=True).start()
+            
+            add_log("info", f"Camera stream started: camera={camera_index}, fps={fps}, quality={quality}", category="camera")
+            return {"success": True, "session_id": session_id, "camera_index": camera_index}
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _stop_camera_stream(self) -> Dict[str, Any]:
+        """Stop camera streaming."""
+        try:
+            if self._camera_streamer:
+                self._camera_streamer["running"] = False
+            if self._camera_ws:
+                try:
+                    self._camera_ws.close()
+                except:
+                    pass
+            self._camera_streamer = None
+            self._camera_ws = None
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _update_camera_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update FPS/quality settings for active camera stream."""
+        try:
+            if not self._camera_streamer:
+                return {"success": False, "error": "No active camera stream"}
+            
+            if "fps" in payload:
+                self._camera_streamer["fps"] = int(payload["fps"])
+            if "quality" in payload:
+                self._camera_streamer["quality"] = int(payload["quality"])
+            
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _start_screen_stream(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Start streaming screen frames to the relay."""
+        try:
+            if not HAS_MSS:
+                return {"success": False, "error": "mss not installed - screen capture unavailable"}
+            
+            session_id = payload.get("session_id", "")
+            fps = int(payload.get("fps", 30))
+            quality = int(payload.get("quality", 70))
+            scale = float(payload.get("scale", 0.5))
+            monitor_index = int(payload.get("monitor_index", 1))
+            
+            if not session_id:
+                return {"success": False, "error": "Missing session_id"}
+            
+            # Stop existing stream
+            self._stop_screen_stream()
+            
+            self._screen_streamer = {
+                "session_id": session_id,
+                "fps": fps,
+                "quality": quality,
+                "scale": scale,
+                "monitor_index": monitor_index,
+                "running": True,
+            }
+            
+            def stream_screen():
+                import websockets.sync.client as ws_client
+                
+                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
+                
+                try:
+                    with ws_client.connect(ws_url) as ws:
+                        self._screen_ws = ws
+                        add_log("info", f"Screen stream connected: session={session_id[:8]}...", category="screen")
+                        
+                        with mss.mss() as sct:
+                            monitors = sct.monitors
+                            idx = monitor_index if 0 < monitor_index < len(monitors) else 1
+                            monitor = monitors[idx]
+                            
+                            interval = 1.0 / max(1, fps)
+                            while self._screen_streamer and self._screen_streamer.get("running"):
+                                screenshot = sct.grab(monitor)
+                                img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
+                                
+                                # Scale down
+                                current_scale = self._screen_streamer.get("scale", scale)
+                                new_size = (int(img.width * current_scale), int(img.height * current_scale))
+                                img = img.resize(new_size, Image.LANCZOS)
+                                
+                                # Encode to JPEG
+                                buffer = io.BytesIO()
+                                img.save(buffer, format="JPEG", quality=self._screen_streamer.get("quality", quality), optimize=True)
+                                
+                                # Send binary frame
+                                ws.send(buffer.getvalue())
+                                time.sleep(interval)
+                                
+                except Exception as e:
+                    add_log("error", f"Screen stream error: {e}", category="screen")
+                finally:
+                    add_log("info", "Screen stream ended", category="screen")
+            
+            threading.Thread(target=stream_screen, daemon=True).start()
+            
+            add_log("info", f"Screen stream started: fps={fps}, quality={quality}, scale={scale}", category="screen")
+            return {"success": True, "session_id": session_id}
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _stop_screen_stream(self) -> Dict[str, Any]:
+        """Stop screen streaming."""
+        try:
+            if self._screen_streamer:
+                self._screen_streamer["running"] = False
+            if self._screen_ws:
+                try:
+                    self._screen_ws.close()
+                except:
+                    pass
+            self._screen_streamer = None
+            self._screen_ws = None
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _update_screen_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update FPS/quality/scale settings for active screen stream."""
+        try:
+            if not self._screen_streamer:
+                return {"success": False, "error": "No active screen stream"}
+            
+            if "fps" in payload:
+                self._screen_streamer["fps"] = int(payload["fps"])
+            if "quality" in payload:
+                self._screen_streamer["quality"] = int(payload["quality"])
+            if "scale" in payload:
+                self._screen_streamer["scale"] = float(payload["scale"])
+            
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _start_test_pattern(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Start a test pattern stream for debugging."""
+        try:
+            session_id = payload.get("session_id", "")
+            fps = int(payload.get("fps", 30))
+            quality = int(payload.get("quality", 70))
+            mode = payload.get("mode", "camera")  # 'camera' or 'screen'
+            
+            if not session_id:
+                return {"success": False, "error": "Missing session_id"}
+            
+            if mode == "screen":
+                self._stop_screen_stream()
+                self._screen_streamer = {"session_id": session_id, "fps": fps, "quality": quality, "running": True}
+            else:
+                self._stop_camera_stream()
+                self._camera_streamer = {"session_id": session_id, "fps": fps, "quality": quality, "running": True}
+            
+            def stream_test_pattern():
+                import websockets.sync.client as ws_client
+                
+                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
+                
+                try:
+                    with ws_client.connect(ws_url) as ws:
+                        add_log("info", f"Test pattern connected: session={session_id[:8]}...", category="test")
+                        
+                        frame_num = 0
+                        interval = 1.0 / max(1, fps)
+                        streamer = self._screen_streamer if mode == "screen" else self._camera_streamer
+                        
+                        while streamer and streamer.get("running"):
+                            # Create test pattern with frame number
+                            img = Image.new('RGB', (640, 480), color=(frame_num % 256, 128, 255 - (frame_num % 256)))
+                            from PIL import ImageDraw
+                            draw = ImageDraw.Draw(img)
+                            draw.text((280, 220), f"Frame {frame_num}", fill=(255, 255, 255))
+                            draw.text((250, 250), f"FPS: {fps} | Quality: {quality}", fill=(255, 255, 255))
+                            
+                            buffer = io.BytesIO()
+                            img.save(buffer, format="JPEG", quality=quality)
+                            ws.send(buffer.getvalue())
+                            
+                            frame_num += 1
+                            time.sleep(interval)
+                            
+                except Exception as e:
+                    add_log("error", f"Test pattern error: {e}", category="test")
+            
+            threading.Thread(target=stream_test_pattern, daemon=True).start()
+            
+            add_log("info", f"Test pattern started: mode={mode}, fps={fps}", category="test")
+            return {"success": True, "session_id": session_id, "mode": mode}
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
     # ============== BOOST PC ==============
     def _boost_ram(self) -> Dict[str, Any]:
         try:
@@ -1401,6 +1680,22 @@ class JarvisAgent:
             elif cmd in ["ping", "heartbeat"]:
                 return {"success": True, "pong": True, "timestamp": datetime.now().isoformat()}
             
+            # ============== CAMERA/SCREEN STREAMING ==============
+            elif cmd == "start_camera_stream":
+                return await self._start_camera_stream(payload)
+            elif cmd == "stop_camera_stream":
+                return self._stop_camera_stream()
+            elif cmd == "update_camera_settings":
+                return self._update_camera_settings(payload)
+            elif cmd == "start_screen_stream":
+                return await self._start_screen_stream(payload)
+            elif cmd == "stop_screen_stream":
+                return self._stop_screen_stream()
+            elif cmd == "update_screen_settings":
+                return self._update_screen_settings(payload)
+            elif cmd == "start_test_pattern":
+                return await self._start_test_pattern(payload)
+            
             else:
                 add_log("warn", f"Unknown command: {cmd}", category="command")
                 return {"success": False, "error": f"Unknown command: {cmd}"}
@@ -1718,34 +2013,37 @@ def main():
                 notebook = ttk.Notebook(container)
                 notebook.pack(fill="both", expand=True)
 
-                # ============ Tab 1: Status ============
+                # ============ Tab 1: Dashboard ============
                 status_tab = ttk.Frame(notebook)
-                notebook.add(status_tab, text="Status")
+                notebook.add(status_tab, text="📊 Dashboard")
 
-                status_box = ttk.Labelframe(status_tab, text="Status")
+                # Connection Status Card
+                status_box = ttk.Labelframe(status_tab, text="🔗 Connection Status")
                 status_box.pack(fill="x", padx=8, pady=(8, 0))
 
                 grid = ttk.Frame(status_box)
                 grid.pack(fill="x", padx=10, pady=10)
 
-                self.pairing_value = ttk.Label(grid, text="—", font=("Consolas", 14, "bold"))
-                self.device_value = ttk.Label(grid, text="—")
-                self.ip_value = ttk.Label(grid, text="—")
-                self.heartbeat_value = ttk.Label(grid, text="—")
-                self.mode_label = ttk.Label(grid, text="—")
-                self.cpu_label = ttk.Label(grid, text="—")
+                self.pairing_value = ttk.Label(grid, text="—", font=("Consolas", 18, "bold"), foreground="#22c55e")
+                self.device_value = ttk.Label(grid, text="—", font=("Segoe UI", 11))
+                self.ip_value = ttk.Label(grid, text="—", font=("Consolas", 10))
+                self.heartbeat_value = ttk.Label(grid, text="—", font=("Segoe UI", 9))
+                self.mode_label = ttk.Label(grid, text="—", font=("Segoe UI", 10, "bold"), foreground="#3b82f6")
+                self.cpu_label = ttk.Label(grid, text="—", font=("Segoe UI", 10))
+                self.stream_label = ttk.Label(grid, text="—", font=("Segoe UI", 9))
 
                 labels_1 = [
-                    ("Pairing code:", self.pairing_value),
-                    ("Device:", self.device_value),
-                    ("Local IPs:", self.ip_value),
-                    ("Heartbeat:", self.heartbeat_value),
-                    ("Mode:", self.mode_label),
-                    ("CPU / RAM:", self.cpu_label),
+                    ("🔑 Pairing Code:", self.pairing_value),
+                    ("💻 Device:", self.device_value),
+                    ("🌐 Local IPs:", self.ip_value),
+                    ("💓 Heartbeat:", self.heartbeat_value),
+                    ("📡 Mode:", self.mode_label),
+                    ("📊 CPU / RAM:", self.cpu_label),
+                    ("📹 Streams:", self.stream_label),
                 ]
                 for i, (lbl_text, value_widget) in enumerate(labels_1):
-                    ttk.Label(grid, text=lbl_text).grid(row=i, column=0, sticky="w", pady=(4, 0))
-                    value_widget.grid(row=i, column=1, sticky="w", pady=(4, 0))
+                    ttk.Label(grid, text=lbl_text, font=("Segoe UI", 10)).grid(row=i, column=0, sticky="w", pady=(4, 0))
+                    value_widget.grid(row=i, column=1, sticky="w", pady=(4, 0), padx=(12, 0))
 
                 for c in (0, 1):
                     grid.grid_columnconfigure(c, weight=1)
@@ -1753,50 +2051,86 @@ def main():
                 actions = ttk.Frame(status_box)
                 actions.pack(fill="x", padx=10, pady=(0, 10))
 
-                ttk.Button(actions, text="Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL)).pack(side="left")
-                ttk.Button(actions, text="Copy Pairing Code", command=self._copy_pairing).pack(side="left", padx=(8, 0))
-                ttk.Button(actions, text="Quit", command=self._on_close).pack(side="right")
+                ttk.Button(actions, text="🌐 Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL)).pack(side="left")
+                ttk.Button(actions, text="📋 Copy Code", command=self._copy_pairing).pack(side="left", padx=(8, 0))
+                ttk.Button(actions, text="🔄 Refresh", command=self._refresh_status).pack(side="left", padx=(8, 0))
+                ttk.Button(actions, text="❌ Quit", command=self._on_close).pack(side="right")
 
-                logs_box = ttk.Labelframe(status_tab, text="Live Logs")
+                # System Info Card
+                sysinfo_box = ttk.Labelframe(status_tab, text="💻 System Info")
+                sysinfo_box.pack(fill="x", padx=8, pady=(12, 0))
+                
+                sysinfo = ttk.Frame(sysinfo_box)
+                sysinfo.pack(fill="x", padx=10, pady=10)
+                
+                self.disk_label = ttk.Label(sysinfo, text="Disk: —")
+                self.battery_label = ttk.Label(sysinfo, text="Battery: —")
+                self.uptime_label = ttk.Label(sysinfo, text="Uptime: —")
+                
+                self.disk_label.grid(row=0, column=0, sticky="w")
+                self.battery_label.grid(row=0, column=1, sticky="w", padx=(20, 0))
+                self.uptime_label.grid(row=0, column=2, sticky="w", padx=(20, 0))
+
+                # Logs Card
+                logs_box = ttk.Labelframe(status_tab, text="📜 Live Logs")
                 logs_box.pack(fill="both", expand=True, padx=8, pady=(12, 8))
 
                 self.log_text = scrolledtext.ScrolledText(
                     logs_box,
-                    height=12,
+                    height=10,
                     bg="#0f172a",
                     fg="#e5e7eb",
                     insertbackground="#e5e7eb",
-                    font=("Consolas", 10),
+                    font=("Consolas", 9),
                 )
                 self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
                 self.log_text.configure(state="disabled")
 
                 # ============ Tab 2: Quick Actions ============
                 actions_tab = ttk.Frame(notebook)
-                notebook.add(actions_tab, text="Actions")
+                notebook.add(actions_tab, text="⚡ Actions")
 
-                quick_box = ttk.Labelframe(actions_tab, text="Quick Actions")
-                quick_box.pack(fill="x", padx=8, pady=8)
+                # Power Controls
+                power_box = ttk.Labelframe(actions_tab, text="🔌 Power Controls")
+                power_box.pack(fill="x", padx=8, pady=8)
 
-                qb = ttk.Frame(quick_box)
-                qb.pack(fill="x", padx=10, pady=10)
+                pb = ttk.Frame(power_box)
+                pb.pack(fill="x", padx=10, pady=10)
 
-                ttk.Button(qb, text="Lock Screen", command=self._action_lock).grid(row=0, column=0, padx=4, pady=4)
-                ttk.Button(qb, text="Sleep", command=self._action_sleep).grid(row=0, column=1, padx=4, pady=4)
-                ttk.Button(qb, text="Restart", command=self._action_restart).grid(row=0, column=2, padx=4, pady=4)
-                ttk.Button(qb, text="Restart Explorer", command=self._action_explorer).grid(row=0, column=3, padx=4, pady=4)
-                ttk.Button(qb, text="Mute", command=self._action_mute).grid(row=1, column=0, padx=4, pady=4)
-                ttk.Button(qb, text="Unmute", command=self._action_unmute).grid(row=1, column=1, padx=4, pady=4)
-                ttk.Button(qb, text="Clear Temp Files", command=self._action_clear_temp).grid(row=1, column=2, padx=4, pady=4)
-                ttk.Button(qb, text="High Performance", command=self._action_highperf).grid(row=1, column=3, padx=4, pady=4)
+                ttk.Button(pb, text="🔒 Lock", command=self._action_lock, width=12).grid(row=0, column=0, padx=4, pady=4)
+                ttk.Button(pb, text="😴 Sleep", command=self._action_sleep, width=12).grid(row=0, column=1, padx=4, pady=4)
+                ttk.Button(pb, text="🔄 Restart", command=self._action_restart, width=12).grid(row=0, column=2, padx=4, pady=4)
+                ttk.Button(pb, text="⏻ Shutdown", command=self._action_shutdown, width=12).grid(row=0, column=3, padx=4, pady=4)
 
-                for c in range(4):
-                    qb.grid_columnconfigure(c, weight=1)
+                # Audio Controls
+                audio_box = ttk.Labelframe(actions_tab, text="🔊 Audio Controls")
+                audio_box.pack(fill="x", padx=8, pady=8)
 
-                diagnostics_box = ttk.Labelframe(actions_tab, text="Diagnostics")
-                diagnostics_box.pack(fill="x", padx=8, pady=8)
+                ab = ttk.Frame(audio_box)
+                ab.pack(fill="x", padx=10, pady=10)
 
-                diag_frame = ttk.Frame(diagnostics_box)
+                ttk.Button(ab, text="🔇 Mute", command=self._action_mute, width=12).grid(row=0, column=0, padx=4, pady=4)
+                ttk.Button(ab, text="🔊 Unmute", command=self._action_unmute, width=12).grid(row=0, column=1, padx=4, pady=4)
+                ttk.Button(ab, text="⏯️ Play/Pause", command=self._action_playpause, width=12).grid(row=0, column=2, padx=4, pady=4)
+                ttk.Button(ab, text="⏭️ Next", command=self._action_next, width=12).grid(row=0, column=3, padx=4, pady=4)
+
+                # Performance
+                perf_box = ttk.Labelframe(actions_tab, text="🚀 Performance")
+                perf_box.pack(fill="x", padx=8, pady=8)
+
+                pf = ttk.Frame(perf_box)
+                pf.pack(fill="x", padx=10, pady=10)
+
+                ttk.Button(pf, text="🧹 Clear Temp", command=self._action_clear_temp, width=12).grid(row=0, column=0, padx=4, pady=4)
+                ttk.Button(pf, text="⚡ High Perf", command=self._action_highperf, width=12).grid(row=0, column=1, padx=4, pady=4)
+                ttk.Button(pf, text="🔄 Explorer", command=self._action_explorer, width=12).grid(row=0, column=2, padx=4, pady=4)
+                ttk.Button(pf, text="🎮 Gaming Mode", command=self._action_gaming, width=12).grid(row=0, column=3, padx=4, pady=4)
+
+                # P2P Diagnostics
+                diag_box = ttk.Labelframe(actions_tab, text="🔍 P2P Diagnostics")
+                diag_box.pack(fill="x", padx=8, pady=8)
+
+                diag_frame = ttk.Frame(diag_box)
                 diag_frame.pack(fill="x", padx=10, pady=10)
 
                 ttk.Label(diag_frame, text="P2P Port:").grid(row=0, column=0, sticky="w")
@@ -1805,19 +2139,55 @@ def main():
                 self.port_entry.config(state="readonly")
                 self.port_entry.grid(row=0, column=1, sticky="w", padx=(4, 0))
 
-                self.p2p_status_label = ttk.Label(diag_frame, text="—")
+                self.p2p_status_label = ttk.Label(diag_frame, text="—", font=("Segoe UI", 10, "bold"))
                 self.p2p_status_label.grid(row=0, column=2, sticky="w", padx=(16, 0))
 
-                ttk.Button(diag_frame, text="Test Firewall Port", command=self._action_test_firewall).grid(row=0, column=3, sticky="e")
+                ttk.Button(diag_frame, text="🔥 Test Firewall", command=self._action_test_firewall).grid(row=0, column=3, sticky="e")
 
-                for c in range(4):
-                    diag_frame.grid_columnconfigure(c, weight=1)
+                # ============ Tab 3: File Transfer ============
+                files_tab = ttk.Frame(notebook)
+                notebook.add(files_tab, text="📁 Files")
 
-                # ============ Tab 3: Settings ============
+                # Save Folder
+                folder_box = ttk.Labelframe(files_tab, text="📂 Download Folder")
+                folder_box.pack(fill="x", padx=8, pady=8)
+
+                ff = ttk.Frame(folder_box)
+                ff.pack(fill="x", padx=10, pady=10)
+
+                self.save_folder_var = tk.StringVar(value=os.path.expanduser("~/Downloads/JARVIS"))
+                self.folder_entry = ttk.Entry(ff, textvariable=self.save_folder_var, width=40)
+                self.folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+                ttk.Button(ff, text="📁 Browse", command=self._browse_folder).grid(row=0, column=1)
+                ttk.Button(ff, text="📂 Open", command=self._open_folder).grid(row=0, column=2, padx=(4, 0))
+                ff.grid_columnconfigure(0, weight=1)
+
+                # Send File
+                send_box = ttk.Labelframe(files_tab, text="📤 Send File to Phone")
+                send_box.pack(fill="x", padx=8, pady=8)
+
+                sf = ttk.Frame(send_box)
+                sf.pack(fill="x", padx=10, pady=10)
+
+                self.send_file_var = tk.StringVar()
+                self.send_file_entry = ttk.Entry(sf, textvariable=self.send_file_var, width=40)
+                self.send_file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+                ttk.Button(sf, text="📄 Select File", command=self._select_file).grid(row=0, column=1)
+                ttk.Button(sf, text="📤 Send", command=self._send_file).grid(row=0, column=2, padx=(4, 0))
+                sf.grid_columnconfigure(0, weight=1)
+
+                # Recent Transfers
+                transfers_box = ttk.Labelframe(files_tab, text="📋 Recent Transfers")
+                transfers_box.pack(fill="both", expand=True, padx=8, pady=8)
+
+                self.transfer_list = tk.Listbox(transfers_box, bg="#0f172a", fg="#e5e7eb", font=("Consolas", 9), height=8)
+                self.transfer_list.pack(fill="both", expand=True, padx=10, pady=10)
+
+                # ============ Tab 4: Settings ============
                 settings_tab = ttk.Frame(notebook)
-                notebook.add(settings_tab, text="Settings")
+                notebook.add(settings_tab, text="⚙️ Settings")
 
-                settings_box = ttk.Labelframe(settings_tab, text="Agent Settings")
+                settings_box = ttk.Labelframe(settings_tab, text="⚙️ Agent Settings")
                 settings_box.pack(fill="x", padx=8, pady=8)
 
                 sf = ttk.Frame(settings_box)
@@ -1839,7 +2209,18 @@ def main():
                 self.url_entry.grid(row=2, column=1, sticky="w", pady=(8, 0))
 
                 ttk.Label(sf, text="Export logs:").grid(row=3, column=0, sticky="w", pady=(8, 0))
-                ttk.Button(sf, text="Export to JSON", command=self._export_logs).grid(row=3, column=1, sticky="w", pady=(8, 0))
+                ttk.Button(sf, text="📥 Export JSON", command=self._export_logs).grid(row=3, column=1, sticky="w", pady=(8, 0))
+
+                # About Box
+                about_box = ttk.Labelframe(settings_tab, text="ℹ️ About")
+                about_box.pack(fill="x", padx=8, pady=8)
+                
+                ab_frame = ttk.Frame(about_box)
+                ab_frame.pack(fill="x", padx=10, pady=10)
+                
+                ttk.Label(ab_frame, text=f"JARVIS PC Agent v{AGENT_VERSION}", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+                ttk.Label(ab_frame, text="Remote PC control from your phone", font=("Segoe UI", 10)).pack(anchor="w")
+                ttk.Label(ab_frame, text=f"Python {sys.version_info.major}.{sys.version_info.minor} | Platform: {platform.system()}", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
 
             # ================ ACTION HELPERS ================
             def _action_lock(self):
@@ -1853,6 +2234,10 @@ def main():
             def _action_restart(self):
                 if sys.platform == "win32":
                     os.system("shutdown /r /t 10")
+            
+            def _action_shutdown(self):
+                if sys.platform == "win32":
+                    os.system("shutdown /s /t 10")
 
             def _action_explorer(self):
                 if sys.platform == "win32":
@@ -1881,6 +2266,12 @@ def main():
                         volume.SetMute(0, None)
                     except Exception:
                         pass
+            
+            def _action_playpause(self):
+                pyautogui.press("playpause")
+            
+            def _action_next(self):
+                pyautogui.press("nexttrack")
 
             def _action_clear_temp(self):
                 if sys.platform == "win32":
@@ -1903,6 +2294,16 @@ def main():
             def _action_highperf(self):
                 if sys.platform == "win32":
                     os.system("powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c")
+            
+            def _action_gaming(self):
+                if sys.platform == "win32":
+                    try:
+                        kernel32 = ctypes.windll.kernel32
+                        handle = kernel32.GetCurrentProcess()
+                        kernel32.SetPriorityClass(handle, 0x00008000)
+                        add_log("info", "Gaming mode enabled", category="system")
+                    except Exception:
+                        pass
 
             def _action_test_firewall(self):
                 try:
@@ -1937,6 +2338,58 @@ def main():
                     self.root.clipboard_append(code)
                 except Exception:
                     pass
+            
+            def _refresh_status(self):
+                """Force refresh system status."""
+                try:
+                    st = get_agent_status()
+                    st["cpu_percent"] = psutil.cpu_percent()
+                    st["memory_percent"] = psutil.virtual_memory().percent
+                    update_agent_status(st)
+                except Exception:
+                    pass
+            
+            def _browse_folder(self):
+                """Browse for download folder."""
+                try:
+                    folder = filedialog.askdirectory()
+                    if folder:
+                        self.save_folder_var.set(folder)
+                        os.makedirs(folder, exist_ok=True)
+                except Exception:
+                    pass
+            
+            def _open_folder(self):
+                """Open the download folder."""
+                try:
+                    folder = self.save_folder_var.get()
+                    os.makedirs(folder, exist_ok=True)
+                    if sys.platform == "win32":
+                        os.startfile(folder)
+                    else:
+                        subprocess.run(["xdg-open", folder])
+                except Exception:
+                    pass
+            
+            def _select_file(self):
+                """Select a file to send."""
+                try:
+                    file_path = filedialog.askopenfilename()
+                    if file_path:
+                        self.send_file_var.set(file_path)
+                except Exception:
+                    pass
+            
+            def _send_file(self):
+                """Queue file for sending (placeholder - actual sending via P2P)."""
+                try:
+                    file_path = self.send_file_var.get()
+                    if file_path and os.path.exists(file_path):
+                        file_name = os.path.basename(file_path)
+                        self.transfer_list.insert(0, f"📤 {file_name} - Pending...")
+                        add_log("info", f"File queued for send: {file_name}", category="file")
+                except Exception:
+                    pass
 
             def _append_log(self, line: str):
                 try:
@@ -1950,22 +2403,67 @@ def main():
             def _tick(self):
                 st = get_agent_status()
                 mode = st.get("connection_mode", "cloud")
-                self.mode_label.configure(text=str(mode))
+                self.mode_label.configure(text=f"{'🟢' if mode == 'local_p2p' else '🟡'} {mode.upper()}")
 
                 self.pairing_value.configure(text=str(st.get("pairing_code") or "—"))
                 self.device_value.configure(text=str(st.get("device_name") or DEVICE_NAME))
 
                 ips = st.get("local_ips") or []
-                self.ip_value.configure(text=", ".join(ips) if ips else "—")
-                self.heartbeat_value.configure(text=str(st.get("last_heartbeat") or "—"))
-                self.cpu_label.configure(text=f"{st.get('cpu_percent', 0):.0f}% / {st.get('memory_percent', 0):.0f}%")
+                self.ip_value.configure(text=", ".join(ips[:2]) if ips else "—")
+                
+                hb = st.get("last_heartbeat")
+                if hb:
+                    try:
+                        hb_time = hb.split("T")[1][:8] if "T" in hb else hb[-8:]
+                        self.heartbeat_value.configure(text=f"✓ {hb_time}")
+                    except:
+                        self.heartbeat_value.configure(text=str(hb))
+                else:
+                    self.heartbeat_value.configure(text="—")
+                    
+                self.cpu_label.configure(text=f"{'🟢' if st.get('cpu_percent', 0) < 80 else '🔴'} {st.get('cpu_percent', 0):.0f}% / {st.get('memory_percent', 0):.0f}%")
+                
+                # Stream status
+                if hasattr(self, 'stream_label'):
+                    agent = self.runner.agent if self.runner else None
+                    cam_active = agent and agent._camera_streamer and agent._camera_streamer.get("running")
+                    screen_active = agent and agent._screen_streamer and agent._screen_streamer.get("running")
+                    if cam_active and screen_active:
+                        self.stream_label.configure(text="📹 Camera + 🖥️ Screen")
+                    elif cam_active:
+                        self.stream_label.configure(text="📹 Camera Active")
+                    elif screen_active:
+                        self.stream_label.configure(text="🖥️ Screen Active")
+                    else:
+                        self.stream_label.configure(text="—")
+                
+                # System info
+                try:
+                    disk = psutil.disk_usage('C:\\' if sys.platform == "win32" else '/')
+                    self.disk_label.configure(text=f"Disk: {disk.percent:.0f}%")
+                    
+                    battery = psutil.sensors_battery()
+                    if battery:
+                        plug = "⚡" if battery.power_plugged else "🔋"
+                        self.battery_label.configure(text=f"Battery: {plug} {battery.percent:.0f}%")
+                    else:
+                        self.battery_label.configure(text="Battery: N/A")
+                    
+                    boot_time = psutil.boot_time()
+                    uptime_secs = time.time() - boot_time
+                    hours = int(uptime_secs // 3600)
+                    mins = int((uptime_secs % 3600) // 60)
+                    self.uptime_label.configure(text=f"Uptime: {hours}h {mins}m")
+                except:
+                    pass
 
                 # Update P2P status
                 p2p = get_local_p2p_server()
                 if p2p and p2p.running:
-                    self.p2p_status_label.configure(text=f"Running ({len(p2p.clients)} clients)")
+                    clients = len(p2p.clients)
+                    self.p2p_status_label.configure(text=f"🟢 Running ({clients} clients)", foreground="#22c55e")
                 else:
-                    self.p2p_status_label.configure(text="Stopped")
+                    self.p2p_status_label.configure(text="🔴 Stopped", foreground="#ef4444")
 
                 # Append new logs
                 for entry in get_logs():
@@ -1977,7 +2475,8 @@ def main():
                     cat = str(entry.get("category", "general"))
                     lvl = str(entry.get("level", "info")).upper()
                     msg = str(entry.get("message", ""))
-                    self._append_log(f"{ts} [{lvl}] {cat}: {msg}")
+                    emoji = {"ERROR": "❌", "WARN": "⚠️", "INFO": "ℹ️"}.get(lvl, "📝")
+                    self._append_log(f"{ts} {emoji} [{cat}] {msg}")
 
                 self.root.after(500, self._tick)
 
