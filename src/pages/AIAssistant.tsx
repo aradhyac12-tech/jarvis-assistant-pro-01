@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -12,11 +12,9 @@ import {
   Bot, 
   User, 
   Loader2, 
-  Zap, 
   Mic, 
   MicOff, 
   Volume2,
-  Settings,
   Smartphone,
   Monitor,
   Globe,
@@ -26,15 +24,12 @@ import {
   Moon,
   Lock,
   Power,
-  FolderOpen,
   Calendar,
   StickyNote,
-  Terminal,
   Wifi,
   WifiOff,
   ChevronDown,
   ChevronUp,
-  Plus,
   Sparkles,
   Play,
   Pause,
@@ -42,6 +37,21 @@ import {
   SkipBack,
   VolumeX,
   Volume1,
+  Clock,
+  CloudSun,
+  MessageSquare,
+  Phone,
+  Mail,
+  Settings,
+  Zap,
+  Home,
+  Timer,
+  Bell,
+  AlarmClock,
+  MapPin,
+  Camera,
+  Image,
+  Heart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -58,34 +68,59 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  type?: "text" | "weather" | "alarm" | "reminder" | "media";
 }
 
-interface QuickCommand {
+interface QuickAction {
   icon: React.ReactNode;
   label: string;
   command: string;
+  payload?: Record<string, unknown>;
   color: string;
 }
 
-const pcCommands: QuickCommand[] = [
+const mobileActions: QuickAction[] = [
+  { icon: <Phone className="h-4 w-4" />, label: "Call", command: "dial", color: "bg-green-500/20 text-green-400" },
+  { icon: <MessageSquare className="h-4 w-4" />, label: "Text", command: "sms", color: "bg-blue-500/20 text-blue-400" },
+  { icon: <Mail className="h-4 w-4" />, label: "Email", command: "email", color: "bg-purple-500/20 text-purple-400" },
+  { icon: <Camera className="h-4 w-4" />, label: "Camera", command: "camera", color: "bg-pink-500/20 text-pink-400" },
+];
+
+const pcActions: QuickAction[] = [
   { icon: <Lock className="h-4 w-4" />, label: "Lock", command: "lock", color: "bg-orange-500/20 text-orange-400" },
   { icon: <Moon className="h-4 w-4" />, label: "Sleep", command: "sleep", color: "bg-blue-500/20 text-blue-400" },
   { icon: <Power className="h-4 w-4" />, label: "Shutdown", command: "shutdown", color: "bg-red-500/20 text-red-400" },
   { icon: <Zap className="h-4 w-4" />, label: "Boost", command: "boost", color: "bg-green-500/20 text-green-400" },
 ];
 
-const mediaCommands: QuickCommand[] = [
-  { icon: <Play className="h-4 w-4" />, label: "Play/Pause", command: "media_control", color: "bg-primary/20 text-primary" },
-  { icon: <SkipBack className="h-4 w-4" />, label: "Previous", command: "previous", color: "bg-muted text-muted-foreground" },
-  { icon: <SkipForward className="h-4 w-4" />, label: "Next", command: "next", color: "bg-muted text-muted-foreground" },
-  { icon: <VolumeX className="h-4 w-4" />, label: "Mute", command: "mute", color: "bg-muted text-muted-foreground" },
+const mediaActions: QuickAction[] = [
+  { icon: <Play className="h-4 w-4" />, label: "Play", command: "media_control", payload: { action: "play_pause" }, color: "bg-primary/20 text-primary" },
+  { icon: <SkipBack className="h-4 w-4" />, label: "Prev", command: "media_control", payload: { action: "previous" }, color: "bg-muted text-muted-foreground" },
+  { icon: <SkipForward className="h-4 w-4" />, label: "Next", command: "media_control", payload: { action: "next" }, color: "bg-muted text-muted-foreground" },
+  { icon: <VolumeX className="h-4 w-4" />, label: "Mute", command: "media_control", payload: { action: "mute" }, color: "bg-muted text-muted-foreground" },
+];
+
+const utilityActions: QuickAction[] = [
+  { icon: <CloudSun className="h-4 w-4" />, label: "Weather", command: "weather", color: "bg-sky-500/20 text-sky-400" },
+  { icon: <AlarmClock className="h-4 w-4" />, label: "Alarm", command: "set_alarm", color: "bg-amber-500/20 text-amber-400" },
+  { icon: <Timer className="h-4 w-4" />, label: "Timer", command: "set_timer", color: "bg-emerald-500/20 text-emerald-400" },
+  { icon: <Bell className="h-4 w-4" />, label: "Remind", command: "set_reminder", color: "bg-violet-500/20 text-violet-400" },
+];
+
+const suggestedCommands = [
+  { text: "What's the weather?", icon: <CloudSun className="h-3 w-3" /> },
+  { text: "Play some music", icon: <Music className="h-3 w-3" /> },
+  { text: "Open Chrome", icon: <Globe className="h-3 w-3" /> },
+  { text: "Set a timer for 5 min", icon: <Timer className="h-3 w-3" /> },
+  { text: "Lock my PC", icon: <Lock className="h-3 w-3" /> },
+  { text: "Search Google for...", icon: <Search className="h-3 w-3" /> },
 ];
 
 export function AIAssistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [inputText, setInputText] = useState("");
-  const [activeTab, setActiveTab] = useState("chat");
+  const [activeTab, setActiveTab] = useState<"all" | "mobile" | "pc" | "media">("all");
   const [showQuickActions, setShowQuickActions] = useState(true);
   const [volume, setVolume] = useState(50);
   const [brightness, setBrightness] = useState(50);
@@ -97,6 +132,7 @@ export function AIAssistant() {
 
   const { speak, stopSpeaking, isSpeaking } = useWebSpeechTTS({ rate: 1.0, pitch: 1.0 });
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
 
   const { 
     isListening, 
@@ -131,7 +167,61 @@ export function AIAssistant() {
   const processAIMessage = async (text: string) => {
     setIsProcessing(true);
     try {
-      if (!session?.session_token) throw new Error("Not paired. Please connect your PC first.");
+      // Check for local mobile commands first
+      const lowerText = text.toLowerCase();
+      
+      // Handle mobile-specific commands locally
+      if (lowerText.includes("call ") || lowerText.includes("dial ")) {
+        const response = "I'll help you make a call. Opening the dialer...";
+        addAssistantMessage(response);
+        // Extract number/contact and open dialer
+        window.location.href = "tel:";
+        return;
+      }
+      
+      if (lowerText.includes("text ") || lowerText.includes("message ") || lowerText.includes("sms ")) {
+        const response = "Opening messaging app...";
+        addAssistantMessage(response);
+        window.location.href = "sms:";
+        return;
+      }
+      
+      if (lowerText.includes("email ")) {
+        const response = "Opening email...";
+        addAssistantMessage(response);
+        window.location.href = "mailto:";
+        return;
+      }
+      
+      if (lowerText.includes("weather")) {
+        const response = "Let me check the weather for you. Opening weather...";
+        addAssistantMessage(response, "weather");
+        window.open("https://weather.com", "_blank");
+        return;
+      }
+      
+      if (lowerText.includes("timer") || lowerText.includes("alarm")) {
+        // Extract time from message
+        const match = lowerText.match(/(\d+)\s*(min|minute|sec|second|hour)/);
+        if (match) {
+          const amount = parseInt(match[1]);
+          const unit = match[2];
+          const ms = unit.startsWith("min") ? amount * 60000 : unit.startsWith("sec") ? amount * 1000 : amount * 3600000;
+          const response = `Timer set for ${amount} ${unit}(s). I'll notify you when it's done!`;
+          addAssistantMessage(response, "alarm");
+          setTimeout(() => {
+            toast({ title: "⏰ Timer Complete!", description: `Your ${amount} ${unit} timer is done!` });
+            if (voiceEnabled) speak(`Your ${amount} ${unit} timer is complete.`);
+          }, ms);
+          return;
+        }
+      }
+
+      // For PC commands, send to backend
+      if (!session?.session_token) {
+        addAssistantMessage("I'm not connected to your PC. Please pair your device first to control it remotely.");
+        return;
+      }
 
       const { data, error } = await supabase.functions.invoke("jarvis-chat", {
         body: { message: text },
@@ -141,15 +231,7 @@ export function AIAssistant() {
       if (error) throw new Error(error.message || "Failed to get AI response");
 
       const responseText = (data as Record<string, unknown>)?.response as string ?? "";
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: responseText,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-      if (voiceEnabled && responseText) speak(responseText);
+      addAssistantMessage(responseText);
       
       // Execute commands if present
       const commands = (data as Record<string, unknown>)?.commands as Array<Record<string, unknown>>;
@@ -160,11 +242,23 @@ export function AIAssistant() {
       }
     } catch (error) {
       console.error("Error:", error);
-      const errorMsg = error instanceof Error ? error.message : "Failed to get AI response";
-      toast({ title: "Error", description: errorMsg, variant: "destructive" });
+      const errorMsg = error instanceof Error ? error.message : "Something went wrong. Please try again.";
+      addAssistantMessage(errorMsg);
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const addAssistantMessage = (content: string, type?: Message["type"]) => {
+    const assistantMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      role: "assistant",
+      content,
+      timestamp: new Date(),
+      type,
+    };
+    setMessages((prev) => [...prev, assistantMessage]);
+    if (voiceEnabled && content) speak(content);
   };
 
   const executeCommand = async (cmd: Record<string, unknown>) => {
@@ -221,24 +315,58 @@ export function AIAssistant() {
     setMessages((prev) => [...prev, userMessage]);
     setInputText("");
     await processAIMessage(messageText);
-  }, [inputText, isProcessing, session?.session_token]);
+  }, [inputText, isProcessing]);
 
-  const handleQuickCommand = async (command: string) => {
-    try {
-      if (command === "media_control") {
-        await sendCommand("media_control", { action: "play_pause" }, { awaitResult: true, timeoutMs: 4000 });
-      } else if (command === "next") {
-        await sendCommand("media_control", { action: "next" }, { awaitResult: true, timeoutMs: 4000 });
-      } else if (command === "previous") {
-        await sendCommand("media_control", { action: "previous" }, { awaitResult: true, timeoutMs: 4000 });
-      } else if (command === "mute") {
-        await sendCommand("media_control", { action: "mute" }, { awaitResult: true, timeoutMs: 4000 });
-      } else {
-        await sendCommand(command, {}, { awaitResult: true, timeoutMs: 8000 });
+  const handleQuickAction = async (action: QuickAction) => {
+    // Handle mobile-native actions
+    if (action.command === "dial") {
+      window.location.href = "tel:";
+      return;
+    }
+    if (action.command === "sms") {
+      window.location.href = "sms:";
+      return;
+    }
+    if (action.command === "email") {
+      window.location.href = "mailto:";
+      return;
+    }
+    if (action.command === "camera") {
+      // Request camera permission
+      try {
+        await navigator.mediaDevices.getUserMedia({ video: true });
+        toast({ title: "Camera", description: "Camera access granted" });
+      } catch {
+        toast({ variant: "destructive", title: "Camera", description: "Camera access denied" });
       }
-      toast({ title: "Success", description: `Command executed: ${command}` });
+      return;
+    }
+    if (action.command === "weather") {
+      window.open("https://weather.com", "_blank");
+      return;
+    }
+    if (action.command === "set_alarm" || action.command === "set_timer") {
+      setInputText(`Set a ${action.command === "set_alarm" ? "alarm" : "timer"} for `);
+      return;
+    }
+    if (action.command === "set_reminder") {
+      setInputText("Remind me to ");
+      return;
+    }
+
+    // PC commands
+    try {
+      if (action.command === "media_control") {
+        await sendCommand("media_control", action.payload || { action: "play_pause" }, { awaitResult: true, timeoutMs: 4000 });
+      } else if (action.command === "boost") {
+        await sendCommand("boost_ram", {}, { awaitResult: true, timeoutMs: 8000 });
+        await sendCommand("clear_temp_files", {}, { awaitResult: true, timeoutMs: 8000 });
+      } else {
+        await sendCommand(action.command, action.payload || {}, { awaitResult: true, timeoutMs: 8000 });
+      }
+      toast({ title: "✓ Success", description: `${action.label} executed` });
     } catch (e) {
-      toast({ variant: "destructive", title: "Error", description: `Failed: ${command}` });
+      toast({ variant: "destructive", title: "Error", description: `Failed: ${action.label}` });
     }
   };
 
@@ -265,6 +393,15 @@ export function AIAssistant() {
     else startListening();
   }, [isListening, startListening, stopListening, stopSpeaking]);
 
+  const getActionsForTab = () => {
+    switch (activeTab) {
+      case "mobile": return mobileActions;
+      case "pc": return pcActions;
+      case "media": return mediaActions;
+      default: return [...mobileActions, ...pcActions];
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
@@ -278,7 +415,7 @@ export function AIAssistant() {
                 AI Assistant
               </h1>
               <p className="text-xs text-muted-foreground">
-                {isConnected ? "PC Connected" : "Offline"}
+                {isConnected ? "PC Connected • Ready" : "Mobile Only Mode"}
               </p>
             </div>
           </div>
@@ -293,7 +430,7 @@ export function AIAssistant() {
               <Button 
                 variant={isListening ? "destructive" : "outline"} 
                 size="icon" 
-                className="h-8 w-8"
+                className={cn("h-8 w-8", isListening && "animate-pulse")}
                 onClick={toggleVoice}
               >
                 {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
@@ -306,57 +443,99 @@ export function AIAssistant() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
         {/* Quick Actions Toggle */}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="self-start gap-2 text-muted-foreground"
-          onClick={() => setShowQuickActions(!showQuickActions)}
-        >
-          {showQuickActions ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          Quick Actions
-        </Button>
+        <div className="flex items-center justify-between">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-muted-foreground"
+            onClick={() => setShowQuickActions(!showQuickActions)}
+          >
+            {showQuickActions ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            Quick Actions
+          </Button>
+          
+          <div className="flex items-center gap-2">
+            <Label htmlFor="voice-toggle" className="text-xs text-muted-foreground">Voice</Label>
+            <Switch
+              id="voice-toggle"
+              checked={voiceEnabled}
+              onCheckedChange={setVoiceEnabled}
+              className="scale-75"
+            />
+          </div>
+        </div>
 
         {/* Quick Actions Panel */}
         {showQuickActions && (
           <div className="space-y-4 animate-in slide-in-from-top-2">
-            {/* PC Controls */}
+            {/* Category Tabs */}
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="w-full">
+              <TabsList className="grid grid-cols-4 h-8">
+                <TabsTrigger value="all" className="text-xs">All</TabsTrigger>
+                <TabsTrigger value="mobile" className="text-xs">📱 Mobile</TabsTrigger>
+                <TabsTrigger value="pc" className="text-xs">💻 PC</TabsTrigger>
+                <TabsTrigger value="media" className="text-xs">🎵 Media</TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            {/* Action Buttons */}
             <div className="grid grid-cols-4 gap-2">
-              {pcCommands.map((cmd) => (
+              {getActionsForTab().map((action) => (
                 <Button
-                  key={cmd.command}
+                  key={action.label}
                   variant="outline"
-                  className={cn("flex flex-col h-auto py-3 gap-1", cmd.color)}
-                  onClick={() => handleQuickCommand(cmd.command)}
-                  disabled={!isConnected}
+                  className={cn("flex flex-col h-auto py-3 gap-1 hover:scale-105 transition-transform", action.color)}
+                  onClick={() => handleQuickAction(action)}
+                  disabled={!isConnected && !["dial", "sms", "email", "camera", "weather", "set_alarm", "set_timer", "set_reminder"].includes(action.command)}
                 >
-                  {cmd.icon}
-                  <span className="text-[10px]">{cmd.label}</span>
+                  {action.icon}
+                  <span className="text-[10px]">{action.label}</span>
                 </Button>
               ))}
             </div>
 
-            {/* Media Controls */}
+            {/* Utilities Row */}
+            {activeTab === "all" && (
+              <div className="grid grid-cols-4 gap-2">
+                {utilityActions.map((action) => (
+                  <Button
+                    key={action.label}
+                    variant="outline"
+                    className={cn("flex flex-col h-auto py-3 gap-1 hover:scale-105 transition-transform", action.color)}
+                    onClick={() => handleQuickAction(action)}
+                  >
+                    {action.icon}
+                    <span className="text-[10px]">{action.label}</span>
+                  </Button>
+                ))}
+              </div>
+            )}
+
+            {/* Media & System Controls */}
             <Card className="border-border/40">
               <CardContent className="p-3 space-y-3">
+                {/* Media Controls */}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium">Media Controls</span>
+                  <span className="text-xs font-medium flex items-center gap-1">
+                    <Music className="h-3 w-3" /> Media
+                  </span>
                   <div className="flex gap-1">
-                    {mediaCommands.map((cmd) => (
+                    {mediaActions.map((action) => (
                       <Button
-                        key={cmd.command}
+                        key={action.label}
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => handleQuickCommand(cmd.command)}
+                        onClick={() => handleQuickAction(action)}
                         disabled={!isConnected}
                       >
-                        {cmd.icon}
+                        {action.icon}
                       </Button>
                     ))}
                   </div>
                 </div>
 
-                {/* Volume Slider */}
+                {/* Volume */}
                 <div className="flex items-center gap-3">
                   <Volume1 className="h-4 w-4 text-muted-foreground" />
                   <input
@@ -365,13 +544,13 @@ export function AIAssistant() {
                     max="100"
                     value={volume}
                     onChange={(e) => handleVolumeChange(parseInt(e.target.value))}
-                    className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer"
+                    className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
                     disabled={!isConnected}
                   />
                   <span className="text-xs w-8 text-right">{volume}%</span>
                 </div>
 
-                {/* Brightness Slider */}
+                {/* Brightness */}
                 <div className="flex items-center gap-3">
                   <Sun className="h-4 w-4 text-muted-foreground" />
                   <input
@@ -380,7 +559,7 @@ export function AIAssistant() {
                     max="100"
                     value={brightness}
                     onChange={(e) => handleBrightnessChange(parseInt(e.target.value))}
-                    className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer"
+                    className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
                     disabled={!isConnected}
                   />
                   <span className="text-xs w-8 text-right">{brightness}%</span>
@@ -402,29 +581,23 @@ export function AIAssistant() {
                   </div>
                 </div>
 
-                <h2 className="text-lg font-semibold mb-1">Hey, I'm your AI Assistant!</h2>
+                <h2 className="text-lg font-semibold mb-1">Hey, I'm JARVIS!</h2>
                 <p className="text-muted-foreground text-sm mb-4 max-w-xs">
-                  Control your PC, play music, search the web, and more. Just ask!
+                  Your AI assistant. Control your PC, set timers, make calls, and more!
                 </p>
 
-                {/* Example Commands */}
-                <div className="grid grid-cols-2 gap-2 w-full max-w-xs">
-                  {[
-                    { icon: <Music className="h-3 w-3" />, text: "Play some music" },
-                    { icon: <Globe className="h-3 w-3" />, text: "Search Google" },
-                    { icon: <Monitor className="h-3 w-3" />, text: "Open Chrome" },
-                    { icon: <Calendar className="h-3 w-3" />, text: "Open Calendar" },
-                  ].map((ex, i) => (
+                {/* Suggested Commands */}
+                <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
+                  {suggestedCommands.map((cmd, i) => (
                     <Button
                       key={i}
                       variant="outline"
                       size="sm"
                       className="justify-start gap-2 text-xs h-auto py-2"
-                      onClick={() => handleSendMessage(ex.text)}
-                      disabled={!isConnected}
+                      onClick={() => handleSendMessage(cmd.text)}
                     >
-                      {ex.icon}
-                      {ex.text}
+                      {cmd.icon}
+                      <span className="truncate">{cmd.text}</span>
                     </Button>
                   ))}
                 </div>
@@ -457,7 +630,11 @@ export function AIAssistant() {
                       <Bot className="w-4 h-4 text-primary" />
                     </div>
                     <div className="bg-muted rounded-2xl px-3 py-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <span className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <span className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </div>
                     </div>
                   </div>
                 )}
@@ -483,22 +660,22 @@ export function AIAssistant() {
                   variant={isListening ? "destructive" : "outline"} 
                   size="icon" 
                   onClick={toggleVoice} 
-                  className="shrink-0"
+                  className={cn("shrink-0", isListening && "animate-pulse")}
                 >
                   {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </Button>
               )}
               <Input
-                placeholder={isConnected ? "Ask me anything..." : "Connect PC to start..."}
+                placeholder="Ask me anything..."
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendMessage()}
-                disabled={isProcessing || !isConnected}
+                disabled={isProcessing}
                 className="flex-1"
               />
               <Button 
                 onClick={() => handleSendMessage()} 
-                disabled={isProcessing || !inputText.trim() || !isConnected} 
+                disabled={isProcessing || !inputText.trim()} 
                 size="icon" 
                 className="shrink-0"
               >
