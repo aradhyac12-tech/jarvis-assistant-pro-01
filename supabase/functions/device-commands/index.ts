@@ -4,7 +4,7 @@ import { checkRateLimit, rateLimitExceededResponse, rateLimitHeaders, type RateL
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token, x-device-key",
 };
 
 // Rate limit: 60 requests per minute per session

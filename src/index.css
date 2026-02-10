@@ -157,6 +157,44 @@
     @apply backdrop-blur-md bg-card/80 border border-border/30;
   }
 
+  /* Glass morphism enhanced */
+  .glass-morphism {
+    @apply backdrop-blur-xl border border-border/20;
+    background: linear-gradient(
+      135deg,
+      hsl(var(--card) / 0.6),
+      hsl(var(--card) / 0.3)
+    );
+    box-shadow: 
+      0 8px 32px hsl(var(--background) / 0.3),
+      inset 0 1px 0 hsl(var(--foreground) / 0.05);
+  }
+
+  .glass-morphism-strong {
+    @apply backdrop-blur-2xl border border-border/30;
+    background: linear-gradient(
+      135deg,
+      hsl(var(--card) / 0.8),
+      hsl(var(--card) / 0.5)
+    );
+    box-shadow: 
+      0 8px 32px hsl(var(--background) / 0.4),
+      inset 0 1px 0 hsl(var(--foreground) / 0.08);
+  }
+
+  .glass-orb {
+    background: radial-gradient(
+      circle at 30% 30%,
+      hsl(var(--primary) / 0.3),
+      hsl(var(--accent-purple) / 0.15),
+      transparent 70%
+    );
+    box-shadow:
+      0 0 60px hsl(var(--primary) / 0.15),
+      0 0 120px hsl(var(--accent-purple) / 0.08),
+      inset 0 0 40px hsl(var(--primary) / 0.1);
+  }
+
   /* Gradient button */
   .btn-gradient {
     @apply bg-gradient-to-r from-primary to-[hsl(var(--accent-purple))] text-primary-foreground;
