@@ -1,5 +1,5 @@
 """
-JARVIS PC Agent v3.0 - Consolidated Edition
+JARVIS PC Agent v4.0 - Enhanced GUI Edition
 ============================================
 Single-file agent with:
 - Local P2P WebSocket server (port 9876) for ultra-low latency
@@ -10,8 +10,9 @@ Single-file agent with:
 - Circular buffers to prevent memory leaks
 - Batch command execution
 - File transfer support
+- Enhanced Tkinter GUI with clock, calendar, diagnostics
 
-Run: python jarvis_agent.py
+Run: python jarvis_agent.py --gui
 """
 
 import os
@@ -36,9 +37,10 @@ import webbrowser
 import urllib.parse
 import urllib.request
 import traceback
+import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "3.1.0"
+AGENT_VERSION = "4.0.0"
 
 # Skill registry
 try:
@@ -625,7 +627,6 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _get_system_state(self) -> Dict[str, Any]:
-        """Lightweight snapshot used by the Hub to sync sliders + lock state."""
         try:
             return {
                 "success": True,
@@ -637,27 +638,18 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _get_cameras(self) -> Dict[str, Any]:
-        """Enumerate basic camera indices for PC camera streaming."""
         try:
             cameras: List[Dict[str, Any]] = []
-
             if not HAS_OPENCV:
-                return {
-                    "success": True,
-                    "cameras": [],
-                    "note": "OpenCV not installed; camera enumeration disabled.",
-                }
-
+                return {"success": True, "cameras": [], "note": "OpenCV not installed."}
             max_test = 6
             for idx in range(0, max_test):
                 cap = None
                 try:
-                    # CAP_DSHOW improves reliability on Windows
                     if platform.system() == "Windows":
                         cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
                     else:
                         cap = cv2.VideoCapture(idx)
-
                     if cap is not None and cap.isOpened():
                         cameras.append({"index": idx, "name": f"Camera {idx}"})
                 except Exception:
@@ -668,21 +660,14 @@ class JarvisAgent:
                             cap.release()
                     except Exception:
                         pass
-
             return {"success": True, "cameras": cameras}
         except Exception as e:
             return {"success": False, "error": str(e), "cameras": []}
 
     def _get_audio_devices(self) -> Dict[str, Any]:
-        """Return output devices + master volume/mute.
-
-        Note: full endpoint enumeration is OS-specific; we return the default endpoint
-        for now so the UI works without 'unknown command' errors.
-        """
         try:
             master_volume = self._get_volume()
             is_muted = False
-
             if platform.system() == "Windows" and HAS_PYCAW:
                 try:
                     devices = AudioUtilities.GetSpeakers()
@@ -691,46 +676,21 @@ class JarvisAgent:
                     is_muted = bool(endpoint.GetMute())
                 except Exception:
                     pass
-
-            devices_out = [
-                {
-                    "id": "default",
-                    "name": "Default Output",
-                    "type": "default",
-                    "volume": int(master_volume),
-                    "isMuted": bool(is_muted),
-                    "isDefault": True,
-                }
-            ]
-
-            return {
-                "success": True,
-                "devices": devices_out,
-                "master_volume": int(master_volume),
-                "is_muted": bool(is_muted),
-            }
+            devices_out = [{"id": "default", "name": "Default Output", "type": "default", "volume": int(master_volume), "isMuted": bool(is_muted), "isDefault": True}]
+            return {"success": True, "devices": devices_out, "master_volume": int(master_volume), "is_muted": bool(is_muted)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _set_audio_output(self, device_id: str) -> Dict[str, Any]:
-        """Best-effort audio output switching.
-
-        We keep this as a safe no-op for non-default ids to avoid breaking the UI.
-        """
         try:
             device_id = (device_id or "").strip() or "default"
             if device_id != "default":
-                return {
-                    "success": True,
-                    "device_id": device_id,
-                    "note": "Only the default output endpoint is supported in this build.",
-                }
+                return {"success": True, "device_id": device_id, "note": "Only the default output endpoint is supported."}
             return {"success": True, "device_id": "default"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _list_audio_outputs(self) -> Dict[str, Any]:
-        """Alias for get_audio_devices that returns a compatible structure."""
         return self._get_audio_devices()
 
     def _toggle_mute(self) -> Dict[str, Any]:
@@ -742,18 +702,13 @@ class JarvisAgent:
                 current = bool(endpoint.GetMute())
                 endpoint.SetMute(0 if current else 1, None)
                 return {"success": True, "is_muted": (not current)}
-
-            # Fallback: media key
             pyautogui.press("volumemute")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def _join_zoom(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Join a Zoom meeting and apply privacy toggles.
-
-        This is intentionally best-effort (Zoom focus can vary), but avoids unknown-command errors.
-        """
+        """Join a Zoom meeting via native Zoom protocol for reliability."""
         try:
             meeting_link = str(payload.get("meeting_link") or "").strip()
             meeting_id = str(payload.get("meeting_id") or "").strip()
@@ -763,21 +718,39 @@ class JarvisAgent:
             mute_video = bool(payload.get("mute_video", True))
             take_screenshot = bool(payload.get("take_screenshot", False))
 
-            link = meeting_link
-            if not link and meeting_id:
+            # Build zoom protocol URL for native app
+            link = ""
+            if meeting_link:
+                # Convert web URL to zoom protocol
+                link = meeting_link
+                if "zoom.us/j/" in link:
+                    mid = re.search(r'/j/(\d+)', link)
+                    pwd = re.search(r'pwd=([^&]+)', link)
+                    if mid:
+                        link = f"zoommtg://zoom.us/join?confno={mid.group(1)}"
+                        if pwd:
+                            link += f"&pwd={pwd.group(1)}"
+                        elif password:
+                            link += f"&pwd={urllib.parse.quote(password)}"
+            elif meeting_id:
                 mid = re.sub(r"[^0-9]", "", meeting_id)
-                link = f"https://zoom.us/j/{mid}"
+                link = f"zoommtg://zoom.us/join?confno={mid}"
                 if password:
-                    link += f"?pwd={urllib.parse.quote(password)}"
+                    link += f"&pwd={urllib.parse.quote(password)}"
 
             if not link:
                 return {"success": False, "error": "Missing meeting_link or meeting_id"}
 
-            add_log("info", "Opening Zoom meeting", details=link[:140], category="zoom")
-            webbrowser.open(link)
+            add_log("info", "Opening Zoom meeting via native protocol", details=link[:140], category="zoom")
+            
+            # Try zoommtg:// protocol first (opens native Zoom app)
+            if platform.system() == "Windows":
+                os.startfile(link)
+            else:
+                webbrowser.open(link)
 
-            # Give Zoom time to open and focus
-            await asyncio.sleep(8)
+            # Give Zoom more time to open (slow PC support)
+            await asyncio.sleep(12)
 
             # Privacy toggles (Windows Zoom hotkeys)
             if platform.system() == "Windows":
@@ -788,6 +761,8 @@ class JarvisAgent:
 
             screenshot_path = None
             if take_screenshot:
+                # Extra wait for slow PCs
+                await asyncio.sleep(5)
                 shot = self.screenshot_handler.capture_sync(quality=70, scale=0.5)
                 if shot.get("success") and shot.get("image"):
                     os.makedirs("screenshots", exist_ok=True)
@@ -832,7 +807,6 @@ class JarvisAgent:
     
     def _key_press(self, key: str) -> Dict[str, Any]:
         try:
-            # Handle combos like "ctrl+c"
             if "+" in key:
                 keys = [k.strip().lower() for k in key.split("+")]
                 pyautogui.hotkey(*keys)
@@ -939,6 +913,7 @@ class JarvisAgent:
                     "notepad": "notepad", "calculator": "calc", "terminal": "wt",
                     "explorer": "explorer", "spotify": "spotify", "discord": "discord",
                     "vscode": "code", "vs code": "code",
+                    "zoom": "zoom",
                 }
                 cmd = app_paths.get(app_name.lower())
                 if cmd:
@@ -1048,7 +1023,6 @@ class JarvisAgent:
     _screen_ws = None
     
     async def _start_camera_stream(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Start streaming camera frames to the relay."""
         try:
             if not HAS_OPENCV:
                 return {"success": False, "error": "OpenCV not installed"}
@@ -1061,10 +1035,8 @@ class JarvisAgent:
             if not session_id:
                 return {"success": False, "error": "Missing session_id"}
             
-            # Stop existing stream
             self._stop_camera_stream()
             
-            # Open camera with DirectShow on Windows for reliability
             if platform.system() == "Windows":
                 cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
             else:
@@ -1077,41 +1049,24 @@ class JarvisAgent:
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             cap.set(cv2.CAP_PROP_FPS, fps)
             
-            # Store for later cleanup
-            self._camera_streamer = {
-                "cap": cap,
-                "session_id": session_id,
-                "fps": fps,
-                "quality": quality,
-                "running": True,
-            }
+            self._camera_streamer = {"cap": cap, "session_id": session_id, "fps": fps, "quality": quality, "running": True}
             
-            # Start streaming in background thread
             def stream_camera():
                 import websockets.sync.client as ws_client
-                
-                # Build WebSocket URL with session token
                 ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
-                
                 try:
                     with ws_client.connect(ws_url) as ws:
                         self._camera_ws = ws
                         add_log("info", f"Camera stream connected: session={session_id[:8]}...", category="camera")
-                        
                         interval = 1.0 / max(1, fps)
                         while self._camera_streamer and self._camera_streamer.get("running"):
                             ret, frame = cap.read()
                             if not ret:
                                 continue
-                            
-                            # Encode to JPEG
                             encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._camera_streamer.get("quality", quality)]
                             _, buffer = cv2.imencode(".jpg", frame, encode_params)
-                            
-                            # Send binary frame
                             ws.send(buffer.tobytes())
                             time.sleep(interval)
-                            
                 except Exception as e:
                     add_log("error", f"Camera stream error: {e}", category="camera")
                 finally:
@@ -1119,15 +1074,12 @@ class JarvisAgent:
                     add_log("info", "Camera stream ended", category="camera")
             
             threading.Thread(target=stream_camera, daemon=True).start()
-            
             add_log("info", f"Camera stream started: camera={camera_index}, fps={fps}, quality={quality}", category="camera")
             return {"success": True, "session_id": session_id, "camera_index": camera_index}
-            
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _stop_camera_stream(self) -> Dict[str, Any]:
-        """Stop camera streaming."""
         try:
             if self._camera_streamer:
                 self._camera_streamer["running"] = False
@@ -1143,25 +1095,21 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _update_camera_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Update FPS/quality settings for active camera stream."""
         try:
             if not self._camera_streamer:
                 return {"success": False, "error": "No active camera stream"}
-            
             if "fps" in payload:
                 self._camera_streamer["fps"] = int(payload["fps"])
             if "quality" in payload:
                 self._camera_streamer["quality"] = int(payload["quality"])
-            
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     async def _start_screen_stream(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Start streaming screen frames to the relay."""
         try:
             if not HAS_MSS:
-                return {"success": False, "error": "mss not installed - screen capture unavailable"}
+                return {"success": False, "error": "mss not installed"}
             
             session_id = payload.get("session_id", "")
             fps = int(payload.get("fps", 30))
@@ -1172,66 +1120,44 @@ class JarvisAgent:
             if not session_id:
                 return {"success": False, "error": "Missing session_id"}
             
-            # Stop existing stream
             self._stop_screen_stream()
             
-            self._screen_streamer = {
-                "session_id": session_id,
-                "fps": fps,
-                "quality": quality,
-                "scale": scale,
-                "monitor_index": monitor_index,
-                "running": True,
-            }
+            self._screen_streamer = {"session_id": session_id, "fps": fps, "quality": quality, "scale": scale, "monitor_index": monitor_index, "running": True}
             
             def stream_screen():
                 import websockets.sync.client as ws_client
-                
                 ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
-                
                 try:
                     with ws_client.connect(ws_url) as ws:
                         self._screen_ws = ws
                         add_log("info", f"Screen stream connected: session={session_id[:8]}...", category="screen")
-                        
                         with mss.mss() as sct:
                             monitors = sct.monitors
                             idx = monitor_index if 0 < monitor_index < len(monitors) else 1
                             monitor = monitors[idx]
-                            
                             interval = 1.0 / max(1, fps)
                             while self._screen_streamer and self._screen_streamer.get("running"):
                                 screenshot = sct.grab(monitor)
                                 img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
-                                
-                                # Scale down
                                 current_scale = self._screen_streamer.get("scale", scale)
                                 new_size = (int(img.width * current_scale), int(img.height * current_scale))
                                 img = img.resize(new_size, Image.LANCZOS)
-                                
-                                # Encode to JPEG
                                 buffer = io.BytesIO()
                                 img.save(buffer, format="JPEG", quality=self._screen_streamer.get("quality", quality), optimize=True)
-                                
-                                # Send binary frame
                                 ws.send(buffer.getvalue())
                                 time.sleep(interval)
-                                
                 except Exception as e:
                     add_log("error", f"Screen stream error: {e}", category="screen")
                 finally:
                     add_log("info", "Screen stream ended", category="screen")
             
             threading.Thread(target=stream_screen, daemon=True).start()
-            
             add_log("info", f"Screen stream started: fps={fps}, quality={quality}, scale={scale}", category="screen")
             return {"success": True, "session_id": session_id}
-            
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _stop_screen_stream(self) -> Dict[str, Any]:
-        """Stop screen streaming."""
         try:
             if self._screen_streamer:
                 self._screen_streamer["running"] = False
@@ -1247,29 +1173,25 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _update_screen_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Update FPS/quality/scale settings for active screen stream."""
         try:
             if not self._screen_streamer:
                 return {"success": False, "error": "No active screen stream"}
-            
             if "fps" in payload:
                 self._screen_streamer["fps"] = int(payload["fps"])
             if "quality" in payload:
                 self._screen_streamer["quality"] = int(payload["quality"])
             if "scale" in payload:
                 self._screen_streamer["scale"] = float(payload["scale"])
-            
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     async def _start_test_pattern(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Start a test pattern stream for debugging."""
         try:
             session_id = payload.get("session_id", "")
             fps = int(payload.get("fps", 30))
             quality = int(payload.get("quality", 70))
-            mode = payload.get("mode", "camera")  # 'camera' or 'screen'
+            mode = payload.get("mode", "camera")
             
             if not session_id:
                 return {"success": False, "error": "Missing session_id"}
@@ -1283,40 +1205,28 @@ class JarvisAgent:
             
             def stream_test_pattern():
                 import websockets.sync.client as ws_client
-                
                 ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true"
-                
                 try:
                     with ws_client.connect(ws_url) as ws:
                         add_log("info", f"Test pattern connected: session={session_id[:8]}...", category="test")
-                        
                         frame_num = 0
                         interval = 1.0 / max(1, fps)
                         streamer = self._screen_streamer if mode == "screen" else self._camera_streamer
-                        
                         while streamer and streamer.get("running"):
-                            # Create test pattern with frame number
                             img = Image.new('RGB', (640, 480), color=(frame_num % 256, 128, 255 - (frame_num % 256)))
                             from PIL import ImageDraw
                             draw = ImageDraw.Draw(img)
                             draw.text((280, 220), f"Frame {frame_num}", fill=(255, 255, 255))
-                            draw.text((250, 250), f"FPS: {fps} | Quality: {quality}", fill=(255, 255, 255))
-                            
                             buffer = io.BytesIO()
                             img.save(buffer, format="JPEG", quality=quality)
                             ws.send(buffer.getvalue())
-                            
                             frame_num += 1
                             time.sleep(interval)
-                            
                 except Exception as e:
                     add_log("error", f"Test pattern error: {e}", category="test")
             
             threading.Thread(target=stream_test_pattern, daemon=True).start()
-            
-            add_log("info", f"Test pattern started: mode={mode}, fps={fps}", category="test")
             return {"success": True, "session_id": session_id, "mode": mode}
-            
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -1339,10 +1249,7 @@ class JarvisAgent:
         try:
             import shutil
             freed_mb = 0
-            temp_paths = [
-                os.environ.get("TEMP", ""),
-                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
-            ]
+            temp_paths = [os.environ.get("TEMP", ""), os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp")]
             for temp_path in temp_paths:
                 if os.path.exists(temp_path):
                     try:
@@ -1367,10 +1274,7 @@ class JarvisAgent:
     def _set_power_plan(self, plan: str) -> Dict[str, Any]:
         try:
             if sys.platform == "win32":
-                plans = {
-                    "high_performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
-                    "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e",
-                }
+                plans = {"high_performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c", "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e"}
                 plan_guid = plans.get(plan, plans["high_performance"])
                 os.system(f"powercfg /setactive {plan_guid}")
                 add_log("info", f"Power plan set to: {plan}", category="system")
@@ -1415,6 +1319,23 @@ class JarvisAgent:
             "p2p_clients": len(p2p_server.clients) if p2p_server else 0,
         }
     
+    # ============== OPEN URL (supports zoom protocol) ==============
+    def _open_url(self, url: str) -> Dict[str, Any]:
+        try:
+            url = (url or "").strip()
+            if not url:
+                return {"success": False, "error": "Missing URL"}
+            
+            # For protocol URLs on Windows, use os.startfile
+            if platform.system() == "Windows" and "://" in url and not url.startswith("http"):
+                os.startfile(url)
+            else:
+                webbrowser.open(url)
+            
+            return {"success": True, "url": url}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
     # ============== BATCH COMMAND EXECUTION ==============
     async def _execute_batch(self, commands: List[Dict[str, Any]]) -> Dict[str, Any]:
         results = []
@@ -1440,7 +1361,6 @@ class JarvisAgent:
                 "get_system_state": "system_state",
                 "get_cameras": "list_cameras",
                 "get_audio_devices": "audio_devices",
-                # Skill aliases
                 "spotify": "spotify",
                 "spotify_control": "spotify",
                 "spotify_play": "spotify",
@@ -1483,29 +1403,17 @@ class JarvisAgent:
                 return {"success": True, "enabled": False}
             
             # Gate remote input commands
-            GATED_COMMANDS = {
-                "mouse_move", "mouse_click", "key_press", "key_combo", "type_text",
-                "scroll", "zoom", "gesture_3_finger", "gesture_4_finger",
-            }
+            GATED_COMMANDS = {"mouse_move", "mouse_click", "key_press", "key_combo", "type_text", "scroll", "zoom", "gesture_3_finger", "gesture_4_finger"}
             if cmd in GATED_COMMANDS:
                 incoming_session = str(payload.get("input_session", "") or "")
-                if (
-                    not self._active_input_session
-                    or incoming_session != self._active_input_session
-                    or time.time() > self._input_session_expires_at
-                ):
-                    # Silently reject - prevents ghost input
+                if (not self._active_input_session or incoming_session != self._active_input_session or time.time() > self._input_session_expires_at):
                     return {"success": False, "error": "Remote input not enabled"}
             
             # ============== SKILLS DISPATCH ==============
             if HAS_SKILLS:
                 registry = get_skill_registry()
                 if registry.can_dispatch(cmd):
-                    ctx = {
-                        "supabase": self.supabase,
-                        "user_id": self.current_user_id,
-                        "device_id": self.device_id,
-                    }
+                    ctx = {"supabase": self.supabase, "user_id": self.current_user_id, "device_id": self.device_id}
                     return await registry.dispatch(cmd, payload, ctx)
 
             # ============== ROUTE COMMANDS ==============
@@ -1600,11 +1508,9 @@ class JarvisAgent:
                         add_log("warn", f"unmute_pc failed: {e}", category="command")
                 return {"success": True}
             
-            # Audio device listing alias
             elif cmd in ["list_audio_outputs", "get_audio_outputs"]:
                 return self._list_audio_outputs()
             
-            # Play music alias (open YouTube search)
             elif cmd == "play_music":
                 query = payload.get("query", "")
                 service = payload.get("service", "youtube")
@@ -1614,7 +1520,6 @@ class JarvisAgent:
                     return {"success": True, "message": f"Playing '{query}' on YouTube"}
                 return {"success": False, "error": f"Unsupported service: {service}"}
             
-            # Web search alias
             elif cmd == "search_web":
                 query = payload.get("query", "")
                 engine = payload.get("engine", "google").lower()
@@ -1629,7 +1534,6 @@ class JarvisAgent:
                 webbrowser.open(url)
                 return {"success": True, "message": f"Searching '{query}' on {engine}"}
             
-            # Call controls - these are mobile-side actions; agent just acknowledges
             elif cmd in ["answer_call", "end_call", "decline_call", "call_mute"]:
                 add_log("info", f"Call control received: {cmd}", category="command")
                 return {"success": True, "message": f"{cmd} acknowledged (mobile-side action)"}
@@ -1639,6 +1543,10 @@ class JarvisAgent:
                 return self._open_app(payload.get("app_name", ""), payload.get("app_id"))
             elif cmd == "close_app":
                 return self._close_app(payload.get("app_name", ""))
+            
+            # Open URL (supports zoom:// and other protocols)
+            elif cmd == "open_url":
+                return self._open_url(payload.get("url", ""))
             
             # Files
             elif cmd == "list_files":
@@ -1660,7 +1568,7 @@ class JarvisAgent:
             elif cmd == "gaming_mode":
                 return self._gaming_mode(payload.get("enable", True))
             
-            # Notifications (PC-side acknowledgment)
+            # Notifications
             elif cmd in ["start_notification_sync", "stop_notification_sync"]:
                 add_log("info", f"Notification sync: {cmd}", category="sync")
                 return {"success": True}
@@ -1680,7 +1588,7 @@ class JarvisAgent:
             elif cmd in ["ping", "heartbeat"]:
                 return {"success": True, "pong": True, "timestamp": datetime.now().isoformat()}
             
-            # ============== CAMERA/SCREEN STREAMING ==============
+            # Camera/Screen streaming
             elif cmd == "start_camera_stream":
                 return await self._start_camera_stream(payload)
             elif cmd == "stop_camera_stream":
@@ -1699,51 +1607,50 @@ class JarvisAgent:
             else:
                 add_log("warn", f"Unknown command: {cmd}", category="command")
                 return {"success": False, "error": f"Unknown command: {cmd}"}
-        
+                
         except Exception as e:
-            add_log("error", f"Command '{command_type}' exception: {e}", details=traceback.format_exc(), category="command")
+            add_log("error", f"Command error: {e}", details=traceback.format_exc(), category="command")
             return {"success": False, "error": str(e)}
     
-    # ============== DEVICE REGISTRATION ==============
+    # ============== REGISTRATION & PAIRING ==============
+    def _generate_pairing_code(self) -> str:
+        import random
+        return f"{random.randint(100000, 999999)}"
+    
     async def register_device(self):
+        self.pairing_code = self._generate_pairing_code()
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)).isoformat()
+        
         try:
-            # Generate pairing code
-            import random
-            self.pairing_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
-            pairing_expires = datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)
-            
-            # Check for existing device
-            result = self.supabase.table("devices").select("id, device_key").eq("device_key", self.device_key).limit(1).execute()
+            result = self.supabase.table("devices").select("id").eq("device_key", self.device_key).execute()
             
             if result.data:
                 self.device_id = result.data[0]["id"]
                 self.supabase.table("devices").update({
                     "is_online": True,
                     "pairing_code": self.pairing_code,
-                    "pairing_expires_at": pairing_expires.isoformat(),
+                    "pairing_expires_at": expires_at,
                     "last_seen": datetime.now(timezone.utc).isoformat(),
+                    "name": DEVICE_NAME,
                 }).eq("id", self.device_id).execute()
             else:
-                # Create new device
                 insert_result = self.supabase.table("devices").insert({
-                    "name": DEVICE_NAME,
                     "device_key": self.device_key,
+                    "name": DEVICE_NAME,
                     "is_online": True,
                     "pairing_code": self.pairing_code,
-                    "pairing_expires_at": pairing_expires.isoformat(),
-                    "current_volume": self._get_volume(),
-                    "current_brightness": self._get_brightness(),
-                    "user_id": "00000000-0000-0000-0000-000000000000",  # Anonymous device
+                    "pairing_expires_at": expires_at,
+                    "user_id": "00000000-0000-0000-0000-000000000000",
                 }).execute()
-                
-                if insert_result.data:
-                    self.device_id = insert_result.data[0]["id"]
+                self.device_id = insert_result.data[0]["id"]
             
+            local_ips = get_local_ips()
             update_agent_status({
                 "connected": True,
                 "device_id": self.device_id,
                 "pairing_code": self.pairing_code,
-                "pairing_expires_at": pairing_expires.isoformat(),
+                "pairing_expires_at": expires_at,
+                "local_ips": local_ips,
             })
             
             add_log("info", f"Device registered: {self.device_id}", category="system")
@@ -1751,151 +1658,141 @@ class JarvisAgent:
             
         except Exception as e:
             add_log("error", f"Registration failed: {e}", category="system")
+            raise
     
-    # ============== POLLING ==============
-    async def poll_commands(self):
-        poll_url = f"{SUPABASE_URL}/functions/v1/agent-poll"
+    async def _refresh_pairing_code(self):
+        self.pairing_code = self._generate_pairing_code()
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)).isoformat()
         
-        while self.running:
-            try:
-                req_data = json.dumps({"action": "poll"}).encode("utf-8")
-                req = urllib.request.Request(
-                    poll_url,
-                    data=req_data,
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-device-key": self.device_key,
-                    },
-                    method="POST"
-                )
+        try:
+            self.supabase.table("devices").update({
+                "pairing_code": self.pairing_code,
+                "pairing_expires_at": expires_at,
+            }).eq("id", self.device_id).execute()
+            
+            update_agent_status({
+                "pairing_code": self.pairing_code,
+                "pairing_expires_at": expires_at,
+            })
+            
+            add_log("info", f"New pairing code: {self.pairing_code}", category="system")
+        except Exception as e:
+            add_log("error", f"Failed to refresh pairing code: {e}", category="system")
+    
+    async def heartbeat(self):
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            cpu = psutil.cpu_percent()
+            mem = psutil.virtual_memory().percent
+            
+            self.supabase.table("devices").update({
+                "is_online": True,
+                "last_seen": now,
+                "current_volume": self._get_volume(),
+                "current_brightness": self._get_brightness(),
+                "is_locked": self.is_locked,
+                "system_info": {
+                    "cpu_percent": cpu,
+                    "memory_percent": mem,
+                    "platform": platform.system(),
+                    "hostname": socket.gethostname(),
+                    "local_ips": get_local_ips(),
+                    "p2p_port": LOCAL_P2P_PORT,
+                    "agent_version": AGENT_VERSION,
+                },
+            }).eq("id", self.device_id).execute()
+            
+            update_agent_status({
+                "last_heartbeat": now,
+                "cpu_percent": cpu,
+                "memory_percent": mem,
+                "volume": self._get_volume(),
+                "brightness": self._get_brightness(),
+            })
+            
+        except Exception as e:
+            add_log("warn", f"Heartbeat failed: {e}", category="system")
+    
+    async def poll_commands(self):
+        try:
+            result = self.supabase.table("commands").select("*").eq(
+                "device_id", self.device_id
+            ).eq("status", "pending").order("created_at").limit(10).execute()
+            
+            for cmd in (result.data or []):
+                command_type = cmd.get("command_type", "")
+                payload = cmd.get("payload") or {}
+                cmd_id = cmd.get("id")
                 
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode("utf-8"))
-                
-                if not result.get("success"):
-                    if "Invalid device key" in str(result.get("error", "")):
-                        add_log("error", "Device key rejected - re-registering", category="auth")
-                        await self.register_device()
-                    await asyncio.sleep(POLL_INTERVAL)
-                    continue
-                
-                # Update user_id if returned (needed for skills)
-                if result.get("user_id"):
-                    self.current_user_id = result.get("user_id")
-
-                commands = result.get("commands", [])
+                try:
+                    self.supabase.table("commands").update({"status": "executing"}).eq("id", cmd_id).execute()
+                    
+                    result_data = await self._handle_command(command_type, payload)
+                    
+                    self.supabase.table("commands").update({
+                        "status": "completed",
+                        "result": result_data,
+                        "executed_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", cmd_id).execute()
+                    
+                    add_log("info", f"Command executed: {command_type}", category="command")
+                    self.consecutive_failures = 0
+                    self.backoff_seconds = 1
+                    
+                except Exception as e:
+                    self.supabase.table("commands").update({
+                        "status": "failed",
+                        "result": {"error": str(e)},
+                        "executed_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", cmd_id).execute()
+                    add_log("error", f"Command failed: {command_type} - {e}", category="command")
+                    
+        except Exception as e:
+            self.consecutive_failures += 1
+            self.backoff_seconds = min(self.backoff_seconds * 2, self.max_backoff)
+            add_log("warn", f"Poll error (attempt {self.consecutive_failures}): {e}", category="system")
+            
+            if self.consecutive_failures >= self.max_failures_before_reregister:
+                add_log("warn", "Too many failures, re-registering...", category="system")
                 self.consecutive_failures = 0
                 self.backoff_seconds = 1
-                
-                for cmd in commands:
-                    cmd_type = cmd["command_type"]
-                    payload = cmd.get("payload") or {}
-                    cmd_id = cmd["id"]
-                    
-                    add_log("info", f"Executing: {cmd_type}", category="command")
-                    result_data = await self._handle_command(cmd_type, payload)
-                    
-                    # Report completion
-                    try:
-                        complete_data = json.dumps({
-                            "action": "complete",
-                            "commandId": cmd_id,
-                            "result": result_data
-                        }).encode("utf-8")
-                        complete_req = urllib.request.Request(
-                            poll_url,
-                            data=complete_data,
-                            headers={
-                                "Content-Type": "application/json",
-                                "x-device-key": self.device_key,
-                            },
-                            method="POST"
-                        )
-                        with urllib.request.urlopen(complete_req, timeout=10) as _:
-                            pass
-                    except Exception as e:
-                        add_log("warn", f"Failed to report completion: {e}", category="command")
-                
-            except urllib.error.HTTPError as e:
-                if e.code == 401:
-                    add_log("error", "Authentication failed", category="auth")
-                self.consecutive_failures += 1
-            except Exception as e:
-                self.consecutive_failures += 1
-                add_log("warn", f"Poll error ({self.consecutive_failures}): {e}", category="polling")
-                
-                if self.consecutive_failures >= self.max_failures_before_reregister:
-                    add_log("warn", "Too many failures, re-registering...", category="system")
-                    self.backoff_seconds = min(self.backoff_seconds * 2, self.max_backoff)
-                    await asyncio.sleep(self.backoff_seconds)
-                    await self.register_device()
-            
-            await asyncio.sleep(POLL_INTERVAL)
+                await self.register_device()
     
-    # ============== HEARTBEAT ==============
-    async def heartbeat(self):
-        poll_url = f"{SUPABASE_URL}/functions/v1/agent-poll"
-        
-        while self.running:
-            try:
-                hb_data = json.dumps({
-                    "action": "heartbeat",
-                    "volume": self._get_volume(),
-                    "brightness": self._get_brightness(),
-                }).encode("utf-8")
-                
-                req = urllib.request.Request(
-                    poll_url,
-                    data=hb_data,
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-device-key": self.device_key,
-                    },
-                    method="POST"
-                )
-                
-                with urllib.request.urlopen(req, timeout=10) as _:
-                    pass
-                
-                update_agent_status({
-                    "last_heartbeat": datetime.now().isoformat(),
-                    "volume": self._volume_cache,
-                    "brightness": self._brightness_cache,
-                    "cpu_percent": psutil.cpu_percent(),
-                    "memory_percent": psutil.virtual_memory().percent,
-                })
-            except Exception as e:
-                add_log("warn", f"Heartbeat error: {e}", category="heartbeat")
-            
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
-    
-    # ============== RUN ==============
     async def run(self):
-        print("\n" + "="*50)
-        print(f"🤖 JARVIS PC Agent v{AGENT_VERSION}")
-        print("="*50)
-        print(f"📍 Device: {DEVICE_NAME}")
-        print(f"🔗 Backend: {SUPABASE_URL}")
-        print(f"📷 Camera: {'✅' if HAS_OPENCV else '❌'}")
-        print(f"🎤 Audio: {'✅' if HAS_PYAUDIO else '❌'}")
-        print(f"🔌 WebSockets: {'✅' if HAS_WEBSOCKETS else '❌'}")
-        print("="*50 + "\n")
-        
         await self.register_device()
         
-        # Start local P2P server
-        async def handle_local_command(command_type: str, payload: dict):
-            return await self._handle_command(command_type, payload)
+        # Start P2P server
+        start_local_p2p_server(command_handler=self._handle_command)
         
-        start_local_p2p_server(handle_local_command, LOCAL_P2P_PORT)
+        last_heartbeat = 0
+        last_pairing_check = 0
         
-        print("\n✅ Agent running! Open the Jarvis web app to control this PC.")
-        print("   Press Ctrl+C to stop.\n")
+        add_log("info", "Agent running. Waiting for commands...", category="system")
         
-        await asyncio.gather(
-            self.poll_commands(),
-            self.heartbeat()
-        )
+        while self.running:
+            now = time.time()
+            
+            # Heartbeat
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                await self.heartbeat()
+                last_heartbeat = now
+            
+            # Pairing code refresh
+            if now - last_pairing_check >= 60:
+                last_pairing_check = now
+                try:
+                    expires_str = get_agent_status().get("pairing_expires_at")
+                    if expires_str:
+                        expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+                        if datetime.now(timezone.utc) >= expires_dt:
+                            await self._refresh_pairing_code()
+                except Exception:
+                    pass
+            
+            # Poll commands
+            await self.poll_commands()
+            
+            await asyncio.sleep(max(POLL_INTERVAL, self.backoff_seconds if self.consecutive_failures > 0 else POLL_INTERVAL))
     
     async def shutdown(self):
         self.running = False
@@ -1934,10 +1831,9 @@ def main():
     print("="*60 + "\n")
 
     if args.gui and not HAS_TKINTER:
-        print("⚠️ Tkinter not available on this Python install. Starting in console mode.")
+        print("⚠️ Tkinter not available. Starting in console mode.")
 
     if args.gui and HAS_TKINTER:
-        # Run agent in a background thread; keep UI responsive.
         class AgentThreadRunner:
             def __init__(self):
                 self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1976,28 +1872,50 @@ def main():
                     pass
 
         class JarvisAgentGUI:
+            """Enhanced GUI with clock, calendar, connection status, file transfer, and P2P diagnostics."""
+            
             def __init__(self):
                 self.runner = AgentThreadRunner()
                 self.runner.start()
 
                 self.root = tk.Tk()
                 self.root.title(f"JARVIS PC Agent v{AGENT_VERSION}")
-                self.root.geometry("520x760")
-                self.root.minsize(480, 680)
+                self.root.geometry("680x820")
+                self.root.minsize(640, 760)
 
-                # Dark-ish styling (simple + stable across Windows builds)
-                self.root.configure(bg="#0b0b0f")
+                # Modern dark theme
+                BG = "#0a0a0f"
+                CARD_BG = "#111118"
+                CARD_BORDER = "#1e1e2e"
+                TEXT = "#e5e7eb"
+                TEXT_DIM = "#9ca3af"
+                ACCENT = "#3b82f6"
+                SUCCESS = "#22c55e"
+                DANGER = "#ef4444"
+                
+                self.BG = BG
+                self.CARD_BG = CARD_BG
+                self.CARD_BORDER = CARD_BORDER
+                self.TEXT = TEXT
+                self.TEXT_DIM = TEXT_DIM
+                self.ACCENT = ACCENT
+                self.SUCCESS = SUCCESS
+                self.DANGER = DANGER
+
+                self.root.configure(bg=BG)
                 style = ttk.Style()
                 try:
                     style.theme_use("clam")
                 except Exception:
                     pass
 
-                style.configure("TFrame", background="#0b0b0f")
-                style.configure("TLabel", background="#0b0b0f", foreground="#e5e7eb")
+                style.configure("TFrame", background=BG)
+                style.configure("TLabel", background=BG, foreground=TEXT)
                 style.configure("TButton", padding=6)
-                style.configure("TLabelframe", background="#0b0b0f", foreground="#e5e7eb")
-                style.configure("TLabelframe.Label", background="#0b0b0f", foreground="#e5e7eb")
+                style.configure("TLabelframe", background=BG, foreground=TEXT)
+                style.configure("TLabelframe.Label", background=BG, foreground=TEXT)
+                style.configure("TNotebook", background=BG)
+                style.configure("TNotebook.Tab", padding=[12, 6])
 
                 self._build_ui()
                 self._last_log_ids: Set[str] = set()
@@ -2007,222 +1925,213 @@ def main():
 
             def _build_ui(self):
                 container = ttk.Frame(self.root)
-                container.pack(fill="both", expand=True, padx=12, pady=12)
+                container.pack(fill="both", expand=True, padx=8, pady=8)
 
-                # Notebook for tabs
+                # ═══════ TOP BAR: Clock + Date + Connection ═══════
+                top_bar = tk.Frame(container, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                top_bar.pack(fill="x", pady=(0, 8))
+
+                # Clock
+                clock_frame = tk.Frame(top_bar, bg=self.CARD_BG)
+                clock_frame.pack(side="left", padx=16, pady=10)
+                
+                self.clock_label = tk.Label(clock_frame, text="00:00", font=("Segoe UI", 28, "bold"), bg=self.CARD_BG, fg=self.TEXT)
+                self.clock_label.pack(anchor="w")
+                self.date_label = tk.Label(clock_frame, text="", font=("Segoe UI", 10), bg=self.CARD_BG, fg=self.TEXT_DIM)
+                self.date_label.pack(anchor="w")
+
+                # Connection Status
+                conn_frame = tk.Frame(top_bar, bg=self.CARD_BG)
+                conn_frame.pack(side="right", padx=16, pady=10)
+                
+                self.conn_status = tk.Label(conn_frame, text="● CLOUD", font=("Consolas", 11, "bold"), bg=self.CARD_BG, fg=self.ACCENT)
+                self.conn_status.pack(anchor="e")
+                self.pairing_label = tk.Label(conn_frame, text="Code: —", font=("Consolas", 14, "bold"), bg=self.CARD_BG, fg=self.SUCCESS)
+                self.pairing_label.pack(anchor="e")
+                self.ip_label = tk.Label(conn_frame, text="IP: —", font=("Consolas", 9), bg=self.CARD_BG, fg=self.TEXT_DIM)
+                self.ip_label.pack(anchor="e")
+
+                # ═══════ NOTEBOOK TABS ═══════
                 notebook = ttk.Notebook(container)
                 notebook.pack(fill="both", expand=True)
 
-                # ============ Tab 1: Dashboard ============
-                status_tab = ttk.Frame(notebook)
-                notebook.add(status_tab, text="📊 Dashboard")
+                # ══════════ Tab 1: Dashboard ══════════
+                dash_tab = ttk.Frame(notebook)
+                notebook.add(dash_tab, text="  📊 Dashboard  ")
 
-                # Connection Status Card
-                status_box = ttk.Labelframe(status_tab, text="🔗 Connection Status")
-                status_box.pack(fill="x", padx=8, pady=(8, 0))
+                # System Stats Row
+                stats_frame = tk.Frame(dash_tab, bg=self.BG)
+                stats_frame.pack(fill="x", padx=4, pady=8)
 
-                grid = ttk.Frame(status_box)
-                grid.pack(fill="x", padx=10, pady=10)
+                self.cpu_card = self._make_stat_card(stats_frame, "CPU", "0%", 0)
+                self.ram_card = self._make_stat_card(stats_frame, "RAM", "0%", 1)
+                self.disk_card = self._make_stat_card(stats_frame, "Disk", "0%", 2)
+                self.battery_card = self._make_stat_card(stats_frame, "Battery", "N/A", 3)
+                self.uptime_card = self._make_stat_card(stats_frame, "Uptime", "0h", 4)
 
-                self.pairing_value = ttk.Label(grid, text="—", font=("Consolas", 18, "bold"), foreground="#22c55e")
-                self.device_value = ttk.Label(grid, text="—", font=("Segoe UI", 11))
-                self.ip_value = ttk.Label(grid, text="—", font=("Consolas", 10))
-                self.heartbeat_value = ttk.Label(grid, text="—", font=("Segoe UI", 9))
-                self.mode_label = ttk.Label(grid, text="—", font=("Segoe UI", 10, "bold"), foreground="#3b82f6")
-                self.cpu_label = ttk.Label(grid, text="—", font=("Segoe UI", 10))
-                self.stream_label = ttk.Label(grid, text="—", font=("Segoe UI", 9))
+                for i in range(5):
+                    stats_frame.grid_columnconfigure(i, weight=1)
 
-                labels_1 = [
-                    ("🔑 Pairing Code:", self.pairing_value),
-                    ("💻 Device:", self.device_value),
-                    ("🌐 Local IPs:", self.ip_value),
-                    ("💓 Heartbeat:", self.heartbeat_value),
-                    ("📡 Mode:", self.mode_label),
-                    ("📊 CPU / RAM:", self.cpu_label),
-                    ("📹 Streams:", self.stream_label),
-                ]
-                for i, (lbl_text, value_widget) in enumerate(labels_1):
-                    ttk.Label(grid, text=lbl_text, font=("Segoe UI", 10)).grid(row=i, column=0, sticky="w", pady=(4, 0))
-                    value_widget.grid(row=i, column=1, sticky="w", pady=(4, 0), padx=(12, 0))
+                # Calendar Mini
+                cal_frame = tk.Frame(dash_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                cal_frame.pack(fill="x", padx=4, pady=(0, 8))
 
-                for c in (0, 1):
-                    grid.grid_columnconfigure(c, weight=1)
+                now = datetime.now()
+                cal_header = tk.Label(cal_frame, text=now.strftime("%B %Y"), font=("Segoe UI", 11, "bold"), bg=self.CARD_BG, fg=self.TEXT)
+                cal_header.pack(pady=(8, 4))
 
-                actions = ttk.Frame(status_box)
-                actions.pack(fill="x", padx=10, pady=(0, 10))
+                cal_text = cal_module.month(now.year, now.month)
+                cal_display = tk.Label(cal_frame, text=cal_text, font=("Consolas", 9), bg=self.CARD_BG, fg=self.TEXT_DIM, justify="left")
+                cal_display.pack(padx=12, pady=(0, 8))
 
-                ttk.Button(actions, text="🌐 Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL)).pack(side="left")
-                ttk.Button(actions, text="📋 Copy Code", command=self._copy_pairing).pack(side="left", padx=(8, 0))
-                ttk.Button(actions, text="🔄 Refresh", command=self._refresh_status).pack(side="left", padx=(8, 0))
-                ttk.Button(actions, text="❌ Quit", command=self._on_close).pack(side="right")
+                # Logs
+                logs_frame = tk.Frame(dash_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                logs_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
 
-                # System Info Card
-                sysinfo_box = ttk.Labelframe(status_tab, text="💻 System Info")
-                sysinfo_box.pack(fill="x", padx=8, pady=(12, 0))
-                
-                sysinfo = ttk.Frame(sysinfo_box)
-                sysinfo.pack(fill="x", padx=10, pady=10)
-                
-                self.disk_label = ttk.Label(sysinfo, text="Disk: —")
-                self.battery_label = ttk.Label(sysinfo, text="Battery: —")
-                self.uptime_label = ttk.Label(sysinfo, text="Uptime: —")
-                
-                self.disk_label.grid(row=0, column=0, sticky="w")
-                self.battery_label.grid(row=0, column=1, sticky="w", padx=(20, 0))
-                self.uptime_label.grid(row=0, column=2, sticky="w", padx=(20, 0))
+                tk.Label(logs_frame, text="📜 Live Logs", font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(8, 4))
 
-                # Logs Card
-                logs_box = ttk.Labelframe(status_tab, text="📜 Live Logs")
-                logs_box.pack(fill="both", expand=True, padx=8, pady=(12, 8))
-
-                self.log_text = scrolledtext.ScrolledText(
-                    logs_box,
-                    height=10,
-                    bg="#0f172a",
-                    fg="#e5e7eb",
-                    insertbackground="#e5e7eb",
-                    font=("Consolas", 9),
-                )
-                self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
+                self.log_text = scrolledtext.ScrolledText(logs_frame, height=8, bg="#0f172a", fg=self.TEXT, insertbackground=self.TEXT, font=("Consolas", 9), borderwidth=0)
+                self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
                 self.log_text.configure(state="disabled")
 
-                # ============ Tab 2: Quick Actions ============
+                # ══════════ Tab 2: Actions ══════════
                 actions_tab = ttk.Frame(notebook)
-                notebook.add(actions_tab, text="⚡ Actions")
+                notebook.add(actions_tab, text="  ⚡ Actions  ")
 
-                # Power Controls
-                power_box = ttk.Labelframe(actions_tab, text="🔌 Power Controls")
-                power_box.pack(fill="x", padx=8, pady=8)
+                # Power
+                self._make_action_group(actions_tab, "🔌 Power", [
+                    ("🔒 Lock", self._action_lock), ("😴 Sleep", self._action_sleep),
+                    ("🔄 Restart", self._action_restart), ("⏻ Shutdown", self._action_shutdown),
+                ])
 
-                pb = ttk.Frame(power_box)
-                pb.pack(fill="x", padx=10, pady=10)
-
-                ttk.Button(pb, text="🔒 Lock", command=self._action_lock, width=12).grid(row=0, column=0, padx=4, pady=4)
-                ttk.Button(pb, text="😴 Sleep", command=self._action_sleep, width=12).grid(row=0, column=1, padx=4, pady=4)
-                ttk.Button(pb, text="🔄 Restart", command=self._action_restart, width=12).grid(row=0, column=2, padx=4, pady=4)
-                ttk.Button(pb, text="⏻ Shutdown", command=self._action_shutdown, width=12).grid(row=0, column=3, padx=4, pady=4)
-
-                # Audio Controls
-                audio_box = ttk.Labelframe(actions_tab, text="🔊 Audio Controls")
-                audio_box.pack(fill="x", padx=8, pady=8)
-
-                ab = ttk.Frame(audio_box)
-                ab.pack(fill="x", padx=10, pady=10)
-
-                ttk.Button(ab, text="🔇 Mute", command=self._action_mute, width=12).grid(row=0, column=0, padx=4, pady=4)
-                ttk.Button(ab, text="🔊 Unmute", command=self._action_unmute, width=12).grid(row=0, column=1, padx=4, pady=4)
-                ttk.Button(ab, text="⏯️ Play/Pause", command=self._action_playpause, width=12).grid(row=0, column=2, padx=4, pady=4)
-                ttk.Button(ab, text="⏭️ Next", command=self._action_next, width=12).grid(row=0, column=3, padx=4, pady=4)
+                # Audio
+                self._make_action_group(actions_tab, "🔊 Audio", [
+                    ("🔇 Mute", self._action_mute), ("🔊 Unmute", self._action_unmute),
+                    ("⏯️ Play/Pause", self._action_playpause), ("⏭️ Next", self._action_next),
+                ])
 
                 # Performance
-                perf_box = ttk.Labelframe(actions_tab, text="🚀 Performance")
-                perf_box.pack(fill="x", padx=8, pady=8)
-
-                pf = ttk.Frame(perf_box)
-                pf.pack(fill="x", padx=10, pady=10)
-
-                ttk.Button(pf, text="🧹 Clear Temp", command=self._action_clear_temp, width=12).grid(row=0, column=0, padx=4, pady=4)
-                ttk.Button(pf, text="⚡ High Perf", command=self._action_highperf, width=12).grid(row=0, column=1, padx=4, pady=4)
-                ttk.Button(pf, text="🔄 Explorer", command=self._action_explorer, width=12).grid(row=0, column=2, padx=4, pady=4)
-                ttk.Button(pf, text="🎮 Gaming Mode", command=self._action_gaming, width=12).grid(row=0, column=3, padx=4, pady=4)
+                self._make_action_group(actions_tab, "🚀 Performance", [
+                    ("🧹 Clear Temp", self._action_clear_temp), ("⚡ High Perf", self._action_highperf),
+                    ("🔄 Explorer", self._action_explorer), ("🎮 Gaming", self._action_gaming),
+                ])
 
                 # P2P Diagnostics
-                diag_box = ttk.Labelframe(actions_tab, text="🔍 P2P Diagnostics")
-                diag_box.pack(fill="x", padx=8, pady=8)
+                diag_frame = tk.Frame(actions_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                diag_frame.pack(fill="x", padx=4, pady=8)
 
-                diag_frame = ttk.Frame(diag_box)
-                diag_frame.pack(fill="x", padx=10, pady=10)
+                tk.Label(diag_frame, text="🔍 P2P Diagnostics", font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(8, 4))
+                
+                diag_inner = tk.Frame(diag_frame, bg=self.CARD_BG)
+                diag_inner.pack(fill="x", padx=10, pady=(0, 10))
 
-                ttk.Label(diag_frame, text="P2P Port:").grid(row=0, column=0, sticky="w")
-                self.port_entry = ttk.Entry(diag_frame, width=8)
-                self.port_entry.insert(0, str(LOCAL_P2P_PORT))
-                self.port_entry.config(state="readonly")
-                self.port_entry.grid(row=0, column=1, sticky="w", padx=(4, 0))
+                tk.Label(diag_inner, text=f"Port: {LOCAL_P2P_PORT}", font=("Consolas", 10), bg=self.CARD_BG, fg=self.TEXT_DIM).pack(side="left")
+                self.p2p_status_label = tk.Label(diag_inner, text="—", font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT)
+                self.p2p_status_label.pack(side="left", padx=16)
+                tk.Button(diag_inner, text="🔥 Test Port", command=self._action_test_firewall, bg=self.CARD_BG, fg=self.TEXT, relief="flat", borderwidth=1).pack(side="right")
+                tk.Button(diag_inner, text="📋 Copy IPs", command=self._copy_ips, bg=self.CARD_BG, fg=self.TEXT, relief="flat", borderwidth=1).pack(side="right", padx=4)
 
-                self.p2p_status_label = ttk.Label(diag_frame, text="—", font=("Segoe UI", 10, "bold"))
-                self.p2p_status_label.grid(row=0, column=2, sticky="w", padx=(16, 0))
-
-                ttk.Button(diag_frame, text="🔥 Test Firewall", command=self._action_test_firewall).grid(row=0, column=3, sticky="e")
-
-                # ============ Tab 3: File Transfer ============
+                # ══════════ Tab 3: Files ══════════
                 files_tab = ttk.Frame(notebook)
-                notebook.add(files_tab, text="📁 Files")
+                notebook.add(files_tab, text="  📁 Files  ")
 
-                # Save Folder
-                folder_box = ttk.Labelframe(files_tab, text="📂 Download Folder")
-                folder_box.pack(fill="x", padx=8, pady=8)
+                # Download Folder
+                dl_frame = tk.Frame(files_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                dl_frame.pack(fill="x", padx=4, pady=8)
 
-                ff = ttk.Frame(folder_box)
-                ff.pack(fill="x", padx=10, pady=10)
+                tk.Label(dl_frame, text="📂 Download Folder", font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(8, 4))
+
+                ff = tk.Frame(dl_frame, bg=self.CARD_BG)
+                ff.pack(fill="x", padx=10, pady=(0, 10))
 
                 self.save_folder_var = tk.StringVar(value=os.path.expanduser("~/Downloads/JARVIS"))
                 self.folder_entry = ttk.Entry(ff, textvariable=self.save_folder_var, width=40)
-                self.folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-                ttk.Button(ff, text="📁 Browse", command=self._browse_folder).grid(row=0, column=1)
-                ttk.Button(ff, text="📂 Open", command=self._open_folder).grid(row=0, column=2, padx=(4, 0))
-                ff.grid_columnconfigure(0, weight=1)
+                self.folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+                tk.Button(ff, text="📁 Browse", command=self._browse_folder, bg=self.CARD_BG, fg=self.TEXT, relief="flat").pack(side="left")
+                tk.Button(ff, text="📂 Open", command=self._open_folder, bg=self.CARD_BG, fg=self.TEXT, relief="flat").pack(side="left", padx=(4, 0))
 
                 # Send File
-                send_box = ttk.Labelframe(files_tab, text="📤 Send File to Phone")
-                send_box.pack(fill="x", padx=8, pady=8)
+                send_frame = tk.Frame(files_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                send_frame.pack(fill="x", padx=4, pady=(0, 8))
 
-                sf = ttk.Frame(send_box)
-                sf.pack(fill="x", padx=10, pady=10)
+                tk.Label(send_frame, text="📤 Send File to Phone", font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(8, 4))
+
+                sf = tk.Frame(send_frame, bg=self.CARD_BG)
+                sf.pack(fill="x", padx=10, pady=(0, 10))
 
                 self.send_file_var = tk.StringVar()
                 self.send_file_entry = ttk.Entry(sf, textvariable=self.send_file_var, width=40)
-                self.send_file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-                ttk.Button(sf, text="📄 Select File", command=self._select_file).grid(row=0, column=1)
-                ttk.Button(sf, text="📤 Send", command=self._send_file).grid(row=0, column=2, padx=(4, 0))
-                sf.grid_columnconfigure(0, weight=1)
+                self.send_file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+                tk.Button(sf, text="📄 Select", command=self._select_file, bg=self.CARD_BG, fg=self.TEXT, relief="flat").pack(side="left")
+                tk.Button(sf, text="📤 Send", command=self._send_file, bg=self.CARD_BG, fg=self.TEXT, relief="flat").pack(side="left", padx=(4, 0))
 
                 # Recent Transfers
-                transfers_box = ttk.Labelframe(files_tab, text="📋 Recent Transfers")
-                transfers_box.pack(fill="both", expand=True, padx=8, pady=8)
+                transfers_frame = tk.Frame(files_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                transfers_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
 
-                self.transfer_list = tk.Listbox(transfers_box, bg="#0f172a", fg="#e5e7eb", font=("Consolas", 9), height=8)
-                self.transfer_list.pack(fill="both", expand=True, padx=10, pady=10)
+                tk.Label(transfers_frame, text="📋 Recent Transfers", font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(8, 4))
 
-                # ============ Tab 4: Settings ============
+                self.transfer_list = tk.Listbox(transfers_frame, bg="#0f172a", fg=self.TEXT, font=("Consolas", 9), height=8, borderwidth=0)
+                self.transfer_list.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+                # ══════════ Tab 4: Settings ══════════
                 settings_tab = ttk.Frame(notebook)
-                notebook.add(settings_tab, text="⚙️ Settings")
+                notebook.add(settings_tab, text="  ⚙️ Settings  ")
 
-                settings_box = ttk.Labelframe(settings_tab, text="⚙️ Agent Settings")
-                settings_box.pack(fill="x", padx=8, pady=8)
+                settings_card = tk.Frame(settings_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                settings_card.pack(fill="x", padx=4, pady=8)
 
-                sf = ttk.Frame(settings_box)
-                sf.pack(fill="x", padx=10, pady=10)
+                tk.Label(settings_card, text="⚙️ Agent Settings", font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(8, 4))
 
-                ttk.Label(sf, text="Auto-start with Windows:").grid(row=0, column=0, sticky="w")
-                self.autostart_var = tk.BooleanVar()
-                ttk.Checkbutton(sf, variable=self.autostart_var, command=self._toggle_autostart).grid(row=0, column=1, sticky="w")
+                sf = tk.Frame(settings_card, bg=self.CARD_BG)
+                sf.pack(fill="x", padx=10, pady=(0, 10))
 
-                ttk.Label(sf, text="Device Name:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+                tk.Label(sf, text="Device Name:", bg=self.CARD_BG, fg=self.TEXT_DIM).grid(row=0, column=0, sticky="w", pady=4)
                 self.device_name_entry = ttk.Entry(sf, width=24)
                 self.device_name_entry.insert(0, DEVICE_NAME)
-                self.device_name_entry.grid(row=1, column=1, sticky="w", pady=(8, 0))
+                self.device_name_entry.grid(row=0, column=1, sticky="w", pady=4, padx=(8, 0))
 
-                ttk.Label(sf, text="Supabase URL:").grid(row=2, column=0, sticky="w", pady=(8, 0))
-                self.url_entry = ttk.Entry(sf, width=40)
-                self.url_entry.insert(0, SUPABASE_URL)
-                self.url_entry.config(state="readonly")
-                self.url_entry.grid(row=2, column=1, sticky="w", pady=(8, 0))
+                tk.Label(sf, text="Backend URL:", bg=self.CARD_BG, fg=self.TEXT_DIM).grid(row=1, column=0, sticky="w", pady=4)
+                url_entry = ttk.Entry(sf, width=40)
+                url_entry.insert(0, SUPABASE_URL)
+                url_entry.config(state="readonly")
+                url_entry.grid(row=1, column=1, sticky="w", pady=4, padx=(8, 0))
 
-                ttk.Label(sf, text="Export logs:").grid(row=3, column=0, sticky="w", pady=(8, 0))
-                ttk.Button(sf, text="📥 Export JSON", command=self._export_logs).grid(row=3, column=1, sticky="w", pady=(8, 0))
-
-                # About Box
-                about_box = ttk.Labelframe(settings_tab, text="ℹ️ About")
-                about_box.pack(fill="x", padx=8, pady=8)
+                btn_frame = tk.Frame(settings_card, bg=self.CARD_BG)
+                btn_frame.pack(fill="x", padx=10, pady=(0, 10))
                 
-                ab_frame = ttk.Frame(about_box)
-                ab_frame.pack(fill="x", padx=10, pady=10)
-                
-                ttk.Label(ab_frame, text=f"JARVIS PC Agent v{AGENT_VERSION}", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-                ttk.Label(ab_frame, text="Remote PC control from your phone", font=("Segoe UI", 10)).pack(anchor="w")
-                ttk.Label(ab_frame, text=f"Python {sys.version_info.major}.{sys.version_info.minor} | Platform: {platform.system()}", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+                tk.Button(btn_frame, text="📥 Export Logs", command=self._export_logs, bg=self.CARD_BG, fg=self.TEXT, relief="flat").pack(side="left")
+                tk.Button(btn_frame, text="📋 Copy Code", command=self._copy_pairing, bg=self.CARD_BG, fg=self.TEXT, relief="flat").pack(side="left", padx=4)
+                tk.Button(btn_frame, text="🌐 Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL), bg=self.CARD_BG, fg=self.TEXT, relief="flat").pack(side="left", padx=4)
+                tk.Button(btn_frame, text="❌ Quit", command=self._on_close, bg=self.DANGER, fg="white", relief="flat").pack(side="right")
 
-            # ================ ACTION HELPERS ================
+                # About
+                about_card = tk.Frame(settings_tab, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                about_card.pack(fill="x", padx=4, pady=(0, 8))
+
+                tk.Label(about_card, text=f"JARVIS PC Agent v{AGENT_VERSION}", font=("Segoe UI", 12, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(10, 2))
+                tk.Label(about_card, text="Remote PC control from your phone", font=("Segoe UI", 10), bg=self.CARD_BG, fg=self.TEXT_DIM).pack(anchor="w", padx=10)
+                tk.Label(about_card, text=f"Python {sys.version_info.major}.{sys.version_info.minor} | {platform.system()}", font=("Segoe UI", 9), bg=self.CARD_BG, fg=self.TEXT_DIM).pack(anchor="w", padx=10, pady=(4, 10))
+
+            # ═══════ HELPER METHODS ═══════
+            def _make_stat_card(self, parent, title, value, col):
+                card = tk.Frame(parent, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                card.grid(row=0, column=col, padx=2, sticky="nsew")
+                tk.Label(card, text=title, font=("Segoe UI", 8), bg=self.CARD_BG, fg=self.TEXT_DIM).pack(pady=(6, 0))
+                val_label = tk.Label(card, text=value, font=("Segoe UI", 14, "bold"), bg=self.CARD_BG, fg=self.TEXT)
+                val_label.pack(pady=(0, 6))
+                return val_label
+
+            def _make_action_group(self, parent, title, buttons):
+                frame = tk.Frame(parent, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
+                frame.pack(fill="x", padx=4, pady=4)
+                tk.Label(frame, text=title, font=("Segoe UI", 10, "bold"), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=10, pady=(8, 4))
+                btn_row = tk.Frame(frame, bg=self.CARD_BG)
+                btn_row.pack(fill="x", padx=10, pady=(0, 10))
+                for i, (text, cmd) in enumerate(buttons):
+                    tk.Button(btn_row, text=text, command=cmd, width=14, bg="#1e1e2e", fg=self.TEXT, relief="flat", font=("Segoe UI", 9)).grid(row=0, column=i, padx=3, pady=2)
+
+            # ═══════ ACTIONS ═══════
             def _action_lock(self):
                 if sys.platform == "win32":
                     ctypes.windll.user32.LockWorkStation()
@@ -2248,7 +2157,6 @@ def main():
             def _action_mute(self):
                 if sys.platform == "win32" and HAS_PYCAW:
                     try:
-                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
                         devices = AudioUtilities.GetSpeakers()
                         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                         volume = cast(interface, POINTER(IAudioEndpointVolume))
@@ -2259,7 +2167,6 @@ def main():
             def _action_unmute(self):
                 if sys.platform == "win32" and HAS_PYCAW:
                     try:
-                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
                         devices = AudioUtilities.GetSpeakers()
                         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                         volume = cast(interface, POINTER(IAudioEndpointVolume))
@@ -2312,15 +2219,19 @@ def main():
                     result = sock.connect_ex(("127.0.0.1", LOCAL_P2P_PORT))
                     sock.close()
                     if result == 0:
-                        self.p2p_status_label.configure(text="Port OPEN ✓")
+                        self.p2p_status_label.configure(text="✅ Port OPEN", fg=self.SUCCESS)
                     else:
-                        self.p2p_status_label.configure(text="Port CLOSED ✗")
+                        self.p2p_status_label.configure(text="❌ Port CLOSED", fg=self.DANGER)
                 except Exception as e:
-                    self.p2p_status_label.configure(text=f"Error: {e}")
+                    self.p2p_status_label.configure(text=f"Error: {e}", fg=self.DANGER)
 
-            def _toggle_autostart(self):
-                # Placeholder: would set a registry key or scheduled task
-                pass
+            def _copy_ips(self):
+                try:
+                    ips = get_agent_status().get("local_ips", [])
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append("\n".join(ips))
+                except Exception:
+                    pass
 
             def _export_logs(self):
                 try:
@@ -2339,18 +2250,7 @@ def main():
                 except Exception:
                     pass
             
-            def _refresh_status(self):
-                """Force refresh system status."""
-                try:
-                    st = get_agent_status()
-                    st["cpu_percent"] = psutil.cpu_percent()
-                    st["memory_percent"] = psutil.virtual_memory().percent
-                    update_agent_status(st)
-                except Exception:
-                    pass
-            
             def _browse_folder(self):
-                """Browse for download folder."""
                 try:
                     folder = filedialog.askdirectory()
                     if folder:
@@ -2360,7 +2260,6 @@ def main():
                     pass
             
             def _open_folder(self):
-                """Open the download folder."""
                 try:
                     folder = self.save_folder_var.get()
                     os.makedirs(folder, exist_ok=True)
@@ -2372,7 +2271,6 @@ def main():
                     pass
             
             def _select_file(self):
-                """Select a file to send."""
                 try:
                     file_path = filedialog.askopenfilename()
                     if file_path:
@@ -2381,7 +2279,6 @@ def main():
                     pass
             
             def _send_file(self):
-                """Queue file for sending (placeholder - actual sending via P2P)."""
                 try:
                     file_path = self.send_file_var.get()
                     if file_path and os.path.exists(file_path):
@@ -2401,69 +2298,57 @@ def main():
                     pass
 
             def _tick(self):
+                # Update clock
+                now = datetime.now()
+                self.clock_label.configure(text=now.strftime("%H:%M"))
+                self.date_label.configure(text=now.strftime("%A, %d %B %Y"))
+                
                 st = get_agent_status()
                 mode = st.get("connection_mode", "cloud")
-                self.mode_label.configure(text=f"{'🟢' if mode == 'local_p2p' else '🟡'} {mode.upper()}")
-
-                self.pairing_value.configure(text=str(st.get("pairing_code") or "—"))
-                self.device_value.configure(text=str(st.get("device_name") or DEVICE_NAME))
-
-                ips = st.get("local_ips") or []
-                self.ip_value.configure(text=", ".join(ips[:2]) if ips else "—")
                 
-                hb = st.get("last_heartbeat")
-                if hb:
-                    try:
-                        hb_time = hb.split("T")[1][:8] if "T" in hb else hb[-8:]
-                        self.heartbeat_value.configure(text=f"✓ {hb_time}")
-                    except:
-                        self.heartbeat_value.configure(text=str(hb))
+                # Connection status
+                if mode == "local_p2p":
+                    self.conn_status.configure(text="● LOCAL P2P", fg=self.SUCCESS)
                 else:
-                    self.heartbeat_value.configure(text="—")
-                    
-                self.cpu_label.configure(text=f"{'🟢' if st.get('cpu_percent', 0) < 80 else '🔴'} {st.get('cpu_percent', 0):.0f}% / {st.get('memory_percent', 0):.0f}%")
+                    self.conn_status.configure(text="● CLOUD", fg=self.ACCENT)
                 
-                # Stream status
-                if hasattr(self, 'stream_label'):
-                    agent = self.runner.agent if self.runner else None
-                    cam_active = agent and agent._camera_streamer and agent._camera_streamer.get("running")
-                    screen_active = agent and agent._screen_streamer and agent._screen_streamer.get("running")
-                    if cam_active and screen_active:
-                        self.stream_label.configure(text="📹 Camera + 🖥️ Screen")
-                    elif cam_active:
-                        self.stream_label.configure(text="📹 Camera Active")
-                    elif screen_active:
-                        self.stream_label.configure(text="🖥️ Screen Active")
-                    else:
-                        self.stream_label.configure(text="—")
+                self.pairing_label.configure(text=f"Code: {st.get('pairing_code') or '—'}")
                 
-                # System info
+                ips = st.get("local_ips") or []
+                self.ip_label.configure(text=f"IP: {', '.join(ips[:2]) if ips else '—'}")
+
+                # System stats
+                cpu = st.get('cpu_percent', 0)
+                mem = st.get('memory_percent', 0)
+                self.cpu_card.configure(text=f"{cpu:.0f}%", fg=self.DANGER if cpu > 80 else self.SUCCESS)
+                self.ram_card.configure(text=f"{mem:.0f}%", fg=self.DANGER if mem > 80 else self.TEXT)
+                
                 try:
                     disk = psutil.disk_usage('C:\\' if sys.platform == "win32" else '/')
-                    self.disk_label.configure(text=f"Disk: {disk.percent:.0f}%")
+                    self.disk_card.configure(text=f"{disk.percent:.0f}%")
                     
                     battery = psutil.sensors_battery()
                     if battery:
-                        plug = "⚡" if battery.power_plugged else "🔋"
-                        self.battery_label.configure(text=f"Battery: {plug} {battery.percent:.0f}%")
+                        plug = "⚡" if battery.power_plugged else ""
+                        self.battery_card.configure(text=f"{plug}{battery.percent:.0f}%")
                     else:
-                        self.battery_label.configure(text="Battery: N/A")
+                        self.battery_card.configure(text="N/A")
                     
                     boot_time = psutil.boot_time()
                     uptime_secs = time.time() - boot_time
                     hours = int(uptime_secs // 3600)
                     mins = int((uptime_secs % 3600) // 60)
-                    self.uptime_label.configure(text=f"Uptime: {hours}h {mins}m")
+                    self.uptime_card.configure(text=f"{hours}h{mins}m")
                 except:
                     pass
 
-                # Update P2P status
+                # P2P status
                 p2p = get_local_p2p_server()
                 if p2p and p2p.running:
                     clients = len(p2p.clients)
-                    self.p2p_status_label.configure(text=f"🟢 Running ({clients} clients)", foreground="#22c55e")
+                    self.p2p_status_label.configure(text=f"🟢 Running ({clients} clients)", fg=self.SUCCESS)
                 else:
-                    self.p2p_status_label.configure(text="🔴 Stopped", foreground="#ef4444")
+                    self.p2p_status_label.configure(text="🔴 Stopped", fg=self.DANGER)
 
                 # Append new logs
                 for entry in get_logs():

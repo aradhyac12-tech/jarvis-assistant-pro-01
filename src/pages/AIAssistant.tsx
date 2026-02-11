@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Slider } from "@/components/ui/slider";
 import {
   Send,
   Bot,
@@ -11,41 +10,10 @@ import {
   Loader2,
   Mic,
   MicOff,
-  Volume2,
-  Smartphone,
-  Monitor,
-  Globe,
-  Music,
-  Search,
-  Sun,
-  Moon,
-  Lock,
-  Power,
   Wifi,
   WifiOff,
   Sparkles,
-  Play,
-  Pause,
-  SkipForward,
-  SkipBack,
-  VolumeX,
-  Volume1,
-  CloudSun,
-  MessageSquare,
-  Phone,
-  Mail,
-  Settings,
-  Zap,
-  Timer,
-  Bell,
-  AlarmClock,
-  Camera,
-  PhoneCall,
-  Instagram,
   ArrowLeft,
-  ChevronUp,
-  ChevronDown,
-  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -66,39 +34,10 @@ interface Message {
   type?: "text" | "weather" | "alarm" | "reminder" | "media" | "call" | "action";
 }
 
-// ── Suggested Commands ─────────────────────────────────────────
-const suggestedCommands = [
-  { text: "What's the weather?", icon: <CloudSun className="h-4 w-4" />, color: "from-sky-500/20 to-blue-500/20" },
-  { text: "Play some music", icon: <Music className="h-4 w-4" />, color: "from-pink-500/20 to-purple-500/20" },
-  { text: "Open Chrome on PC", icon: <Globe className="h-4 w-4" />, color: "from-green-500/20 to-emerald-500/20" },
-  { text: "Set a timer for 5 min", icon: <Timer className="h-4 w-4" />, color: "from-amber-500/20 to-orange-500/20" },
-  { text: "Call Mom", icon: <Phone className="h-4 w-4" />, color: "from-green-500/20 to-teal-500/20" },
-  { text: "Send a WhatsApp message", icon: <MessageSquare className="h-4 w-4" />, color: "from-emerald-500/20 to-green-500/20" },
-  { text: "Lock my PC", icon: <Lock className="h-4 w-4" />, color: "from-orange-500/20 to-red-500/20" },
-  { text: "Search Google for news", icon: <Search className="h-4 w-4" />, color: "from-blue-500/20 to-indigo-500/20" },
-];
-
-// ── Quick Action Chips ─────────────────────────────────────────
-const quickChips = [
-  { icon: <Phone className="h-3.5 w-3.5" />, label: "Call", cmd: "call" },
-  { icon: <MessageSquare className="h-3.5 w-3.5" />, label: "Text", cmd: "sms" },
-  { icon: <Mail className="h-3.5 w-3.5" />, label: "Email", cmd: "email" },
-  { icon: <Play className="h-3.5 w-3.5" />, label: "Play/Pause", cmd: "media_play" },
-  { icon: <SkipForward className="h-3.5 w-3.5" />, label: "Next", cmd: "media_next" },
-  { icon: <Lock className="h-3.5 w-3.5" />, label: "Lock PC", cmd: "lock" },
-  { icon: <Moon className="h-3.5 w-3.5" />, label: "Sleep", cmd: "sleep" },
-  { icon: <AlarmClock className="h-3.5 w-3.5" />, label: "Alarm", cmd: "alarm" },
-  { icon: <Camera className="h-3.5 w-3.5" />, label: "Camera", cmd: "camera" },
-  { icon: <CloudSun className="h-3.5 w-3.5" />, label: "Weather", cmd: "weather" },
-];
-
 export function AIAssistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [inputText, setInputText] = useState("");
-  const [volume, setVolume] = useState(50);
-  const [brightness, setBrightness] = useState(50);
-  const [showControls, setShowControls] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -134,6 +73,13 @@ export function AIAssistant() {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Request notification permission on mount
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
   // ── Voice Command Handler ────────────────────────────────────
   const handleVoiceCommand = useCallback(async (text: string) => {
     const userMessage: Message = { id: Date.now().toString(), role: "user", content: text, timestamp: new Date() };
@@ -148,48 +94,62 @@ export function AIAssistant() {
       const lowerText = text.toLowerCase();
 
       // ── Mobile-Native Actions (handled locally) ──────────────
-      // Proper calling: "call Mom", "call +1234567890"
+      // Proper calling via tel: or app intents
       if (/^(call|dial|phone)\s+/i.test(lowerText)) {
         const target = text.replace(/^(call|dial|phone)\s+/i, "").trim();
-        const isNumber = /^[\d\+\-\s\(\)]+$/.test(target);
-        if (isNumber) {
-          addAssistantMessage(`Calling ${target}...`, "call");
-          window.location.href = `tel:${target.replace(/\s/g, "")}`;
-        } else {
-          // Contact name - try intent
-          addAssistantMessage(`Calling ${target}... If the contact isn't found, you may need to select them.`, "call");
-          window.location.href = `tel:`;
+        
+        // Check if they specify a platform
+        if (/on\s+(whatsapp|wp)/i.test(lowerText)) {
+          const name = target.replace(/\s+on\s+(whatsapp|wp)/i, "").trim();
+          addAssistantMessage(`Opening WhatsApp call to ${name}...`, "call");
+          window.open(`https://wa.me/?text=Calling+${encodeURIComponent(name)}`, "_blank");
+          return;
         }
+        if (/on\s+(instagram|insta)/i.test(lowerText)) {
+          const name = target.replace(/\s+on\s+(instagram|insta)/i, "").trim();
+          addAssistantMessage(`Opening Instagram for ${name}...`, "call");
+          window.open(`instagram://user?username=${encodeURIComponent(name)}`, "_blank");
+          return;
+        }
+        if (/on\s+(snapchat|snap)/i.test(lowerText)) {
+          const name = target.replace(/\s+on\s+(snapchat|snap)/i, "").trim();
+          addAssistantMessage(`Opening Snapchat for ${name}...`, "call");
+          window.open(`snapchat://add/${encodeURIComponent(name)}`, "_blank");
+          return;
+        }
+
+        const isNumber = /^[\d\+\-\s\(\)]+$/.test(target);
+        addAssistantMessage(`Calling ${target}...`, "call");
+        window.location.href = isNumber ? `tel:${target.replace(/\s/g, "")}` : `tel:`;
         return;
       }
 
-      // WhatsApp message: "send whatsapp to Mom saying hello"
+      // WhatsApp message
       if (/whatsapp|wp\s/i.test(lowerText)) {
         const msgMatch = text.match(/(?:saying|message|msg|text)\s+(.+)/i);
         const msg = msgMatch?.[1] || "";
         addAssistantMessage(`Opening WhatsApp${msg ? ` with message: "${msg}"` : ""}...`, "action");
-        const wpUrl = msg
-          ? `https://wa.me/?text=${encodeURIComponent(msg)}`
-          : `https://wa.me/`;
-        window.open(wpUrl, "_blank");
+        window.open(msg ? `https://wa.me/?text=${encodeURIComponent(msg)}` : `https://wa.me/`, "_blank");
         return;
       }
 
-      // Instagram call/message
-      if (/instagram|insta\s/i.test(lowerText)) {
+      // Instagram
+      if (/instagram|insta\b/i.test(lowerText)) {
         addAssistantMessage("Opening Instagram...", "action");
-        window.open("https://instagram.com", "_blank");
+        window.open("instagram://", "_blank");
+        setTimeout(() => { window.open("https://instagram.com", "_blank"); }, 1500);
         return;
       }
 
       // Snapchat
-      if (/snapchat|snap\s/i.test(lowerText)) {
+      if (/snapchat|snap\b/i.test(lowerText)) {
         addAssistantMessage("Opening Snapchat...", "action");
-        window.open("https://snapchat.com", "_blank");
+        window.open("snapchat://", "_blank");
+        setTimeout(() => { window.open("https://snapchat.com", "_blank"); }, 1500);
         return;
       }
 
-      // SMS: "text John hello"
+      // SMS
       if (/^(text|sms|message)\s+/i.test(lowerText)) {
         const rest = text.replace(/^(text|sms|message)\s+/i, "").trim();
         const parts = rest.match(/^(\S+)\s+(.*)/);
@@ -215,7 +175,6 @@ export function AIAssistant() {
       // Weather
       if (lowerText.includes("weather")) {
         addAssistantMessage("Let me check the weather for you...", "weather");
-        // Use the AI to get weather info via web search
         if (isConnected) {
           const { data } = await supabase.functions.invoke("jarvis-chat", {
             body: { message: `Search Google for current weather in user's location and tell me` },
@@ -241,14 +200,25 @@ export function AIAssistant() {
           setTimeout(() => {
             toast({ title: "⏰ Timer Complete!", description: `Your ${amount} ${unit} timer is done!` });
             if (voiceEnabled) speak(`Your ${amount} ${unit} timer is complete.`);
-            // Try native notification
             if ("Notification" in window && Notification.permission === "granted") {
               new Notification("Timer Complete", { body: `Your ${amount} ${unit} timer is done!`, icon: "/favicon.ico" });
             }
           }, ms);
-          // Request notification permission
-          if ("Notification" in window && Notification.permission === "default") {
-            Notification.requestPermission();
+          return;
+        }
+      }
+
+      // ── Zoom - open via zoommtg:// protocol for native app ──
+      if (/zoom|join\s+meeting/i.test(lowerText)) {
+        const meetingIdMatch = lowerText.match(/(\d{9,11})/);
+        if (meetingIdMatch) {
+          const mid = meetingIdMatch[1];
+          addAssistantMessage(`Opening Zoom meeting ${mid} in the Zoom app...`, "action");
+          // Try native Zoom protocol first
+          if (isConnected) {
+            await sendCommand("open_url", { url: `zoommtg://zoom.us/join?confno=${mid}` }, { awaitResult: true, timeoutMs: 8000 });
+          } else {
+            window.location.href = `zoommtg://zoom.us/join?confno=${mid}`;
           }
           return;
         }
@@ -256,7 +226,6 @@ export function AIAssistant() {
 
       // ── PC Commands (via backend AI) ──────────────────────────
       if (!session?.session_token) {
-        // Even without PC connection, try to process with AI for general questions
         const { data, error } = await supabase.functions.invoke("jarvis-chat", {
           body: { message: text },
         });
@@ -321,11 +290,9 @@ export function AIAssistant() {
           break;
         case "set_volume":
           await sendCommand("set_volume", { level: cmd.level }, { awaitResult: true, timeoutMs: 4000 });
-          setVolume(cmd.level as number);
           break;
         case "set_brightness":
           await sendCommand("set_brightness", { level: cmd.level }, { awaitResult: true, timeoutMs: 4000 });
-          setBrightness(cmd.level as number);
           break;
         case "lock": case "sleep": case "shutdown": case "restart": case "screenshot":
           await sendCommand(action, {}, { awaitResult: true, timeoutMs: 4000 });
@@ -338,6 +305,24 @@ export function AIAssistant() {
           break;
         case "open_url":
           await sendCommand("open_url", { url: cmd.url }, { awaitResult: true, timeoutMs: 10000 });
+          break;
+        case "join_zoom":
+          // Use zoommtg:// protocol for native app
+          const meetingId = cmd.meeting_id || cmd.meetingId || "";
+          const meetingLink = cmd.meeting_link || cmd.meetingLink || "";
+          if (meetingLink) {
+            // Convert web link to zoom protocol
+            const zoomUrl = String(meetingLink).replace("https://zoom.us/j/", "zoommtg://zoom.us/join?confno=").replace("https://us04web.zoom.us/j/", "zoommtg://zoom.us/join?confno=");
+            await sendCommand("open_url", { url: zoomUrl }, { awaitResult: true, timeoutMs: 10000 });
+          } else if (meetingId) {
+            await sendCommand("open_url", { url: `zoommtg://zoom.us/join?confno=${meetingId}` }, { awaitResult: true, timeoutMs: 10000 });
+          }
+          // Take screenshot after delay for slow PCs
+          if (cmd.take_screenshot) {
+            setTimeout(async () => {
+              await sendCommand("take_screenshot", { quality: 70, scale: 0.5 }, { awaitResult: true, timeoutMs: 15000 });
+            }, 15000); // 15s delay for slow PCs
+          }
           break;
         case "make_call":
           window.location.href = `tel:${cmd.number || ""}`;
@@ -371,50 +356,6 @@ export function AIAssistant() {
     [inputText, isProcessing]
   );
 
-  const handleQuickChip = async (cmd: string) => {
-    switch (cmd) {
-      case "call":
-        setInputText("Call ");
-        inputRef.current?.focus();
-        break;
-      case "sms":
-        setInputText("Text ");
-        inputRef.current?.focus();
-        break;
-      case "email":
-        setInputText("Email ");
-        inputRef.current?.focus();
-        break;
-      case "media_play":
-        if (isConnected) await sendCommand("media_control", { action: "play_pause" }, { awaitResult: true, timeoutMs: 4000 });
-        break;
-      case "media_next":
-        if (isConnected) await sendCommand("media_control", { action: "next" }, { awaitResult: true, timeoutMs: 4000 });
-        break;
-      case "lock":
-        if (isConnected) await sendCommand("lock", {}, { awaitResult: true, timeoutMs: 4000 });
-        break;
-      case "sleep":
-        if (isConnected) await sendCommand("sleep", {}, { awaitResult: true, timeoutMs: 4000 });
-        break;
-      case "alarm":
-        setInputText("Set a timer for ");
-        inputRef.current?.focus();
-        break;
-      case "camera":
-        try {
-          await navigator.mediaDevices.getUserMedia({ video: true });
-          toast({ title: "Camera ready" });
-        } catch {
-          toast({ variant: "destructive", title: "Camera access denied" });
-        }
-        break;
-      case "weather":
-        handleSendMessage("What's the weather?");
-        break;
-    }
-  };
-
   const toggleVoice = useCallback(() => {
     if (isListening) {
       stopListening();
@@ -423,20 +364,6 @@ export function AIAssistant() {
       startListening();
     }
   }, [isListening, startListening, stopListening, stopSpeaking]);
-
-  const handleVolumeChange = async (val: number[]) => {
-    setVolume(val[0]);
-    if (isConnected) {
-      try { await sendCommand("set_volume", { level: val[0] }, { awaitResult: true, timeoutMs: 4000 }); } catch {}
-    }
-  };
-
-  const handleBrightnessChange = async (val: number[]) => {
-    setBrightness(val[0]);
-    if (isConnected) {
-      try { await sendCommand("set_brightness", { level: val[0] }, { awaitResult: true, timeoutMs: 4000 }); } catch {}
-    }
-  };
 
   const voiceMode = isSpeaking ? "speaking" : isListening ? "listening" : "idle";
   const isVoiceActive = isListening || isSpeaking;
@@ -468,32 +395,16 @@ export function AIAssistant() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Badge
-              variant="outline"
-              className={cn(
-                "text-[10px] gap-1 h-6 rounded-full",
-                isConnected ? "border-[hsl(var(--success))]/40 text-[hsl(var(--success))]" : "border-border"
-              )}
-            >
-              {isConnected ? <Wifi className="h-2.5 w-2.5" /> : <WifiOff className="h-2.5 w-2.5" />}
-              {isConnected ? "PC" : "Off"}
-            </Badge>
-
-            {voiceSupported && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className={cn(
-                  "h-9 w-9 rounded-full transition-all",
-                  isListening && "bg-primary/20 text-primary shadow-[0_0_15px_hsl(var(--primary)/0.3)]"
-                )}
-                onClick={toggleVoice}
-              >
-                {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </Button>
+          <Badge
+            variant="outline"
+            className={cn(
+              "text-[10px] gap-1 h-6 rounded-full",
+              isConnected ? "border-[hsl(var(--success))]/40 text-[hsl(var(--success))]" : "border-border"
             )}
-          </div>
+          >
+            {isConnected ? <Wifi className="h-2.5 w-2.5" /> : <WifiOff className="h-2.5 w-2.5" />}
+            {isConnected ? "PC" : "Off"}
+          </Badge>
         </div>
       </header>
 
@@ -501,23 +412,23 @@ export function AIAssistant() {
       <div className="flex-1 flex flex-col overflow-hidden relative z-10">
         <ScrollArea className="flex-1 px-4">
           {messages.length === 0 ? (
-            /* ── Empty State: Orb + Suggestions ───────────────── */
-            <div className="flex flex-col items-center justify-center pt-8 pb-4">
+            /* ── Empty State: Orb only, clean minimal ───────────── */
+            <div className="flex flex-col items-center justify-center min-h-[60vh]">
               {/* Glassmorphic Orb */}
-              <div className="relative mb-6">
+              <div className="relative mb-8">
                 <div className={cn(
-                  "w-36 h-36 rounded-full glass-orb flex items-center justify-center transition-all duration-500",
+                  "w-44 h-44 rounded-full glass-orb flex items-center justify-center transition-all duration-500",
                   isVoiceActive && "scale-110"
                 )}>
                   <CircularWaveform
                     isActive={isVoiceActive}
                     mode={voiceMode}
-                    size={120}
-                    className="absolute inset-2"
+                    size={140}
+                    className="absolute inset-3"
                   />
                   <div className="absolute inset-0 flex items-center justify-center">
                     <Bot className={cn(
-                      "w-10 h-10 transition-all",
+                      "w-12 h-12 transition-all",
                       isVoiceActive ? "text-primary" : "text-muted-foreground"
                     )} />
                   </div>
@@ -531,141 +442,15 @@ export function AIAssistant() {
                 )}
               </div>
 
-              <h2 className="text-xl font-bold mb-1 bg-gradient-to-r from-primary to-[hsl(var(--accent-purple))] bg-clip-text text-transparent">
+              <h2 className="text-2xl font-bold mb-2 bg-gradient-to-r from-primary to-[hsl(var(--accent-purple))] bg-clip-text text-transparent">
                 Hey, I'm JARVIS
               </h2>
-              <p className="text-muted-foreground text-xs mb-1 max-w-[260px] text-center">
-                Your AI assistant. Say <span className="text-primary font-medium">"Jarvis"</span> to wake me up.
+              <p className="text-muted-foreground text-sm mb-1 max-w-[280px] text-center">
+                Say <span className="text-primary font-semibold">"Jarvis"</span> or type anything below.
               </p>
-              <p className="text-muted-foreground/60 text-[10px] mb-6">
-                Control PC • Make Calls • Set Timers • Play Music • Search Web
+              <p className="text-muted-foreground/50 text-[11px]">
+                I can control your PC, make calls, set timers & more.
               </p>
-
-              {/* Quick Action Chips */}
-              <div className="flex flex-wrap gap-2 justify-center mb-6 max-w-sm">
-                {quickChips.map((chip) => (
-                  <button
-                    key={chip.cmd}
-                    onClick={() => handleQuickChip(chip.cmd)}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs",
-                      "glass-morphism hover:border-primary/30 transition-all hover:scale-105",
-                      "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {chip.icon}
-                    {chip.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Suggested Commands */}
-              <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
-                {suggestedCommands.map((cmd, i) => (
-                  <button
-                    key={i}
-                    onClick={() => handleSendMessage(cmd.text)}
-                    className={cn(
-                      "flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs text-left",
-                      "glass-morphism hover:border-primary/30 transition-all hover:scale-[1.02]",
-                      "bg-gradient-to-r", cmd.color
-                    )}
-                  >
-                    <span className="shrink-0 opacity-80">{cmd.icon}</span>
-                    <span className="text-foreground/80">{cmd.text}</span>
-                  </button>
-                ))}
-              </div>
-
-              {/* PC Controls Toggle */}
-              {isConnected && (
-                <button
-                  onClick={() => setShowControls(!showControls)}
-                  className="flex items-center gap-1.5 text-xs text-muted-foreground mt-4 hover:text-foreground transition-colors"
-                >
-                  <Monitor className="h-3.5 w-3.5" />
-                  PC Controls
-                  {showControls ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                </button>
-              )}
-
-              {/* PC Controls Panel */}
-              {showControls && isConnected && (
-                <div className="w-full max-w-sm mt-3 glass-morphism rounded-2xl p-4 space-y-4 animate-fade-in">
-                  {/* Media Controls */}
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                      <Music className="h-3 w-3" /> Media
-                    </span>
-                    <div className="flex gap-1">
-                      {[
-                        { icon: <SkipBack className="h-3.5 w-3.5" />, cmd: "previous" },
-                        { icon: <Play className="h-3.5 w-3.5" />, cmd: "play_pause" },
-                        { icon: <SkipForward className="h-3.5 w-3.5" />, cmd: "next" },
-                        { icon: <VolumeX className="h-3.5 w-3.5" />, cmd: "mute" },
-                      ].map((btn) => (
-                        <Button
-                          key={btn.cmd}
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 rounded-full hover:bg-primary/10"
-                          onClick={() => sendCommand("media_control", { action: btn.cmd }, { awaitResult: true, timeoutMs: 4000 })}
-                        >
-                          {btn.icon}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Volume */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                        <Volume1 className="h-3 w-3" /> Volume
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">{volume}%</span>
-                    </div>
-                    <Slider value={[volume]} max={100} step={1} onValueChange={handleVolumeChange} className="w-full" />
-                  </div>
-
-                  {/* Brightness */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                        <Sun className="h-3 w-3" /> Brightness
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">{brightness}%</span>
-                    </div>
-                    <Slider value={[brightness]} max={100} step={1} onValueChange={handleBrightnessChange} className="w-full" />
-                  </div>
-
-                  {/* System Actions */}
-                  <div className="grid grid-cols-4 gap-2">
-                    {[
-                      { icon: <Lock className="h-3.5 w-3.5" />, label: "Lock", cmd: "lock" },
-                      { icon: <Moon className="h-3.5 w-3.5" />, label: "Sleep", cmd: "sleep" },
-                      { icon: <Power className="h-3.5 w-3.5" />, label: "Off", cmd: "shutdown" },
-                      { icon: <Zap className="h-3.5 w-3.5" />, label: "Boost", cmd: "boost" },
-                    ].map((btn) => (
-                      <button
-                        key={btn.cmd}
-                        onClick={async () => {
-                          if (btn.cmd === "boost") {
-                            await sendCommand("boost_ram", {}, { awaitResult: true, timeoutMs: 8000 });
-                          } else {
-                            await sendCommand(btn.cmd, {}, { awaitResult: true, timeoutMs: 4000 });
-                          }
-                          toast({ title: `${btn.label} executed` });
-                        }}
-                        className="flex flex-col items-center gap-1 py-2 rounded-xl glass-morphism hover:border-primary/30 transition-all text-xs text-muted-foreground hover:text-foreground"
-                      >
-                        {btn.icon}
-                        <span className="text-[10px]">{btn.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           ) : (
             /* ── Chat Messages ──────────────────────────────────── */
@@ -737,13 +522,13 @@ export function AIAssistant() {
                 size="icon"
                 onClick={toggleVoice}
                 className={cn(
-                  "h-10 w-10 rounded-full shrink-0 transition-all",
+                  "h-11 w-11 rounded-full shrink-0 transition-all",
                   isListening
                     ? "bg-primary text-primary-foreground shadow-[0_0_20px_hsl(var(--primary)/0.4)] animate-pulse"
                     : "hover:bg-primary/10"
                 )}
               >
-                {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
               </Button>
             )}
             <Input
@@ -753,15 +538,15 @@ export function AIAssistant() {
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendMessage()}
               disabled={isProcessing}
-              className="flex-1 rounded-full border-border/30 bg-card/50 h-10 px-4 text-sm"
+              className="flex-1 rounded-full border-border/30 bg-card/50 h-11 px-4 text-sm"
             />
             <Button
               onClick={() => handleSendMessage()}
               disabled={isProcessing || !inputText.trim()}
               size="icon"
-              className="h-10 w-10 rounded-full shrink-0"
+              className="h-11 w-11 rounded-full shrink-0"
             >
-              {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              {isProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
             </Button>
           </div>
         </div>
