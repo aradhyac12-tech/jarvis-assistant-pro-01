@@ -25,13 +25,11 @@ import { CircularWaveform } from "@/components/AudioWaveform";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 
-// ── Types ──────────────────────────────────────────────────────
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
-  type?: "text" | "weather" | "alarm" | "reminder" | "media" | "call" | "action";
 }
 
 export function AIAssistant() {
@@ -73,130 +71,86 @@ export function AIAssistant() {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Request notification permission on mount
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission();
     }
   }, []);
 
-  // ── Voice Command Handler ────────────────────────────────────
   const handleVoiceCommand = useCallback(async (text: string) => {
     const userMessage: Message = { id: Date.now().toString(), role: "user", content: text, timestamp: new Date() };
     setMessages((prev) => [...prev, userMessage]);
     await processAIMessage(text);
   }, []);
 
-  // ── Core AI Processing ───────────────────────────────────────
   const processAIMessage = async (text: string) => {
     setIsProcessing(true);
     try {
       const lowerText = text.toLowerCase();
 
-      // ── Mobile-Native Actions (handled locally) ──────────────
-      // Proper calling via tel: or app intents
+      // ── Mobile-native actions ──
       if (/^(call|dial|phone)\s+/i.test(lowerText)) {
         const target = text.replace(/^(call|dial|phone)\s+/i, "").trim();
-        
-        // Check if they specify a platform
         if (/on\s+(whatsapp|wp)/i.test(lowerText)) {
           const name = target.replace(/\s+on\s+(whatsapp|wp)/i, "").trim();
-          addAssistantMessage(`Opening WhatsApp call to ${name}...`, "call");
+          addAssistantMessage(`Opening WhatsApp call to ${name}...`);
           window.open(`https://wa.me/?text=Calling+${encodeURIComponent(name)}`, "_blank");
           return;
         }
         if (/on\s+(instagram|insta)/i.test(lowerText)) {
           const name = target.replace(/\s+on\s+(instagram|insta)/i, "").trim();
-          addAssistantMessage(`Opening Instagram for ${name}...`, "call");
+          addAssistantMessage(`Opening Instagram for ${name}...`);
           window.open(`instagram://user?username=${encodeURIComponent(name)}`, "_blank");
           return;
         }
         if (/on\s+(snapchat|snap)/i.test(lowerText)) {
           const name = target.replace(/\s+on\s+(snapchat|snap)/i, "").trim();
-          addAssistantMessage(`Opening Snapchat for ${name}...`, "call");
+          addAssistantMessage(`Opening Snapchat for ${name}...`);
           window.open(`snapchat://add/${encodeURIComponent(name)}`, "_blank");
           return;
         }
-
         const isNumber = /^[\d\+\-\s\(\)]+$/.test(target);
-        addAssistantMessage(`Calling ${target}...`, "call");
+        addAssistantMessage(`Calling ${target}...`);
         window.location.href = isNumber ? `tel:${target.replace(/\s/g, "")}` : `tel:`;
         return;
       }
 
-      // WhatsApp message
       if (/whatsapp|wp\s/i.test(lowerText)) {
         const msgMatch = text.match(/(?:saying|message|msg|text)\s+(.+)/i);
         const msg = msgMatch?.[1] || "";
-        addAssistantMessage(`Opening WhatsApp${msg ? ` with message: "${msg}"` : ""}...`, "action");
+        addAssistantMessage(`Opening WhatsApp${msg ? ` with message: "${msg}"` : ""}...`);
         window.open(msg ? `https://wa.me/?text=${encodeURIComponent(msg)}` : `https://wa.me/`, "_blank");
         return;
       }
 
-      // Instagram
-      if (/instagram|insta\b/i.test(lowerText)) {
-        addAssistantMessage("Opening Instagram...", "action");
-        window.open("instagram://", "_blank");
-        setTimeout(() => { window.open("https://instagram.com", "_blank"); }, 1500);
-        return;
-      }
-
-      // Snapchat
-      if (/snapchat|snap\b/i.test(lowerText)) {
-        addAssistantMessage("Opening Snapchat...", "action");
-        window.open("snapchat://", "_blank");
-        setTimeout(() => { window.open("https://snapchat.com", "_blank"); }, 1500);
-        return;
-      }
-
-      // SMS
       if (/^(text|sms|message)\s+/i.test(lowerText)) {
         const rest = text.replace(/^(text|sms|message)\s+/i, "").trim();
         const parts = rest.match(/^(\S+)\s+(.*)/);
         if (parts) {
-          addAssistantMessage(`Sending text to ${parts[1]}: "${parts[2]}"`, "action");
+          addAssistantMessage(`Sending text to ${parts[1]}: "${parts[2]}"`);
           window.location.href = `sms:?body=${encodeURIComponent(parts[2])}`;
         } else {
-          addAssistantMessage("Opening messaging...", "action");
+          addAssistantMessage("Opening messaging...");
           window.location.href = "sms:";
         }
         return;
       }
 
-      // Email
       if (/^(email|mail)\s+/i.test(lowerText)) {
         const rest = text.replace(/^(email|mail)\s+/i, "").trim();
-        addAssistantMessage(`Opening email${rest ? ` to ${rest}` : ""}...`, "action");
+        addAssistantMessage(`Opening email${rest ? ` to ${rest}` : ""}...`);
         const emailTarget = rest.includes("@") ? rest : "";
         window.location.href = emailTarget ? `mailto:${emailTarget}` : "mailto:";
         return;
       }
 
-      // Weather
-      if (lowerText.includes("weather")) {
-        addAssistantMessage("Let me check the weather for you...", "weather");
-        if (isConnected) {
-          const { data } = await supabase.functions.invoke("jarvis-chat", {
-            body: { message: `Search Google for current weather in user's location and tell me` },
-            headers: session?.session_token ? { "x-session-token": session.session_token } : {},
-          });
-          if (data?.response) {
-            addAssistantMessage(data.response, "weather");
-          }
-        } else {
-          window.open("https://weather.com", "_blank");
-        }
-        return;
-      }
-
-      // Timer/Alarm
       if (lowerText.includes("timer") || lowerText.includes("alarm")) {
         const match = lowerText.match(/(\d+)\s*(min|minute|sec|second|hour)/);
         if (match) {
           const amount = parseInt(match[1]);
           const unit = match[2];
           const ms = unit.startsWith("min") ? amount * 60000 : unit.startsWith("sec") ? amount * 1000 : amount * 3600000;
-          addAssistantMessage(`⏰ Timer set for ${amount} ${unit}(s). I'll notify you when done!`, "alarm");
+          addAssistantMessage(`⏰ Timer set for ${amount} ${unit}(s). I'll notify you when done!`);
           setTimeout(() => {
             toast({ title: "⏰ Timer Complete!", description: `Your ${amount} ${unit} timer is done!` });
             if (voiceEnabled) speak(`Your ${amount} ${unit} timer is complete.`);
@@ -208,35 +162,15 @@ export function AIAssistant() {
         }
       }
 
-      // ── Zoom - open via zoommtg:// protocol for native app ──
-      if (/zoom|join\s+meeting/i.test(lowerText)) {
-        const meetingIdMatch = lowerText.match(/(\d{9,11})/);
-        if (meetingIdMatch) {
-          const mid = meetingIdMatch[1];
-          addAssistantMessage(`Opening Zoom meeting ${mid} in the Zoom app...`, "action");
-          // Try native Zoom protocol first
-          if (isConnected) {
-            await sendCommand("open_url", { url: `zoommtg://zoom.us/join?confno=${mid}` }, { awaitResult: true, timeoutMs: 8000 });
-          } else {
-            window.location.href = `zoommtg://zoom.us/join?confno=${mid}`;
-          }
-          return;
-        }
-      }
-
-      // ── PC Commands (via backend AI) ──────────────────────────
-      if (!session?.session_token) {
-        const { data, error } = await supabase.functions.invoke("jarvis-chat", {
-          body: { message: text },
-        });
-        if (error) throw error;
-        addAssistantMessage(data?.response || "I couldn't process that. Please try again.");
-        return;
+      // ── PC commands via AI backend ──
+      const headers: Record<string, string> = {};
+      if (session?.session_token) {
+        headers["x-session-token"] = session.session_token;
       }
 
       const { data, error } = await supabase.functions.invoke("jarvis-chat", {
         body: { message: text },
-        headers: { "x-session-token": session.session_token },
+        headers,
       });
 
       if (error) throw new Error(error.message || "Failed to get AI response");
@@ -244,7 +178,6 @@ export function AIAssistant() {
       const responseText = data?.response ?? "";
       addAssistantMessage(responseText);
 
-      // Execute commands
       const commands = data?.commands as Array<Record<string, unknown>>;
       if (commands?.length > 0) {
         for (const cmd of commands) {
@@ -260,13 +193,12 @@ export function AIAssistant() {
     }
   };
 
-  const addAssistantMessage = (content: string, type?: Message["type"]) => {
+  const addAssistantMessage = (content: string) => {
     const msg: Message = {
       id: (Date.now() + Math.random()).toString(),
       role: "assistant",
       content,
       timestamp: new Date(),
-      type,
     };
     setMessages((prev) => [...prev, msg]);
     if (voiceEnabled && content) speak(content);
@@ -306,24 +238,17 @@ export function AIAssistant() {
         case "open_url":
           await sendCommand("open_url", { url: cmd.url }, { awaitResult: true, timeoutMs: 10000 });
           break;
-        case "join_zoom":
-          // Use zoommtg:// protocol for native app
+        case "join_zoom": {
           const meetingId = cmd.meeting_id || cmd.meetingId || "";
           const meetingLink = cmd.meeting_link || cmd.meetingLink || "";
           if (meetingLink) {
-            // Convert web link to zoom protocol
             const zoomUrl = String(meetingLink).replace("https://zoom.us/j/", "zoommtg://zoom.us/join?confno=").replace("https://us04web.zoom.us/j/", "zoommtg://zoom.us/join?confno=");
             await sendCommand("open_url", { url: zoomUrl }, { awaitResult: true, timeoutMs: 10000 });
           } else if (meetingId) {
             await sendCommand("open_url", { url: `zoommtg://zoom.us/join?confno=${meetingId}` }, { awaitResult: true, timeoutMs: 10000 });
           }
-          // Take screenshot after delay for slow PCs
-          if (cmd.take_screenshot) {
-            setTimeout(async () => {
-              await sendCommand("take_screenshot", { quality: 70, scale: 0.5 }, { awaitResult: true, timeoutMs: 15000 });
-            }, 15000); // 15s delay for slow PCs
-          }
           break;
+        }
         case "make_call":
           window.location.href = `tel:${cmd.number || ""}`;
           break;
@@ -370,14 +295,13 @@ export function AIAssistant() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col relative overflow-hidden">
-      {/* Background gradient orbs */}
+      {/* Subtle background */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
         <div className="absolute -top-32 -left-32 w-64 h-64 rounded-full bg-primary/5 blur-3xl" />
-        <div className="absolute top-1/3 -right-32 w-72 h-72 rounded-full bg-accent-purple/5 blur-3xl" />
-        <div className="absolute -bottom-32 left-1/3 w-56 h-56 rounded-full bg-accent-cyan/5 blur-3xl" />
+        <div className="absolute top-1/3 -right-32 w-72 h-72 rounded-full bg-primary/3 blur-3xl" />
       </div>
 
-      {/* ── Header ──────────────────────────────────────────────── */}
+      {/* Header */}
       <header className="sticky top-0 z-50 glass-morphism border-b border-border/20">
         <div className="flex items-center justify-between h-14 px-4">
           <div className="flex items-center gap-3">
@@ -390,7 +314,7 @@ export function AIAssistant() {
                 JARVIS
               </h1>
               <p className="text-[10px] text-muted-foreground">
-                {isWakeWordActive ? '🟢 Wake word detected' : isListening ? '🎤 Listening...' : isConnected ? "PC Connected" : "Mobile Mode"}
+                {isWakeWordActive ? '🟢 Wake word detected' : isListening ? '🎤 Listening...' : isConnected ? "PC Connected" : "Mobile Only"}
               </p>
             </div>
           </div>
@@ -399,7 +323,7 @@ export function AIAssistant() {
             variant="outline"
             className={cn(
               "text-[10px] gap-1 h-6 rounded-full",
-              isConnected ? "border-[hsl(var(--success))]/40 text-[hsl(var(--success))]" : "border-border"
+              isConnected ? "border-emerald-500/40 text-emerald-500" : "border-border"
             )}
           >
             {isConnected ? <Wifi className="h-2.5 w-2.5" /> : <WifiOff className="h-2.5 w-2.5" />}
@@ -408,11 +332,10 @@ export function AIAssistant() {
         </div>
       </header>
 
-      {/* ── Main Content ────────────────────────────────────────── */}
+      {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden relative z-10">
         <ScrollArea className="flex-1 px-4">
           {messages.length === 0 ? (
-            /* ── Empty State: Orb only, clean minimal ───────────── */
             <div className="flex flex-col items-center justify-center min-h-[60vh]">
               {/* Glassmorphic Orb */}
               <div className="relative mb-8">
@@ -433,7 +356,6 @@ export function AIAssistant() {
                     )} />
                   </div>
                 </div>
-                {/* Pulse rings */}
                 {isVoiceActive && (
                   <>
                     <div className="absolute inset-0 rounded-full border border-primary/20 animate-ping" style={{ animationDuration: "2s" }} />
@@ -442,7 +364,7 @@ export function AIAssistant() {
                 )}
               </div>
 
-              <h2 className="text-2xl font-bold mb-2 bg-gradient-to-r from-primary to-[hsl(var(--accent-purple))] bg-clip-text text-transparent">
+              <h2 className="text-2xl font-bold mb-2 bg-gradient-to-r from-primary to-foreground bg-clip-text text-transparent">
                 Hey, I'm JARVIS
               </h2>
               <p className="text-muted-foreground text-sm mb-1 max-w-[280px] text-center">
@@ -453,7 +375,6 @@ export function AIAssistant() {
               </p>
             </div>
           ) : (
-            /* ── Chat Messages ──────────────────────────────────── */
             <div className="space-y-3 py-4">
               {messages.map((msg) => (
                 <div key={msg.id} className={cn("flex gap-2.5", msg.role === "user" ? "justify-end" : "justify-start")}>
@@ -504,7 +425,7 @@ export function AIAssistant() {
           )}
         </ScrollArea>
 
-        {/* ── Interim Transcript ───────────────────────────────── */}
+        {/* Interim Transcript */}
         {interimTranscript && (
           <div className="mx-4 mb-2 px-3 py-2 glass-morphism rounded-xl">
             <p className="text-xs text-muted-foreground italic truncate">
@@ -513,7 +434,7 @@ export function AIAssistant() {
           </div>
         )}
 
-        {/* ── Input Bar ────────────────────────────────────────── */}
+        {/* Input Bar */}
         <div className="p-3 glass-morphism-strong border-t border-border/10">
           <div className="flex gap-2 items-center">
             {voiceSupported && (
