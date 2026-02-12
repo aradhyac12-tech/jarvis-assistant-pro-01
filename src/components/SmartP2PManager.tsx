@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   Wifi,
@@ -16,6 +17,7 @@ import {
   Loader2,
   Signal,
   ArrowRightLeft,
+  Link2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ConnectionMode } from "@/hooks/useP2PCommand";
@@ -59,11 +61,14 @@ export function SmartP2PManager({
   className,
 }: SmartP2PManagerProps) {
   const [isUpgrading, setIsUpgrading] = useState(false);
+  const [manualIp, setManualIp] = useState(() => {
+    return localStorage.getItem("jarvis_manual_pc_ip") || "";
+  });
+  const [ipConnecting, setIpConnecting] = useState(false);
   
   const modeInfo = MODE_INFO[connectionMode];
   const ModeIcon = modeInfo.icon;
   
-  // Latency quality indicator
   const getLatencyQuality = (ms: number) => {
     if (ms <= 10) return { label: "Excellent", color: "bg-emerald-500", percent: 100 };
     if (ms <= 30) return { label: "Great", color: "bg-primary", percent: 85 };
@@ -83,6 +88,22 @@ export function SmartP2PManager({
     }
     setTimeout(() => setIsUpgrading(false), 2000);
   }, [autoLocalP2P, networkState.sameNetwork, onForceLocalP2P, onForceUpgrade]);
+
+  const handleManualConnect = useCallback(async () => {
+    const ip = manualIp.trim();
+    if (!ip) return;
+    
+    // Validate IP format
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipRegex.test(ip)) return;
+    
+    setIpConnecting(true);
+    localStorage.setItem("jarvis_manual_pc_ip", ip);
+    
+    // Force local P2P with this IP
+    onForceLocalP2P();
+    setTimeout(() => setIpConnecting(false), 3000);
+  }, [manualIp, onForceLocalP2P]);
 
   return (
     <Card className={cn("border-border/40", className)}>
@@ -115,6 +136,41 @@ export function SmartP2PManager({
       </CardHeader>
 
       <CardContent className="space-y-4">
+        {/* Manual PC IP Entry - KDE Connect style */}
+        <div className="space-y-2">
+          <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+            <Link2 className="w-3 h-3" /> Direct PC IP Connection
+          </Label>
+          <div className="flex gap-2">
+            <Input
+              placeholder="e.g. 192.168.1.100"
+              value={manualIp}
+              onChange={(e) => setManualIp(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleManualConnect()}
+              className="flex-1 h-9 text-xs font-mono bg-background/50"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleManualConnect}
+              disabled={ipConnecting || !manualIp.trim()}
+              className="h-9 px-3 shrink-0"
+            >
+              {ipConnecting ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Zap className="h-3 w-3" />
+              )}
+              <span className="ml-1.5 text-xs">Connect</span>
+            </Button>
+          </div>
+          {localP2PState.pcIp && (
+            <p className="text-[10px] text-emerald-500 font-mono">
+              ✓ Connected to {localP2PState.pcIp}:{localP2PState.port}
+            </p>
+          )}
+        </div>
+
         {/* Latency Indicator */}
         <div className="space-y-2">
           <div className="flex items-center justify-between text-sm">
@@ -143,7 +199,7 @@ export function SmartP2PManager({
           <div className="p-2.5 rounded-lg bg-muted/50 space-y-1">
             <p className="text-muted-foreground">PC IP</p>
             <p className="font-mono font-medium truncate">
-              {networkState.pc?.localIp || localP2PState.pcIp || "Unknown"}
+              {networkState.pc?.localIp || localP2PState.pcIp || manualIp || "Unknown"}
             </p>
           </div>
         </div>
@@ -185,7 +241,7 @@ export function SmartP2PManager({
           )}
         </div>
 
-        {/* Detailed Local P2P diagnostics (inside connection card) */}
+        {/* Detailed Local P2P diagnostics */}
         <P2PDiagnosticsPanel
           connectionMode={connectionMode}
           networkState={networkState}
@@ -218,7 +274,7 @@ export function SmartP2PManager({
             <ul className="text-[10px] text-muted-foreground space-y-0.5 list-disc list-inside">
               <li>HTTPS blocks ws:// connections (mixed content)</li>
               <li>Use the <strong>Capacitor APK</strong> for local P2P</li>
-              <li>PC IP: {localP2PState.pcIp || networkState.pc?.localIp || "unknown"}</li>
+              <li>PC IP: {localP2PState.pcIp || networkState.pc?.localIp || manualIp || "unknown"}</li>
               <li>Port 9876 must be open on PC firewall</li>
             </ul>
           </div>
