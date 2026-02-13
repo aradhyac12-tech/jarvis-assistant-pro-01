@@ -1540,26 +1540,73 @@ class JarvisAgent:
             
             elif cmd == "play_music":
                 query = payload.get("query", "")
-                service = payload.get("service", "youtube")
-                if service == "youtube":
-                    url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+                service = payload.get("service", "youtube").lower()
+                auto_play = payload.get("auto_play", True)
+                if service == "spotify":
+                    # Open Spotify and search
+                    self._open_app("spotify")
+                    await asyncio.sleep(3)
+                    pyautogui.hotkey("ctrl", "l")  # Focus search
+                    await asyncio.sleep(0.5)
+                    pyautogui.hotkey("ctrl", "a")
+                    pyautogui.typewrite(query, interval=0.03)
+                    await asyncio.sleep(1.5)
+                    pyautogui.press("enter")
+                    await asyncio.sleep(1)
+                    if auto_play:
+                        pyautogui.press("enter")  # Play first result
+                    return {"success": True, "message": f"Playing '{query}' on Spotify"}
+                elif service in ("youtube", "yt"):
+                    # Open YouTube search and auto-play first video
+                    url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
                     webbrowser.open(url)
+                    if auto_play:
+                        await asyncio.sleep(5)  # Wait for page load (slow PC)
+                        # Tab to first video and play it
+                        pyautogui.press("tab")
+                        await asyncio.sleep(0.3)
+                        pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on YouTube"}
-                return {"success": False, "error": f"Unsupported service: {service}"}
+                else:
+                    return {"success": False, "error": f"Unsupported service: {service}"}
             
             elif cmd == "search_web":
                 query = payload.get("query", "")
                 engine = payload.get("engine", "google").lower()
-                urls = {
-                    "google": f"https://www.google.com/search?q={query.replace(' ', '+')}",
-                    "bing": f"https://www.bing.com/search?q={query.replace(' ', '+')}",
-                    "duckduckgo": f"https://duckduckgo.com/?q={query.replace(' ', '+')}",
-                    "perplexity": f"https://www.perplexity.ai/search?q={query.replace(' ', '+')}",
-                    "chatgpt": f"https://chat.openai.com/?q={query.replace(' ', '+')}",
-                }
-                url = urls.get(engine, urls["google"])
-                webbrowser.open(url)
-                return {"success": True, "message": f"Searching '{query}' on {engine}"}
+                auto_enter = payload.get("auto_enter", True)
+                
+                # AI platforms need special handling - open and type into search box
+                if engine in ("chatgpt", "openai"):
+                    webbrowser.open("https://chat.openai.com/")
+                    if auto_enter:
+                        await asyncio.sleep(5)
+                        pyautogui.typewrite(query, interval=0.02)
+                        await asyncio.sleep(0.3)
+                        pyautogui.press("enter")
+                    return {"success": True, "message": f"Searching '{query}' on ChatGPT"}
+                elif engine == "gemini":
+                    webbrowser.open("https://gemini.google.com/app")
+                    if auto_enter:
+                        await asyncio.sleep(5)
+                        pyautogui.typewrite(query, interval=0.02)
+                        await asyncio.sleep(0.3)
+                        pyautogui.press("enter")
+                    return {"success": True, "message": f"Searching '{query}' on Gemini"}
+                elif engine == "perplexity":
+                    webbrowser.open(f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}")
+                    return {"success": True, "message": f"Searching '{query}' on Perplexity"}
+                elif engine == "wikipedia":
+                    webbrowser.open(f"https://en.wikipedia.org/wiki/Special:Search?search={urllib.parse.quote(query)}")
+                    return {"success": True, "message": f"Searching '{query}' on Wikipedia"}
+                else:
+                    urls = {
+                        "google": f"https://www.google.com/search?q={urllib.parse.quote(query)}",
+                        "bing": f"https://www.bing.com/search?q={urllib.parse.quote(query)}",
+                        "duckduckgo": f"https://duckduckgo.com/?q={urllib.parse.quote(query)}",
+                    }
+                    url = urls.get(engine, urls["google"])
+                    webbrowser.open(url)
+                    return {"success": True, "message": f"Searching '{query}' on {engine}"}
             
             elif cmd in ["answer_call", "end_call", "decline_call", "call_mute"]:
                 add_log("info", f"Call control received: {cmd}", category="command")
@@ -2094,6 +2141,27 @@ def main():
                 self.folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
                 tk.Button(ff, text="📁 Browse", command=self._browse_folder, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
                 tk.Button(ff, text="📂 Open", command=self._open_folder, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(4, 0))
+
+                # Drag & Drop Zone
+                drop_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
+                drop_frame.pack(fill="x", padx=8, pady=(0, 8))
+
+                tk.Label(drop_frame, text="📥 Drag & Drop to Share", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                
+                self.drop_zone = tk.Label(drop_frame, text="🗂️ Drag files here to send to phone\n\nOr use the Send File button below",
+                                          font=("Segoe UI", 10), bg="#f0f9ff", fg=TEXT_DIM,
+                                          relief="groove", borderwidth=2, padx=20, pady=30)
+                self.drop_zone.pack(fill="x", padx=12, pady=(0, 10))
+
+                # Try to enable drag and drop (Windows)
+                try:
+                    if sys.platform == "win32":
+                        import ctypes
+                        # Enable DragAcceptFiles for the window
+                        hwnd = int(self.root.wm_frame(), 16)
+                        ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
+                except Exception:
+                    pass
 
                 # Send File
                 send_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)

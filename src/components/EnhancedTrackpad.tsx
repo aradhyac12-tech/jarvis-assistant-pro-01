@@ -109,9 +109,10 @@ export const EnhancedTrackpad = memo(function EnhancedTrackpad({
       </CardHeader>
 
       <CardContent className="p-4 pt-0 space-y-3">
-      {/* Trackpad Area - Sized to screen ratio */}
+      {/* Trackpad Area - Proper screen aspect ratio */}
       <div
-        className="aspect-[16/10] w-full max-h-[45vh] bg-muted/20 rounded-xl border border-dashed border-border/40 cursor-crosshair flex flex-col items-center justify-center select-none touch-none relative overflow-hidden"
+        className="aspect-video w-full bg-muted/10 rounded-xl border border-border/30 cursor-crosshair flex flex-col items-center justify-center select-none touch-none relative overflow-hidden"
+        style={{ minHeight: "200px", maxHeight: "55vh" }}
         {...gestureInput.touchHandlers}
         {...gestureInput.mouseHandlers}
         onWheel={gestureInput.wheelHandler}

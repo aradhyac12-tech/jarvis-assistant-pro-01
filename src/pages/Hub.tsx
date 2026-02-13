@@ -310,12 +310,28 @@ export default function Hub() {
           toast({ title: "Opened", description: appName });
         }
       } else if (lower.startsWith("play ")) {
-        const query = lower.slice(5).trim();
-        await sendCommand("play_music", { query, service: "youtube" });
-        toast({ title: "Playing", description: query });
+        // Detect service: "play X on spotify" / "play X on youtube"
+        let query = lower.slice(5).trim();
+        let service = "youtube";
+        const onMatch = query.match(/(.+?)\s+on\s+(spotify|youtube|yt)$/i);
+        if (onMatch) {
+          query = onMatch[1].trim();
+          service = onMatch[2].toLowerCase() === "yt" ? "youtube" : onMatch[2].toLowerCase();
+        }
+        await sendCommand("play_music", { query, service, auto_play: true }, { awaitResult: true, timeoutMs: 15000 });
+        toast({ title: "Playing", description: `${query} on ${service}` });
       } else if (lower.startsWith("search ")) {
-        await sendCommand("search_web", { query: lower.slice(7), engine: "google" });
-        toast({ title: "Searching..." });
+        // Detect engine: "search X on/with chatgpt/perplexity/gemini/wikipedia/google"
+        let query = lower.slice(7).trim();
+        let engine = "google";
+        const engineMatch = query.match(/(.+?)\s+(?:on|with)\s+(chatgpt|perplexity|gemini|google|bing|wikipedia|wiki|duckduckgo)$/i);
+        if (engineMatch) {
+          query = engineMatch[1].trim();
+          engine = engineMatch[2].toLowerCase();
+          if (engine === "wiki") engine = "wikipedia";
+        }
+        await sendCommand("search_web", { query, engine, auto_enter: true }, { awaitResult: true, timeoutMs: 15000 });
+        toast({ title: "Searching", description: `${query} on ${engine}` });
       } else {
         await sendCommand("search_web", { query: cmdInput, engine: "google" });
         toast({ title: "Searching..." });
