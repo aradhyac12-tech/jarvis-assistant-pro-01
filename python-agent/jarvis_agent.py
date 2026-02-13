@@ -1,6 +1,6 @@
 """
-JARVIS PC Agent v4.0 - Enhanced GUI Edition
-============================================
+JARVIS PC Agent v5.0.0 - Professional GUI Edition
+==================================================
 Single-file agent with:
 - Local P2P WebSocket server (port 9876) for ultra-low latency
 - Input-session gating to prevent "ghost" command execution
@@ -10,7 +10,7 @@ Single-file agent with:
 - Circular buffers to prevent memory leaks
 - Batch command execution
 - File transfer support
-- Enhanced Tkinter GUI with clock, calendar, diagnostics
+- Professional 5-tab GUI: Dashboard, Actions, Files, Assistant, Settings
 
 Run: python jarvis_agent.py --gui
 """
@@ -40,7 +40,7 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "4.0.0"
+AGENT_VERSION = "5.0.0"
 
 # Skill registry
 try:
@@ -1946,7 +1946,7 @@ def main():
                     pass
 
         class JarvisAgentGUI:
-            """Professional GUI with clock, calendar, planner, file transfer, assistant, and P2P diagnostics."""
+            """Professional v5.0.0 GUI with Dashboard, Actions, Files, Assistant, Settings."""
             
             def __init__(self):
                 self.runner = AgentThreadRunner()
@@ -1954,20 +1954,22 @@ def main():
 
                 self.root = tk.Tk()
                 self.root.title(f"JARVIS PC Agent v{AGENT_VERSION}")
-                self.root.geometry("720x860")
-                self.root.minsize(680, 800)
+                self.root.geometry("780x900")
+                self.root.minsize(720, 840)
 
-                # Modern light theme (matching reference)
-                BG = "#f0f2f5"
-                CARD_BG = "#ffffff"
-                CARD_BORDER = "#e2e8f0"
-                TEXT = "#1a1a2e"
-                TEXT_DIM = "#64748b"
-                ACCENT = "#3b82f6"
-                SUCCESS = "#22c55e"
-                DANGER = "#ef4444"
-                SIDEBAR_BG = "#1e293b"
-                SIDEBAR_TEXT = "#e2e8f0"
+                # ─── Professional Color Palette ───
+                BG = "#0f172a"           # Deep navy background
+                CARD_BG = "#1e293b"      # Slate card background
+                CARD_BORDER = "#334155"   # Subtle border
+                TEXT = "#f1f5f9"          # Light text
+                TEXT_DIM = "#94a3b8"      # Muted text
+                ACCENT = "#3b82f6"        # Blue accent
+                ACCENT_GLOW = "#60a5fa"   # Lighter blue
+                SUCCESS = "#22c55e"       # Green
+                WARNING = "#f59e0b"       # Amber
+                DANGER = "#ef4444"        # Red
+                HEADER_BG = "#020617"     # Almost black header
+                INPUT_BG = "#0f172a"      # Input background
                 
                 self.BG = BG
                 self.CARD_BG = CARD_BG
@@ -1975,189 +1977,213 @@ def main():
                 self.TEXT = TEXT
                 self.TEXT_DIM = TEXT_DIM
                 self.ACCENT = ACCENT
+                self.ACCENT_GLOW = ACCENT_GLOW
                 self.SUCCESS = SUCCESS
+                self.WARNING = WARNING
                 self.DANGER = DANGER
-                self.SIDEBAR_BG = SIDEBAR_BG
-                self.SIDEBAR_TEXT = SIDEBAR_TEXT
+                self.HEADER_BG = HEADER_BG
+                self.INPUT_BG = INPUT_BG
 
                 self.root.configure(bg=BG)
                 
                 style = ttk.Style()
                 style.theme_use("clam")
-                style.configure("TNotebook", background=BG)
-                style.configure("TNotebook.Tab", background=CARD_BG, foreground=TEXT, padding=[16, 8], font=("Segoe UI", 10))
-                style.map("TNotebook.Tab", background=[("selected", ACCENT)], foreground=[("selected", "white")])
-                style.configure("TEntry", fieldbackground=CARD_BG, foreground=TEXT)
+                style.configure("TNotebook", background=BG, borderwidth=0)
+                style.configure("TNotebook.Tab", background=CARD_BG, foreground=TEXT_DIM, padding=[18, 10], font=("Segoe UI Semibold", 10))
+                style.map("TNotebook.Tab", background=[("selected", ACCENT)], foreground=[("selected", "#ffffff")])
+                style.configure("TEntry", fieldbackground=INPUT_BG, foreground=TEXT, borderwidth=1, relief="solid")
                 style.configure("TFrame", background=BG)
 
                 self._last_log_ids: set = set()
 
-                # ═══════ TOP STATUS BAR ═══════
-                status_bar = tk.Frame(self.root, bg=SIDEBAR_BG, height=48)
-                status_bar.pack(fill="x")
-                status_bar.pack_propagate(False)
+                # ═══════ TOP HEADER BAR ═══════
+                header = tk.Frame(self.root, bg=HEADER_BG, height=56)
+                header.pack(fill="x")
+                header.pack_propagate(False)
 
                 # Left: Logo + Title
-                tk.Label(status_bar, text="🤖", font=("Segoe UI", 16), bg=SIDEBAR_BG, fg=SIDEBAR_TEXT).pack(side="left", padx=(12, 4))
-                tk.Label(status_bar, text="JARVIS", font=("Segoe UI Semibold", 14), bg=SIDEBAR_BG, fg=SIDEBAR_TEXT).pack(side="left")
-                tk.Label(status_bar, text=f"v{AGENT_VERSION}", font=("Segoe UI", 9), bg=SIDEBAR_BG, fg="#94a3b8").pack(side="left", padx=(4, 0))
+                logo_frame = tk.Frame(header, bg=HEADER_BG)
+                logo_frame.pack(side="left", padx=16)
+                tk.Label(logo_frame, text="⬡", font=("Segoe UI", 22), bg=HEADER_BG, fg=ACCENT).pack(side="left")
+                title_frame = tk.Frame(logo_frame, bg=HEADER_BG)
+                title_frame.pack(side="left", padx=(8, 0))
+                tk.Label(title_frame, text="JARVIS", font=("Segoe UI Black", 15), bg=HEADER_BG, fg=TEXT).pack(anchor="w")
+                tk.Label(title_frame, text=f"v{AGENT_VERSION} • PC Agent", font=("Segoe UI", 8), bg=HEADER_BG, fg=TEXT_DIM).pack(anchor="w")
 
-                # Right: Connection status + Pairing
-                self.conn_status = tk.Label(status_bar, text="● CONNECTING", font=("Segoe UI Semibold", 10), bg=SIDEBAR_BG, fg="#fbbf24")
-                self.conn_status.pack(side="right", padx=12)
+                # Right: Status indicators
+                right_frame = tk.Frame(header, bg=HEADER_BG)
+                right_frame.pack(side="right", padx=16)
                 
-                self.pairing_label = tk.Label(status_bar, text="Code: —", font=("Consolas", 10), bg=SIDEBAR_BG, fg=SIDEBAR_TEXT)
+                self.conn_status = tk.Label(right_frame, text="● CONNECTING", font=("Segoe UI Black", 9), bg=HEADER_BG, fg=WARNING)
+                self.conn_status.pack(side="right", padx=(12, 0))
+                
+                self.pairing_label = tk.Label(right_frame, text="CODE: ——", font=("JetBrains Mono", 11, "bold"), bg=HEADER_BG, fg=ACCENT_GLOW)
                 self.pairing_label.pack(side="right", padx=8)
                 
-                self.ip_label = tk.Label(status_bar, text="IP: —", font=("Consolas", 9), bg=SIDEBAR_BG, fg="#94a3b8")
+                self.ip_label = tk.Label(right_frame, text="IP: —", font=("JetBrains Mono", 9), bg=HEADER_BG, fg=TEXT_DIM)
                 self.ip_label.pack(side="right", padx=8)
 
                 # ═══════ NOTEBOOK (TABS) ═══════
                 notebook = ttk.Notebook(self.root)
                 notebook.pack(fill="both", expand=True, padx=0, pady=0)
 
-                # ══════════ Tab 1: Dashboard ══════════
-                dash_tab = ttk.Frame(notebook)
+                # ══════════ Tab 1: DASHBOARD ══════════
+                dash_tab = tk.Frame(notebook, bg=BG)
                 notebook.add(dash_tab, text="  📊 Dashboard  ")
 
-                # Top row: Clock + Date + Calendar
+                # ── Clock + Calendar Row ──
                 top_row = tk.Frame(dash_tab, bg=BG)
-                top_row.pack(fill="x", padx=8, pady=8)
+                top_row.pack(fill="x", padx=12, pady=(12, 8))
 
-                # Clock Card
-                clock_card = tk.Frame(top_row, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1, padx=20, pady=12)
-                clock_card.pack(side="left", fill="both", expand=True, padx=(0, 4))
+                # Clock Card (large, prominent)
+                clock_card = tk.Frame(top_row, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1, padx=24, pady=16)
+                clock_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
-                self.clock_label = tk.Label(clock_card, text="00:00", font=("Segoe UI Light", 42), bg=CARD_BG, fg=TEXT)
+                self.clock_label = tk.Label(clock_card, text="00:00", font=("Segoe UI Light", 48), bg=CARD_BG, fg=TEXT)
                 self.clock_label.pack(anchor="w")
-                self.date_label = tk.Label(clock_card, text="Loading...", font=("Segoe UI", 12), bg=CARD_BG, fg=TEXT_DIM)
-                self.date_label.pack(anchor="w")
+                self.seconds_label = tk.Label(clock_card, text=":00", font=("Segoe UI Light", 20), bg=CARD_BG, fg=TEXT_DIM)
+                self.seconds_label.place(relx=0.62, rely=0.35)
+                self.date_label = tk.Label(clock_card, text="Loading...", font=("Segoe UI", 13), bg=CARD_BG, fg=ACCENT_GLOW)
+                self.date_label.pack(anchor="w", pady=(4, 0))
 
                 # Calendar Card
-                cal_card = tk.Frame(top_row, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1, padx=12, pady=8)
-                cal_card.pack(side="left", fill="both", expand=True, padx=(4, 0))
+                cal_card = tk.Frame(top_row, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1, padx=14, pady=10)
+                cal_card.pack(side="left", fill="both", expand=True, padx=(6, 0))
 
                 now = datetime.now()
-                tk.Label(cal_card, text=f"{now.strftime('%B %Y')}", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", pady=(0, 4))
+                tk.Label(cal_card, text=f"📅 {now.strftime('%B %Y')}", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", pady=(0, 6))
                 
-                # Mini calendar grid
                 cal_grid = tk.Frame(cal_card, bg=CARD_BG)
                 cal_grid.pack(fill="x")
                 
                 for i, day in enumerate(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]):
-                    tk.Label(cal_grid, text=day, font=("Segoe UI", 8, "bold"), bg=CARD_BG, fg=TEXT_DIM, width=3).grid(row=0, column=i)
+                    color = DANGER if i >= 5 else TEXT_DIM
+                    tk.Label(cal_grid, text=day, font=("Segoe UI", 8, "bold"), bg=CARD_BG, fg=color, width=3).grid(row=0, column=i, pady=(0, 2))
                 
                 month_cal = cal_module.monthcalendar(now.year, now.month)
-                for r, week in enumerate(month_cal[:5]):
+                for r, week in enumerate(month_cal[:6]):
                     for c, day in enumerate(week):
                         if day == 0:
                             tk.Label(cal_grid, text="", bg=CARD_BG, width=3).grid(row=r+1, column=c)
                         else:
                             is_today = day == now.day
                             lbl = tk.Label(cal_grid, text=str(day), font=("Segoe UI", 9, "bold" if is_today else "normal"),
-                                          bg=ACCENT if is_today else CARD_BG, fg="white" if is_today else TEXT, width=3)
+                                          bg=ACCENT if is_today else CARD_BG, fg="white" if is_today else TEXT_DIM, width=3)
+                            if is_today:
+                                lbl.configure(relief="solid", borderwidth=0)
                             lbl.grid(row=r+1, column=c, pady=1)
 
-                # System Stats Row
+                # ── System Stats Cards ──
                 stats_frame = tk.Frame(dash_tab, bg=BG)
-                stats_frame.pack(fill="x", padx=8, pady=(0, 8))
+                stats_frame.pack(fill="x", padx=12, pady=(0, 8))
                 stats_frame.columnconfigure((0,1,2,3,4), weight=1)
 
-                self.cpu_card = self._make_stat_card(stats_frame, "CPU", "—", 0)
-                self.ram_card = self._make_stat_card(stats_frame, "RAM", "—", 1)
-                self.disk_card = self._make_stat_card(stats_frame, "Disk", "—", 2)
-                self.battery_card = self._make_stat_card(stats_frame, "Battery", "—", 3)
-                self.uptime_card = self._make_stat_card(stats_frame, "Uptime", "—", 4)
+                self.cpu_card = self._make_stat_card(stats_frame, "⚡ CPU", "—%", 0, ACCENT)
+                self.ram_card = self._make_stat_card(stats_frame, "🧠 RAM", "—%", 1, "#8b5cf6")
+                self.disk_card = self._make_stat_card(stats_frame, "💾 Disk", "—%", 2, "#f59e0b")
+                self.battery_card = self._make_stat_card(stats_frame, "🔋 Battery", "—", 3, SUCCESS)
+                self.uptime_card = self._make_stat_card(stats_frame, "⏱️ Uptime", "—", 4, "#ec4899")
 
-                # Connection Info Card
+                # ── Connection Info Card ──
                 conn_card = tk.Frame(dash_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                conn_card.pack(fill="x", padx=8, pady=(0, 8))
+                conn_card.pack(fill="x", padx=12, pady=(0, 8))
 
                 conn_inner = tk.Frame(conn_card, bg=CARD_BG)
-                conn_inner.pack(fill="x", padx=12, pady=10)
+                conn_inner.pack(fill="x", padx=16, pady=12)
 
-                tk.Label(conn_inner, text="🔗 Connection Details", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", pady=(0, 6))
+                tk.Label(conn_inner, text="🔗 Connection Details", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", pady=(0, 8))
                 
-                self.conn_details = tk.Label(conn_inner, text="Initializing...", font=("Consolas", 9), bg=CARD_BG, fg=TEXT_DIM, justify="left", anchor="w")
+                self.conn_details = tk.Label(conn_inner, text="Initializing...", font=("JetBrains Mono", 9), bg=CARD_BG, fg=TEXT_DIM, justify="left", anchor="w")
                 self.conn_details.pack(anchor="w", fill="x")
 
-                # Logs
+                # ── Activity Log ──
                 log_card = tk.Frame(dash_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                log_card.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+                log_card.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-                tk.Label(log_card, text="📋 Activity Log", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
-                self.log_text = scrolledtext.ScrolledText(log_card, height=8, bg="#f8fafc", fg=TEXT, font=("Consolas", 9), borderwidth=0, state="disabled")
-                self.log_text.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+                log_header = tk.Frame(log_card, bg=CARD_BG)
+                log_header.pack(fill="x", padx=16, pady=(12, 6))
+                tk.Label(log_header, text="📋 Activity Log", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(side="left")
+                tk.Button(log_header, text="🗑 Clear", command=lambda: (clear_logs(), self._clear_log_display()), bg=CARD_BG, fg=TEXT_DIM, relief="flat", font=("Segoe UI", 8), activebackground=DANGER, activeforeground="white").pack(side="right")
+                
+                self.log_text = scrolledtext.ScrolledText(log_card, height=6, bg=INPUT_BG, fg=TEXT_DIM, font=("JetBrains Mono", 9), borderwidth=0, state="disabled", insertbackground=TEXT)
+                self.log_text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-                # ══════════ Tab 2: Actions ══════════
-                actions_tab = ttk.Frame(notebook)
+                # ══════════ Tab 2: ACTIONS ══════════
+                actions_tab = tk.Frame(notebook, bg=BG)
                 notebook.add(actions_tab, text="  ⚡ Actions  ")
 
-                self._make_action_group(actions_tab, "🔌 Power", [
+                actions_scroll = tk.Frame(actions_tab, bg=BG)
+                actions_scroll.pack(fill="both", expand=True, padx=0, pady=0)
+
+                self._make_action_group(actions_scroll, "🔌 Power Controls", [
                     ("🔒 Lock", self._action_lock), ("😴 Sleep", self._action_sleep),
                     ("🔄 Restart", self._action_restart), ("⏻ Shutdown", self._action_shutdown),
                 ])
 
-                self._make_action_group(actions_tab, "🔊 Audio", [
+                self._make_action_group(actions_scroll, "🔊 Audio Controls", [
                     ("🔇 Mute", self._action_mute), ("🔊 Unmute", self._action_unmute),
-                    ("⏯️ Play/Pause", self._action_playpause), ("⏭️ Next", self._action_next),
+                    ("⏯️ Play/Pause", self._action_playpause), ("⏭️ Next Track", self._action_next),
                 ])
 
-                self._make_action_group(actions_tab, "🚀 Performance", [
+                self._make_action_group(actions_scroll, "🚀 Performance", [
                     ("🧹 Clear Temp", self._action_clear_temp), ("⚡ High Perf", self._action_highperf),
-                    ("🔄 Explorer", self._action_explorer), ("🎮 Gaming", self._action_gaming),
+                    ("🔄 Explorer", self._action_explorer), ("🎮 Gaming Mode", self._action_gaming),
                 ])
 
                 # P2P Diagnostics
-                diag_frame = tk.Frame(actions_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                diag_frame.pack(fill="x", padx=8, pady=8)
+                diag_frame = tk.Frame(actions_scroll, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
+                diag_frame.pack(fill="x", padx=12, pady=8)
 
-                tk.Label(diag_frame, text="🔍 P2P Diagnostics", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                tk.Label(diag_frame, text="🔍 P2P Network Diagnostics", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
                 
                 diag_inner = tk.Frame(diag_frame, bg=CARD_BG)
-                diag_inner.pack(fill="x", padx=12, pady=(0, 10))
+                diag_inner.pack(fill="x", padx=16, pady=(0, 12))
 
-                tk.Label(diag_inner, text=f"Port: {LOCAL_P2P_PORT}", font=("Consolas", 10), bg=CARD_BG, fg=TEXT_DIM).pack(side="left")
-                self.p2p_status_label = tk.Label(diag_inner, text="—", font=("Segoe UI Semibold", 10), bg=CARD_BG, fg=TEXT)
+                diag_info = tk.Frame(diag_inner, bg=CARD_BG)
+                diag_info.pack(fill="x", pady=(0, 8))
+                tk.Label(diag_info, text=f"Port: {LOCAL_P2P_PORT}", font=("JetBrains Mono", 10), bg=CARD_BG, fg=ACCENT_GLOW).pack(side="left")
+                self.p2p_status_label = tk.Label(diag_info, text="Checking...", font=("Segoe UI Semibold", 10), bg=CARD_BG, fg=TEXT_DIM)
                 self.p2p_status_label.pack(side="left", padx=16)
-                tk.Button(diag_inner, text="🔥 Test Port", command=self._action_test_firewall, bg=CARD_BG, fg=TEXT, relief="flat", borderwidth=1, font=("Segoe UI", 9)).pack(side="right")
-                tk.Button(diag_inner, text="📋 Copy IPs", command=self._copy_ips, bg=CARD_BG, fg=TEXT, relief="flat", borderwidth=1, font=("Segoe UI", 9)).pack(side="right", padx=4)
 
-                # ══════════ Tab 3: Files ══════════
-                files_tab = ttk.Frame(notebook)
+                diag_btns = tk.Frame(diag_inner, bg=CARD_BG)
+                diag_btns.pack(fill="x")
+                tk.Button(diag_btns, text="🔥 Test Port", command=self._action_test_firewall, bg="#1e3a5f", fg=TEXT, relief="flat", borderwidth=0, font=("Segoe UI Semibold", 9), padx=16, pady=6, activebackground=ACCENT).pack(side="left", padx=(0, 6))
+                tk.Button(diag_btns, text="📋 Copy IPs", command=self._copy_ips, bg="#1e3a5f", fg=TEXT, relief="flat", borderwidth=0, font=("Segoe UI Semibold", 9), padx=16, pady=6, activebackground=ACCENT).pack(side="left", padx=(0, 6))
+                tk.Button(diag_btns, text="🔄 Refresh", command=lambda: self._tick(), bg="#1e3a5f", fg=TEXT, relief="flat", borderwidth=0, font=("Segoe UI Semibold", 9), padx=16, pady=6, activebackground=ACCENT).pack(side="left")
+
+                # ══════════ Tab 3: FILES ══════════
+                files_tab = tk.Frame(notebook, bg=BG)
                 notebook.add(files_tab, text="  📁 Files  ")
 
-                # Download Folder
+                # Download Folder Config
                 dl_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                dl_frame.pack(fill="x", padx=8, pady=8)
+                dl_frame.pack(fill="x", padx=12, pady=(12, 8))
 
-                tk.Label(dl_frame, text="📂 Download Folder", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                tk.Label(dl_frame, text="📂 Download Folder", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
 
                 ff = tk.Frame(dl_frame, bg=CARD_BG)
-                ff.pack(fill="x", padx=12, pady=(0, 10))
+                ff.pack(fill="x", padx=16, pady=(0, 12))
 
                 self.save_folder_var = tk.StringVar(value=os.path.expanduser("~/Downloads/JARVIS"))
                 self.folder_entry = ttk.Entry(ff, textvariable=self.save_folder_var, width=40)
                 self.folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-                tk.Button(ff, text="📁 Browse", command=self._browse_folder, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
-                tk.Button(ff, text="📂 Open", command=self._open_folder, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(4, 0))
+                tk.Button(ff, text="📁 Browse", command=self._browse_folder, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=12, pady=4).pack(side="left")
+                tk.Button(ff, text="📂 Open", command=self._open_folder, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=12, pady=4).pack(side="left", padx=(6, 0))
 
                 # Drag & Drop Zone
                 drop_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                drop_frame.pack(fill="x", padx=8, pady=(0, 8))
+                drop_frame.pack(fill="x", padx=12, pady=(0, 8))
 
-                tk.Label(drop_frame, text="📥 Drag & Drop to Share", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                tk.Label(drop_frame, text="📥 Drag & Drop to Share", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
                 
-                self.drop_zone = tk.Label(drop_frame, text="🗂️ Drag files here to send to phone\n\nOr use the Send File button below",
-                                          font=("Segoe UI", 10), bg="#f0f9ff", fg=TEXT_DIM,
-                                          relief="groove", borderwidth=2, padx=20, pady=30)
-                self.drop_zone.pack(fill="x", padx=12, pady=(0, 10))
+                self.drop_zone = tk.Label(drop_frame, text="🗂️  Drag files here to send to phone\n\n— or use the Send File button below —",
+                                          font=("Segoe UI", 11), bg="#0c1929", fg=TEXT_DIM,
+                                          relief="ridge", borderwidth=2, padx=24, pady=36)
+                self.drop_zone.pack(fill="x", padx=16, pady=(0, 12))
 
-                # Try to enable drag and drop (Windows)
+                # Enable drag and drop (Windows)
                 try:
                     if sys.platform == "win32":
-                        import ctypes
-                        # Enable DragAcceptFiles for the window
                         hwnd = int(self.root.wm_frame(), 16)
                         ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
                 except Exception:
@@ -2165,116 +2191,168 @@ def main():
 
                 # Send File
                 send_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                send_frame.pack(fill="x", padx=8, pady=(0, 8))
+                send_frame.pack(fill="x", padx=12, pady=(0, 8))
 
-                tk.Label(send_frame, text="📤 Send File to Phone", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                tk.Label(send_frame, text="📤 Send File to Phone", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
 
                 sf = tk.Frame(send_frame, bg=CARD_BG)
-                sf.pack(fill="x", padx=12, pady=(0, 10))
+                sf.pack(fill="x", padx=16, pady=(0, 12))
 
                 self.send_file_var = tk.StringVar()
                 self.send_file_entry = ttk.Entry(sf, textvariable=self.send_file_var, width=40)
                 self.send_file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-                tk.Button(sf, text="📄 Select", command=self._select_file, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
-                tk.Button(sf, text="📤 Send", command=self._send_file, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(4, 0))
+                tk.Button(sf, text="📄 Select", command=self._select_file, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=12, pady=4).pack(side="left")
+                tk.Button(sf, text="📤 Send", command=self._send_file, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 9, "bold"), padx=16, pady=4).pack(side="left", padx=(6, 0))
 
                 # Recent Transfers
                 transfers_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                transfers_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+                transfers_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-                tk.Label(transfers_frame, text="📋 Recent Transfers", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                tk.Label(transfers_frame, text="📋 Recent Transfers", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
 
-                self.transfer_list = tk.Listbox(transfers_frame, bg="#f8fafc", fg=TEXT, font=("Consolas", 9), height=8, borderwidth=0, selectbackground=ACCENT)
-                self.transfer_list.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+                self.transfer_list = tk.Listbox(transfers_frame, bg=INPUT_BG, fg=TEXT_DIM, font=("JetBrains Mono", 9), height=6, borderwidth=0, selectbackground=ACCENT, selectforeground="white")
+                self.transfer_list.pack(fill="both", expand=True, padx=16, pady=(0, 12))
 
-                # ══════════ Tab 4: Assistant ══════════
-                assistant_tab = ttk.Frame(notebook)
+                # ══════════ Tab 4: ASSISTANT ══════════
+                assistant_tab = tk.Frame(notebook, bg=BG)
                 notebook.add(assistant_tab, text="  🤖 Assistant  ")
 
+                # Voice Assistant Card
                 assist_card = tk.Frame(assistant_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                assist_card.pack(fill="x", padx=8, pady=8)
+                assist_card.pack(fill="x", padx=12, pady=(12, 8))
 
-                tk.Label(assist_card, text="🎤 JARVIS Voice Assistant", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 2))
-                tk.Label(assist_card, text="Wake word: \"Jarvis\" • Listens in background", font=("Segoe UI", 10), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", padx=12, pady=(0, 6))
+                assist_header = tk.Frame(assist_card, bg=CARD_BG)
+                assist_header.pack(fill="x", padx=16, pady=(12, 4))
+                tk.Label(assist_header, text="🎤", font=("Segoe UI", 20), bg=CARD_BG, fg=ACCENT).pack(side="left")
+                ah_text = tk.Frame(assist_header, bg=CARD_BG)
+                ah_text.pack(side="left", padx=(10, 0))
+                tk.Label(ah_text, text="JARVIS Voice Assistant", font=("Segoe UI Semibold", 14), bg=CARD_BG, fg=TEXT).pack(anchor="w")
+                tk.Label(ah_text, text='Wake word: "Jarvis" • Auto-listens in background', font=("Segoe UI", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w")
 
                 assist_btns = tk.Frame(assist_card, bg=CARD_BG)
-                assist_btns.pack(fill="x", padx=12, pady=(0, 10))
+                assist_btns.pack(fill="x", padx=16, pady=(8, 12))
 
-                self.wake_status = tk.Label(assist_btns, text="⏸ Inactive", font=("Segoe UI Semibold", 10), bg=CARD_BG, fg=TEXT_DIM)
+                self.wake_status = tk.Label(assist_btns, text="⏸ Inactive", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT_DIM)
                 self.wake_status.pack(side="left")
 
-                tk.Button(assist_btns, text="🎤 Start Listening", command=self._start_wake_word, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI", 10, "bold"), padx=16, pady=4).pack(side="right")
-                tk.Button(assist_btns, text="⏹ Stop", command=self._stop_wake_word, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 10), padx=12).pack(side="right", padx=(0, 8))
+                tk.Button(assist_btns, text="🎤 Start Listening", command=self._start_wake_word, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 10), padx=20, pady=6, activebackground=ACCENT_GLOW).pack(side="right")
+                tk.Button(assist_btns, text="⏹ Stop", command=self._stop_wake_word, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI", 10), padx=14, pady=6).pack(side="right", padx=(0, 8))
 
                 # Voice Training Card
                 train_card = tk.Frame(assistant_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                train_card.pack(fill="x", padx=8, pady=(0, 8))
+                train_card.pack(fill="x", padx=12, pady=(0, 8))
 
-                tk.Label(train_card, text="🧠 Voice Training", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 2))
-                tk.Label(train_card, text="Record your voice saying 'Jarvis' to improve recognition accuracy.", font=("Segoe UI", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", padx=12, pady=(0, 6))
+                tk.Label(train_card, text="🧠 Voice Training", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 2))
+                tk.Label(train_card, text='Record your voice saying "Jarvis" to improve wake-word accuracy.\nSamples are auto-saved to ~/.jarvis/voice_samples/', font=("Segoe UI", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", padx=16, pady=(0, 8))
                 
                 train_btns = tk.Frame(train_card, bg=CARD_BG)
-                train_btns.pack(fill="x", padx=12, pady=(0, 10))
+                train_btns.pack(fill="x", padx=16, pady=(0, 12))
                 
-                self.train_count_label = tk.Label(train_btns, text="Samples: 0", font=("Consolas", 9), bg=CARD_BG, fg=TEXT_DIM)
+                self.train_count_label = tk.Label(train_btns, text="Samples: 0", font=("JetBrains Mono", 10), bg=CARD_BG, fg=ACCENT_GLOW)
                 self.train_count_label.pack(side="left")
-                tk.Button(train_btns, text="🎙️ Record Sample", command=self._record_voice_sample, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="right")
+                tk.Button(train_btns, text="🎙️ Record Sample", command=self._record_voice_sample, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="right")
+                
+                # Load existing sample count
+                try:
+                    samples_dir = os.path.join(os.path.expanduser("~"), ".jarvis", "voice_samples")
+                    if os.path.isdir(samples_dir):
+                        count = len([f for f in os.listdir(samples_dir) if f.endswith(".wav")])
+                        self.train_count_label.configure(text=f"Samples: {count}")
+                except Exception:
+                    pass
 
                 # Assistant Chat Log
                 chat_card = tk.Frame(assistant_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                chat_card.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+                chat_card.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-                tk.Label(chat_card, text="💬 Conversation", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
-                self.chat_log = scrolledtext.ScrolledText(chat_card, height=10, bg="#f8fafc", fg=TEXT, font=("Segoe UI", 10), borderwidth=0, state="disabled", wrap="word")
-                self.chat_log.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+                tk.Label(chat_card, text="💬 Conversation", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
+                self.chat_log = scrolledtext.ScrolledText(chat_card, height=8, bg=INPUT_BG, fg=TEXT, font=("Segoe UI", 10), borderwidth=0, state="disabled", wrap="word", insertbackground=TEXT)
+                self.chat_log.pack(fill="both", expand=True, padx=16, pady=(0, 8))
                 
                 chat_input_frame = tk.Frame(chat_card, bg=CARD_BG)
-                chat_input_frame.pack(fill="x", padx=12, pady=(0, 10))
+                chat_input_frame.pack(fill="x", padx=16, pady=(0, 12))
                 
                 self.chat_input_var = tk.StringVar()
                 chat_entry = ttk.Entry(chat_input_frame, textvariable=self.chat_input_var, width=50)
                 chat_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
                 chat_entry.bind("<Return>", lambda e: self._send_chat())
-                tk.Button(chat_input_frame, text="📤 Send", command=self._send_chat, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI", 9, "bold"), padx=12).pack(side="right")
+                tk.Button(chat_input_frame, text="📤 Send", command=self._send_chat, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="right")
 
-                # ══════════ Tab 5: Settings ══════════
-                settings_tab = ttk.Frame(notebook)
+                # ══════════ Tab 5: SETTINGS ══════════
+                settings_tab = tk.Frame(notebook, bg=BG)
                 notebook.add(settings_tab, text="  ⚙️ Settings  ")
 
+                # Agent Settings Card
                 settings_card = tk.Frame(settings_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                settings_card.pack(fill="x", padx=8, pady=8)
+                settings_card.pack(fill="x", padx=12, pady=(12, 8))
 
-                tk.Label(settings_card, text="⚙️ Agent Settings", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                tk.Label(settings_card, text="⚙️ Agent Configuration", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 8))
 
                 sf = tk.Frame(settings_card, bg=CARD_BG)
-                sf.pack(fill="x", padx=12, pady=(0, 10))
+                sf.pack(fill="x", padx=16, pady=(0, 12))
 
-                tk.Label(sf, text="Device Name:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w", pady=4)
-                self.device_name_entry = ttk.Entry(sf, width=28)
+                tk.Label(sf, text="Device Name:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w", pady=6)
+                self.device_name_entry = ttk.Entry(sf, width=30)
                 self.device_name_entry.insert(0, DEVICE_NAME)
-                self.device_name_entry.grid(row=0, column=1, sticky="w", pady=4, padx=(8, 0))
+                self.device_name_entry.grid(row=0, column=1, sticky="w", pady=6, padx=(12, 0))
 
-                tk.Label(sf, text="P2P Port:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=4)
-                port_entry = ttk.Entry(sf, width=28)
+                tk.Label(sf, text="P2P Port:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=6)
+                port_entry = ttk.Entry(sf, width=30)
                 port_entry.insert(0, str(LOCAL_P2P_PORT))
                 port_entry.config(state="readonly")
-                port_entry.grid(row=1, column=1, sticky="w", pady=4, padx=(8, 0))
+                port_entry.grid(row=1, column=1, sticky="w", pady=6, padx=(12, 0))
 
+                tk.Label(sf, text="Save Path:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=2, column=0, sticky="w", pady=6)
+                tk.Label(sf, text=os.path.expanduser("~/Downloads/JARVIS"), bg=CARD_BG, fg=ACCENT_GLOW, font=("JetBrains Mono", 9)).grid(row=2, column=1, sticky="w", pady=6, padx=(12, 0))
+
+                # Quick Actions
                 btn_frame = tk.Frame(settings_card, bg=CARD_BG)
-                btn_frame.pack(fill="x", padx=12, pady=(0, 10))
+                btn_frame.pack(fill="x", padx=16, pady=(0, 12))
                 
-                tk.Button(btn_frame, text="📥 Export Logs", command=self._export_logs, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
-                tk.Button(btn_frame, text="📋 Copy Code", command=self._copy_pairing, bg=CARD_BG, fg=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=4)
-                tk.Button(btn_frame, text="🌐 Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL), bg=ACCENT, fg="white", relief="flat", font=("Segoe UI", 9, "bold"), padx=12).pack(side="left", padx=4)
-                tk.Button(btn_frame, text="❌ Quit", command=self._on_close, bg=DANGER, fg="white", relief="flat", font=("Segoe UI", 9, "bold"), padx=12).pack(side="right")
+                tk.Button(btn_frame, text="📥 Export Logs", command=self._export_logs, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=14, pady=6).pack(side="left")
+                tk.Button(btn_frame, text="📋 Copy Code", command=self._copy_pairing, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=14, pady=6).pack(side="left", padx=6)
+                tk.Button(btn_frame, text="🌐 Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL), bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="left", padx=6)
+                tk.Button(btn_frame, text="❌ Quit", command=self._on_close, bg=DANGER, fg="white", relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="right")
 
-                # About
+                # About Card
                 about_card = tk.Frame(settings_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                about_card.pack(fill="x", padx=8, pady=(0, 8))
+                about_card.pack(fill="x", padx=12, pady=(0, 8))
 
-                tk.Label(about_card, text=f"JARVIS PC Agent v{AGENT_VERSION}", font=("Segoe UI Semibold", 13), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=12, pady=(10, 2))
-                tk.Label(about_card, text="Remote PC control from your phone", font=("Segoe UI", 10), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", padx=12)
-                tk.Label(about_card, text=f"Python {sys.version_info.major}.{sys.version_info.minor} | {platform.system()} | {platform.node()}", font=("Segoe UI", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", padx=12, pady=(4, 10))
+                about_inner = tk.Frame(about_card, bg=CARD_BG)
+                about_inner.pack(fill="x", padx=16, pady=16)
+                tk.Label(about_inner, text="⬡", font=("Segoe UI", 28), bg=CARD_BG, fg=ACCENT).pack(side="left")
+                about_text = tk.Frame(about_inner, bg=CARD_BG)
+                about_text.pack(side="left", padx=(12, 0))
+                tk.Label(about_text, text=f"JARVIS PC Agent v{AGENT_VERSION}", font=("Segoe UI Black", 14), bg=CARD_BG, fg=TEXT).pack(anchor="w")
+                tk.Label(about_text, text="Remote PC control from your phone • Built with Python", font=("Segoe UI", 10), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w")
+                tk.Label(about_text, text=f"Python {sys.version_info.major}.{sys.version_info.minor} │ {platform.system()} │ {platform.node()}", font=("JetBrains Mono", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", pady=(4, 0))
+
+                # System Info Card
+                sysinfo_card = tk.Frame(settings_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
+                sysinfo_card.pack(fill="x", padx=12, pady=(0, 8))
+                
+                tk.Label(sysinfo_card, text="🖥️ System Information", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
+                
+                sysinfo_inner = tk.Frame(sysinfo_card, bg=CARD_BG)
+                sysinfo_inner.pack(fill="x", padx=16, pady=(0, 12))
+                
+                try:
+                    import cpuinfo
+                    cpu_name = cpuinfo.get_cpu_info().get("brand_raw", "Unknown CPU")
+                except Exception:
+                    cpu_name = platform.processor() or "Unknown CPU"
+                
+                total_ram = psutil.virtual_memory().total / (1024**3)
+                disk_total = psutil.disk_usage('C:\\' if sys.platform == "win32" else '/').total / (1024**3)
+                
+                for label_text in [
+                    f"CPU: {cpu_name}",
+                    f"RAM: {total_ram:.1f} GB",
+                    f"Disk: {disk_total:.0f} GB",
+                    f"OS: {platform.system()} {platform.release()}",
+                    f"Hostname: {platform.node()}",
+                ]:
+                    tk.Label(sysinfo_inner, text=label_text, font=("JetBrains Mono", 9), bg=CARD_BG, fg=TEXT_DIM, anchor="w").pack(anchor="w", pady=1)
 
                 # Start ticking
                 self._tick()
@@ -2282,22 +2360,32 @@ def main():
                 self.root.mainloop()
 
             # ═══════ HELPER METHODS ═══════
-            def _make_stat_card(self, parent, title, value, col):
+            def _make_stat_card(self, parent, title, value, col, accent_color=None):
+                accent = accent_color or self.ACCENT
                 card = tk.Frame(parent, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
-                card.grid(row=0, column=col, padx=2, sticky="nsew")
-                tk.Label(card, text=title, font=("Segoe UI", 8), bg=self.CARD_BG, fg=self.TEXT_DIM).pack(pady=(8, 0))
-                val_label = tk.Label(card, text=value, font=("Segoe UI Semibold", 16), bg=self.CARD_BG, fg=self.TEXT)
-                val_label.pack(pady=(0, 8))
+                card.grid(row=0, column=col, padx=3, sticky="nsew")
+                tk.Label(card, text=title, font=("Segoe UI", 8), bg=self.CARD_BG, fg=self.TEXT_DIM).pack(pady=(10, 2))
+                val_label = tk.Label(card, text=value, font=("Segoe UI Black", 18), bg=self.CARD_BG, fg=accent)
+                val_label.pack(pady=(0, 10))
                 return val_label
 
             def _make_action_group(self, parent, title, buttons):
                 frame = tk.Frame(parent, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
-                frame.pack(fill="x", padx=8, pady=4)
-                tk.Label(frame, text=title, font=("Segoe UI Semibold", 11), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=12, pady=(10, 4))
+                frame.pack(fill="x", padx=12, pady=4)
+                tk.Label(frame, text=title, font=("Segoe UI Semibold", 12), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=16, pady=(12, 6))
                 btn_row = tk.Frame(frame, bg=self.CARD_BG)
-                btn_row.pack(fill="x", padx=12, pady=(0, 10))
+                btn_row.pack(fill="x", padx=16, pady=(0, 12))
                 for i, (text, cmd) in enumerate(buttons):
-                    tk.Button(btn_row, text=text, command=cmd, width=14, bg="#f1f5f9", fg=self.TEXT, relief="flat", font=("Segoe UI", 9), activebackground=self.ACCENT, activeforeground="white").grid(row=0, column=i, padx=3, pady=2)
+                    tk.Button(btn_row, text=text, command=cmd, width=14, bg="#1e3a5f", fg=self.TEXT, relief="flat", font=("Segoe UI Semibold", 9), activebackground=self.ACCENT, activeforeground="white", padx=4, pady=6).grid(row=0, column=i, padx=3, pady=2)
+            
+            def _clear_log_display(self):
+                try:
+                    self.log_text.configure(state="normal")
+                    self.log_text.delete("1.0", "end")
+                    self.log_text.configure(state="disabled")
+                    self._last_log_ids.clear()
+                except Exception:
+                    pass
 
             # ═══════ ACTIONS ═══════
             def _action_lock(self):
@@ -2554,65 +2642,66 @@ def main():
                     pass
 
             def _tick(self):
-                # Update clock
                 now = datetime.now()
                 self.clock_label.configure(text=now.strftime("%H:%M"))
+                self.seconds_label.configure(text=f":{now.strftime('%S')}")
                 self.date_label.configure(text=now.strftime("%A, %d %B %Y"))
                 
                 st = get_agent_status()
                 mode = st.get("connection_mode", "cloud")
                 
-                # Connection status
                 if mode == "local_p2p":
                     self.conn_status.configure(text="● LOCAL P2P", fg=self.SUCCESS)
+                elif st.get("connected"):
+                    self.conn_status.configure(text="● CONNECTED", fg=self.SUCCESS)
                 else:
-                    self.conn_status.configure(text="● CLOUD", fg="#3b82f6")
+                    self.conn_status.configure(text="● CONNECTING", fg=self.WARNING)
                 
-                self.pairing_label.configure(text=f"Code: {st.get('pairing_code') or '—'}")
+                code = st.get('pairing_code') or '——'
+                self.pairing_label.configure(text=f"CODE: {code}")
                 
                 ips = st.get("local_ips") or []
                 self.ip_label.configure(text=f"IP: {', '.join(ips[:2]) if ips else '—'}")
 
-                # Connection details
                 p2p = get_local_p2p_server()
-                details = f"Device: {st.get('device_name', '—')}  |  ID: {st.get('device_id', '—')[:12]}...\n"
-                details += f"IPs: {', '.join(ips) if ips else '—'}  |  Port: {LOCAL_P2P_PORT}\n"
-                details += f"P2P: {'Running' if p2p and p2p.running else 'Stopped'} ({len(p2p.clients) if p2p else 0} clients)"
+                dev_id = st.get('device_id', '—')
+                dev_id_short = dev_id[:12] + "..." if len(dev_id) > 12 else dev_id
+                details = f"Device: {st.get('device_name', '—')}  │  ID: {dev_id_short}\n"
+                details += f"IPs: {', '.join(ips) if ips else '—'}  │  Port: {LOCAL_P2P_PORT}\n"
+                details += f"P2P: {'Running' if p2p and p2p.running else 'Stopped'} ({len(p2p.clients) if p2p else 0} clients)  │  Mode: {mode.upper()}"
                 self.conn_details.configure(text=details)
 
-                # System stats
                 cpu = st.get('cpu_percent', 0)
                 mem = st.get('memory_percent', 0)
-                self.cpu_card.configure(text=f"{cpu:.0f}%", fg=self.DANGER if cpu > 80 else self.TEXT)
-                self.ram_card.configure(text=f"{mem:.0f}%", fg=self.DANGER if mem > 80 else self.TEXT)
+                self.cpu_card.configure(text=f"{cpu:.0f}%", fg=self.DANGER if cpu > 80 else self.ACCENT)
+                self.ram_card.configure(text=f"{mem:.0f}%", fg=self.DANGER if mem > 80 else "#8b5cf6")
                 
                 try:
                     disk = psutil.disk_usage('C:\\' if sys.platform == "win32" else '/')
-                    self.disk_card.configure(text=f"{disk.percent:.0f}%")
+                    self.disk_card.configure(text=f"{disk.percent:.0f}%", fg=self.DANGER if disk.percent > 90 else "#f59e0b")
                     
                     battery = psutil.sensors_battery()
                     if battery:
                         plug = "⚡" if battery.power_plugged else ""
-                        self.battery_card.configure(text=f"{plug}{battery.percent:.0f}%")
+                        bat_color = self.DANGER if battery.percent < 20 else self.SUCCESS
+                        self.battery_card.configure(text=f"{plug}{battery.percent:.0f}%", fg=bat_color)
                     else:
-                        self.battery_card.configure(text="N/A")
+                        self.battery_card.configure(text="AC", fg=self.SUCCESS)
                     
                     boot_time = psutil.boot_time()
                     uptime_secs = time.time() - boot_time
                     hours = int(uptime_secs // 3600)
                     mins = int((uptime_secs % 3600) // 60)
                     self.uptime_card.configure(text=f"{hours}h{mins}m")
-                except:
+                except Exception:
                     pass
 
-                # P2P status
                 if p2p and p2p.running:
                     clients = len(p2p.clients)
                     self.p2p_status_label.configure(text=f"🟢 Running ({clients} clients)", fg=self.SUCCESS)
                 else:
                     self.p2p_status_label.configure(text="🔴 Stopped", fg=self.DANGER)
 
-                # Append new logs
                 for entry in get_logs():
                     eid = str(entry.get("id"))
                     if eid in self._last_log_ids:
