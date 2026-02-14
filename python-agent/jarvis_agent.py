@@ -495,9 +495,31 @@ voice_listener = None
 
 # ============== JARVIS AGENT ==============
 class JarvisAgent:
+    DEVICE_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".device_key")
+
+    @staticmethod
+    def _load_or_create_device_key() -> str:
+        """Persist device_key so the agent reuses the same device across restarts."""
+        key_file = JarvisAgent.DEVICE_KEY_FILE
+        if os.path.exists(key_file):
+            try:
+                with open(key_file, "r") as f:
+                    key = f.read().strip()
+                if key:
+                    return key
+            except Exception:
+                pass
+        key = str(uuid.uuid4())
+        try:
+            with open(key_file, "w") as f:
+                f.write(key)
+        except Exception as e:
+            add_log("warn", f"Could not save device key: {e}", category="system")
+        return key
+
     def __init__(self):
         self.device_id = ""
-        self.device_key = str(uuid.uuid4())
+        self.device_key = self._load_or_create_device_key()
         self.pairing_code = ""
         self.running = True
         self.is_locked = False
@@ -956,7 +978,121 @@ class JarvisAgent:
             return {"success": False, "error": "Process not found"}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
+
+    def _get_running_apps(self) -> Dict[str, Any]:
+        """Get list of running processes with CPU and memory usage."""
+        try:
+            apps = []
+            seen = set()
+            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status']):
+                try:
+                    info = proc.info
+                    name = info.get('name', '')
+                    if not name or name in seen or name.lower() in ('system idle process', 'system', 'registry', 'idle'):
+                        continue
+                    seen.add(name)
+                    apps.append({
+                        "pid": info['pid'],
+                        "name": name,
+                        "cpu": round(info.get('cpu_percent', 0) or 0, 1),
+                        "memory": round(info.get('memory_percent', 0) or 0, 1),
+                        "status": info.get('status', 'unknown'),
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            # Sort by memory descending
+            apps.sort(key=lambda x: x['memory'], reverse=True)
+            return {"success": True, "apps": apps[:100]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_installed_apps(self) -> Dict[str, Any]:
+        """Get list of installed applications (Windows only)."""
+        try:
+            apps = []
+            if platform.system() == "Windows":
+                # Query registry for installed apps
+                import winreg
+                reg_paths = [
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                ]
+                seen = set()
+                for hive, path in reg_paths:
+                    try:
+                        key = winreg.OpenKey(hive, path)
+                        for i in range(winreg.QueryInfoKey(key)[0]):
+                            try:
+                                subkey_name = winreg.EnumKey(key, i)
+                                subkey = winreg.OpenKey(key, subkey_name)
+                                try:
+                                    name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                                    if name and name not in seen:
+                                        seen.add(name)
+                                        source = "registry"
+                                        try:
+                                            source = winreg.QueryValueEx(subkey, "Publisher")[0] or "registry"
+                                        except (FileNotFoundError, OSError):
+                                            pass
+                                        apps.append({"name": name, "app_id": subkey_name, "source": source})
+                                except (FileNotFoundError, OSError):
+                                    pass
+                                finally:
+                                    winreg.CloseKey(subkey)
+                            except (OSError, WindowsError):
+                                continue
+                        winreg.CloseKey(key)
+                    except (FileNotFoundError, OSError):
+                        continue
+                apps.sort(key=lambda x: x['name'].lower())
+            return {"success": True, "apps": apps}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _kill_app(self, pid=None, app_name: str = "") -> Dict[str, Any]:
+        """Kill a process by PID or name."""
+        try:
+            if pid:
+                proc = psutil.Process(int(pid))
+                proc.kill()
+                return {"success": True, "message": f"Killed PID {pid}"}
+            elif app_name:
+                killed = 0
+                for proc in psutil.process_iter(['name', 'pid']):
+                    if app_name.lower() in proc.info['name'].lower():
+                        try:
+                            proc.kill()
+                            killed += 1
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+                return {"success": killed > 0, "message": f"Killed {killed} processes", "killed": killed}
+            return {"success": False, "error": "No PID or app_name provided"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_services(self) -> Dict[str, Any]:
+        """Get list of Windows services."""
+        try:
+            services = []
+            if platform.system() == "Windows":
+                for svc in psutil.win_service_iter():
+                    try:
+                        info = svc.as_dict()
+                        services.append({
+                            "name": info.get("name", ""),
+                            "display_name": info.get("display_name", ""),
+                            "status": info.get("status", ""),
+                            "start_type": info.get("start_type", ""),
+                            "pid": info.get("pid"),
+                        })
+                    except Exception:
+                        continue
+                services.sort(key=lambda x: x['display_name'].lower())
+            return {"success": True, "services": services}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # ============== FILES ==============
     def _list_files(self, path: str = "~") -> Dict[str, Any]:
         try:
@@ -1617,6 +1753,14 @@ class JarvisAgent:
                 return self._open_app(payload.get("app_name", ""), payload.get("app_id"))
             elif cmd == "close_app":
                 return self._close_app(payload.get("app_name", ""))
+            elif cmd == "get_running_apps":
+                return self._get_running_apps()
+            elif cmd == "get_installed_apps":
+                return self._get_installed_apps()
+            elif cmd == "kill_app":
+                return self._kill_app(payload.get("pid"), payload.get("app_name", ""))
+            elif cmd == "get_services":
+                return self._get_services()
             
             # Open URL (supports zoom:// and other protocols)
             elif cmd == "open_url":
