@@ -25,6 +25,8 @@ import {
   X,
   Cpu,
   Zap,
+  Cog,
+  Skull,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -50,6 +52,14 @@ type InstalledApp = {
   app_id?: string | null;
   source?: string;
 };
+
+interface ServiceInfo {
+  name: string;
+  display_name: string;
+  status: string;
+  start_type: string;
+  pid: number | null;
+}
 
 const quickApps: QuickApp[] = [
   { id: "chrome", name: "Google Chrome", icon: Chrome, category: "Browser", color: "text-neon-blue" },
@@ -93,7 +103,9 @@ export default function Apps() {
   const [isLoadingInstalled, setIsLoadingInstalled] = useState(false);
 
   const [customAppName, setCustomAppName] = useState("");
-
+  const [services, setServices] = useState<ServiceInfo[]>([]);
+  const [isLoadingServices, setIsLoadingServices] = useState(false);
+  const [killingPid, setKillingPid] = useState<number | null>(null);
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
 
@@ -148,8 +160,30 @@ export default function Apps() {
     setIsLoadingInstalled(false);
   };
 
+  const fetchServices = async () => {
+    setIsLoadingServices(true);
+    const res = await sendCommand("get_services", {}, { awaitResult: true, timeoutMs: 15000 });
+    const result = (res as any).result as Record<string, unknown> | undefined;
+    if (res.success && Array.isArray(result?.services)) {
+      setServices(result!.services as ServiceInfo[]);
+    }
+    setIsLoadingServices(false);
+  };
+
+  const handleKillApp = async (pid: number, name: string) => {
+    setKillingPid(pid);
+    const res = await sendCommand("kill_app", { pid, app_name: name }, { awaitResult: true, timeoutMs: 8000 });
+    if (res.success) {
+      toast({ title: "Process killed", description: name });
+      setTimeout(() => void fetchRunningApps(), 800);
+    } else {
+      toast({ title: "Kill failed", variant: "destructive" });
+    }
+    setKillingPid(null);
+  };
+
   const refreshAll = async () => {
-    await Promise.all([fetchInstalledApps(), fetchRunningApps()]);
+    await Promise.all([fetchInstalledApps(), fetchRunningApps(), fetchServices()]);
   };
 
   useEffect(() => {
@@ -268,24 +302,32 @@ export default function Apps() {
 
           <section aria-label="Apps tabs">
             <Tabs defaultValue="installed" className="w-full">
-              <TabsList className="grid w-full grid-cols-3 mb-4">
+              <TabsList className="grid w-full grid-cols-4 mb-4">
                 <TabsTrigger value="installed">
                   Installed
                   {installedApps.length > 0 && (
-                    <Badge variant="secondary" className="ml-2 text-xs">
+                    <Badge variant="secondary" className="ml-1 text-xs">
                       {installedApps.length}
                     </Badge>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="quick">Quick</TabsTrigger>
                 <TabsTrigger value="running">
                   Running
                   {runningApps.length > 0 && (
-                    <Badge variant="secondary" className="ml-2 text-xs">
+                    <Badge variant="secondary" className="ml-1 text-xs">
                       {runningApps.length}
                     </Badge>
                   )}
                 </TabsTrigger>
+                <TabsTrigger value="services">
+                  Services
+                  {services.length > 0 && (
+                    <Badge variant="secondary" className="ml-1 text-xs">
+                      {services.length}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="quick">Quick</TabsTrigger>
               </TabsList>
 
               <Card className="glass-dark border-border/50 mb-4">
@@ -432,14 +474,29 @@ export default function Apps() {
                                 </div>
                               </div>
                             </div>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
-                              onClick={() => void handleCloseApp(app.name)}
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => void handleCloseApp(app.name)}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => void handleKillApp(app.pid, app.name)}
+                                disabled={killingPid === app.pid}
+                              >
+                                {killingPid === app.pid ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Skull className="h-4 w-4" />
+                                )}
+                              </Button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -447,6 +504,55 @@ export default function Apps() {
                       <div className="text-center py-12">
                         <Square className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                         <p className="text-muted-foreground">No running apps detected</p>
+                        <p className="text-xs text-muted-foreground mt-1">Click Refresh to fetch from your PC</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="services">
+                <Card className="glass-dark border-border/50">
+                  <CardContent className="p-4">
+                    {isLoadingServices ? (
+                      <div className="flex items-center justify-center py-12">
+                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                      </div>
+                    ) : services.length > 0 ? (
+                      <div className="space-y-2">
+                        {services
+                          .filter((s) => !searchQuery || s.display_name.toLowerCase().includes(searchQuery.toLowerCase()))
+                          .slice(0, 100)
+                          .map((svc) => (
+                          <div
+                            key={svc.name}
+                            className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-colors"
+                          >
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <div className="w-8 h-8 rounded-lg bg-secondary flex items-center justify-center shrink-0">
+                                <Cog className="h-4 w-4 text-muted-foreground" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="font-medium text-sm truncate">{svc.display_name}</p>
+                                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                                  <span>{svc.name}</span>
+                                  <span>{svc.start_type}</span>
+                                </div>
+                              </div>
+                            </div>
+                            <Badge
+                              variant={svc.status === "running" ? "default" : "secondary"}
+                              className={cn("text-xs shrink-0", svc.status === "running" && "bg-green-500/20 text-green-400")}
+                            >
+                              {svc.status}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-12">
+                        <Cog className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                        <p className="text-muted-foreground">No services detected</p>
                         <p className="text-xs text-muted-foreground mt-1">Click Refresh to fetch from your PC</p>
                       </div>
                     )}
