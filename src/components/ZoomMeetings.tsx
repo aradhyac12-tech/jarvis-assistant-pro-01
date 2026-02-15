@@ -190,10 +190,10 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         return;
       }
       
-      // Extended timeout for screenshot
+      // Extended timeout for slow PCs - 60s total (20s Zoom load + 15s screenshot + buffer)
       const res = await sendCommand("join_zoom", payload, { 
         awaitResult: true, 
-        timeoutMs: payload.take_screenshot ? 20000 : 10000 
+        timeoutMs: 60000 
       });
       
       if (res.success) {
