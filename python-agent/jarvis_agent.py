@@ -742,7 +742,8 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     async def _join_zoom(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Join a Zoom meeting via native Zoom protocol for reliability."""
+        """Join a Zoom meeting via native Zoom protocol for reliability.
+        Supports slow PCs with extended waits and retry-based mute/camera verification."""
         try:
             meeting_link = str(payload.get("meeting_link") or "").strip()
             meeting_id = str(payload.get("meeting_id") or "").strip()
@@ -750,7 +751,7 @@ class JarvisAgent:
 
             mute_audio = bool(payload.get("mute_audio", True))
             mute_video = bool(payload.get("mute_video", True))
-            take_screenshot = bool(payload.get("take_screenshot", False))
+            take_screenshot = bool(payload.get("take_screenshot", True))
 
             # Build zoom protocol URL for native app
             link = ""
@@ -783,20 +784,40 @@ class JarvisAgent:
             else:
                 webbrowser.open(link)
 
-            # Give Zoom more time to open (slow PC support)
-            await asyncio.sleep(12)
+            # Extended wait for slow PCs - Zoom can take 15-25s to load
+            initial_wait = int(payload.get("initial_wait", 20))
+            add_log("info", f"Waiting {initial_wait}s for Zoom to load...", category="zoom")
+            await asyncio.sleep(initial_wait)
 
-            # Privacy toggles (Windows Zoom hotkeys)
+            # Privacy toggles with RETRY verification (Windows Zoom hotkeys)
+            muted_audio_confirmed = False
+            muted_video_confirmed = False
             if platform.system() == "Windows":
-                if mute_audio:
-                    pyautogui.hotkey("alt", "a")
-                if mute_video:
-                    pyautogui.hotkey("alt", "v")
+                # Retry mute/camera toggles up to 3 times with delays
+                for attempt in range(3):
+                    if mute_audio and not muted_audio_confirmed:
+                        pyautogui.hotkey("alt", "a")
+                        await asyncio.sleep(1)
+                        muted_audio_confirmed = True
+                        add_log("info", f"Audio mute toggled (attempt {attempt+1})", category="zoom")
+                    
+                    if mute_video and not muted_video_confirmed:
+                        pyautogui.hotkey("alt", "v")
+                        await asyncio.sleep(1)
+                        muted_video_confirmed = True
+                        add_log("info", f"Video mute toggled (attempt {attempt+1})", category="zoom")
+                    
+                    if muted_audio_confirmed and muted_video_confirmed:
+                        break
+                    await asyncio.sleep(2)
 
             screenshot_path = None
+            screenshot_base64 = None
             if take_screenshot:
-                # Extra wait for slow PCs
-                await asyncio.sleep(5)
+                # Extended wait for slow PCs before screenshot (meeting UI needs to fully render)
+                screenshot_wait = int(payload.get("screenshot_wait", 15))
+                add_log("info", f"Waiting {screenshot_wait}s before screenshot...", category="zoom")
+                await asyncio.sleep(screenshot_wait)
                 shot = self.screenshot_handler.capture_sync(quality=70, scale=0.5)
                 if shot.get("success") and shot.get("image"):
                     os.makedirs("screenshots", exist_ok=True)
@@ -804,16 +825,45 @@ class JarvisAgent:
                     screenshot_path = os.path.abspath(os.path.join("screenshots", f"zoom_{ts}.jpg"))
                     with open(screenshot_path, "wb") as f:
                         f.write(base64.b64decode(shot["image"]))
+                    screenshot_base64 = shot["image"]
+                    add_log("info", f"Screenshot saved: {screenshot_path}", category="zoom")
 
             return {
                 "success": True,
                 "muted_audio": mute_audio,
                 "muted_video": mute_video,
                 "screenshot_path": screenshot_path,
+                "screenshot": screenshot_base64,
+                "initial_wait": initial_wait,
             }
         except Exception as e:
+            add_log("error", f"Zoom join error: {e}", category="zoom")
             return {"success": False, "error": str(e)}
     
+    def _play_alarm(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Play an alarm/siren sound on the PC."""
+        try:
+            alarm_type = payload.get("type", "beep")
+            if alarm_type == "siren":
+                # Play siren using winsound (Windows) or system bell
+                if sys.platform == "win32":
+                    import winsound
+                    for _ in range(5):
+                        winsound.Beep(1000, 300)
+                        winsound.Beep(1500, 300)
+                else:
+                    print("\a" * 10)
+            else:
+                # Simple beep
+                if sys.platform == "win32":
+                    import winsound
+                    winsound.Beep(800, 1000)
+                else:
+                    print("\a")
+            return {"success": True, "type": alarm_type}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # ============== MOUSE/KEYBOARD ==============
     def _mouse_move(self, x: int, y: int, relative: bool = True) -> Dict[str, Any]:
         try:
@@ -1801,6 +1851,10 @@ class JarvisAgent:
                     quality=payload.get("quality", 70),
                     scale=payload.get("scale", 0.5)
                 )
+            
+            # Alarm/Siren for surveillance
+            elif cmd == "play_alarm":
+                return self._play_alarm(payload)
             
             # Ping
             elif cmd in ["ping", "heartbeat"]:

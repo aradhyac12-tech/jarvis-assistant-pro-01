@@ -144,16 +144,16 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "No PC found. Start the PC agent first." };
       }
 
-      // Create a fresh session with short TTL (24h) for auto-pair
+      // Create a persistent session (remember_device=true, 365 days TTL) so user never needs access code again
       const sessionToken = crypto.randomUUID();
-      const expiresAt = new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
+      const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString();
       
       const { data: sessionData, error: sessionError } = await supabase
         .from("device_sessions")
         .insert({ 
           device_id: device.id, 
           session_token: sessionToken,
-          remember_device: false,
+          remember_device: true,
           expires_at: expiresAt
         })
         .select("id")
@@ -168,10 +168,11 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         device_id: device.id,
         session_token: sessionToken,
         device_name: device.name,
-        remember_device: false,
+        remember_device: true,
       };
 
-      persistSession(newSession, false);
+      // Persist to localStorage so it survives browser restarts
+      persistSession(newSession, true);
 
       const info = await fetchDeviceInfo(device.id);
       if (info) setDeviceInfo(info);

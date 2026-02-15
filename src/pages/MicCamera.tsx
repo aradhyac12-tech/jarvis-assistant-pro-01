@@ -34,10 +34,12 @@ import {
   ScreenShareOff,
   Maximize2,
   PictureInPicture2,
+  Shield,
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
 import { CameraTroubleshooter } from "@/components/CameraTroubleshooter";
+import { SurveillancePanel } from "@/components/SurveillancePanel";
 import { BackButton } from "@/components/BackButton";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -1053,14 +1055,14 @@ export default function MicCamera() {
           )}
 
           <Tabs defaultValue="audio" className="w-full">
-            <TabsList className="grid w-full grid-cols-4 mb-4">
+            <TabsList className="grid w-full grid-cols-5 mb-4">
               <TabsTrigger value="audio" className="text-sm">
                 <Volume2 className="h-4 w-4 mr-1.5" />
                 <span className="hidden sm:inline">Audio</span>
               </TabsTrigger>
               <TabsTrigger value="phone-camera" className="text-sm">
                 <Camera className="h-4 w-4 mr-1.5" />
-                <span className="hidden sm:inline">Phone Cam</span>
+                <span className="hidden sm:inline">Phone</span>
               </TabsTrigger>
               <TabsTrigger value="pc-camera" className="text-sm">
                 <Webcam className="h-4 w-4 mr-1.5" />
@@ -1069,6 +1071,10 @@ export default function MicCamera() {
               <TabsTrigger value="screen-mirror" className="text-sm">
                 <ScreenShare className="h-4 w-4 mr-1.5" />
                 <span className="hidden sm:inline">Screen</span>
+              </TabsTrigger>
+              <TabsTrigger value="surveillance" className="text-sm">
+                <Shield className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">Guard</span>
               </TabsTrigger>
             </TabsList>
 
@@ -1994,6 +2000,10 @@ export default function MicCamera() {
                   <InlineDiagnostics type="screen" />
                 </CardContent>
               </Card>
+            </TabsContent>
+            {/* ==================== SURVEILLANCE TAB ==================== */}
+            <TabsContent value="surveillance">
+              <SurveillancePanel />
             </TabsContent>
           </Tabs>
         </main>
