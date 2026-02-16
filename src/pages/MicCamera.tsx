@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
+import { DetailedDiagnostics } from "@/components/DetailedDiagnostics";
 import { CameraTroubleshooter } from "@/components/CameraTroubleshooter";
 import { SurveillancePanel } from "@/components/SurveillancePanel";
 import { BackButton } from "@/components/BackButton";
@@ -1299,6 +1300,10 @@ export default function MicCamera() {
 
                   {/* Inline Diagnostics */}
                   <InlineDiagnostics type="audio" />
+                  <DetailedDiagnostics
+                    mode="audio"
+                    isStreamActive={audioRelayActive}
+                  />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1589,6 +1594,10 @@ export default function MicCamera() {
 
                   {/* Inline Diagnostics */}
                   <InlineDiagnostics type="phone-camera" />
+                  <DetailedDiagnostics
+                    mode="phone-camera"
+                    isStreamActive={phoneCameraActive}
+                  />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1808,6 +1817,13 @@ export default function MicCamera() {
 
                   {/* Inline Diagnostics */}
                   <InlineDiagnostics type="pc-camera" />
+                  <DetailedDiagnostics
+                    mode="pc-camera"
+                    currentFps={cameraFps}
+                    currentLatency={cameraLatency}
+                    currentQuality={cameraQualitySetting}
+                    isStreamActive={pcCameraActive}
+                  />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1998,6 +2014,13 @@ export default function MicCamera() {
 
                   {/* Inline Diagnostics */}
                   <InlineDiagnostics type="screen" />
+                  <DetailedDiagnostics
+                    mode="screen-mirror"
+                    currentFps={screenMirrorLiveFps}
+                    currentLatency={screenMirrorLatency}
+                    currentQuality={screenMirrorQuality}
+                    isStreamActive={screenMirrorActive}
+                  />
                 </CardContent>
               </Card>
             </TabsContent>
