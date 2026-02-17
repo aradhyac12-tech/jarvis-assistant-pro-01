@@ -225,11 +225,16 @@ export default function MicCamera() {
       setPhoneCameraStream(stream);
       if (phoneCameraRef.current) {
         phoneCameraRef.current.srcObject = stream;
-        // Some mobile browsers need an explicit play() after srcObject assignment.
+        // Critical: explicit play() with muted to ensure video renders on mobile
+        phoneCameraRef.current.muted = true;
+        phoneCameraRef.current.setAttribute("playsinline", "true");
+        phoneCameraRef.current.setAttribute("webkit-playsinline", "true");
         try {
           await phoneCameraRef.current.play();
         } catch {
-          // ignore
+          // Retry after brief delay for mobile browsers
+          await new Promise(r => setTimeout(r, 100));
+          try { await phoneCameraRef.current!.play(); } catch { /* ignore */ }
         }
       }
       setPhoneCameraActive(true);
