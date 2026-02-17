@@ -784,8 +784,8 @@ class JarvisAgent:
             else:
                 webbrowser.open(link)
 
-            # Extended wait for slow PCs - Zoom can take 15-25s to load
-            initial_wait = int(payload.get("initial_wait", 20))
+            # Extended wait for slow PCs - Zoom can take 30-60s to load
+            initial_wait = int(payload.get("initial_wait", 60))
             add_log("info", f"Waiting {initial_wait}s for Zoom to load...", category="zoom")
             await asyncio.sleep(initial_wait)
 
@@ -815,7 +815,7 @@ class JarvisAgent:
             screenshot_base64 = None
             if take_screenshot:
                 # Extended wait for slow PCs before screenshot (meeting UI needs to fully render)
-                screenshot_wait = int(payload.get("screenshot_wait", 15))
+                screenshot_wait = int(payload.get("screenshot_wait", 20))
                 add_log("info", f"Waiting {screenshot_wait}s before screenshot...", category="zoom")
                 await asyncio.sleep(screenshot_wait)
                 shot = self.screenshot_handler.capture_sync(quality=70, scale=0.5)
@@ -845,7 +845,6 @@ class JarvisAgent:
         try:
             alarm_type = payload.get("type", "beep")
             if alarm_type == "siren":
-                # Play siren using winsound (Windows) or system bell
                 if sys.platform == "win32":
                     import winsound
                     for _ in range(5):
@@ -854,13 +853,147 @@ class JarvisAgent:
                 else:
                     print("\a" * 10)
             else:
-                # Simple beep
                 if sys.platform == "win32":
                     import winsound
                     winsound.Beep(800, 1000)
                 else:
                     print("\a")
             return {"success": True, "type": alarm_type}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ============== AUDIO RELAY ==============
+    _audio_streamer = None
+    _audio_ws = None
+
+    async def _start_audio_relay(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Start audio relay - connect to the Supabase audio-relay edge function via WebSocket."""
+        try:
+            session_id = payload.get("session_id", "")
+            direction = payload.get("direction", "phone_to_pc")
+            use_system_audio = payload.get("use_system_audio", False)
+
+            if not session_id:
+                return {"success": False, "error": "Missing session_id"}
+
+            session_token = self._get_session_token()
+            if not session_token:
+                return {"success": False, "error": "No active session token for relay auth"}
+
+            self._stop_audio_relay()
+
+            self._audio_streamer = {
+                "session_id": session_id,
+                "direction": direction,
+                "running": True,
+            }
+
+            def stream_audio():
+                import websockets.sync.client as ws_client
+                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
+                try:
+                    with ws_client.connect(ws_url) as ws:
+                        self._audio_ws = ws
+                        add_log("info", f"Audio relay connected: session={session_id[:8]}..., direction={direction}", category="audio")
+
+                        if not HAS_PYAUDIO:
+                            add_log("warn", "PyAudio not installed - audio capture/playback limited", category="audio")
+                            # Keep connection alive for signaling even without pyaudio
+                            while self._audio_streamer and self._audio_streamer.get("running"):
+                                try:
+                                    msg = ws.recv(timeout=1.0)
+                                    if isinstance(msg, str):
+                                        data = json.loads(msg)
+                                        if data.get("type") == "peer_connected":
+                                            add_log("info", "Audio peer connected", category="audio")
+                                except Exception:
+                                    pass
+                            return
+
+                        pa = pyaudio.PyAudio()
+                        RATE = 16000
+                        CHANNELS = 1
+                        CHUNK = 2048
+                        FORMAT = pyaudio.paInt16
+
+                        # Capture mic if PC is sending audio
+                        mic_stream = None
+                        if direction in ("pc_to_phone", "bidirectional"):
+                            try:
+                                mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                                add_log("info", "PC microphone opened for audio relay", category="audio")
+                            except Exception as e:
+                                add_log("warn", f"Could not open PC microphone: {e}", category="audio")
+
+                        # Playback if PC is receiving audio
+                        speaker_stream = None
+                        if direction in ("phone_to_pc", "bidirectional"):
+                            try:
+                                speaker_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True, frames_per_buffer=CHUNK)
+                                add_log("info", "PC speakers opened for audio relay", category="audio")
+                            except Exception as e:
+                                add_log("warn", f"Could not open PC speakers: {e}", category="audio")
+
+                        # Sender thread
+                        def send_mic():
+                            while self._audio_streamer and self._audio_streamer.get("running") and mic_stream:
+                                try:
+                                    data = mic_stream.read(CHUNK, exception_on_overflow=False)
+                                    ws.send(data)
+                                except Exception:
+                                    break
+
+                        send_thread = None
+                        if mic_stream:
+                            send_thread = threading.Thread(target=send_mic, daemon=True)
+                            send_thread.start()
+
+                        # Receiver loop
+                        while self._audio_streamer and self._audio_streamer.get("running"):
+                            try:
+                                msg = ws.recv(timeout=0.1)
+                                if isinstance(msg, bytes) and speaker_stream:
+                                    speaker_stream.write(msg)
+                                elif isinstance(msg, str):
+                                    data = json.loads(msg)
+                                    if data.get("type") == "peer_connected":
+                                        add_log("info", "Audio peer connected", category="audio")
+                            except Exception:
+                                pass
+
+                        # Cleanup
+                        if mic_stream:
+                            mic_stream.stop_stream()
+                            mic_stream.close()
+                        if speaker_stream:
+                            speaker_stream.stop_stream()
+                            speaker_stream.close()
+                        pa.terminate()
+
+                except Exception as e:
+                    add_log("error", f"Audio relay error: {e}", category="audio")
+                finally:
+                    add_log("info", "Audio relay ended", category="audio")
+
+            threading.Thread(target=stream_audio, daemon=True).start()
+            add_log("info", f"Audio relay started: direction={direction}", category="audio")
+            return {"success": True, "session_id": session_id, "direction": direction}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _stop_audio_relay(self) -> Dict[str, Any]:
+        """Stop the audio relay."""
+        try:
+            if self._audio_streamer:
+                self._audio_streamer["running"] = False
+            if self._audio_ws:
+                try:
+                    self._audio_ws.close()
+                except:
+                    pass
+            self._audio_streamer = None
+            self._audio_ws = None
+            return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1875,6 +2008,12 @@ class JarvisAgent:
                 return self._update_screen_settings(payload)
             elif cmd == "start_test_pattern":
                 return await self._start_test_pattern(payload)
+            
+            # Audio relay - handled by Supabase edge function, agent just acknowledges
+            elif cmd == "start_audio_relay":
+                return await self._start_audio_relay(payload)
+            elif cmd == "stop_audio_relay":
+                return self._stop_audio_relay()
             
             else:
                 add_log("warn", f"Unknown command: {cmd}", category="command")
