@@ -31,10 +31,14 @@ import {
   ChevronDown,
   ChevronUp,
   Video,
+  Mic,
+  MicOff,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useToast } from "@/hooks/use-toast";
+import { DetailedDiagnostics } from "@/components/DetailedDiagnostics";
 
 interface MotionEvent {
   id: string;
@@ -93,6 +97,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const isRecordingRef = useRef(false);
   const recordingTimerRef = useRef<number | null>(null);
 
+  // Audio preview
+  const [audioPreviewActive, setAudioPreviewActive] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+
   const pollingRef = useRef<number | null>(null);
   const previousFrameRef = useRef<ImageData | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -102,41 +110,38 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const startSurveillance = useCallback(async () => {
     setIsStarting(true);
     try {
-      const res = await sendCommand("start_camera_stream", {
-        session_id: crypto.randomUUID(),
-        camera_index: 0,
-        fps: streamFps,
-        quality: streamQuality,
-        mode: "surveillance",
-      }, { awaitResult: true, timeoutMs: 20000 });
-
-      if (res.success) {
-        setMonitoring(true);
-        setDiagnostics(prev => ({ ...prev, relayConnected: true, agentResponding: true }));
-        toast({ title: "Surveillance Active", description: "Motion detection started" });
-
-        pollingRef.current = window.setInterval(async () => {
-          try {
-            const shot = await sendCommand("take_screenshot", { quality: streamQuality, scale: 0.3 }, { awaitResult: true, timeoutMs: 5000 });
-            if (shot.success && (shot as any).result?.image) {
-              const imageData = (shot as any).result.image;
-              setLastFrame(`data:image/jpeg;base64,${imageData}`);
-              setDiagnostics(prev => ({ ...prev, framesReceived: prev.framesReceived + 1, lastFrameTime: Date.now() }));
-              detectMotion(imageData);
-            }
-          } catch {
-            setDiagnostics(prev => ({ ...prev, connectionErrors: prev.connectionErrors + 1 }));
-          }
-        }, Math.max(1000, Math.round(1000 / streamFps)));
-      } else {
-        setDiagnostics(prev => ({ ...prev, relayConnected: false }));
-        toast({ title: "Failed to start surveillance", variant: "destructive" });
+      // First verify agent is responsive with a ping
+      const ping = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 8000 });
+      if (!ping?.success) {
+        toast({ title: "Agent not responding", description: "Start jarvis_agent.py on your PC", variant: "destructive" });
+        setIsStarting(false);
+        return;
       }
-    } catch {
+
+      setMonitoring(true);
+      setDiagnostics(prev => ({ ...prev, relayConnected: true, agentResponding: true }));
+      toast({ title: "Surveillance Active", description: "Motion detection started via screenshot polling" });
+
+      // Use screenshot polling - more reliable than camera stream for surveillance
+      pollingRef.current = window.setInterval(async () => {
+        try {
+          const shot = await sendCommand("take_screenshot", { quality: streamQuality, scale: 0.3 }, { awaitResult: true, timeoutMs: 8000 });
+          if (shot.success && (shot as any).result?.image) {
+            const imageData = (shot as any).result.image;
+            setLastFrame(`data:image/jpeg;base64,${imageData}`);
+            setDiagnostics(prev => ({ ...prev, framesReceived: prev.framesReceived + 1, lastFrameTime: Date.now() }));
+            detectMotion(imageData);
+          }
+        } catch {
+          setDiagnostics(prev => ({ ...prev, connectionErrors: prev.connectionErrors + 1 }));
+        }
+      }, Math.max(1000, Math.round(1000 / streamFps)));
+    } catch (err) {
       setDiagnostics(prev => ({ ...prev, connectionErrors: prev.connectionErrors + 1 }));
-      toast({ title: "Surveillance error", variant: "destructive" });
+      toast({ title: "Surveillance error", description: err instanceof Error ? err.message : "Failed to start", variant: "destructive" });
     }
     setIsStarting(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendCommand, toast, streamFps, streamQuality]);
 
   const stopSurveillance = useCallback(() => {
@@ -544,6 +549,36 @@ export function SurveillancePanel({ className }: { className?: string }) {
             </div>
           )}
         </div>
+
+        {/* Audio Preview Toggle */}
+        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
+          <div className="flex items-center gap-2">
+            {audioPreviewActive ? <Mic className="h-4 w-4 text-primary" /> : <MicOff className="h-4 w-4 text-muted-foreground" />}
+            <Label>Audio Preview (Listen via PC Mic)</Label>
+          </div>
+          <Switch
+            checked={audioPreviewActive}
+            onCheckedChange={async (checked) => {
+              setAudioPreviewActive(checked);
+              if (checked && monitoring) {
+                await sendCommand("start_audio_relay", {
+                  session_id: crypto.randomUUID(),
+                  direction: "pc_to_phone",
+                });
+                toast({ title: "Audio Preview Started", description: "Listening to PC microphone" });
+              } else {
+                await sendCommand("stop_audio_relay", {});
+              }
+            }}
+          />
+        </div>
+
+        {/* Detailed Diagnostics */}
+        <DetailedDiagnostics
+          mode="pc-camera"
+          isStreamActive={monitoring}
+          currentFps={diagnostics.framesReceived > 0 ? streamFps : 0}
+        />
 
         {/* Manual Controls */}
         <div className="flex items-center justify-center gap-3">

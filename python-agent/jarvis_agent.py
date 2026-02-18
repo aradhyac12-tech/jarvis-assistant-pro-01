@@ -1576,6 +1576,56 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    # ============== STREAMING STATS ==============
+    def _get_streaming_stats(self) -> Dict[str, Any]:
+        """Return current streaming statistics for camera, screen, and audio."""
+        stats: Dict[str, Any] = {"success": True}
+        
+        # Camera stats
+        if self._camera_streamer:
+            stats["camera"] = {
+                "running": bool(self._camera_streamer.get("running")),
+                "session_id": self._camera_streamer.get("session_id", ""),
+                "fps": self._camera_streamer.get("fps", 0),
+                "quality": self._camera_streamer.get("quality", 0),
+                "frame_count": self._camera_streamer.get("frame_count", 0),
+                "bytes_sent": self._camera_streamer.get("bytes_sent", 0),
+                "last_error": self._camera_streamer.get("last_error"),
+            }
+        else:
+            stats["camera"] = {"running": False, "frame_count": 0, "bytes_sent": 0, "fps": 0, "last_error": None}
+        
+        # Screen stats
+        if self._screen_streamer:
+            stats["screen"] = {
+                "running": bool(self._screen_streamer.get("running")),
+                "session_id": self._screen_streamer.get("session_id", ""),
+                "fps": self._screen_streamer.get("fps", 0),
+                "quality": self._screen_streamer.get("quality", 0),
+                "frame_count": self._screen_streamer.get("frame_count", 0),
+                "bytes_sent": self._screen_streamer.get("bytes_sent", 0),
+                "last_error": self._screen_streamer.get("last_error"),
+                "resolution": self._screen_streamer.get("resolution", ""),
+            }
+        else:
+            stats["screen"] = {"running": False, "frame_count": 0, "bytes_sent": 0, "fps": 0, "last_error": None}
+        
+        # Audio stats
+        if self._audio_streamer:
+            stats["audio"] = {
+                "running": bool(self._audio_streamer.get("running")),
+                "session_id": self._audio_streamer.get("session_id", ""),
+                "direction": self._audio_streamer.get("direction", ""),
+                "bytes_sent": self._audio_streamer.get("bytes_sent", 0),
+                "bytes_received": self._audio_streamer.get("bytes_received", 0),
+                "send_rate_kbps": 0,
+                "recv_rate_kbps": 0,
+            }
+        else:
+            stats["audio"] = {"running": False, "bytes_sent": 0, "bytes_received": 0, "send_rate_kbps": 0, "recv_rate_kbps": 0}
+        
+        return stats
+
     # ============== BOOST PC ==============
     def _boost_ram(self) -> Dict[str, Any]:
         try:
@@ -2009,11 +2059,25 @@ class JarvisAgent:
             elif cmd == "start_test_pattern":
                 return await self._start_test_pattern(payload)
             
-            # Audio relay - handled by Supabase edge function, agent just acknowledges
+            # Audio relay
             elif cmd == "start_audio_relay":
                 return await self._start_audio_relay(payload)
             elif cmd == "stop_audio_relay":
                 return self._stop_audio_relay()
+            
+            # Streaming stats
+            elif cmd == "get_streaming_stats":
+                return self._get_streaming_stats()
+            
+            # Check audio support
+            elif cmd == "check_audio_support":
+                return {
+                    "success": True,
+                    "has_pyaudio": HAS_PYAUDIO,
+                    "has_websockets": HAS_WEBSOCKETS,
+                    "has_opencv": HAS_OPENCV,
+                    "has_speech_recognition": HAS_SPEECH_RECOGNITION,
+                }
             
             else:
                 add_log("warn", f"Unknown command: {cmd}", category="command")
