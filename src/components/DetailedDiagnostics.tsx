@@ -78,6 +78,8 @@ export function DetailedDiagnostics({
   const { selectedDevice } = useDeviceContext();
   const [isOpen, setIsOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [isAutoFixing, setIsAutoFixing] = useState(false);
+  const [autoFixLog, setAutoFixLog] = useState<string[]>([]);
   const [issues, setIssues] = useState<DiagIssue[]>([]);
 
   const WS_BASE = getFunctionsWsBase();
@@ -630,6 +632,7 @@ export function DetailedDiagnostics({
   const runDiagnostics = useCallback(async () => {
     setIssues([]);
     setIsRunning(true);
+    setAutoFixLog([]);
 
     const agentOk = await runCommonChecks();
     runQualityChecks();
@@ -654,6 +657,163 @@ export function DetailedDiagnostics({
     setIsRunning(false);
     addLog("info", "web", `${MODE_LABELS[mode]} diagnostics complete`);
   }, [mode, runCommonChecks, runQualityChecks, runAudioSpecificChecks, runPhoneCameraChecks, runPcCameraChecks, runScreenMirrorChecks]);
+
+  // ============== AUTO-FIX ENGINE ==============
+  const autoFixIssues = useCallback(async () => {
+    const errors = issues.filter(i => i.severity === "error" || i.severity === "warning");
+    if (errors.length === 0) return;
+
+    setIsAutoFixing(true);
+    const log: string[] = [];
+
+    for (const issue of errors) {
+      log.push(`🔍 Analyzing: ${issue.title}`);
+      setAutoFixLog([...log]);
+
+      try {
+        // Agent offline - try ping to wake it up
+        if (issue.id === "device_offline" || issue.id === "agent_ping") {
+          log.push("↻ Attempting to reach agent with ping...");
+          setAutoFixLog([...log]);
+          try {
+            const ping = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 8000 });
+            if (ping?.success) {
+              log.push("✅ Agent is now responding!");
+            } else {
+              log.push("❌ Agent still unreachable. Please start jarvis_agent.py on your PC.");
+            }
+          } catch {
+            log.push("❌ Agent unreachable. Ensure the Python agent is running.");
+          }
+        }
+
+        // WebSocket connection failed
+        else if (issue.id === "ws_test") {
+          log.push("↻ Retrying WebSocket connection...");
+          setAutoFixLog([...log]);
+          const WS_BASE_LOCAL = getFunctionsWsBase();
+          const testUrl = mode === "audio"
+            ? `${WS_BASE_LOCAL}/functions/v1/audio-relay?sessionId=autofix-${Date.now()}&type=phone&direction=phone_to_pc`
+            : `${WS_BASE_LOCAL}/functions/v1/camera-relay?sessionId=autofix-${Date.now()}&type=pc&fps=10&quality=50&binary=true`;
+          try {
+            const ws = new WebSocket(testUrl);
+            await new Promise<void>((resolve, reject) => {
+              const t = setTimeout(() => { ws.close(); reject(new Error("Timeout")); }, 8000);
+              ws.onopen = () => { clearTimeout(t); ws.close(); resolve(); };
+              ws.onerror = () => { clearTimeout(t); reject(new Error("Refused")); };
+            });
+            log.push("✅ WebSocket connection succeeded on retry!");
+          } catch {
+            log.push("⚠️ WebSocket still failing. This may be a network/firewall issue.");
+            log.push("💡 Try: Switch to mobile data, or use the Capacitor APK which bypasses mixed-content restrictions.");
+          }
+        }
+
+        // Relay unavailable
+        else if (issue.id === "relay_health") {
+          log.push("↻ Checking relay health again...");
+          setAutoFixLog([...log]);
+          const relayEndpoint = mode === "audio" ? "audio-relay" : "camera-relay";
+          try {
+            const { error } = await supabase.functions.invoke(relayEndpoint, { method: "GET" });
+            if (!error) {
+              log.push("✅ Relay is now online!");
+            } else {
+              log.push("❌ Relay still down. The backend function may need redeployment.");
+            }
+          } catch {
+            log.push("❌ Cannot reach relay service.");
+          }
+        }
+
+        // FPS issues
+        else if (issue.id === "fps_zero" || issue.id === "fps_low") {
+          log.push("↻ Attempting to restart stream with lower quality...");
+          setAutoFixLog([...log]);
+          try {
+            await sendCommand("update_camera_settings", { fps: 15, quality: 40 }, { awaitResult: true, timeoutMs: 5000 });
+            log.push("✅ Sent lower quality settings (15fps, 40% quality) to agent.");
+          } catch {
+            log.push("⚠️ Could not update settings. Try stopping and restarting the stream.");
+          }
+        }
+
+        // Quality too high
+        else if (issue.id === "quality_too_high" || issue.id === "cam_frame_size") {
+          log.push("↻ Reducing quality to avoid 400KB frame cap...");
+          setAutoFixLog([...log]);
+          try {
+            await sendCommand("update_camera_settings", { quality: 50 }, { awaitResult: true, timeoutMs: 5000 });
+            log.push("✅ Quality reduced to 50%.");
+          } catch {
+            log.push("⚠️ Could not send quality update.");
+          }
+        }
+
+        // High latency
+        else if (issue.id === "latency_high" || issue.id === "latency_medium") {
+          log.push("↻ Reducing FPS to improve latency...");
+          setAutoFixLog([...log]);
+          try {
+            await sendCommand("update_camera_settings", { fps: 10, quality: 50 }, { awaitResult: true, timeoutMs: 5000 });
+            log.push("✅ Reduced to 10fps, 50% quality for better latency.");
+          } catch {
+            log.push("⚠️ Could not apply fix.");
+          }
+        }
+
+        // Mic permission
+        else if (issue.id === "mic_perm" && issue.severity === "error") {
+          log.push("💡 Microphone access denied. You need to grant permission in your browser/app settings.");
+          log.push("📱 On mobile: Settings → Site Settings → Microphone → Allow");
+        }
+
+        // Camera permission
+        else if (issue.id === "cam_perm" && issue.severity === "error") {
+          log.push("💡 Camera access denied. Grant permission in browser/app settings.");
+          log.push("📱 On mobile: Settings → Site Settings → Camera → Allow");
+        }
+
+        // Missing packages
+        else if (issue.id === "agent_audio" && issue.severity === "error") {
+          log.push("💡 Missing Python packages on PC. Run on your PC terminal:");
+          log.push("   pip install pyaudio websockets");
+        }
+
+        // Generic with fix text
+        else if (issue.fix) {
+          log.push(`💡 Suggested fix: ${issue.fix}`);
+        } else {
+          log.push("ℹ️ No automatic fix available for this issue.");
+        }
+      } catch (err) {
+        log.push(`❌ Auto-fix error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      setAutoFixLog([...log]);
+    }
+
+    log.push("");
+    log.push("🔄 Re-running diagnostics to verify fixes...");
+    setAutoFixLog([...log]);
+    
+    // Re-run diagnostics after fixes
+    setIssues([]);
+    const agentOk2 = await runCommonChecks();
+    runQualityChecks();
+    if (agentOk2) {
+      switch (mode) {
+        case "audio": await runAudioSpecificChecks(); break;
+        case "phone-camera": await runPhoneCameraChecks(); break;
+        case "pc-camera": await runPcCameraChecks(); break;
+        case "screen-mirror": await runScreenMirrorChecks(); break;
+      }
+    }
+
+    log.push("✅ Auto-fix complete.");
+    setAutoFixLog([...log]);
+    setIsAutoFixing(false);
+  }, [issues, sendCommand, mode, runCommonChecks, runQualityChecks, runAudioSpecificChecks, runPhoneCameraChecks, runPcCameraChecks, runScreenMirrorChecks]);
 
   const errorCount = issues.filter(i => i.severity === "error").length;
   const warnCount = issues.filter(i => i.severity === "warning").length;
@@ -749,6 +909,42 @@ export function DetailedDiagnostics({
               </>
             )}
           </Button>
+
+          {/* Auto-Fix Button */}
+          {issues.length > 0 && (errorCount > 0 || warnCount > 0) && (
+            <Button
+              onClick={autoFixIssues}
+              disabled={isAutoFixing || isRunning}
+              size="sm"
+              className="w-full"
+              variant="outline"
+            >
+              {isAutoFixing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Auto-Fixing Issues...
+                </>
+              ) : (
+                <>
+                  <Zap className="h-4 w-4 mr-2" />
+                  Auto-Fix {errorCount + warnCount} Issue{errorCount + warnCount > 1 ? "s" : ""}
+                </>
+              )}
+            </Button>
+          )}
+
+          {/* Auto-Fix Log */}
+          {autoFixLog.length > 0 && (
+            <div className="p-2.5 rounded-md border border-border/50 bg-muted/20 text-xs font-mono space-y-0.5 max-h-48 overflow-y-auto">
+              {autoFixLog.map((line, i) => (
+                <p key={i} className={cn(
+                  "text-muted-foreground",
+                  line.startsWith("✅") && "text-primary",
+                  line.startsWith("❌") && "text-destructive",
+                )}>{line}</p>
+              ))}
+            </div>
+          )}
 
           {issues.length > 0 && (
             <ScrollArea className="max-h-[400px]">
