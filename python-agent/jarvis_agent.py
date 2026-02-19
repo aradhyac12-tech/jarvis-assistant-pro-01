@@ -785,8 +785,8 @@ class JarvisAgent:
                 webbrowser.open(link)
 
             # Extended wait for slow PCs - Zoom can take 30-60s to load
-            initial_wait = int(payload.get("initial_wait", 60))
-            add_log("info", f"Waiting {initial_wait}s for Zoom to load...", category="zoom")
+            initial_wait = int(payload.get("initial_wait", 240))
+            add_log("info", f"Waiting {initial_wait}s (4 min) for Zoom to load...", category="zoom")
             await asyncio.sleep(initial_wait)
 
             # Privacy toggles with RETRY verification (Windows Zoom hotkeys)
@@ -859,6 +859,27 @@ class JarvisAgent:
                 else:
                     print("\a")
             return {"success": True, "type": alarm_type}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ============== CAMERA SNAPSHOT ==============
+    def _take_camera_snapshot(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Capture a single frame from the PC webcam and return as base64."""
+        try:
+            if not HAS_OPENCV:
+                return {"success": False, "error": "OpenCV not installed"}
+            camera_index = int(payload.get("camera_index", 0))
+            quality = int(payload.get("quality", 70))
+            cap = cv2.VideoCapture(camera_index)
+            if not cap.isOpened():
+                return {"success": False, "error": f"Cannot open camera {camera_index}"}
+            ret, frame = cap.read()
+            cap.release()
+            if not ret or frame is None:
+                return {"success": False, "error": "Failed to capture frame"}
+            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            image_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+            return {"success": True, "image": image_b64}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -2034,6 +2055,10 @@ class JarvisAgent:
                     quality=payload.get("quality", 70),
                     scale=payload.get("scale", 0.5)
                 )
+            
+            # Camera snapshot (single frame from PC webcam)
+            elif cmd == "take_camera_snapshot":
+                return self._take_camera_snapshot(payload)
             
             # Alarm/Siren for surveillance
             elif cmd == "play_alarm":

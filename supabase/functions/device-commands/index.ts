@@ -7,10 +7,10 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token, x-device-key",
 };
 
-// Rate limit: 60 requests per minute per session
+// Rate limit: 200 requests per minute per session (needs headroom for rapid button presses + polling)
 const RATE_LIMIT_CONFIG: RateLimitConfig = {
   windowMs: 60000, // 1 minute
-  maxRequests: 60,
+  maxRequests: 200,
 };
 
 serve(async (req) => {
@@ -48,7 +48,7 @@ serve(async (req) => {
     for (let attempt = 1; attempt <= 3; attempt++) {
       const result = await supabase
         .from("device_sessions")
-        .select("device_id, expires_at, remember_device")
+        .select("device_id, expires_at, remember_device, last_active")
         .eq("session_token", sessionToken)
         .maybeSingle();
       
@@ -94,18 +94,23 @@ serve(async (req) => {
       );
     }
 
-    // Update last_active and extend expires_at based on remember preference
-    const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-    const SESSION_SHORT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-    
-    const newExpiry = session.remember_device
-      ? new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
-      : new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
-    
-    await supabase
-      .from("device_sessions")
-      .update({ last_active: new Date().toISOString(), expires_at: newExpiry })
-      .eq("session_token", sessionToken);
+    // Update last_active only every 5 minutes to reduce DB writes and latency
+    const lastActive = new Date(session.last_active || 0).getTime();
+    const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+    if (Date.now() - lastActive > REFRESH_INTERVAL_MS) {
+      const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+      const SESSION_SHORT_TTL_MS = 24 * 60 * 60 * 1000;
+      const newExpiry = session.remember_device
+        ? new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
+        : new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
+      
+      // Fire and forget - don't await to keep response fast
+      supabase
+        .from("device_sessions")
+        .update({ last_active: new Date().toISOString(), expires_at: newExpiry })
+        .eq("session_token", sessionToken)
+        .then(() => {});
+    }
 
     const { action, commandType, payload, commandId } = await req.json();
 
