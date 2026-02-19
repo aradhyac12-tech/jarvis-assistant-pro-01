@@ -72,6 +72,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [motionEvents, setMotionEvents] = useState<MotionEvent[]>([]);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
+  const [previewSource, setPreviewSource] = useState<"screen" | "camera">("screen");
 
   // Quality settings
   const [streamQuality, setStreamQuality] = useState(50);
@@ -122,12 +123,26 @@ export function SurveillancePanel({ className }: { className?: string }) {
       setDiagnostics(prev => ({ ...prev, relayConnected: true, agentResponding: true }));
       toast({ title: "Surveillance Active", description: "Motion detection started via screenshot polling" });
 
-      // Use screenshot polling - more reliable than camera stream for surveillance
+      // Use screenshot or camera polling based on user selection
       pollingRef.current = window.setInterval(async () => {
         try {
-          const shot = await sendCommand("take_screenshot", { quality: streamQuality, scale: 0.3 }, { awaitResult: true, timeoutMs: 8000 });
-          if (shot.success && (shot as any).result?.image) {
-            const imageData = (shot as any).result.image;
+          let imageData: string | null = null;
+          
+          if (previewSource === "camera") {
+            // Use PC camera for surveillance
+            const shot = await sendCommand("take_camera_snapshot", { quality: streamQuality, camera_index: 0 }, { awaitResult: true, timeoutMs: 8000 });
+            if (shot.success && (shot as any).result?.image) {
+              imageData = (shot as any).result.image;
+            }
+          } else {
+            // Use screen screenshot
+            const shot = await sendCommand("take_screenshot", { quality: streamQuality, scale: 0.3 }, { awaitResult: true, timeoutMs: 8000 });
+            if (shot.success && (shot as any).result?.image) {
+              imageData = (shot as any).result.image;
+            }
+          }
+          
+          if (imageData) {
             setLastFrame(`data:image/jpeg;base64,${imageData}`);
             setDiagnostics(prev => ({ ...prev, framesReceived: prev.framesReceived + 1, lastFrameTime: Date.now() }));
             detectMotion(imageData);
@@ -491,6 +506,23 @@ export function SurveillancePanel({ className }: { className?: string }) {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Preview Source */}
+        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
+          <div className="flex items-center gap-2">
+            <Camera className="h-4 w-4 text-muted-foreground" />
+            <Label>Preview Source</Label>
+          </div>
+          <Select value={previewSource} onValueChange={(v) => setPreviewSource(v as any)} disabled={monitoring}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="screen">Screen</SelectItem>
+              <SelectItem value="camera">PC Camera</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Sensitivity */}

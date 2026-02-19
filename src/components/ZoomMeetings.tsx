@@ -190,10 +190,10 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         return;
       }
       
-      // Extended timeout for slow PCs - 120s total (60s Zoom load + 20s screenshot + buffer)
-      const res = await sendCommand("join_zoom", payload, { 
+      // Extended timeout for slow PCs - 300s total (240s Zoom load + 20s screenshot + buffer)
+      const res = await sendCommand("join_zoom", { ...payload, initial_wait: 240 }, { 
         awaitResult: true, 
-        timeoutMs: 120000 
+        timeoutMs: 300000 
       });
       
       if (res.success) {
@@ -234,12 +234,18 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
           await saveMeetingToDb();
         }
         
-        // Show screenshot indicator
-        if (result.screenshot || result.screenshot_path) {
-          setLastScreenshot(result.screenshot_path || "captured");
+        // Show screenshot preview with base64 data from agent
+        if (result.screenshot) {
+          setLastScreenshot(`data:image/jpeg;base64,${result.screenshot}`);
           toast({
-            title: "Screenshot Captured",
-            description: "Meeting screenshot saved successfully",
+            title: "✅ Meeting Successfully Joined",
+            description: "Screenshot captured - see preview below",
+          });
+        } else if (result.screenshot_path) {
+          setLastScreenshot("captured");
+          toast({
+            title: "✅ Meeting Successfully Joined",
+            description: "Screenshot saved on PC",
           });
         }
         
@@ -419,12 +425,23 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         <CardTitle className="flex items-center gap-2 text-lg">
           <Video className="h-5 w-5 text-primary" />
           Zoom Meetings
-          {lastScreenshot && (
-            <Badge variant="outline" className="ml-auto gap-1 text-green-400 border-green-500/30">
-              <Image className="h-3 w-3" />
-              Screenshot saved
-            </Badge>
-          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto gap-1"
+            onClick={async () => {
+              const res = await sendCommand("take_screenshot", { quality: 70, scale: 0.5 }, { awaitResult: true, timeoutMs: 10000 });
+              if (res.success && (res as any).result?.image) {
+                setLastScreenshot(`data:image/jpeg;base64,${(res as any).result.image}`);
+                toast({ title: "Screenshot Captured" });
+              } else {
+                toast({ title: "Screenshot Failed", variant: "destructive" });
+              }
+            }}
+          >
+            <Image className="h-3 w-3" />
+            Screenshot
+          </Button>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -571,6 +588,27 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
               )}
               Join on PC
             </Button>
+
+            {/* Screenshot Preview */}
+            {lastScreenshot && lastScreenshot.startsWith("data:") && (
+              <div className="relative rounded-lg overflow-hidden border border-border/50 bg-secondary/30">
+                <img src={lastScreenshot} alt="Meeting screenshot" className="w-full h-auto" />
+                <div className="absolute top-2 left-2 flex items-center gap-2">
+                  <Badge className="bg-primary/80">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    Meeting Joined
+                  </Badge>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 h-6 w-6 bg-background/50"
+                  onClick={() => setLastScreenshot(null)}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="saved" className="mt-4">
