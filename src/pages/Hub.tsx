@@ -214,8 +214,9 @@ export default function Hub() {
     }
     volumeCommitRef.current = window.setTimeout(async () => {
       try {
-        const result = await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 3000 });
-        if (result?.success && selectedDevice?.id) {
+        // Fire-and-forget: don't await result for volume changes to avoid "failed" status
+        sendCommand("set_volume", { level: v[0] });
+        if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_volume: v[0] }).eq("id", selectedDevice.id);
         }
       } catch (e) {
@@ -236,8 +237,9 @@ export default function Hub() {
     }
     brightnessCommitRef.current = window.setTimeout(async () => {
       try {
-        const result = await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 3000 });
-        if (result?.success && selectedDevice?.id) {
+        // Fire-and-forget: don't await result for brightness changes
+        sendCommand("set_brightness", { level: v[0] });
+        if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_brightness: v[0] }).eq("id", selectedDevice.id);
         }
       } catch (e) {
@@ -249,12 +251,12 @@ export default function Hub() {
 
   const handleLock = useCallback(async () => {
     setIsLocked(true);
-    await sendCommand("lock", {});
+    sendCommand("lock", {});
     toast({ title: "PC Locked" });
   }, [sendCommand, toast]);
 
   const handlePower = useCallback(async (action: string) => {
-    await sendCommand(action, {});
+    sendCommand(action, {});
     toast({ title: `${action.charAt(0).toUpperCase() + action.slice(1)} initiated` });
   }, [sendCommand, toast]);
 
