@@ -35,8 +35,8 @@ export function useDeviceCommands() {
 
   const waitForCommandResult = useCallback(
     async (commandId: string, sessionToken: string, options: SendCommandOptions = {}) => {
-      const timeoutMs = options.timeoutMs ?? 12000;
-      const pollIntervalMs = options.pollIntervalMs ?? 500;
+      const timeoutMs = options.timeoutMs ?? 20000;
+      const pollIntervalMs = options.pollIntervalMs ?? 400;
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {

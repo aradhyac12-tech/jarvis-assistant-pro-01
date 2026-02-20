@@ -441,7 +441,7 @@ export default function MicCamera() {
           fps: cameraFpsSetting,
           quality: cameraQualitySetting,
         },
-        { awaitResult: true, timeoutMs: 20000 }
+        { awaitResult: true, timeoutMs: 30000 }
       );
 
       if (!started.success) {
@@ -500,10 +500,9 @@ export default function MicCamera() {
         {
           session_id: sessionId,
           direction: audioDirection,
-          // When streaming PC -> Phone, allow selecting system audio vs microphone on the PC.
           use_system_audio: useSystemAudio,
         },
-        { awaitResult: true, timeoutMs: 10000 }
+        { awaitResult: true, timeoutMs: 20000 }
       );
 
       if (!started.success) {
