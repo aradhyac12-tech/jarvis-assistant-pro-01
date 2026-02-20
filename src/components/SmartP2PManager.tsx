@@ -89,6 +89,8 @@ export function SmartP2PManager({
     setTimeout(() => setIsUpgrading(false), 2000);
   }, [autoLocalP2P, networkState.sameNetwork, onForceLocalP2P, onForceUpgrade]);
 
+  const [pingResult, setPingResult] = useState<{ success: boolean; ms: number } | null>(null);
+
   const handleManualConnect = useCallback(async () => {
     const ip = manualIp.trim();
     if (!ip) return;
@@ -98,12 +100,22 @@ export function SmartP2PManager({
     if (!ipRegex.test(ip)) return;
     
     setIpConnecting(true);
+    setPingResult(null);
     localStorage.setItem("jarvis_manual_pc_ip", ip);
     
     // Force local P2P with this IP
     onForceLocalP2P();
-    setTimeout(() => setIpConnecting(false), 3000);
-  }, [manualIp, onForceLocalP2P]);
+    
+    // Wait and then ping to verify
+    setTimeout(() => {
+      setIpConnecting(false);
+      if (localP2PState.isConnected) {
+        setPingResult({ success: true, ms: localP2PState.latency });
+      } else {
+        setPingResult({ success: false, ms: 0 });
+      }
+    }, 3000);
+  }, [manualIp, onForceLocalP2P, localP2PState.isConnected, localP2PState.latency]);
 
   return (
     <Card className={cn("border-border/40", className)}>
@@ -166,7 +178,12 @@ export function SmartP2PManager({
           </div>
           {localP2PState.pcIp && (
             <p className="text-[10px] text-emerald-500 font-mono">
-              ✓ Connected to {localP2PState.pcIp}:{localP2PState.port}
+              ✓ Connected to {localP2PState.pcIp}:{localP2PState.port} • Ping: {localP2PState.latency}ms
+            </p>
+          )}
+          {pingResult && !localP2PState.pcIp && (
+            <p className={cn("text-[10px] font-mono", pingResult.success ? "text-emerald-500" : "text-destructive")}>
+              {pingResult.success ? `✓ Ping verified: ${pingResult.ms}ms` : "✗ Connection failed – check IP/firewall"}
             </p>
           )}
         </div>
@@ -246,6 +263,7 @@ export function SmartP2PManager({
           connectionMode={connectionMode}
           networkState={networkState}
           localP2PState={localP2PState}
+          onAutoFix={handleForceUpgrade}
         />
 
         {/* Auto-Switch Settings */}

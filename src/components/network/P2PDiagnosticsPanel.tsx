@@ -27,14 +27,18 @@ export function P2PDiagnosticsPanel({
   connectionMode,
   networkState,
   localP2PState,
+  onAutoFix,
   className,
 }: {
   connectionMode: ConnectionMode;
   networkState: NetworkState;
   localP2PState: LocalP2PState;
+  onAutoFix?: () => void;
   className?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [autoFixing, setAutoFixing] = useState(false);
+  const [autoFixLog, setAutoFixLog] = useState<string[]>([]);
   const { isNative, isSecure } = getEnvironmentInfo();
 
   const findings = useMemo((): Finding[] => {
@@ -141,6 +145,33 @@ export function P2PDiagnosticsPanel({
         ? { variant: "secondary" as const, label: "Needs attention" }
         : { variant: "outline" as const, label: "OK" };
 
+  const handleAutoFix = async () => {
+    setAutoFixing(true);
+    setAutoFixLog([]);
+    const log = (msg: string) => setAutoFixLog((prev) => [...prev, msg]);
+
+    try {
+      if (!networkState.sameNetwork) {
+        log("⚠️ Devices not on same network - connect both to the same Wi-Fi");
+      } else if (!localP2PState.pcIp) {
+        log("🔍 Re-scanning LAN for agent...");
+        onAutoFix?.();
+        await new Promise((r) => setTimeout(r, 3000));
+        log(localP2PState.isConnected ? "✅ Agent found!" : "❌ Agent not found. Check port 9876 in firewall.");
+      } else if (!localP2PState.isConnected) {
+        log("🔄 Retrying connection to " + localP2PState.pcIp + "...");
+        onAutoFix?.();
+        await new Promise((r) => setTimeout(r, 2000));
+        log(localP2PState.isConnected ? "✅ Connected!" : "❌ Still failing. Check firewall or try APK.");
+      } else {
+        log("✅ P2P connection is healthy.");
+      }
+    } catch {
+      log("❌ Auto-fix encountered an error");
+    }
+    setAutoFixing(false);
+  };
+
   const handleCopy = async () => {
     const payload = {
       env: { isNative, isSecure, origin: window.location.origin },
@@ -172,6 +203,9 @@ export function P2PDiagnosticsPanel({
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <Button variant="outline" size="sm" onClick={handleAutoFix} disabled={autoFixing}>
+              {autoFixing ? "Fixing..." : "Auto-Fix"}
+            </Button>
             <Button variant="outline" size="sm" onClick={handleCopy}>
               Copy
             </Button>
@@ -206,6 +240,15 @@ export function P2PDiagnosticsPanel({
                 {x.hint && <p className="mt-1 text-[11px]">Hint: <span className="text-muted-foreground">{x.hint}</span></p>}
               </div>
             ))}
+
+            {autoFixLog.length > 0 && (
+              <div className="rounded-md border border-border/50 bg-muted/20 p-2 space-y-1">
+                <p className="text-[10px] font-medium">Auto-Fix Log</p>
+                {autoFixLog.map((msg, i) => (
+                  <p key={i} className="text-[11px] text-muted-foreground">{msg}</p>
+                ))}
+              </div>
+            )}
 
             <div className="pt-1">
               <p className="text-[11px] text-muted-foreground">

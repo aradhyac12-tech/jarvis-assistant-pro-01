@@ -45,6 +45,7 @@ import { BackButton } from "@/components/BackButton";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useAudioDevices } from "@/hooks/useAudioDevices";
 import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
@@ -56,6 +57,7 @@ export default function MicCamera() {
   const { toast } = useToast();
   const { sendCommand } = useDeviceCommands();
   const { selectedDevice } = useDeviceContext();
+  const { session } = useDeviceSession();
   const { 
     inputDevices, 
     outputDevices, 
@@ -307,7 +309,7 @@ export default function MicCamera() {
 
       // 1) Connect receiver FIRST (browser as type=pc)
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true`
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${cameraFpsSetting}&quality=${cameraQualitySetting}&binary=true&session_token=${session?.session_token || ''}`
       );
       pcCameraWsRef.current = ws;
       ws.binaryType = "arraybuffer";
@@ -514,7 +516,7 @@ export default function MicCamera() {
       addLog("info", "agent", "PC audio relay started");
 
       // Connect WebSocket with binary support
-      const ws = new WebSocket(`${WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}`);
+      const ws = new WebSocket(`${WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}&session_token=${session?.session_token || ''}`);
       audioWsRef.current = ws;
       ws.binaryType = "arraybuffer"; // Ensure we receive binary as ArrayBuffer
 
@@ -773,7 +775,7 @@ export default function MicCamera() {
 
       // 1) Connect receiver FIRST (browser as type=pc)
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true`
+        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${screenMirrorFps}&quality=${screenMirrorQuality}&binary=true&session_token=${session?.session_token || ''}`
       );
       screenMirrorWsRef.current = ws;
       ws.binaryType = "arraybuffer";
@@ -1433,7 +1435,7 @@ export default function MicCamera() {
                           setPhoneCamShareSessionId(sessionId);
 
                           // Use higher FPS for smoother sharing
-                          const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=30&quality=70`);
+                          const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=phone&fps=30&quality=70&session_token=${session?.session_token || ''}`);
                           phoneCamShareWsRef.current = ws;
 
                           ws.onopen = () => {
@@ -1521,7 +1523,7 @@ export default function MicCamera() {
                           onClick={() => {
                             const sessionId = phoneCamShareSessionId.trim();
                             // Use higher FPS and binary mode for smoother viewing
-                            const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=60&quality=70&binary=true`);
+                            const ws = new WebSocket(`${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=60&quality=70&binary=true&session_token=${session?.session_token || ''}`);
                             ws.binaryType = "arraybuffer"; // Enable binary reception
                             phoneCamViewWsRef.current = ws;
 
