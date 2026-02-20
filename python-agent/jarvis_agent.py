@@ -156,11 +156,11 @@ else:
     HAS_BRIGHTNESS = False
 
 # ============== CONFIGURATION ==============
-DEFAULT_JARVIS_URL = "https://gkppopjoedadacolxufi.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrcHBvcGpvZWRhZGFjb2x4dWZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk0MzAyNjAsImV4cCI6MjA4NTAwNjI2MH0.BTudp4YXmUuYv6gtPeurUzqzM_mbf_j7QqsL78uwQUE"
+DEFAULT_JARVIS_URL = "https://pcujviwhmfsvwjvejwfz.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBjdWp2aXdobWZzdndqdmVqd2Z6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1ODM4OTUsImV4cCI6MjA4NzE1OTg5NX0.aoOLQTYUCb2LazVt2Zlf22sq3LezG-q3YfOlEZO1Xqo"
 
 # Optional: where the "Open Web App" button should navigate.
-DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://aradhya-jarvis.lovable.app")
+DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--645a8e66-075c-4000-a3c2-6e14ee0e2393.lovable.app")
 
 SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", DEFAULT_JARVIS_URL)
 SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
@@ -359,12 +359,37 @@ class LocalP2PServer:
         self.local_ips = get_local_ips()
         
         try:
+            # Kill any existing process on the port first (Windows)
+            if platform.system() == "Windows":
+                try:
+                    result = subprocess.run(
+                        ["netstat", "-ano"], capture_output=True, text=True, timeout=5
+                    )
+                    for line in result.stdout.splitlines():
+                        if f":{self.port}" in line and "LISTENING" in line:
+                            parts = line.split()
+                            pid = parts[-1]
+                            try:
+                                pid_int = int(pid)
+                                # Don't kill ourselves
+                                if pid_int != os.getpid():
+                                    subprocess.run(["taskkill", "/F", "/PID", str(pid_int)],
+                                                   capture_output=True, timeout=5)
+                                    add_log("info", f"Killed existing process on port {self.port} (PID {pid_int})", category="p2p")
+                                    import time as _time
+                                    _time.sleep(0.5)
+                            except (ValueError, Exception):
+                                pass
+                except Exception:
+                    pass
+
             self.server = await websockets.serve(
                 self.handle_client,
                 "0.0.0.0",
                 self.port,
                 ping_interval=20,
                 ping_timeout=10,
+                reuse_port=False if platform.system() == "Windows" else True,
             )
             self.running = True
             
@@ -377,8 +402,23 @@ class LocalP2PServer:
             await self.server.wait_closed()
             
         except OSError as e:
-            if "Address already in use" in str(e):
-                add_log("warn", f"Port {self.port} already in use", category="p2p")
+            if "10048" in str(e) or "Address already in use" in str(e):
+                add_log("warn", f"Port {self.port} busy, trying port {self.port + 1}", category="p2p")
+                self.port = self.port + 1
+                try:
+                    self.server = await websockets.serve(
+                        self.handle_client, "0.0.0.0", self.port,
+                        ping_interval=20, ping_timeout=10,
+                    )
+                    self.running = True
+                    add_log("info", f"Local P2P server started on fallback port {self.port}", category="p2p")
+                    for ip in self.local_ips:
+                        add_log("info", f"  → ws://{ip}:{self.port}/p2p", category="p2p")
+                    update_agent_status({"local_ips": self.local_ips, "p2p_port": self.port})
+                    await self.server.wait_closed()
+                except Exception as e2:
+                    add_log("error", f"P2P server fallback failed: {e2}", category="p2p")
+                    self.running = False
             else:
                 add_log("error", f"P2P server error: {e}", category="p2p")
             self.running = False
@@ -1572,7 +1612,7 @@ class JarvisAgent:
             
             def stream_test_pattern():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                    ws_url = f"wss://pcujviwhmfsvwjvejwfz.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 try:
                     with ws_client.connect(ws_url) as ws:
                         add_log("info", f"Test pattern connected: session={session_id[:8]}...", category="test")
@@ -1940,25 +1980,52 @@ class JarvisAgent:
                     await asyncio.sleep(0.5)
                     pyautogui.hotkey("ctrl", "a")
                     pyautogui.typewrite(query, interval=0.03)
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(2)
                     pyautogui.press("enter")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                     if auto_play:
-                        pyautogui.press("enter")  # Play first result
+                        # Navigate to first result and play
+                        pyautogui.press("tab")
+                        await asyncio.sleep(0.3)
+                        pyautogui.press("tab")
+                        await asyncio.sleep(0.3)
+                        pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on Spotify"}
                 elif service in ("youtube", "yt"):
                     # Open YouTube search and auto-play first video
                     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
                     webbrowser.open(url)
                     if auto_play:
-                        await asyncio.sleep(5)  # Wait for page load (slow PC)
-                        # Tab to first video and play it
+                        await asyncio.sleep(6)  # Wait for page load
+                        # Click on first video result
+                        pyautogui.press("tab")
+                        await asyncio.sleep(0.2)
+                        pyautogui.press("tab")
+                        await asyncio.sleep(0.2)
+                        pyautogui.press("enter")
+                    return {"success": True, "message": f"Playing '{query}' on YouTube"}
+                elif service in ("amazon", "amazon prime", "prime music", "amazon music"):
+                    url = f"https://music.amazon.com/search/{urllib.parse.quote(query)}"
+                    webbrowser.open(url)
+                    if auto_play:
+                        await asyncio.sleep(6)
+                        # Click first result
                         pyautogui.press("tab")
                         await asyncio.sleep(0.3)
                         pyautogui.press("enter")
-                    return {"success": True, "message": f"Playing '{query}' on YouTube"}
+                    return {"success": True, "message": f"Playing '{query}' on Amazon Music"}
                 else:
-                    return {"success": False, "error": f"Unsupported service: {service}"}
+                    # Fallback: search on YouTube
+                    url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+                    webbrowser.open(url)
+                    if auto_play:
+                        await asyncio.sleep(6)
+                        pyautogui.press("tab")
+                        await asyncio.sleep(0.2)
+                        pyautogui.press("tab")
+                        await asyncio.sleep(0.2)
+                        pyautogui.press("enter")
+                    return {"success": True, "message": f"Playing '{query}' on YouTube (fallback)"}
             
             elif cmd == "search_web":
                 query = payload.get("query", "")
@@ -2112,24 +2179,21 @@ class JarvisAgent:
             add_log("error", f"Command error: {e}", details=traceback.format_exc(), category="command")
             return {"success": False, "error": str(e)}
     
-    # ============== REGISTRATION & PAIRING ==============
-    def _generate_pairing_code(self) -> str:
-        import random
-        return f"{random.randint(100000, 999999)}"
-    
+    # ============== REGISTRATION (NO PAIRING CODE) ==============
     async def register_device(self):
-        self.pairing_code = self._generate_pairing_code()
-        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)).isoformat()
-        
+        """Register device directly - no pairing code needed."""
         try:
-            result = self.supabase.table("devices").select("id").eq("device_key", self.device_key).execute()
+            result = self.supabase.table("devices").select("id, user_id").eq("device_key", self.device_key).execute()
             
             if result.data:
                 self.device_id = result.data[0]["id"]
+                user_id = result.data[0].get("user_id")
+                if user_id and user_id != "00000000-0000-0000-0000-000000000000":
+                    self.current_user_id = user_id
                 self.supabase.table("devices").update({
                     "is_online": True,
-                    "pairing_code": self.pairing_code,
-                    "pairing_expires_at": expires_at,
+                    "pairing_code": None,
+                    "pairing_expires_at": None,
                     "last_seen": datetime.now(timezone.utc).isoformat(),
                     "name": DEVICE_NAME,
                 }).eq("id", self.device_id).execute()
@@ -2138,8 +2202,8 @@ class JarvisAgent:
                     "device_key": self.device_key,
                     "name": DEVICE_NAME,
                     "is_online": True,
-                    "pairing_code": self.pairing_code,
-                    "pairing_expires_at": expires_at,
+                    "pairing_code": None,
+                    "pairing_expires_at": None,
                     "user_id": "00000000-0000-0000-0000-000000000000",
                 }).execute()
                 self.device_id = insert_result.data[0]["id"]
@@ -2148,36 +2212,16 @@ class JarvisAgent:
             update_agent_status({
                 "connected": True,
                 "device_id": self.device_id,
-                "pairing_code": self.pairing_code,
-                "pairing_expires_at": expires_at,
                 "local_ips": local_ips,
             })
             
             add_log("info", f"Device registered: {self.device_id}", category="system")
-            add_log("info", f"Pairing code: {self.pairing_code}", category="system")
             
         except Exception as e:
             add_log("error", f"Registration failed: {e}", category="system")
             raise
     
-    async def _refresh_pairing_code(self):
-        self.pairing_code = self._generate_pairing_code()
-        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=PAIRING_CODE_LIFETIME_MINUTES)).isoformat()
-        
-        try:
-            self.supabase.table("devices").update({
-                "pairing_code": self.pairing_code,
-                "pairing_expires_at": expires_at,
-            }).eq("id", self.device_id).execute()
-            
-            update_agent_status({
-                "pairing_code": self.pairing_code,
-                "pairing_expires_at": expires_at,
-            })
-            
-            add_log("info", f"New pairing code: {self.pairing_code}", category="system")
-        except Exception as e:
-            add_log("error", f"Failed to refresh pairing code: {e}", category="system")
+    # No pairing code refresh needed - direct connection
     
     async def heartbeat(self):
         try:
@@ -2277,17 +2321,7 @@ class JarvisAgent:
                 await self.heartbeat()
                 last_heartbeat = now
             
-            # Pairing code refresh
-            if now - last_pairing_check >= 60:
-                last_pairing_check = now
-                try:
-                    expires_str = get_agent_status().get("pairing_expires_at")
-                    if expires_str:
-                        expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-                        if datetime.now(timezone.utc) >= expires_dt:
-                            await self._refresh_pairing_code()
-                except Exception:
-                    pass
+            # No pairing code to refresh
             
             # Poll commands
             await self.poll_commands()

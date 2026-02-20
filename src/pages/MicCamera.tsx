@@ -97,6 +97,7 @@ export default function MicCamera() {
   const [pcCameraSessionId, setPcCameraSessionId] = useState<string | null>(null);
   const [pcCameraError, setPcCameraError] = useState<string | null>(null);
   const [screenMirrorError, setScreenMirrorError] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // ==================== CAMERA SETTINGS (real-time adjustable) ====================
   const [cameraFpsSetting, setCameraFpsSetting] = useState(30);

@@ -52,7 +52,7 @@ import { EnhancedTrackpad } from "@/components/EnhancedTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 
-type Tab = "control" | "remote" | "media" | "tools";
+type Tab = "control" | "remote" | "media" | "tools" | "network";
 
 interface SystemStats {
   cpu_percent?: number;
@@ -364,6 +364,7 @@ export default function Hub() {
     { id: "control" as Tab, label: "Control", icon: Monitor },
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
+    { id: "network" as Tab, label: "Network", icon: Wifi },
     { id: "tools" as Tab, label: "Tools", icon: Wrench },
   ];
 
@@ -559,20 +560,6 @@ export default function Hub() {
             {/* Remote Tab - Trackpad + Keyboard + Clipboard */}
             {activeTab === "remote" && (
               <div className="space-y-3">
-                {/* P2P Connection Manager */}
-                <SmartP2PManager
-                  connectionMode={connectionMode}
-                  latency={p2pLatency}
-                  networkState={networkState}
-                  localP2PState={localP2PState}
-                  autoP2P={autoP2P}
-                  autoLocalP2P={autoLocalP2P}
-                  onToggleAutoP2P={toggleAutoP2P}
-                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
-                  onForceUpgrade={forceP2PUpgrade}
-                  onForceLocalP2P={forceLocalP2P}
-                />
-
                 {/* Large Trackpad */}
                 <EnhancedTrackpad
                   onMouseMove={fireMouse}
@@ -630,6 +617,37 @@ export default function Hub() {
 
                 {/* PC Optimization */}
                 <BoostPC />
+              </div>
+            )}
+
+            {/* Network Tab - P2P & Diagnostics */}
+            {activeTab === "network" && (
+              <div className="space-y-3">
+                <SmartP2PManager
+                  connectionMode={connectionMode}
+                  latency={p2pLatency}
+                  networkState={networkState}
+                  localP2PState={localP2PState}
+                  autoP2P={autoP2P}
+                  autoLocalP2P={autoLocalP2P}
+                  onToggleAutoP2P={toggleAutoP2P}
+                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
+                  onForceUpgrade={forceP2PUpgrade}
+                  onForceLocalP2P={forceLocalP2P}
+                />
+                
+                {/* Detailed connection info or additional network tools could go here */}
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-4 space-y-2">
+                    <h3 className="font-medium text-sm">Connection Details</h3>
+                    <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                      <div>Protocol: <span className="text-foreground">{connectionMode}</span></div>
+                      <div>Latency: <span className="text-foreground">{p2pLatency}ms</span></div>
+                      <div>Device: <span className="text-foreground">{selectedDevice?.name || "Unknown"}</span></div>
+                      <div>Last Seen: <span className="text-foreground">{selectedDevice?.last_seen ? new Date(selectedDevice.last_seen).toLocaleTimeString() : "Never"}</span></div>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             )}
 
