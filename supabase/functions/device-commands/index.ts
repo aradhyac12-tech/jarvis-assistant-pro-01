@@ -56,7 +56,7 @@ serve(async (req) => {
       sessionError = result.error;
       
       // Success or definite error (not transient)
-      if (!sessionError || !sessionError.message?.includes("connection")) {
+      if (!sessionError || !sessionError.message?.toLowerCase().includes("connection")) {
         break;
       }
       
@@ -69,7 +69,7 @@ serve(async (req) => {
     if (sessionError) {
       console.error("Session validation failed after retries:", sessionError);
       // Return 503 for transient errors, 401 for actual auth issues
-      const isTransient = sessionError.message?.includes("connection");
+      const isTransient = sessionError.message?.toLowerCase().includes("connection");
       return new Response(
         JSON.stringify({ error: isTransient ? "Temporary server error, please retry" : "Invalid or expired session" }),
         { status: isTransient ? 503 : 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -98,8 +98,8 @@ serve(async (req) => {
     const lastActive = new Date(session.last_active || 0).getTime();
     const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
     if (Date.now() - lastActive > REFRESH_INTERVAL_MS) {
-      const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-      const SESSION_SHORT_TTL_MS = 24 * 60 * 60 * 1000;
+      const SESSION_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 365 days for remembered
+      const SESSION_SHORT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days for temp
       const newExpiry = session.remember_device
         ? new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
         : new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
