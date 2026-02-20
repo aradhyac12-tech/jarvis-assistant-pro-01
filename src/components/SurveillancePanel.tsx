@@ -7,7 +7,6 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Shield,
   Eye,
@@ -20,13 +19,6 @@ import {
   Play,
   Square,
   Loader2,
-  Download,
-  Activity,
-  Wifi,
-  WifiOff,
-  CheckCircle,
-  XCircle,
-  HardDrive,
   Settings,
   ChevronDown,
   ChevronUp,
@@ -38,14 +30,12 @@ import {
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useToast } from "@/hooks/use-toast";
-import { DetailedDiagnostics } from "@/components/DetailedDiagnostics";
 
 interface MotionEvent {
   id: string;
   timestamp: Date;
   confidence: number;
   screenshotUrl?: string;
-  videoClipUrl?: string;
 }
 
 interface RecordedClip {
@@ -60,31 +50,33 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const { sendCommand } = useDeviceCommands();
   const { toast } = useToast();
 
-  const [enabled, setEnabled] = useState(false);
+  // Persisted Settings
+  const [enabled, setEnabled] = useState(() => localStorage.getItem("surveillance_enabled") === "true");
+  const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
+  const [endTime, setEndTime] = useState(() => localStorage.getItem("surveillance_end") || "06:00");
+  const [sensitivity, setSensitivity] = useState<"low" | "medium" | "high">(() => 
+    (localStorage.getItem("surveillance_sensitivity") as "low" | "medium" | "high") || "medium"
+  );
+  const [alarmEnabled, setAlarmEnabled] = useState(() => localStorage.getItem("surveillance_alarm") === "true");
+  const [sirenEnabled, setSirenEnabled] = useState(() => localStorage.getItem("surveillance_siren") === "true");
+  const [autoCall, setAutoCall] = useState(() => localStorage.getItem("surveillance_autocall") === "true");
+  const [recordOnMotion, setRecordOnMotion] = useState(() => localStorage.getItem("surveillance_record") !== "false");
+  const [micEnabled, setMicEnabled] = useState(() => localStorage.getItem("surveillance_mic") === "true");
+
+  // Runtime State
   const [monitoring, setMonitoring] = useState(false);
-  const [startTime, setStartTime] = useState("22:00");
-  const [endTime, setEndTime] = useState("06:00");
-  const [sensitivity, setSensitivity] = useState<"low" | "medium" | "high">("medium");
-  const [alarmEnabled, setAlarmEnabled] = useState(true);
-  const [sirenEnabled, setSirenEnabled] = useState(false);
-  const [autoCall, setAutoCall] = useState(false);
-  const [callDirection, setCallDirection] = useState<"pc_to_phone" | "phone_to_pc">("pc_to_phone");
   const [motionEvents, setMotionEvents] = useState<MotionEvent[]>([]);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
-  const [previewSource, setPreviewSource] = useState<"screen" | "camera">("screen");
-
+  
   // Quality settings
   const [streamQuality, setStreamQuality] = useState(50);
   const [streamFps, setStreamFps] = useState(2);
-  const [recordOnMotion, setRecordOnMotion] = useState(true);
   const [recordDuration, setRecordDuration] = useState(10); // seconds
 
   // Diagnostics
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [diagnostics, setDiagnostics] = useState({
-    relayConnected: false,
-    agentResponding: false,
     framesReceived: 0,
     lastFrameTime: 0,
     motionDetections: 0,
@@ -98,21 +90,28 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const isRecordingRef = useRef(false);
   const recordingTimerRef = useRef<number | null>(null);
 
-  // Audio preview
-  const [audioPreviewActive, setAudioPreviewActive] = useState(false);
-  const [audioLevel, setAudioLevel] = useState(0);
-
   const pollingRef = useRef<number | null>(null);
   const previousFrameRef = useRef<ImageData | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const sensitivityThreshold = { low: 30, medium: 15, high: 5 };
 
+  // Persistence Effects
+  useEffect(() => localStorage.setItem("surveillance_enabled", String(enabled)), [enabled]);
+  useEffect(() => localStorage.setItem("surveillance_start", startTime), [startTime]);
+  useEffect(() => localStorage.setItem("surveillance_end", endTime), [endTime]);
+  useEffect(() => localStorage.setItem("surveillance_sensitivity", sensitivity), [sensitivity]);
+  useEffect(() => localStorage.setItem("surveillance_alarm", String(alarmEnabled)), [alarmEnabled]);
+  useEffect(() => localStorage.setItem("surveillance_siren", String(sirenEnabled)), [sirenEnabled]);
+  useEffect(() => localStorage.setItem("surveillance_autocall", String(autoCall)), [autoCall]);
+  useEffect(() => localStorage.setItem("surveillance_record", String(recordOnMotion)), [recordOnMotion]);
+  useEffect(() => localStorage.setItem("surveillance_mic", String(micEnabled)), [micEnabled]);
+
   const startSurveillance = useCallback(async () => {
     setIsStarting(true);
     try {
       // First verify agent is responsive with a ping
-      const ping = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 8000 });
+      const ping = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
       if (!ping?.success) {
         toast({ title: "Agent not responding", description: "Start jarvis_agent.py on your PC", variant: "destructive" });
         setIsStarting(false);
@@ -120,29 +119,22 @@ export function SurveillancePanel({ className }: { className?: string }) {
       }
 
       setMonitoring(true);
-      setDiagnostics(prev => ({ ...prev, relayConnected: true, agentResponding: true }));
-      toast({ title: "Surveillance Active", description: "Motion detection started via screenshot polling" });
+      toast({ title: "Surveillance Active", description: "Motion detection & Camera monitoring started" });
 
-      // Use screenshot or camera polling based on user selection
+      if (micEnabled) {
+        sendCommand("start_audio_relay", { 
+          session_id: crypto.randomUUID(), 
+          direction: "pc_to_phone" 
+        });
+      }
+
+      // Use camera polling
       pollingRef.current = window.setInterval(async () => {
         try {
-          let imageData: string | null = null;
+          const shot = await sendCommand("take_camera_snapshot", { quality: streamQuality, camera_index: 0 }, { awaitResult: true, timeoutMs: 8000 });
           
-          if (previewSource === "camera") {
-            // Use PC camera for surveillance
-            const shot = await sendCommand("take_camera_snapshot", { quality: streamQuality, camera_index: 0 }, { awaitResult: true, timeoutMs: 8000 });
-            if (shot.success && (shot as any).result?.image) {
-              imageData = (shot as any).result.image;
-            }
-          } else {
-            // Use screen screenshot
-            const shot = await sendCommand("take_screenshot", { quality: streamQuality, scale: 0.3 }, { awaitResult: true, timeoutMs: 8000 });
-            if (shot.success && (shot as any).result?.image) {
-              imageData = (shot as any).result.image;
-            }
-          }
-          
-          if (imageData) {
+          if (shot.success && (shot as any).result?.image) {
+            const imageData = (shot as any).result.image;
             setLastFrame(`data:image/jpeg;base64,${imageData}`);
             setDiagnostics(prev => ({ ...prev, framesReceived: prev.framesReceived + 1, lastFrameTime: Date.now() }));
             detectMotion(imageData);
@@ -156,8 +148,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
       toast({ title: "Surveillance error", description: err instanceof Error ? err.message : "Failed to start", variant: "destructive" });
     }
     setIsStarting(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sendCommand, toast, streamFps, streamQuality]);
+  }, [sendCommand, toast, streamFps, streamQuality, micEnabled]);
 
   const stopSurveillance = useCallback(() => {
     if (pollingRef.current) {
@@ -166,10 +157,14 @@ export function SurveillancePanel({ className }: { className?: string }) {
     }
     setMonitoring(false);
     previousFrameRef.current = null;
-    sendCommand("stop_camera_stream", {});
-    setDiagnostics(prev => ({ ...prev, relayConnected: false }));
+    
+    // Stop audio relay if it was running
+    if (micEnabled) {
+      sendCommand("stop_audio_relay", {});
+    }
+    
     toast({ title: "Surveillance Stopped" });
-  }, [sendCommand, toast]);
+  }, [sendCommand, toast, micEnabled]);
 
   const detectMotion = useCallback((base64Image: string) => {
     const img = new Image();
@@ -192,7 +187,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
         const totalPixels = currentFrame.data.length / 4;
         const threshold = sensitivityThreshold[sensitivity];
 
-        for (let i = 0; i < currentFrame.data.length; i += 16) {
+        for (let i = 0; i < currentFrame.data.length; i += 16) { // Optimize: sample every 4th pixel
           const rDiff = Math.abs(currentFrame.data[i] - prev.data[i]);
           const gDiff = Math.abs(currentFrame.data[i + 1] - prev.data[i + 1]);
           const bDiff = Math.abs(currentFrame.data[i + 2] - prev.data[i + 2]);
@@ -221,11 +216,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
           // Start recording clip on motion
           if (recordOnMotion && !isRecordingRef.current) {
             startRecordingClip(event.confidence);
-          }
-
-          // Buffer frame for recording
-          if (isRecordingRef.current) {
-            recordingBufferRef.current.push(base64Image);
           }
 
           triggerAlerts(event);
@@ -265,32 +255,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
     }, recordDuration * 1000);
   }, [recordDuration, toast]);
 
-  const downloadClip = useCallback((clip: RecordedClip) => {
-    // Download the best frame (first frame with motion) as a JPEG
-    if (clip.frames.length > 0) {
-      const link = document.createElement("a");
-      link.href = `data:image/jpeg;base64,${clip.frames[0]}`;
-      link.download = `motion_${clip.startTime.toISOString().replace(/[:.]/g, "-")}.jpg`;
-      link.click();
-    }
-  }, []);
-
   const triggerAlerts = useCallback(async (event: MotionEvent) => {
-    if ("Notification" in window && Notification.permission === "granted") {
-      new Notification("🚨 Motion Detected!", {
-        body: `Activity detected with ${event.confidence}% confidence at ${event.timestamp.toLocaleTimeString()}`,
-        icon: "/favicon.ico",
-      });
-    } else if ("Notification" in window && Notification.permission !== "denied") {
-      Notification.requestPermission();
-    }
-
-    toast({
-      title: "🚨 Motion Detected!",
-      description: `Confidence: ${event.confidence}% at ${event.timestamp.toLocaleTimeString()}`,
-      variant: "destructive",
-    });
-
     if (alarmEnabled) {
       await sendCommand("play_alarm", { type: sirenEnabled ? "siren" : "beep" });
     }
@@ -298,412 +263,178 @@ export function SurveillancePanel({ className }: { className?: string }) {
     if (autoCall) {
       await sendCommand("start_audio_relay", {
         session_id: crypto.randomUUID(),
-        direction: callDirection === "pc_to_phone" ? "pc_to_phone" : "phone_to_pc",
+        direction: "pc_to_phone",
         auto_call: true,
       });
     }
-  }, [alarmEnabled, sirenEnabled, autoCall, callDirection, sendCommand, toast]);
+  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
 
-  const isInSchedule = useCallback(() => {
-    const now = new Date();
-    const hours = now.getHours();
-    const mins = now.getMinutes();
-    const currentMins = hours * 60 + mins;
-
-    const [startH, startM] = startTime.split(":").map(Number);
-    const [endH, endM] = endTime.split(":").map(Number);
-    const startMins = startH * 60 + startM;
-    const endMins = endH * 60 + endM;
-
-    if (startMins <= endMins) {
-      return currentMins >= startMins && currentMins <= endMins;
-    }
-    return currentMins >= startMins || currentMins <= endMins;
-  }, [startTime, endTime]);
-
+  // Auto-start on load if previously enabled
   useEffect(() => {
-    if (!enabled) return;
+    if (enabled && !monitoring && !isStarting) {
+      const now = new Date();
+      const currentMins = now.getHours() * 60 + now.getMinutes();
+      const [startH, startM] = startTime.split(":").map(Number);
+      const [endH, endM] = endTime.split(":").map(Number);
+      const startMins = startH * 60 + startM;
+      const endMins = endH * 60 + endM;
 
-    const checkSchedule = () => {
-      const inSchedule = isInSchedule();
-      if (inSchedule && !monitoring) {
+      const inSchedule = startMins <= endMins 
+        ? currentMins >= startMins && currentMins <= endMins
+        : currentMins >= startMins || currentMins <= endMins;
+
+      if (inSchedule) {
         startSurveillance();
-      } else if (!inSchedule && monitoring) {
-        stopSurveillance();
       }
-    };
-
-    checkSchedule();
-    const timer = window.setInterval(checkSchedule, 60000);
-    return () => window.clearInterval(timer);
-  }, [enabled, monitoring, isInSchedule, startSurveillance, stopSurveillance]);
-
-  useEffect(() => {
-    return () => {
-      if (pollingRef.current) {
-        window.clearInterval(pollingRef.current);
-      }
-      if (recordingTimerRef.current) {
-        window.clearTimeout(recordingTimerRef.current);
-      }
-    };
-  }, []);
+    }
+  }, []); // Run once on mount
 
   return (
     <Card className={cn("glass-dark border-border/50", className)}>
       <CardHeader className="pb-3">
         <CardTitle className="text-lg flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
-          Surveillance
+          Surveillance Guard
           {monitoring && (
             <Badge variant="destructive" className="ml-auto gap-1 animate-pulse">
               <Eye className="h-3 w-3" />
-              MONITORING
-            </Badge>
-          )}
-          {isRecordingRef.current && (
-            <Badge variant="outline" className="gap-1 border-destructive text-destructive">
-              <Video className="h-3 w-3" />
-              REC
+              LIVE
             </Badge>
           )}
         </CardTitle>
         <CardDescription>
-          Motion detection with recording, alerts, alarms, and auto-call
+          Camera monitoring with motion detection & auto-alarms
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Schedule */}
-        <div className="grid gap-3">
-          <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
-            <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-muted-foreground" />
-              <Label>Scheduled Monitoring</Label>
-            </div>
-            <Switch checked={enabled} onCheckedChange={setEnabled} />
+        {/* Main Toggle */}
+        <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-secondary/50 to-secondary/30 border border-border/50">
+          <div className="space-y-1">
+            <Label className="text-base">Guard Mode</Label>
+            <p className="text-xs text-muted-foreground">
+              {monitoring ? "System active & monitoring" : "System disabled"}
+            </p>
           </div>
-
-          {enabled && (
-            <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-secondary/10">
-              <div className="space-y-1">
-                <Label className="text-xs">Start Time</Label>
-                <Input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">End Time</Label>
-                <Input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
-              </div>
-            </div>
-          )}
+          <Switch 
+            checked={enabled} 
+            onCheckedChange={(checked) => {
+              setEnabled(checked);
+              if (checked) startSurveillance();
+              else stopSurveillance();
+            }} 
+          />
         </div>
 
-        {/* Quality & Recording Settings */}
+        {/* Live Preview */}
+        {lastFrame ? (
+          <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50 group">
+            <img src={lastFrame} alt="Live View" className="w-full h-full object-contain" />
+            <div className="absolute top-2 right-2 flex gap-1">
+              <Badge variant="secondary" className="bg-black/50 backdrop-blur">
+                CAM 1
+              </Badge>
+              {micEnabled && (
+                <Badge variant="secondary" className="bg-emerald-500/80 text-white backdrop-blur">
+                  <Mic className="w-3 h-3 mr-1" /> ON
+                </Badge>
+              )}
+            </div>
+            {/* Motion Indicators */}
+            {motionEvents.length > 0 && (
+              <div className="absolute bottom-2 left-2 right-2">
+                <div className="flex gap-1 overflow-x-auto pb-1 no-scrollbar">
+                  {motionEvents.slice(0, 5).map(e => (
+                    <div key={e.id} className="h-8 w-12 bg-black/50 rounded border border-red-500/50 shrink-0 relative">
+                      <div className="absolute bottom-0 left-0 h-1 bg-red-500" style={{ width: `${e.confidence}%` }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="aspect-video rounded-lg bg-secondary/20 border border-dashed border-border/50 flex items-center justify-center text-muted-foreground">
+            <div className="flex flex-col items-center gap-2">
+              <Video className="w-8 h-8 opacity-50" />
+              <span className="text-xs">No Signal</span>
+            </div>
+          </div>
+        )}
+
+        {/* Settings Accordion */}
         <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
           <button
-            className="w-full flex items-center justify-between p-3 text-sm font-medium"
+            className="w-full flex items-center justify-between p-3 text-sm font-medium hover:bg-secondary/20 transition-colors"
             onClick={() => setShowDiagnostics(!showDiagnostics)}
           >
             <div className="flex items-center gap-2">
               <Settings className="h-4 w-4 text-muted-foreground" />
-              Quality & Recording Settings
+              Configuration
             </div>
             {showDiagnostics ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
 
           {showDiagnostics && (
-            <div className="p-3 space-y-4 border-t border-border/50">
-              {/* Quality Slider */}
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <Label>Stream Quality</Label>
-                  <span className="text-muted-foreground">{streamQuality}%</span>
-                </div>
-                <Slider
-                  value={[streamQuality]}
-                  onValueChange={([v]) => setStreamQuality(v)}
-                  min={10}
-                  max={90}
-                  step={10}
-                  disabled={monitoring}
-                />
-              </div>
-
-              {/* FPS */}
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <Label>Check Frequency</Label>
-                  <span className="text-muted-foreground">{streamFps} fps</span>
-                </div>
-                <Slider
-                  value={[streamFps]}
-                  onValueChange={([v]) => setStreamFps(v)}
-                  min={1}
-                  max={5}
-                  step={1}
-                  disabled={monitoring}
-                />
-              </div>
-
-              {/* Record on Motion */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Video className="h-4 w-4 text-muted-foreground" />
-                  <Label>Record on Motion</Label>
-                </div>
-                <Switch checked={recordOnMotion} onCheckedChange={setRecordOnMotion} />
-              </div>
-
-              {recordOnMotion && (
+            <div className="p-3 space-y-4 border-t border-border/50 animate-in slide-in-from-top-2">
+              <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <Label>Record Duration</Label>
-                    <span className="text-muted-foreground">{recordDuration}s</span>
-                  </div>
-                  <Slider
-                    value={[recordDuration]}
-                    onValueChange={([v]) => setRecordDuration(v)}
-                    min={5}
-                    max={60}
-                    step={5}
-                  />
+                  <Label className="text-xs">Start Time</Label>
+                  <Input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className="h-8" />
                 </div>
-              )}
-
-              {/* Diagnostics Info */}
-              <div className="grid grid-cols-2 gap-2 p-3 rounded-lg bg-background/50 text-xs">
-                <div className="flex items-center gap-2">
-                  {diagnostics.relayConnected ? (
-                    <Wifi className="h-3 w-3 text-primary" />
-                  ) : (
-                    <WifiOff className="h-3 w-3 text-destructive" />
-                  )}
-                  <span>Relay: {diagnostics.relayConnected ? "Connected" : "Disconnected"}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {diagnostics.agentResponding ? (
-                    <CheckCircle className="h-3 w-3 text-primary" />
-                  ) : (
-                    <XCircle className="h-3 w-3 text-destructive" />
-                  )}
-                  <span>Agent: {diagnostics.agentResponding ? "Active" : "Inactive"}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Camera className="h-3 w-3 text-muted-foreground" />
-                  <span>Frames: {diagnostics.framesReceived}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Activity className="h-3 w-3 text-muted-foreground" />
-                  <span>Detections: {diagnostics.motionDetections}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="h-3 w-3 text-muted-foreground" />
-                  <span>Avg Conf: {diagnostics.avgConfidence}%</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <HardDrive className="h-3 w-3 text-muted-foreground" />
-                  <span>Errors: {diagnostics.connectionErrors}</span>
+                <div className="space-y-2">
+                  <Label className="text-xs">End Time</Label>
+                  <Input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} className="h-8" />
                 </div>
               </div>
-            </div>
-          )}
-        </div>
 
-        {/* Preview Source */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
-          <div className="flex items-center gap-2">
-            <Camera className="h-4 w-4 text-muted-foreground" />
-            <Label>Preview Source</Label>
-          </div>
-          <Select value={previewSource} onValueChange={(v) => setPreviewSource(v as any)} disabled={monitoring}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="screen">Screen</SelectItem>
-              <SelectItem value="camera">PC Camera</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Mic className="h-4 w-4 text-muted-foreground" />
+                    <Label className="text-xs">Listen (Audio)</Label>
+                  </div>
+                  <Switch checked={micEnabled} onCheckedChange={setMicEnabled} />
+                </div>
 
-        {/* Sensitivity */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
-          <Label>Sensitivity</Label>
-          <Select value={sensitivity} onValueChange={(v) => setSensitivity(v as any)}>
-            <SelectTrigger className="w-[120px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="low">Low</SelectItem>
-              <SelectItem value="medium">Medium</SelectItem>
-              <SelectItem value="high">High</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Bell className="h-4 w-4 text-muted-foreground" />
+                    <Label className="text-xs">Play PC Alarm</Label>
+                  </div>
+                  <Switch checked={alarmEnabled} onCheckedChange={setAlarmEnabled} />
+                </div>
 
-        {/* Alert Options */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
-            <div className="flex items-center gap-2">
-              <Bell className="h-4 w-4 text-muted-foreground" />
-              <Label>Alarm Sound</Label>
-            </div>
-            <Switch checked={alarmEnabled} onCheckedChange={setAlarmEnabled} />
-          </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Phone className="h-4 w-4 text-muted-foreground" />
+                    <Label className="text-xs">Auto-Call Me</Label>
+                  </div>
+                  <Switch checked={autoCall} onCheckedChange={setAutoCall} />
+                </div>
+              </div>
 
-          <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
-            <div className="flex items-center gap-2">
-              <Volume2 className="h-4 w-4 text-muted-foreground" />
-              <Label>Siren Mode</Label>
-            </div>
-            <Switch checked={sirenEnabled} onCheckedChange={setSirenEnabled} />
-          </div>
-
-          <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
-            <div className="flex items-center gap-2">
-              <Phone className="h-4 w-4 text-muted-foreground" />
-              <Label>Auto-Call on Motion</Label>
-            </div>
-            <Switch checked={autoCall} onCheckedChange={setAutoCall} />
-          </div>
-
-          {autoCall && (
-            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/10">
-              <Label className="text-sm">Call Direction</Label>
-              <Select value={callDirection} onValueChange={(v) => setCallDirection(v as any)}>
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="pc_to_phone">PC → Phone</SelectItem>
-                  <SelectItem value="phone_to_pc">Phone → PC</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-        </div>
-
-        {/* Audio Preview Toggle */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50">
-          <div className="flex items-center gap-2">
-            {audioPreviewActive ? <Mic className="h-4 w-4 text-primary" /> : <MicOff className="h-4 w-4 text-muted-foreground" />}
-            <Label>Audio Preview (Listen via PC Mic)</Label>
-          </div>
-          <Switch
-            checked={audioPreviewActive}
-            onCheckedChange={async (checked) => {
-              setAudioPreviewActive(checked);
-              if (checked && monitoring) {
-                await sendCommand("start_audio_relay", {
-                  session_id: crypto.randomUUID(),
-                  direction: "pc_to_phone",
-                });
-                toast({ title: "Audio Preview Started", description: "Listening to PC microphone" });
-              } else {
-                await sendCommand("stop_audio_relay", {});
-              }
-            }}
-          />
-        </div>
-
-        {/* Detailed Diagnostics */}
-        <DetailedDiagnostics
-          mode="pc-camera"
-          isStreamActive={monitoring}
-          currentFps={diagnostics.framesReceived > 0 ? streamFps : 0}
-        />
-
-        {/* Manual Controls */}
-        <div className="flex items-center justify-center gap-3">
-          {!monitoring ? (
-            <Button
-              onClick={startSurveillance}
-              disabled={isStarting}
-              className="gradient-primary"
-            >
-              {isStarting ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="h-4 w-4 mr-2" />
-              )}
-              Start Now
-            </Button>
-          ) : (
-            <Button onClick={stopSurveillance} variant="destructive">
-              <Square className="h-4 w-4 mr-2" />
-              Stop Surveillance
-            </Button>
-          )}
-        </div>
-
-        {/* Live Preview */}
-        {lastFrame && monitoring && (
-          <div className="relative aspect-video bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
-            <img src={lastFrame} alt="Surveillance feed" className="w-full h-full object-cover" />
-            <Badge className="absolute top-2 left-2 bg-destructive/80">
-              <Camera className="h-3 w-3 mr-1" />
-              LIVE
-            </Badge>
-            {isRecordingRef.current && (
-              <Badge className="absolute top-2 right-2 bg-destructive animate-pulse">
-                <Video className="h-3 w-3 mr-1" />
-                REC
-              </Badge>
-            )}
-          </div>
-        )}
-
-        {/* Recorded Clips */}
-        {recordedClips.length > 0 && (
-          <div className="space-y-2">
-            <Label className="flex items-center gap-2">
-              <Video className="h-4 w-4 text-primary" />
-              Recorded Clips ({recordedClips.length})
-            </Label>
-            <ScrollArea className="max-h-48">
-              <div className="space-y-1">
-                {recordedClips.map(clip => (
-                  <div key={clip.id} className="flex items-center justify-between p-2 rounded bg-primary/10 border border-primary/20 text-sm">
-                    <div className="flex flex-col">
-                      <span className="text-muted-foreground">
-                        {clip.startTime.toLocaleTimeString()} - {clip.endTime.toLocaleTimeString()}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {clip.frames.length} frames • {clip.motionConfidence}% confidence
-                      </span>
-                    </div>
-                    <Button variant="ghost" size="sm" onClick={() => downloadClip(clip)}>
-                      <Download className="h-3 w-3" />
+              <div className="space-y-2 pt-2">
+                <div className="flex justify-between text-xs">
+                  <Label>Sensitivity</Label>
+                  <span className="text-muted-foreground capitalize">{sensitivity}</span>
+                </div>
+                <div className="flex gap-1">
+                  {(["low", "medium", "high"] as const).map((s) => (
+                    <Button
+                      key={s}
+                      variant={sensitivity === s ? "default" : "outline"}
+                      size="sm"
+                      className="flex-1 h-7 text-xs capitalize"
+                      onClick={() => setSensitivity(s)}
+                    >
+                      {s}
                     </Button>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </ScrollArea>
-          </div>
-        )}
-
-        {/* Motion Events Log */}
-        {motionEvents.length > 0 && (
-          <div className="space-y-2">
-            <Label className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-destructive" />
-              Recent Motion Events ({motionEvents.length})
-            </Label>
-            <ScrollArea className="max-h-48">
-              <div className="space-y-1">
-                {motionEvents.slice(0, 10).map(event => (
-                  <div key={event.id} className="flex items-center justify-between p-2 rounded bg-destructive/10 border border-destructive/20 text-sm">
-                    <span className="text-muted-foreground">
-                      {event.timestamp.toLocaleTimeString()} – {event.timestamp.toLocaleDateString()}
-                    </span>
-                    <Badge variant="destructive" className="text-xs">
-                      {event.confidence}% confidence
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-            </ScrollArea>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
