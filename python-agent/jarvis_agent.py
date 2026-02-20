@@ -44,7 +44,7 @@ AGENT_VERSION = "5.0.0"
 
 # Skill registry
 try:
-    from skills.registry import get_skill_registry
+    from skills import get_skill_registry
     HAS_SKILLS = True
 except ImportError:
     HAS_SKILLS = False
