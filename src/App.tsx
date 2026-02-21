@@ -16,7 +16,7 @@ const Pair = lazy(() => import("./pages/Pair"));
 const Hub = lazy(() => import("./pages/Hub"));
 const VoiceAI = lazy(() => import("./pages/VoiceAI"));
 const AIAssistant = lazy(() => import("./pages/AIAssistant"));
-const Apps = lazy(() => import("./pages/Apps"));
+// Apps route redirects to Hub now
 const Files = lazy(() => import("./pages/Files"));
 const MicCamera = lazy(() => import("./pages/MicCamera"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -65,71 +65,22 @@ function AppRoutes() {
           <Route path="/pair" element={<Pair />} />
           <Route path="/" element={<Navigate to="/hub" replace />} />
           
-          {/* Main Hub - unified control panel */}
-          <Route
-            path="/hub"
-            element={
-              <ProtectedRoute>
-                <Hub />
-              </ProtectedRoute>
-            }
-          />
+          {/* Main Hub - unified control panel (no sidebar) */}
+          <Route path="/hub" element={<ProtectedRoute><Hub /></ProtectedRoute>} />
           
           {/* Redirect old routes to Hub */}
           <Route path="/dashboard" element={<Navigate to="/hub" replace />} />
           <Route path="/controls" element={<Navigate to="/hub" replace />} />
           <Route path="/music" element={<Navigate to="/hub" replace />} />
           <Route path="/remote" element={<Navigate to="/hub" replace />} />
+          <Route path="/apps" element={<Navigate to="/hub" replace />} />
           
-          {/* Keep these as separate specialized pages */}
-          <Route
-            path="/assistant"
-            element={
-              <ProtectedRoute>
-                <AIAssistant />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/voice"
-            element={
-              <ProtectedRoute>
-                <VoiceAI />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/apps"
-            element={
-              <ProtectedRoute>
-                <Apps />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/files"
-            element={
-              <ProtectedRoute>
-                <Files />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/miccamera"
-            element={
-              <ProtectedRoute>
-                <MicCamera />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <ProtectedRoute>
-                <Settings />
-              </ProtectedRoute>
-            }
-          />
+          {/* Specialized pages - no sidebar wrapper */}
+          <Route path="/assistant" element={<ProtectedRoute><AIAssistant /></ProtectedRoute>} />
+          <Route path="/voice" element={<ProtectedRoute><VoiceAI /></ProtectedRoute>} />
+          <Route path="/files" element={<ProtectedRoute><Files /></ProtectedRoute>} />
+          <Route path="/miccamera" element={<ProtectedRoute><MicCamera /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
