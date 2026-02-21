@@ -2309,24 +2309,27 @@ class JarvisAgent:
         start_local_p2p_server(command_handler=self._handle_command)
         
         last_heartbeat = 0
-        last_pairing_check = 0
         
         add_log("info", "Agent running. Waiting for commands...", category="system")
         
         while self.running:
-            now = time.time()
-            
-            # Heartbeat
-            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-                await self.heartbeat()
-                last_heartbeat = now
-            
-            # No pairing code to refresh
-            
-            # Poll commands
-            await self.poll_commands()
-            
-            await asyncio.sleep(max(POLL_INTERVAL, self.backoff_seconds if self.consecutive_failures > 0 else POLL_INTERVAL))
+            try:
+                now = time.time()
+                
+                # Heartbeat
+                if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                    await self.heartbeat()
+                    last_heartbeat = now
+                
+                # Poll commands
+                await self.poll_commands()
+                
+                await asyncio.sleep(max(POLL_INTERVAL, self.backoff_seconds if self.consecutive_failures > 0 else POLL_INTERVAL))
+            except Exception as e:
+                # Catch ALL exceptions to prevent auto-close
+                add_log("error", f"Main loop error (recovering): {e}", category="system")
+                await asyncio.sleep(2)
+                continue
     
     async def shutdown(self):
         self.running = False
@@ -2345,14 +2348,23 @@ class JarvisAgent:
 
 # ============== MAIN ==============
 async def run_agent():
-    agent = JarvisAgent()
-    try:
-        await agent.run()
-    except KeyboardInterrupt:
-        await agent.shutdown()
-    except Exception as e:
-        add_log("error", f"Fatal error: {e}", category="system")
-        await agent.shutdown()
+    """Run agent with auto-restart on crash to prevent auto-close."""
+    while True:
+        agent = JarvisAgent()
+        try:
+            await agent.run()
+            break  # Clean exit
+        except KeyboardInterrupt:
+            await agent.shutdown()
+            break
+        except Exception as e:
+            add_log("error", f"Fatal error (restarting in 3s): {e}", details=traceback.format_exc(), category="system")
+            try:
+                await agent.shutdown()
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+            add_log("info", "Auto-restarting agent...", category="system")
 
 
 def main():

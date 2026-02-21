@@ -10,6 +10,8 @@ import {
   Bot,
   Mic,
   Volume2,
+  Volume1,
+  VolumeX,
   Sun,
   Monitor,
   Power,
@@ -28,9 +30,22 @@ import {
   Music,
   Moon,
   Wifi,
-  Video,
   Wrench,
-  Cloud,
+  Phone,
+  Bell,
+  Keyboard,
+  SkipBack,
+  SkipForward,
+  Play,
+  Pause,
+  Repeat,
+  Shuffle,
+  Clock,
+  Smartphone,
+  ArrowRight,
+  Copy,
+  FileUp,
+  PhoneIncoming,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -42,15 +57,12 @@ import { supabase } from "@/integrations/supabase/client";
 import { Link } from "react-router-dom";
 import { ZoomMeetings } from "@/components/ZoomMeetings";
 import { BoostPC } from "@/components/BoostPC";
-import { NotificationSyncMinimal } from "@/components/NotificationSyncMinimal";
-import { CallControlsMinimal } from "@/components/CallControlsMinimal";
-import { MediaSyncPanel } from "@/components/MediaSyncPanel";
-import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
 import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
 import { EnhancedTrackpad } from "@/components/EnhancedTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
+import { Switch } from "@/components/ui/switch";
 
 type Tab = "control" | "remote" | "media" | "tools" | "network";
 
@@ -60,6 +72,22 @@ interface SystemStats {
   disk_percent?: number;
   battery_percent?: number;
   battery_plugged?: boolean;
+}
+
+interface MediaInfo {
+  title?: string;
+  artist?: string;
+  album?: string;
+  playing?: boolean;
+  position?: number;
+  duration?: number;
+}
+
+interface CallState {
+  active: boolean;
+  number: string;
+  name: string;
+  duration: number;
 }
 
 export default function Hub() {
@@ -99,16 +127,34 @@ export default function Hub() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isBoosting, setIsBoosting] = useState(false);
 
+  // Media state
+  const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [mediaLoading, setMediaLoading] = useState(false);
+
+  // Call state
+  const [autoMuteCall, setAutoMuteCall] = useState(true);
+  const [autoPauseCall, setAutoPauseCall] = useState(true);
+  const [callState, setCallState] = useState<CallState>({ active: false, number: "", name: "", duration: 0 });
+
+  // Notification state
+  const [notifEnabled, setNotifEnabled] = useState(false);
+
   const volumeCommitRef = useRef<number | null>(null);
   const brightnessCommitRef = useRef<number | null>(null);
 
   const isConnected = selectedDevice?.is_online || false;
 
-  // Get real connection status based on P2P connection mode
+  // Force dark mode
+  useEffect(() => {
+    document.documentElement.classList.add("dark");
+  }, []);
+
   const getConnectionStatus = useCallback(() => {
     if (!selectedDevice) return { text: "No Device", color: "text-muted-foreground", dot: "bg-muted-foreground" };
     if (!isConnected) return { text: "Offline", color: "text-muted-foreground", dot: "bg-muted-foreground" };
-    if (isReconnecting) return { text: "Reconnecting", color: "text-[hsl(var(--warning))]", dot: "bg-[hsl(var(--warning))] animate-pulse" };
+    if (isReconnecting) return { text: "Reconnecting", color: "text-amber-400", dot: "bg-amber-400 animate-pulse" };
     
     switch (connectionMode) {
       case "local_p2p":
@@ -131,13 +177,8 @@ export default function Hub() {
     if (selectedDevice) {
       const deviceVol = selectedDevice.current_volume;
       const deviceBright = selectedDevice.current_brightness;
-      
-      if (typeof deviceVol === 'number' && deviceVol >= 0) {
-        setVolume(deviceVol);
-      }
-      if (typeof deviceBright === 'number' && deviceBright >= 0) {
-        setBrightness(deviceBright);
-      }
+      if (typeof deviceVol === 'number' && deviceVol >= 0) setVolume(deviceVol);
+      if (typeof deviceBright === 'number' && deviceBright >= 0) setBrightness(deviceBright);
       setIsLocked(selectedDevice.is_locked ?? false);
     }
   }, [selectedDevice?.id, selectedDevice?.current_volume, selectedDevice?.current_brightness, selectedDevice?.is_locked]);
@@ -178,9 +219,7 @@ export default function Hub() {
   }, [selectedDevice?.is_online, sendCommand]);
 
   useEffect(() => {
-    if (selectedDevice?.is_online) {
-      fetchStats();
-    }
+    if (selectedDevice?.is_online) fetchStats();
   }, [selectedDevice?.is_online, fetchStats]);
 
   // Realtime device updates
@@ -203,19 +242,16 @@ export default function Hub() {
     return () => { supabase.removeChannel(channel); };
   }, [selectedDevice?.id]);
 
-  // Volume handler
+  // Volume handler - sends set_volume with awaitResult for reliability
   const handleVolumeSlider = useCallback((v: number[]) => {
     setVolume(v[0]);
   }, []);
 
   const handleVolumeCommit = useCallback(async (v: number[]) => {
-    if (volumeCommitRef.current !== null) {
-      clearTimeout(volumeCommitRef.current);
-    }
+    if (volumeCommitRef.current !== null) clearTimeout(volumeCommitRef.current);
     volumeCommitRef.current = window.setTimeout(async () => {
       try {
-        // Fire-and-forget: don't await result for volume changes to avoid "failed" status
-        sendCommand("set_volume", { level: v[0] });
+        await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
         if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_volume: v[0] }).eq("id", selectedDevice.id);
         }
@@ -223,22 +259,18 @@ export default function Hub() {
         console.error("Volume update failed:", e);
       }
       volumeCommitRef.current = null;
-    }, 100);
+    }, 150);
   }, [sendCommand, selectedDevice?.id]);
 
-  // Brightness handler
   const handleBrightnessSlider = useCallback((v: number[]) => {
     setBrightness(v[0]);
   }, []);
 
   const handleBrightnessCommit = useCallback(async (v: number[]) => {
-    if (brightnessCommitRef.current !== null) {
-      clearTimeout(brightnessCommitRef.current);
-    }
+    if (brightnessCommitRef.current !== null) clearTimeout(brightnessCommitRef.current);
     brightnessCommitRef.current = window.setTimeout(async () => {
       try {
-        // Fire-and-forget: don't await result for brightness changes
-        sendCommand("set_brightness", { level: v[0] });
+        await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
         if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_brightness: v[0] }).eq("id", selectedDevice.id);
         }
@@ -246,7 +278,7 @@ export default function Hub() {
         console.error("Brightness update failed:", e);
       }
       brightnessCommitRef.current = null;
-    }, 100);
+    }, 150);
   }, [sendCommand, selectedDevice?.id]);
 
   const handleLock = useCallback(async () => {
@@ -260,7 +292,6 @@ export default function Hub() {
     toast({ title: `${action.charAt(0).toUpperCase() + action.slice(1)} initiated` });
   }, [sendCommand, toast]);
 
-  // Quick boost (one-tap) – runs the same underlying commands as BoostPC
   const handleQuickBoost = useCallback(async () => {
     if (!isConnected || isBoosting) return;
     setIsBoosting(true);
@@ -270,31 +301,96 @@ export default function Hub() {
       await sendCommand("clear_temp_files", {}, { awaitResult: true, timeoutMs: 60000 });
       await sendCommand("set_power_plan", { plan: "high_performance" }, { awaitResult: true, timeoutMs: 15000 });
       toast({ title: "Boost complete" });
-    } catch (e) {
+    } catch {
       toast({ title: "Boost failed", variant: "destructive" });
     } finally {
       setIsBoosting(false);
     }
   }, [isBoosting, isConnected, sendCommand, toast]);
 
-  // Remote input safety: only allow mouse/keyboard execution while Remote tab is open
+  // Remote input session
   useEffect(() => {
     if (!isConnected || activeTab !== "remote") return;
-
     let timer: number | null = null;
     const enable = () => {
-      // keepalive extends the agent-side window; also binds the input session id
       sendCommand("remote_input_enable", { session: inputSessionId, ttl_ms: 12000 });
     };
-
     enable();
     timer = window.setInterval(enable, 5000);
-
     return () => {
       if (timer) window.clearInterval(timer);
       sendCommand("remote_input_disable", { session: inputSessionId });
     };
   }, [activeTab, inputSessionId, isConnected, sendCommand]);
+
+  // Media info fetch
+  const fetchMediaInfo = useCallback(async () => {
+    setMediaLoading(true);
+    try {
+      const result = await sendCommand("get_media_info", {}, { awaitResult: true, timeoutMs: 5000 });
+      if (result.success && "result" in result && result.result) {
+        const info = result.result as MediaInfo;
+        setMediaInfo(info);
+        setIsPlaying(info.playing ?? false);
+      }
+    } catch {}
+    setMediaLoading(false);
+  }, [sendCommand]);
+
+  useEffect(() => {
+    if (selectedDevice?.is_online) fetchMediaInfo();
+  }, [selectedDevice?.is_online, fetchMediaInfo]);
+
+  const handleMediaControl = async (action: string) => {
+    if (action === "play_pause") setIsPlaying(!isPlaying);
+    sendCommand("media_control", { action }).then(() => setTimeout(fetchMediaInfo, 300));
+  };
+
+  const handleMuteToggle = () => {
+    const newMuted = !isMuted;
+    setIsMuted(newMuted);
+    sendCommand(newMuted ? "mute_pc" : "unmute_pc", {});
+  };
+
+  // Call detection
+  useEffect(() => {
+    if (!callState.active) return;
+    const timer = setInterval(() => {
+      setCallState(prev => ({ ...prev, duration: prev.duration + 1 }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [callState.active]);
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  const simulateCall = useCallback(async () => {
+    setCallState({ active: true, number: "+1 (555) 123-4567", name: "Test Caller", duration: 0 });
+    if (autoMuteCall) {
+      try {
+        await sendCommand("mute_pc", {}, { awaitResult: true, timeoutMs: 5000 });
+        toast({ title: "PC Muted", description: "Call detected" });
+      } catch {}
+    }
+    if (autoPauseCall) {
+      try {
+        await sendCommand("media_control", { action: "pause" }, { awaitResult: true, timeoutMs: 5000 });
+      } catch {}
+    }
+  }, [autoMuteCall, autoPauseCall, sendCommand, toast]);
+
+  const simulateEndCall = useCallback(async () => {
+    setCallState({ active: false, number: "", name: "", duration: 0 });
+    if (autoMuteCall) {
+      try {
+        await sendCommand("unmute_pc", {}, { awaitResult: true, timeoutMs: 5000 });
+        toast({ title: "PC Unmuted", description: "Call ended" });
+      } catch {}
+    }
+  }, [autoMuteCall, sendCommand, toast]);
 
   // Command execution
   const handleCommand = async () => {
@@ -312,7 +408,6 @@ export default function Hub() {
           toast({ title: "Opened", description: appName });
         }
       } else if (lower.startsWith("play ")) {
-        // Detect service: "play X on spotify" / "play X on youtube"
         let query = lower.slice(5).trim();
         let service = "youtube";
         const onMatch = query.match(/(.+?)\s+on\s+(spotify|youtube|yt)$/i);
@@ -323,7 +418,6 @@ export default function Hub() {
         await sendCommand("play_music", { query, service, auto_play: true }, { awaitResult: true, timeoutMs: 15000 });
         toast({ title: "Playing", description: `${query} on ${service}` });
       } else if (lower.startsWith("search ")) {
-        // Detect engine: "search X on/with chatgpt/perplexity/gemini/wikipedia/google"
         let query = lower.slice(7).trim();
         let engine = "google";
         const engineMatch = query.match(/(.+?)\s+(?:on|with)\s+(chatgpt|perplexity|gemini|google|bing|wikipedia|wiki|duckduckgo)$/i);
@@ -346,11 +440,12 @@ export default function Hub() {
     setIsProcessing(false);
   };
 
-  // Type text handler for trackpad
   const handleTypeText = useCallback((text: string) => {
     sendCommand("type_text", { text });
     toast({ title: "Text sent" });
   }, [sendCommand, toast]);
+
+  const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
 
   const quickLinks = [
     { title: "AI", icon: Bot, href: "/assistant" },
@@ -368,7 +463,6 @@ export default function Hub() {
     { id: "tools" as Tab, label: "Tools", icon: Wrench },
   ];
 
-  // Loading state
   if (isLoading && !selectedDevice) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -383,7 +477,7 @@ export default function Hub() {
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-background">
-        {/* Header - Ultra Minimal */}
+        {/* Header */}
         <header className="sticky top-0 z-50 border-b border-border/20 bg-background/80 backdrop-blur-xl">
           <div className="flex items-center justify-between h-12 px-4 max-w-3xl mx-auto">
             <div className="flex items-center gap-2.5">
@@ -394,7 +488,6 @@ export default function Hub() {
             </div>
 
             <div className="flex items-center gap-2">
-              {/* System Stats - Compact */}
               {systemStats && (
                 <div className="hidden sm:flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
                   <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />{systemStats.cpu_percent}%</span>
@@ -405,16 +498,12 @@ export default function Hub() {
                 </div>
               )}
 
-              {/* Real Connection Status */}
-              <div className={cn(
-                "flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-medium",
-                status.color
-              )}>
+              <div className={cn("flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-medium", status.color)}>
                 <span className={cn("w-1.5 h-1.5 rounded-full", status.dot)} />
                 {status.text}
               </div>
 
-              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); }} disabled={isLoading} className="h-7 w-7">
+              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-7 w-7">
                 <RefreshCw className={cn("w-3.5 h-3.5", isLoading && "animate-spin")} />
               </Button>
             </div>
@@ -423,10 +512,10 @@ export default function Hub() {
 
         <ScrollArea className="h-[calc(100vh-3rem)]">
           <main className="max-w-3xl mx-auto p-3 space-y-3">
-            {/* Command Input - Minimal */}
+            {/* Command Input */}
             <div className="flex gap-2">
               <Input
-                placeholder="Type a command..."
+                placeholder="Type a command... (open, play, search)"
                 value={cmdInput}
                 onChange={(e) => setCmdInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCommand()}
@@ -438,7 +527,7 @@ export default function Hub() {
               </Button>
             </div>
 
-            {/* Tab Navigation - Pill Style */}
+            {/* Tab Navigation */}
             <div className="flex items-center gap-0.5 p-0.5 bg-card/50 rounded-lg w-fit border border-border/20">
               {tabs.map((tab) => (
                 <button
@@ -460,13 +549,13 @@ export default function Hub() {
             {/* Control Tab */}
             {activeTab === "control" && (
               <div className="grid gap-3 md:grid-cols-2">
-                {/* Volume & Brightness - Combined */}
+                {/* Volume & Brightness */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3 space-y-4">
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs">
                         <span className="flex items-center gap-1.5 text-muted-foreground">
-                          <Volume2 className="w-3.5 h-3.5" /> Volume
+                          <VolumeIcon className="w-3.5 h-3.5 cursor-pointer" onClick={handleMuteToggle} /> Volume
                         </span>
                         <span className="font-mono text-muted-foreground">{volume}%</span>
                       </div>
@@ -535,10 +624,10 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Quick Links */}
+                {/* Quick Links (Apps integrated into Hub) */}
                 <Card className="border-border/20 bg-card/50 md:col-span-2">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-5 gap-2">
                       {quickLinks.map((link) => (
                         <Link key={link.href} to={link.href}>
                           <Button variant="ghost" className="w-full h-auto flex-col gap-1.5 py-3 hover:bg-secondary/50 border border-transparent hover:border-border/20">
@@ -551,16 +640,102 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Notifications & Calls */}
-                <NotificationSyncMinimal />
-                <CallControlsMinimal />
+                {/* Notifications - Compact */}
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Bell className="w-4 h-4 text-primary" />
+                        Notifications
+                      </div>
+                      <Switch checked={notifEnabled} onCheckedChange={(v) => {
+                        setNotifEnabled(v);
+                        sendCommand(v ? "start_notification_sync" : "stop_notification_sync", {});
+                        toast({ title: v ? "Sync Active" : "Sync Disabled" });
+                      }} />
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Smartphone className="w-3 h-3" />
+                      <ArrowRight className="w-3 h-3" />
+                      <Monitor className="w-3 h-3" />
+                      <span>{notifEnabled ? "Mirroring phone notifications" : "Enable to sync"}</span>
+                    </div>
+                    {notifEnabled && (
+                      <div className="mt-2 flex gap-2">
+                        <Button variant="outline" size="sm" className="text-xs h-7 gap-1" onClick={() => {
+                          sendCommand("get_clipboard", {}, { awaitResult: true, timeoutMs: 3000 }).then(r => {
+                            if (r.success && 'result' in r) {
+                              const content = (r.result as any)?.content;
+                              if (content) {
+                                navigator.clipboard.writeText(content);
+                                toast({ title: "Clipboard synced" });
+                              }
+                            }
+                          });
+                        }}>
+                          <Copy className="w-3 h-3" /> Clipboard
+                        </Button>
+                        <Link to="/files">
+                          <Button variant="outline" size="sm" className="text-xs h-7 gap-1">
+                            <FileUp className="w-3 h-3" /> Files
+                          </Button>
+                        </Link>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Call Detection - Compact */}
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Phone className={cn("w-4 h-4", callState.active ? "text-primary" : "text-muted-foreground")} />
+                        Call Detection
+                      </div>
+                      {callState.active && (
+                        <Badge variant="outline" className="font-mono text-[10px] gap-1">
+                          <Clock className="h-3 w-3" />
+                          {formatDuration(callState.duration)}
+                        </Badge>
+                      )}
+                    </div>
+                    
+                    <div className="flex gap-2 mb-2">
+                      <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoMuteCall ? "border-primary/30 bg-primary/5" : "border-border/50")}>
+                        <span>Mute</span>
+                        <Switch checked={autoMuteCall} onCheckedChange={setAutoMuteCall} className="scale-75" />
+                      </div>
+                      <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoPauseCall ? "border-primary/30 bg-primary/5" : "border-border/50")}>
+                        <span>Pause</span>
+                        <Switch checked={autoPauseCall} onCheckedChange={setAutoPauseCall} className="scale-75" />
+                      </div>
+                    </div>
+
+                    {callState.active ? (
+                      <div className="p-3 rounded-lg bg-primary/5 border border-primary/30">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Phone className="h-4 w-4 text-primary" />
+                          <span className="text-sm font-medium">{callState.name || callState.number}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-muted-foreground">PC muted & paused</span>
+                          <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={simulateEndCall}>End Test</Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button variant="outline" size="sm" className="w-full h-8 text-xs gap-1" onClick={simulateCall} disabled={!isConnected}>
+                        <PhoneIncoming className="h-3 w-3" /> Test Call Detection
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
             )}
 
-            {/* Remote Tab - Trackpad + Keyboard + Clipboard */}
+            {/* Remote Tab */}
             {activeTab === "remote" && (
               <div className="space-y-3">
-                {/* Large Trackpad */}
                 <EnhancedTrackpad
                   onMouseMove={fireMouse}
                   onScroll={fireScroll}
@@ -574,7 +749,6 @@ export default function Hub() {
                   isConnected={isConnected}
                 />
 
-                {/* Mobile Keyboard - KDE Connect style */}
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
                     <MobileKeyboard 
@@ -585,7 +759,6 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Auto Clipboard Sync */}
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
                     <AutoClipboardSync />
@@ -594,33 +767,123 @@ export default function Hub() {
               </div>
             )}
 
-            {/* Media Tab - Media + Buds (no Zoom) */}
+            {/* Media Tab - KDE Connect Style */}
             {activeTab === "media" && (
-              <div className="grid gap-3 md:grid-cols-2">
-                <MediaSyncPanel />
-                <GalaxyBudsManager />
+              <div className="space-y-3">
+                {/* Now Playing - KDE Connect Style */}
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-4 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Music className="h-5 w-5 text-primary" />
+                        <span className="font-medium text-sm">Now Playing</span>
+                      </div>
+                      <Button variant="ghost" size="icon" onClick={fetchMediaInfo} disabled={mediaLoading} className="h-7 w-7">
+                        <RefreshCw className={cn("h-3.5 w-3.5", mediaLoading && "animate-spin")} />
+                      </Button>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-secondary/30">
+                      {mediaInfo?.title ? (
+                        <>
+                          <Badge variant={isPlaying ? "default" : "secondary"} className={cn("text-[10px] mb-1", isPlaying && "bg-emerald-500/20 text-emerald-400")}>
+                            {isPlaying ? "▶ Playing" : "⏸ Paused"}
+                          </Badge>
+                          <p className="font-medium text-sm truncate">{mediaInfo.title}</p>
+                          <p className="text-xs text-muted-foreground truncate">{mediaInfo.artist}{mediaInfo.album && ` • ${mediaInfo.album}`}</p>
+                          {mediaInfo.duration && mediaInfo.duration > 0 && (
+                            <div className="mt-2 space-y-1">
+                              <div className="w-full h-1 rounded-full bg-secondary">
+                                <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${((mediaInfo.position || 0) / mediaInfo.duration) * 100}%` }} />
+                              </div>
+                              <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                                <span>{formatDuration(mediaInfo.position || 0)}</span>
+                                <span>{formatDuration(mediaInfo.duration)}</span>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="text-center py-2">
+                          <p className="text-sm text-muted-foreground">No media detected</p>
+                          <p className="text-xs text-muted-foreground">Play something on your PC</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Playback Controls */}
+                    <div className="flex items-center justify-center gap-2">
+                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("shuffle")} className="h-8 w-8">
+                        <Shuffle className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("previous")} className="h-9 w-9">
+                        <SkipBack className="h-5 w-5" />
+                      </Button>
+                      <Button onClick={() => handleMediaControl("play_pause")} className={cn("h-12 w-12 rounded-full", isPlaying ? "bg-primary" : "bg-primary")}>
+                        {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 ml-0.5" />}
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("next")} className="h-9 w-9">
+                        <SkipForward className="h-5 w-5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("repeat")} className="h-8 w-8">
+                        <Repeat className="h-4 w-4" />
+                      </Button>
+                    </div>
+
+                    {/* Volume Control with Mute */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="h-7 w-7">
+                          <VolumeIcon className="h-4 w-4" />
+                        </Button>
+                        <Slider
+                          value={[isMuted ? 0 : volume]}
+                          onValueChange={(v) => { setVolume(v[0]); setIsMuted(v[0] === 0); }}
+                          onValueCommit={handleVolumeCommit}
+                          max={100}
+                          step={5}
+                          disabled={!isConnected}
+                          className="flex-1 cursor-pointer"
+                        />
+                        <Badge variant="secondary" className="text-[10px] w-10 justify-center">{isMuted ? 0 : volume}%</Badge>
+                      </div>
+                    </div>
+
+                    {/* Audio Output Selection */}
+                    <div className="pt-2 border-t border-border/20">
+                      <p className="text-xs text-muted-foreground mb-2">Audio Output: Default Speaker</p>
+                      <div className="flex gap-2">
+                        <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => {
+                          sendCommand("list_audio_outputs", {}, { awaitResult: true, timeoutMs: 5000 }).then(r => {
+                            if (r.success && 'result' in r) {
+                              const devices = (r.result as any)?.devices || [];
+                              toast({ title: "Audio Devices", description: devices.map((d: any) => d.name).join(", ") || "Default only" });
+                            }
+                          });
+                        }}>
+                          List Devices
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             )}
 
-            {/* Tools Tab - Zoom, Files, Boost, Buds */}
+            {/* Tools Tab */}
             {activeTab === "tools" && (
               <div className="grid gap-3 md:grid-cols-2">
-                {/* Zoom Meetings - Separate from media */}
                 <Card className="border-border/20 bg-card/50 md:col-span-2">
                   <CardContent className="p-0">
                     <ZoomMeetings />
                   </CardContent>
                 </Card>
-
-                {/* File Transfer */}
                 <BidirectionalFileTransfer className="md:col-span-2" />
-
-                {/* PC Optimization */}
                 <BoostPC />
               </div>
             )}
 
-            {/* Network Tab - P2P & Diagnostics */}
+            {/* Network Tab */}
             {activeTab === "network" && (
               <div className="space-y-3">
                 <SmartP2PManager
@@ -635,19 +898,6 @@ export default function Hub() {
                   onForceUpgrade={forceP2PUpgrade}
                   onForceLocalP2P={forceLocalP2P}
                 />
-                
-                {/* Detailed connection info or additional network tools could go here */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-4 space-y-2">
-                    <h3 className="font-medium text-sm">Connection Details</h3>
-                    <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                      <div>Protocol: <span className="text-foreground">{connectionMode}</span></div>
-                      <div>Latency: <span className="text-foreground">{p2pLatency}ms</span></div>
-                      <div>Device: <span className="text-foreground">{selectedDevice?.name || "Unknown"}</span></div>
-                      <div>Last Seen: <span className="text-foreground">{selectedDevice?.last_seen ? new Date(selectedDevice.last_seen).toLocaleTimeString() : "Never"}</span></div>
-                    </div>
-                  </CardContent>
-                </Card>
               </div>
             )}
 
@@ -659,7 +909,7 @@ export default function Hub() {
                   <h3 className="font-medium text-sm mb-1">No PC Connected</h3>
                   <p className="text-xs text-muted-foreground mb-3">Run the Python agent on your PC</p>
                   <code className="block p-2 bg-secondary/50 rounded-md text-[10px] font-mono">
-                    pythonw jarvis_agent.pyw
+                    python jarvis_agent.py --gui
                   </code>
                 </CardContent>
               </Card>
