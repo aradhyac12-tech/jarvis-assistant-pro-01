@@ -31,8 +31,6 @@ import {
   Moon,
   Wifi,
   Wrench,
-  Phone,
-  Bell,
   Keyboard,
   SkipBack,
   SkipForward,
@@ -41,11 +39,11 @@ import {
   Repeat,
   Shuffle,
   Clock,
-  Smartphone,
-  ArrowRight,
-  Copy,
-  FileUp,
-  PhoneIncoming,
+  AppWindow,
+  Search,
+  XCircle,
+  RotateCcw,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -62,9 +60,8 @@ import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfe
 import { EnhancedTrackpad } from "@/components/EnhancedTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
-import { Switch } from "@/components/ui/switch";
 
-type Tab = "control" | "remote" | "media" | "tools" | "network";
+type Tab = "control" | "remote" | "media" | "apps" | "network" | "tools";
 
 interface SystemStats {
   cpu_percent?: number;
@@ -83,11 +80,14 @@ interface MediaInfo {
   duration?: number;
 }
 
-interface CallState {
-  active: boolean;
-  number: string;
+interface AppInfo {
+  pid?: number;
   name: string;
-  duration: number;
+  cpu?: number;
+  memory?: number;
+  status?: string;
+  app_id?: string;
+  source?: string;
 }
 
 export default function Hub() {
@@ -133,13 +133,12 @@ export default function Hub() {
   const [isMuted, setIsMuted] = useState(false);
   const [mediaLoading, setMediaLoading] = useState(false);
 
-  // Call state
-  const [autoMuteCall, setAutoMuteCall] = useState(true);
-  const [autoPauseCall, setAutoPauseCall] = useState(true);
-  const [callState, setCallState] = useState<CallState>({ active: false, number: "", name: "", duration: 0 });
-
-  // Notification state
-  const [notifEnabled, setNotifEnabled] = useState(false);
+  // Apps state
+  const [runningApps, setRunningApps] = useState<AppInfo[]>([]);
+  const [installedApps, setInstalledApps] = useState<AppInfo[]>([]);
+  const [appsLoading, setAppsLoading] = useState(false);
+  const [appSearch, setAppSearch] = useState("");
+  const [appView, setAppView] = useState<"running" | "installed">("running");
 
   const volumeCommitRef = useRef<number | null>(null);
   const brightnessCommitRef = useRef<number | null>(null);
@@ -242,7 +241,7 @@ export default function Hub() {
     return () => { supabase.removeChannel(channel); };
   }, [selectedDevice?.id]);
 
-  // Volume handler - sends set_volume with awaitResult for reliability
+  // Volume handler
   const handleVolumeSlider = useCallback((v: number[]) => {
     setVolume(v[0]);
   }, []);
@@ -352,45 +351,76 @@ export default function Hub() {
     sendCommand(newMuted ? "mute_pc" : "unmute_pc", {});
   };
 
-  // Call detection
+  // Apps fetching
+  const fetchRunningApps = useCallback(async () => {
+    setAppsLoading(true);
+    try {
+      const result = await sendCommand("get_running_apps", {}, { awaitResult: true, timeoutMs: 10000 });
+      if (result.success && "result" in result) {
+        const data = result.result as { apps?: AppInfo[] };
+        setRunningApps(data?.apps || []);
+      }
+    } catch {}
+    setAppsLoading(false);
+  }, [sendCommand]);
+
+  const fetchInstalledApps = useCallback(async () => {
+    setAppsLoading(true);
+    try {
+      const result = await sendCommand("get_installed_apps", {}, { awaitResult: true, timeoutMs: 15000 });
+      if (result.success && "result" in result) {
+        const data = result.result as { apps?: AppInfo[] };
+        setInstalledApps(data?.apps || []);
+      }
+    } catch {}
+    setAppsLoading(false);
+  }, [sendCommand]);
+
   useEffect(() => {
-    if (!callState.active) return;
-    const timer = setInterval(() => {
-      setCallState(prev => ({ ...prev, duration: prev.duration + 1 }));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [callState.active]);
+    if (activeTab === "apps" && isConnected) {
+      fetchRunningApps();
+      fetchInstalledApps();
+    }
+  }, [activeTab, isConnected, fetchRunningApps, fetchInstalledApps]);
+
+  const handleOpenApp = useCallback(async (appName: string) => {
+    try {
+      const result = await sendCommand("open_app", { app_name: appName }, { awaitResult: true, timeoutMs: 8000 });
+      if (result?.success) {
+        toast({ title: "Opened", description: appName });
+        setTimeout(fetchRunningApps, 2000);
+      } else {
+        toast({ title: "Failed", description: (result?.error as string) || "Could not open app", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Error opening app", variant: "destructive" });
+    }
+  }, [sendCommand, toast, fetchRunningApps]);
+
+  const handleCloseApp = useCallback(async (appName: string, pid?: number) => {
+    try {
+      const result = await sendCommand("kill_app", { app_name: appName, pid }, { awaitResult: true, timeoutMs: 5000 });
+      if (result?.success) {
+        toast({ title: "Closed", description: appName });
+        setTimeout(fetchRunningApps, 1000);
+      } else {
+        toast({ title: "Failed to close", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Error", variant: "destructive" });
+    }
+  }, [sendCommand, toast, fetchRunningApps]);
+
+  const handleRestartApp = useCallback(async (appName: string, pid?: number) => {
+    await handleCloseApp(appName, pid);
+    setTimeout(() => handleOpenApp(appName), 1500);
+  }, [handleCloseApp, handleOpenApp]);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
-
-  const simulateCall = useCallback(async () => {
-    setCallState({ active: true, number: "+1 (555) 123-4567", name: "Test Caller", duration: 0 });
-    if (autoMuteCall) {
-      try {
-        await sendCommand("mute_pc", {}, { awaitResult: true, timeoutMs: 5000 });
-        toast({ title: "PC Muted", description: "Call detected" });
-      } catch {}
-    }
-    if (autoPauseCall) {
-      try {
-        await sendCommand("media_control", { action: "pause" }, { awaitResult: true, timeoutMs: 5000 });
-      } catch {}
-    }
-  }, [autoMuteCall, autoPauseCall, sendCommand, toast]);
-
-  const simulateEndCall = useCallback(async () => {
-    setCallState({ active: false, number: "", name: "", duration: 0 });
-    if (autoMuteCall) {
-      try {
-        await sendCommand("unmute_pc", {}, { awaitResult: true, timeoutMs: 5000 });
-        toast({ title: "PC Unmuted", description: "Call ended" });
-      } catch {}
-    }
-  }, [autoMuteCall, sendCommand, toast]);
 
   // Command execution
   const handleCommand = async () => {
@@ -459,9 +489,14 @@ export default function Hub() {
     { id: "control" as Tab, label: "Control", icon: Monitor },
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
+    { id: "apps" as Tab, label: "Apps", icon: AppWindow },
     { id: "network" as Tab, label: "Network", icon: Wifi },
     { id: "tools" as Tab, label: "Tools", icon: Wrench },
   ];
+
+  // Filter apps by search
+  const filteredRunning = runningApps.filter(a => a.name.toLowerCase().includes(appSearch.toLowerCase()));
+  const filteredInstalled = installedApps.filter(a => a.name.toLowerCase().includes(appSearch.toLowerCase()));
 
   if (isLoading && !selectedDevice) {
     return (
@@ -511,7 +546,7 @@ export default function Hub() {
         </header>
 
         <ScrollArea className="h-[calc(100vh-3rem)]">
-          <main className="max-w-3xl mx-auto p-3 space-y-3">
+          <main className="max-w-3xl mx-auto p-3 space-y-3 pb-6">
             {/* Command Input */}
             <div className="flex gap-2">
               <Input
@@ -528,13 +563,13 @@ export default function Hub() {
             </div>
 
             {/* Tab Navigation */}
-            <div className="flex items-center gap-0.5 p-0.5 bg-card/50 rounded-lg w-fit border border-border/20">
+            <div className="flex items-center gap-0.5 p-0.5 bg-card/50 rounded-lg w-full overflow-x-auto border border-border/20">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                    "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap flex-shrink-0",
                     activeTab === tab.id
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:text-foreground"
@@ -624,7 +659,7 @@ export default function Hub() {
                   </CardContent>
                 </Card>
 
-                {/* Quick Links (Apps integrated into Hub) */}
+                {/* Quick Links */}
                 <Card className="border-border/20 bg-card/50 md:col-span-2">
                   <CardContent className="p-3">
                     <div className="grid grid-cols-5 gap-2">
@@ -637,97 +672,6 @@ export default function Hub() {
                         </Link>
                       ))}
                     </div>
-                  </CardContent>
-                </Card>
-
-                {/* Notifications - Compact */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <Bell className="w-4 h-4 text-primary" />
-                        Notifications
-                      </div>
-                      <Switch checked={notifEnabled} onCheckedChange={(v) => {
-                        setNotifEnabled(v);
-                        sendCommand(v ? "start_notification_sync" : "stop_notification_sync", {});
-                        toast({ title: v ? "Sync Active" : "Sync Disabled" });
-                      }} />
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Smartphone className="w-3 h-3" />
-                      <ArrowRight className="w-3 h-3" />
-                      <Monitor className="w-3 h-3" />
-                      <span>{notifEnabled ? "Mirroring phone notifications" : "Enable to sync"}</span>
-                    </div>
-                    {notifEnabled && (
-                      <div className="mt-2 flex gap-2">
-                        <Button variant="outline" size="sm" className="text-xs h-7 gap-1" onClick={() => {
-                          sendCommand("get_clipboard", {}, { awaitResult: true, timeoutMs: 3000 }).then(r => {
-                            if (r.success && 'result' in r) {
-                              const content = (r.result as any)?.content;
-                              if (content) {
-                                navigator.clipboard.writeText(content);
-                                toast({ title: "Clipboard synced" });
-                              }
-                            }
-                          });
-                        }}>
-                          <Copy className="w-3 h-3" /> Clipboard
-                        </Button>
-                        <Link to="/files">
-                          <Button variant="outline" size="sm" className="text-xs h-7 gap-1">
-                            <FileUp className="w-3 h-3" /> Files
-                          </Button>
-                        </Link>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* Call Detection - Compact */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <Phone className={cn("w-4 h-4", callState.active ? "text-primary" : "text-muted-foreground")} />
-                        Call Detection
-                      </div>
-                      {callState.active && (
-                        <Badge variant="outline" className="font-mono text-[10px] gap-1">
-                          <Clock className="h-3 w-3" />
-                          {formatDuration(callState.duration)}
-                        </Badge>
-                      )}
-                    </div>
-                    
-                    <div className="flex gap-2 mb-2">
-                      <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoMuteCall ? "border-primary/30 bg-primary/5" : "border-border/50")}>
-                        <span>Mute</span>
-                        <Switch checked={autoMuteCall} onCheckedChange={setAutoMuteCall} className="scale-75" />
-                      </div>
-                      <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoPauseCall ? "border-primary/30 bg-primary/5" : "border-border/50")}>
-                        <span>Pause</span>
-                        <Switch checked={autoPauseCall} onCheckedChange={setAutoPauseCall} className="scale-75" />
-                      </div>
-                    </div>
-
-                    {callState.active ? (
-                      <div className="p-3 rounded-lg bg-primary/5 border border-primary/30">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Phone className="h-4 w-4 text-primary" />
-                          <span className="text-sm font-medium">{callState.name || callState.number}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-muted-foreground">PC muted & paused</span>
-                          <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={simulateEndCall}>End Test</Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <Button variant="outline" size="sm" className="w-full h-8 text-xs gap-1" onClick={simulateCall} disabled={!isConnected}>
-                        <PhoneIncoming className="h-3 w-3" /> Test Call Detection
-                      </Button>
-                    )}
                   </CardContent>
                 </Card>
               </div>
@@ -748,7 +692,6 @@ export default function Hub() {
                   latency={p2pLatency}
                   isConnected={isConnected}
                 />
-
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
                     <MobileKeyboard 
@@ -758,7 +701,6 @@ export default function Hub() {
                     />
                   </CardContent>
                 </Card>
-
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
                     <AutoClipboardSync />
@@ -767,10 +709,9 @@ export default function Hub() {
               </div>
             )}
 
-            {/* Media Tab - KDE Connect Style */}
+            {/* Media Tab */}
             {activeTab === "media" && (
               <div className="space-y-3">
-                {/* Now Playing - KDE Connect Style */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-4 space-y-4">
                     <div className="flex items-center justify-between">
@@ -819,7 +760,7 @@ export default function Hub() {
                       <Button variant="ghost" size="icon" onClick={() => handleMediaControl("previous")} className="h-9 w-9">
                         <SkipBack className="h-5 w-5" />
                       </Button>
-                      <Button onClick={() => handleMediaControl("play_pause")} className={cn("h-12 w-12 rounded-full", isPlaying ? "bg-primary" : "bg-primary")}>
+                      <Button onClick={() => handleMediaControl("play_pause")} className="h-12 w-12 rounded-full bg-primary">
                         {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 ml-0.5" />}
                       </Button>
                       <Button variant="ghost" size="icon" onClick={() => handleMediaControl("next")} className="h-9 w-9">
@@ -830,7 +771,7 @@ export default function Hub() {
                       </Button>
                     </div>
 
-                    {/* Volume Control with Mute */}
+                    {/* Volume Control */}
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
                         <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="h-7 w-7">
@@ -849,24 +790,134 @@ export default function Hub() {
                       </div>
                     </div>
 
-                    {/* Audio Output Selection */}
+                    {/* Audio Output */}
                     <div className="pt-2 border-t border-border/20">
                       <p className="text-xs text-muted-foreground mb-2">Audio Output: Default Speaker</p>
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => {
-                          sendCommand("list_audio_outputs", {}, { awaitResult: true, timeoutMs: 5000 }).then(r => {
-                            if (r.success && 'result' in r) {
-                              const devices = (r.result as any)?.devices || [];
-                              toast({ title: "Audio Devices", description: devices.map((d: any) => d.name).join(", ") || "Default only" });
-                            }
-                          });
-                        }}>
-                          List Devices
-                        </Button>
-                      </div>
+                      <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => {
+                        sendCommand("list_audio_outputs", {}, { awaitResult: true, timeoutMs: 5000 }).then(r => {
+                          if (r.success && 'result' in r) {
+                            const devices = (r.result as any)?.devices || [];
+                            toast({ title: "Audio Devices", description: devices.map((d: any) => d.name).join(", ") || "Default only" });
+                          }
+                        });
+                      }}>
+                        List Devices
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
+              </div>
+            )}
+
+            {/* Apps Tab */}
+            {activeTab === "apps" && (
+              <div className="space-y-3">
+                {/* Search */}
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search apps..."
+                    value={appSearch}
+                    onChange={(e) => setAppSearch(e.target.value)}
+                    className="pl-9 h-9 bg-card border-border/30 text-sm"
+                  />
+                </div>
+
+                {/* App View Toggle */}
+                <div className="flex gap-1 p-0.5 bg-card/50 rounded-lg border border-border/20">
+                  {(["running", "installed"] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setAppView(v)}
+                      className={cn(
+                        "flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all capitalize",
+                        appView === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {v === "running" ? `Running (${filteredRunning.length})` : `Installed (${filteredInstalled.length})`}
+                    </button>
+                  ))}
+                </div>
+
+                {appsLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {appView === "running" ? (
+                      filteredRunning.length === 0 ? (
+                        <Card className="border-border/20 bg-card/50">
+                          <CardContent className="p-4 text-center text-xs text-muted-foreground">
+                            {appSearch ? "No matching running apps" : "No running apps found"}
+                          </CardContent>
+                        </Card>
+                      ) : (
+                        filteredRunning.map((app) => (
+                          <Card key={`${app.name}-${app.pid}`} className="border-border/20 bg-card/50">
+                            <CardContent className="p-2 flex items-center justify-between">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium truncate">{app.name}</p>
+                                <div className="flex gap-2 text-[10px] text-muted-foreground">
+                                  {app.cpu !== undefined && <span>CPU: {app.cpu}%</span>}
+                                  {app.memory !== undefined && <span>RAM: {app.memory}%</span>}
+                                  <span className={cn(
+                                    app.status === "running" ? "text-emerald-400" : "text-muted-foreground"
+                                  )}>{app.status}</span>
+                                </div>
+                              </div>
+                              <div className="flex gap-1 shrink-0">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleRestartApp(app.name, app.pid)}>
+                                      <RotateCcw className="w-3 h-3" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="text-xs">Restart</TooltipContent>
+                                </Tooltip>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleCloseApp(app.name, app.pid)}>
+                                      <XCircle className="w-3 h-3" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="text-xs">Close</TooltipContent>
+                                </Tooltip>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        ))
+                      )
+                    ) : (
+                      filteredInstalled.length === 0 ? (
+                        <Card className="border-border/20 bg-card/50">
+                          <CardContent className="p-4 text-center text-xs text-muted-foreground">
+                            {appSearch ? "No matching installed apps" : "No installed apps found"}
+                          </CardContent>
+                        </Card>
+                      ) : (
+                        filteredInstalled.map((app) => (
+                          <Card key={app.app_id || app.name} className="border-border/20 bg-card/50">
+                            <CardContent className="p-2 flex items-center justify-between">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium truncate">{app.name}</p>
+                                {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
+                              </div>
+                              <Button variant="outline" size="sm" className="h-7 text-xs shrink-0" onClick={() => handleOpenApp(app.name)}>
+                                Open
+                              </Button>
+                            </CardContent>
+                          </Card>
+                        ))
+                      )
+                    )}
+                  </div>
+                )}
+
+                <Button variant="outline" className="w-full text-xs h-8" onClick={() => { fetchRunningApps(); fetchInstalledApps(); }} disabled={appsLoading}>
+                  <RefreshCw className={cn("w-3 h-3 mr-1", appsLoading && "animate-spin")} />
+                  Refresh Apps
+                </Button>
               </div>
             )}
 
