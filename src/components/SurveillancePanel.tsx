@@ -5,7 +5,6 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import {
   Shield,
@@ -13,9 +12,7 @@ import {
   Bell,
   Volume2,
   Phone,
-  Clock,
   Camera,
-  AlertTriangle,
   Play,
   Square,
   Loader2,
@@ -29,68 +26,46 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useToast } from "@/hooks/use-toast";
+import { addLog } from "@/components/IssueLog";
+import { getFunctionsWsBase } from "@/lib/relay";
 
 interface MotionEvent {
   id: string;
   timestamp: Date;
   confidence: number;
-  screenshotUrl?: string;
-}
-
-interface RecordedClip {
-  id: string;
-  startTime: Date;
-  endTime: Date;
-  frames: string[]; // base64 frames
-  motionConfidence: number;
 }
 
 export function SurveillancePanel({ className }: { className?: string }) {
   const { sendCommand } = useDeviceCommands();
+  const { session } = useDeviceSession();
   const { toast } = useToast();
 
   // Persisted Settings
   const [enabled, setEnabled] = useState(() => localStorage.getItem("surveillance_enabled") === "true");
   const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
   const [endTime, setEndTime] = useState(() => localStorage.getItem("surveillance_end") || "06:00");
-  const [sensitivity, setSensitivity] = useState<"low" | "medium" | "high">(() => 
+  const [sensitivity, setSensitivity] = useState<"low" | "medium" | "high">(() =>
     (localStorage.getItem("surveillance_sensitivity") as "low" | "medium" | "high") || "medium"
   );
   const [alarmEnabled, setAlarmEnabled] = useState(() => localStorage.getItem("surveillance_alarm") === "true");
   const [sirenEnabled, setSirenEnabled] = useState(() => localStorage.getItem("surveillance_siren") === "true");
   const [autoCall, setAutoCall] = useState(() => localStorage.getItem("surveillance_autocall") === "true");
-  const [recordOnMotion, setRecordOnMotion] = useState(() => localStorage.getItem("surveillance_record") !== "false");
   const [micEnabled, setMicEnabled] = useState(() => localStorage.getItem("surveillance_mic") === "true");
 
   // Runtime State
   const [monitoring, setMonitoring] = useState(false);
   const [motionEvents, setMotionEvents] = useState<MotionEvent[]>([]);
-  const [lastFrame, setLastFrame] = useState<string | null>(null);
+  const [currentFrame, setCurrentFrame] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
-  
-  // Quality settings
-  const [streamQuality, setStreamQuality] = useState(50);
-  const [streamFps, setStreamFps] = useState(2);
-  const [recordDuration, setRecordDuration] = useState(10); // seconds
+  const [showConfig, setShowConfig] = useState(false);
+  const [liveFps, setLiveFps] = useState(0);
 
-  // Diagnostics
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [diagnostics, setDiagnostics] = useState({
-    framesReceived: 0,
-    lastFrameTime: 0,
-    motionDetections: 0,
-    avgConfidence: 0,
-    connectionErrors: 0,
-  });
-
-  // Recording state
-  const [recordedClips, setRecordedClips] = useState<RecordedClip[]>([]);
-  const recordingBufferRef = useRef<string[]>([]);
-  const isRecordingRef = useRef(false);
-  const recordingTimerRef = useRef<number | null>(null);
-
-  const pollingRef = useRef<number | null>(null);
+  // Refs for streaming
+  const wsRef = useRef<WebSocket | null>(null);
+  const currentBlobUrlRef = useRef<string | null>(null);
+  const fpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
   const previousFrameRef = useRef<ImageData | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -104,162 +79,63 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_alarm", String(alarmEnabled)), [alarmEnabled]);
   useEffect(() => localStorage.setItem("surveillance_siren", String(sirenEnabled)), [sirenEnabled]);
   useEffect(() => localStorage.setItem("surveillance_autocall", String(autoCall)), [autoCall]);
-  useEffect(() => localStorage.setItem("surveillance_record", String(recordOnMotion)), [recordOnMotion]);
   useEffect(() => localStorage.setItem("surveillance_mic", String(micEnabled)), [micEnabled]);
 
-  const startSurveillance = useCallback(async () => {
-    setIsStarting(true);
-    try {
-      // First verify agent is responsive with a ping
-      const ping = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
-      if (!ping?.success) {
-        toast({ title: "Agent not responding", description: "Start jarvis_agent.py on your PC", variant: "destructive" });
-        setIsStarting(false);
-        return;
-      }
-
-      setMonitoring(true);
-      toast({ title: "Surveillance Active", description: "Motion detection & Camera monitoring started" });
-
-      if (micEnabled) {
-        sendCommand("start_audio_relay", { 
-          session_id: crypto.randomUUID(), 
-          direction: "pc_to_phone" 
-        });
-      }
-
-      // Use camera polling
-      pollingRef.current = window.setInterval(async () => {
-        try {
-          const shot = await sendCommand("take_camera_snapshot", { quality: streamQuality, camera_index: 0 }, { awaitResult: true, timeoutMs: 8000 });
-          
-          if (shot.success && (shot as any).result?.image) {
-            const imageData = (shot as any).result.image;
-            setLastFrame(`data:image/jpeg;base64,${imageData}`);
-            setDiagnostics(prev => ({ ...prev, framesReceived: prev.framesReceived + 1, lastFrameTime: Date.now() }));
-            detectMotion(imageData);
-          }
-        } catch {
-          setDiagnostics(prev => ({ ...prev, connectionErrors: prev.connectionErrors + 1 }));
-        }
-      }, Math.max(1000, Math.round(1000 / streamFps)));
-    } catch (err) {
-      setDiagnostics(prev => ({ ...prev, connectionErrors: prev.connectionErrors + 1 }));
-      toast({ title: "Surveillance error", description: err instanceof Error ? err.message : "Failed to start", variant: "destructive" });
+  const cleanupWs = useCallback(() => {
+    if (currentBlobUrlRef.current) {
+      URL.revokeObjectURL(currentBlobUrlRef.current);
+      currentBlobUrlRef.current = null;
     }
-    setIsStarting(false);
-  }, [sendCommand, toast, streamFps, streamQuality, micEnabled]);
-
-  const stopSurveillance = useCallback(() => {
-    if (pollingRef.current) {
-      window.clearInterval(pollingRef.current);
-      pollingRef.current = null;
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch { /* */ }
+      wsRef.current = null;
     }
-    setMonitoring(false);
-    previousFrameRef.current = null;
-    
-    // Stop audio relay if it was running
-    if (micEnabled) {
-      sendCommand("stop_audio_relay", {});
-    }
-    
-    toast({ title: "Surveillance Stopped" });
-  }, [sendCommand, toast, micEnabled]);
+    fpsCounterRef.current = { frames: 0, lastCheck: Date.now() };
+  }, []);
 
-  const detectMotion = useCallback((base64Image: string) => {
+  const detectMotion = useCallback((base64OrBlob: string) => {
     const img = new Image();
     img.onload = () => {
-      if (!canvasRef.current) {
-        canvasRef.current = document.createElement("canvas");
-      }
+      if (!canvasRef.current) canvasRef.current = document.createElement("canvas");
       const canvas = canvasRef.current;
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-
       ctx.drawImage(img, 0, 0);
-      const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
       if (previousFrameRef.current) {
         const prev = previousFrameRef.current;
         let diffPixels = 0;
-        const totalPixels = currentFrame.data.length / 4;
+        const totalSampled = frame.data.length / 16;
         const threshold = sensitivityThreshold[sensitivity];
-
-        for (let i = 0; i < currentFrame.data.length; i += 16) { // Optimize: sample every 4th pixel
-          const rDiff = Math.abs(currentFrame.data[i] - prev.data[i]);
-          const gDiff = Math.abs(currentFrame.data[i + 1] - prev.data[i + 1]);
-          const bDiff = Math.abs(currentFrame.data[i + 2] - prev.data[i + 2]);
-          if (rDiff + gDiff + bDiff > threshold * 3) {
-            diffPixels++;
-          }
+        for (let i = 0; i < frame.data.length; i += 16) {
+          const d = Math.abs(frame.data[i] - prev.data[i]) +
+                    Math.abs(frame.data[i+1] - prev.data[i+1]) +
+                    Math.abs(frame.data[i+2] - prev.data[i+2]);
+          if (d > threshold * 3) diffPixels++;
         }
-
-        const changePercent = (diffPixels / (totalPixels / 4)) * 100;
-
+        const changePercent = (diffPixels / totalSampled) * 100;
         if (changePercent > 2) {
           const event: MotionEvent = {
             id: crypto.randomUUID(),
             timestamp: new Date(),
             confidence: Math.min(100, Math.round(changePercent * 5)),
-            screenshotUrl: `data:image/jpeg;base64,${base64Image}`,
           };
-
           setMotionEvents(prev => [event, ...prev].slice(0, 50));
-          setDiagnostics(prev => ({
-            ...prev,
-            motionDetections: prev.motionDetections + 1,
-            avgConfidence: Math.round(((prev.avgConfidence * prev.motionDetections) + event.confidence) / (prev.motionDetections + 1)),
-          }));
-
-          // Start recording clip on motion
-          if (recordOnMotion && !isRecordingRef.current) {
-            startRecordingClip(event.confidence);
-          }
-
           triggerAlerts(event);
         }
       }
-
-      // Always buffer latest frame for recording context
-      if (isRecordingRef.current) {
-        recordingBufferRef.current.push(base64Image);
-        if (recordingBufferRef.current.length > 100) {
-          recordingBufferRef.current = recordingBufferRef.current.slice(-100);
-        }
-      }
-
-      previousFrameRef.current = currentFrame;
+      previousFrameRef.current = frame;
     };
-    img.src = `data:image/jpeg;base64,${base64Image}`;
-  }, [sensitivity, recordOnMotion]);
-
-  const startRecordingClip = useCallback((confidence: number) => {
-    isRecordingRef.current = true;
-    recordingBufferRef.current = [];
-    const startTime = new Date();
-
-    recordingTimerRef.current = window.setTimeout(() => {
-      isRecordingRef.current = false;
-      const clip: RecordedClip = {
-        id: crypto.randomUUID(),
-        startTime,
-        endTime: new Date(),
-        frames: [...recordingBufferRef.current],
-        motionConfidence: confidence,
-      };
-      setRecordedClips(prev => [clip, ...prev].slice(0, 20));
-      recordingBufferRef.current = [];
-      toast({ title: "Motion Clip Saved", description: `${clip.frames.length} frames recorded` });
-    }, recordDuration * 1000);
-  }, [recordDuration, toast]);
+    img.src = base64OrBlob;
+  }, [sensitivity]);
 
   const triggerAlerts = useCallback(async (event: MotionEvent) => {
     if (alarmEnabled) {
       await sendCommand("play_alarm", { type: sirenEnabled ? "siren" : "beep" });
     }
-
     if (autoCall) {
       await sendCommand("start_audio_relay", {
         session_id: crypto.randomUUID(),
@@ -269,7 +145,149 @@ export function SurveillancePanel({ className }: { className?: string }) {
     }
   }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
 
-  // Auto-start on load if previously enabled
+  const startSurveillance = useCallback(async () => {
+    setIsStarting(true);
+    try {
+      if (!session?.session_token) {
+        toast({ title: "Not Paired", description: "Connect to your PC first", variant: "destructive" });
+        setIsStarting(false);
+        return;
+      }
+
+      // Ping agent
+      const ping = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
+      if (!ping?.success) {
+        toast({ title: "Agent not responding", description: "Start jarvis_agent.py on your PC", variant: "destructive" });
+        setIsStarting(false);
+        return;
+      }
+
+      const sessionId = crypto.randomUUID();
+      const WS_BASE = getFunctionsWsBase();
+      const wsUrl = `${WS_BASE}/functions/v1/camera-relay?sessionId=${sessionId}&type=pc&fps=10&quality=50&binary=true&session_token=${session.session_token}`;
+
+      // Connect WebSocket with retry
+      let ws: WebSocket | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        ws = new WebSocket(wsUrl);
+        ws.binaryType = "arraybuffer";
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => { ws!.close(); reject(new Error("timeout")); }, 10000);
+            ws!.addEventListener("open", () => { clearTimeout(t); resolve(); }, { once: true });
+            ws!.addEventListener("error", () => { clearTimeout(t); reject(new Error("ws error")); }, { once: true });
+          });
+          break; // connected
+        } catch {
+          addLog("warn", "web", `Surveillance WS attempt ${attempt + 1} failed, retrying...`);
+          if (attempt === 2) {
+            toast({ title: "Connection Failed", description: "Could not connect to relay. Try again.", variant: "destructive" });
+            setIsStarting(false);
+            return;
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setIsStarting(false);
+        return;
+      }
+
+      wsRef.current = ws;
+
+      ws.onmessage = async (event) => {
+        const now = Date.now();
+        try {
+          let arrayBuffer: ArrayBuffer | null = null;
+          if (event.data instanceof ArrayBuffer) arrayBuffer = event.data;
+          else if (event.data instanceof Blob && event.data.size > 0) arrayBuffer = await event.data.arrayBuffer();
+
+          if (arrayBuffer && arrayBuffer.byteLength > 100) {
+            const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
+            const newUrl = URL.createObjectURL(blob);
+            if (currentBlobUrlRef.current) URL.revokeObjectURL(currentBlobUrlRef.current);
+            currentBlobUrlRef.current = newUrl;
+            setCurrentFrame(newUrl);
+
+            // FPS tracking
+            fpsCounterRef.current.frames++;
+            const elapsed = now - fpsCounterRef.current.lastCheck;
+            if (elapsed >= 1000) {
+              setLiveFps(Math.round((fpsCounterRef.current.frames * 1000) / elapsed));
+              fpsCounterRef.current = { frames: 0, lastCheck: now };
+            }
+
+            // Motion detection (every 3rd frame to save CPU)
+            if (fpsCounterRef.current.frames % 3 === 0) {
+              detectMotion(newUrl);
+            }
+            return;
+          }
+
+          // Handle JSON messages
+          if (typeof event.data === "string") {
+            const data = JSON.parse(event.data);
+            if (data.type === "camera_frame" && data.data) {
+              const src = `data:image/jpeg;base64,${data.data}`;
+              setCurrentFrame(src);
+              detectMotion(src);
+            }
+          }
+        } catch { /* ignore parse errors */ }
+      };
+
+      ws.onclose = () => {
+        if (monitoring) {
+          addLog("warn", "web", "Surveillance WS closed unexpectedly");
+        }
+        cleanupWs();
+        setMonitoring(false);
+      };
+
+      // Tell agent to start camera stream
+      const started = await sendCommand("start_camera_stream", {
+        session_id: sessionId,
+        camera_index: 0,
+        fps: 10,
+        quality: 50,
+      }, { awaitResult: true, timeoutMs: 20000 });
+
+      if (!started.success) {
+        toast({ title: "Camera Failed", description: "Could not start PC camera", variant: "destructive" });
+        cleanupWs();
+        setIsStarting(false);
+        return;
+      }
+
+      // Start audio if enabled
+      if (micEnabled) {
+        sendCommand("start_audio_relay", {
+          session_id: crypto.randomUUID(),
+          direction: "pc_to_phone",
+        });
+      }
+
+      setMonitoring(true);
+      toast({ title: "Surveillance Active", description: "Live camera + motion detection running" });
+    } catch (err) {
+      toast({ title: "Surveillance error", description: err instanceof Error ? err.message : "Failed", variant: "destructive" });
+    }
+    setIsStarting(false);
+  }, [sendCommand, toast, session, micEnabled, cleanupWs, detectMotion, monitoring]);
+
+  const stopSurveillance = useCallback(() => {
+    sendCommand("stop_camera_stream", {});
+    if (micEnabled) sendCommand("stop_audio_relay", {});
+    cleanupWs();
+    setMonitoring(false);
+    setCurrentFrame(null);
+    previousFrameRef.current = null;
+    setLiveFps(0);
+    toast({ title: "Surveillance Stopped" });
+  }, [sendCommand, toast, micEnabled, cleanupWs]);
+
+  // Auto-start on mount if previously enabled
   useEffect(() => {
     if (enabled && !monitoring && !isStarting) {
       const now = new Date();
@@ -278,16 +296,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
       const [endH, endM] = endTime.split(":").map(Number);
       const startMins = startH * 60 + startM;
       const endMins = endH * 60 + endM;
-
-      const inSchedule = startMins <= endMins 
+      const inSchedule = startMins <= endMins
         ? currentMins >= startMins && currentMins <= endMins
         : currentMins >= startMins || currentMins <= endMins;
-
-      if (inSchedule) {
-        startSurveillance();
-      }
+      if (inSchedule) startSurveillance();
     }
-  }, []); // Run once on mount
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cleanup on unmount
+  useEffect(() => () => { cleanupWs(); }, [cleanupWs]);
 
   return (
     <Card className={cn("glass-dark border-border/50", className)}>
@@ -297,14 +314,11 @@ export function SurveillancePanel({ className }: { className?: string }) {
           Surveillance Guard
           {monitoring && (
             <Badge variant="destructive" className="ml-auto gap-1 animate-pulse">
-              <Eye className="h-3 w-3" />
-              LIVE
+              <Eye className="h-3 w-3" /> LIVE
             </Badge>
           )}
         </CardTitle>
-        <CardDescription>
-          Camera monitoring with motion detection & auto-alarms
-        </CardDescription>
+        <CardDescription>Continuous camera monitoring with motion detection</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Main Toggle */}
@@ -312,26 +326,26 @@ export function SurveillancePanel({ className }: { className?: string }) {
           <div className="space-y-1">
             <Label className="text-base">Guard Mode</Label>
             <p className="text-xs text-muted-foreground">
-              {monitoring ? "System active & monitoring" : "System disabled"}
+              {monitoring ? `Active · ${liveFps} FPS` : "System disabled"}
             </p>
           </div>
-          <Switch 
-            checked={enabled} 
+          <Switch
+            checked={enabled}
             onCheckedChange={(checked) => {
               setEnabled(checked);
               if (checked) startSurveillance();
               else stopSurveillance();
-            }} 
+            }}
           />
         </div>
 
-        {/* Live Preview */}
-        {lastFrame ? (
-          <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50 group">
-            <img src={lastFrame} alt="Live View" className="w-full h-full object-contain" />
+        {/* Live Video Preview */}
+        {currentFrame ? (
+          <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50">
+            <img src={currentFrame} alt="Live View" className="w-full h-full object-contain" />
             <div className="absolute top-2 right-2 flex gap-1">
-              <Badge variant="secondary" className="bg-black/50 backdrop-blur">
-                CAM 1
+              <Badge variant="secondary" className="bg-black/50 backdrop-blur text-xs">
+                {liveFps} FPS
               </Badge>
               {micEnabled && (
                 <Badge variant="secondary" className="bg-emerald-500/80 text-white backdrop-blur">
@@ -339,13 +353,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 </Badge>
               )}
             </div>
-            {/* Motion Indicators */}
+            {/* Motion bar */}
             {motionEvents.length > 0 && (
               <div className="absolute bottom-2 left-2 right-2">
-                <div className="flex gap-1 overflow-x-auto pb-1 no-scrollbar">
-                  {motionEvents.slice(0, 5).map(e => (
-                    <div key={e.id} className="h-8 w-12 bg-black/50 rounded border border-red-500/50 shrink-0 relative">
-                      <div className="absolute bottom-0 left-0 h-1 bg-red-500" style={{ width: `${e.confidence}%` }} />
+                <div className="flex gap-1 overflow-x-auto pb-1">
+                  {motionEvents.slice(0, 8).map(e => (
+                    <div key={e.id} className="h-6 w-10 bg-black/50 rounded border border-red-500/50 shrink-0 relative">
+                      <div className="absolute bottom-0 left-0 h-1 bg-red-500 rounded-b" style={{ width: `${e.confidence}%` }} />
                     </div>
                   ))}
                 </div>
@@ -355,26 +369,34 @@ export function SurveillancePanel({ className }: { className?: string }) {
         ) : (
           <div className="aspect-video rounded-lg bg-secondary/20 border border-dashed border-border/50 flex items-center justify-center text-muted-foreground">
             <div className="flex flex-col items-center gap-2">
-              <Video className="w-8 h-8 opacity-50" />
-              <span className="text-xs">No Signal</span>
+              {isStarting ? <Loader2 className="w-8 h-8 animate-spin" /> : <Video className="w-8 h-8 opacity-50" />}
+              <span className="text-xs">{isStarting ? "Connecting..." : "No Signal"}</span>
             </div>
           </div>
         )}
 
-        {/* Settings Accordion */}
+        {/* Quick Stats */}
+        {motionEvents.length > 0 && (
+          <div className="text-xs text-muted-foreground flex justify-between px-1">
+            <span>{motionEvents.length} motion events</span>
+            <span>Last: {motionEvents[0]?.timestamp.toLocaleTimeString()}</span>
+          </div>
+        )}
+
+        {/* Config Accordion */}
         <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
           <button
             className="w-full flex items-center justify-between p-3 text-sm font-medium hover:bg-secondary/20 transition-colors"
-            onClick={() => setShowDiagnostics(!showDiagnostics)}
+            onClick={() => setShowConfig(!showConfig)}
           >
             <div className="flex items-center gap-2">
               <Settings className="h-4 w-4 text-muted-foreground" />
               Configuration
             </div>
-            {showDiagnostics ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            {showConfig ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
 
-          {showDiagnostics && (
+          {showConfig && (
             <div className="p-3 space-y-4 border-t border-border/50 animate-in slide-in-from-top-2">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
@@ -395,7 +417,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
                   </div>
                   <Switch checked={micEnabled} onCheckedChange={setMicEnabled} />
                 </div>
-
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Bell className="h-4 w-4 text-muted-foreground" />
@@ -403,7 +424,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
                   </div>
                   <Switch checked={alarmEnabled} onCheckedChange={setAlarmEnabled} />
                 </div>
-
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Phone className="h-4 w-4 text-muted-foreground" />
