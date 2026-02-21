@@ -46,6 +46,8 @@ export function useScreenReceiver() {
   const currentBlobUrlRef = useRef<string | null>(null);
   const fpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
   const frameTimesRef = useRef<number[]>([]);
+  const retryCountRef = useRef(0);
+  const maxRetries = 3;
 
   const WS_BASE = getFunctionsWsBase();
   const CAMERA_WS_URL = `${WS_BASE}/functions/v1/camera-relay`;
@@ -196,19 +198,29 @@ export function useScreenReceiver() {
         addLog("info", "web", "Screen WebSocket closed");
       };
 
-      // Wait for WS to open
-      await new Promise<void>((resolve, reject) => {
-        if (ws.readyState === WebSocket.OPEN) return resolve();
-        const t = window.setTimeout(() => {
-          ws.close();
-          reject(new Error("WebSocket connection timeout"));
-        }, 8000);
-        ws.addEventListener("open", () => { window.clearTimeout(t); resolve(); }, { once: true });
-        ws.addEventListener("error", () => { window.clearTimeout(t); reject(new Error("WebSocket error")); }, { once: true });
-      }).catch((err) => {
+      // Wait for WS to open with retry on 502
+      try {
+        await new Promise<void>((resolve, reject) => {
+          if (ws.readyState === WebSocket.OPEN) return resolve();
+          const t = window.setTimeout(() => {
+            ws.close();
+            reject(new Error("WebSocket connection timeout"));
+          }, 10000);
+          ws.addEventListener("open", () => { window.clearTimeout(t); resolve(); }, { once: true });
+          ws.addEventListener("error", () => { window.clearTimeout(t); reject(new Error("WebSocket error (possible 502)")); }, { once: true });
+        });
+        retryCountRef.current = 0; // Reset on success
+      } catch (err: any) {
+        // Retry on transient 502 errors
+        if (retryCountRef.current < maxRetries) {
+          retryCountRef.current++;
+          addLog("warn", "web", `Screen WS failed, retrying (${retryCountRef.current}/${maxRetries})...`);
+          await new Promise(r => setTimeout(r, 1500 * retryCountRef.current));
+          return start(options); // Recursive retry
+        }
         setState((prev) => ({ ...prev, error: err.message }));
         throw err;
-      });
+      }
 
       // 2) Tell PC agent to start sending
       const commandType = testPattern ? "start_test_pattern" : "start_screen_stream";

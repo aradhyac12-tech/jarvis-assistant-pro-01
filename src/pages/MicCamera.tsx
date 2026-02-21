@@ -163,7 +163,7 @@ export default function MicCamera() {
   const WS_URL = `${WS_BASE}/functions/v1/audio-relay`;
   const CAMERA_WS_URL = `${WS_BASE}/functions/v1/camera-relay`;
 
-  const waitForWsOpen = useCallback((ws: WebSocket, timeoutMs = 8000) => {
+  const waitForWsOpen = useCallback((ws: WebSocket, timeoutMs = 10000, retryLabel = "WS") => {
     return new Promise<void>((resolve, reject) => {
       if (ws.readyState === WebSocket.OPEN) return resolve();
 
@@ -173,7 +173,7 @@ export default function MicCamera() {
         } catch {
           // ignore
         }
-        reject(new Error("WebSocket connection timeout"));
+        reject(new Error(`${retryLabel} connection timeout`));
       }, timeoutMs);
 
       ws.addEventListener(
@@ -189,7 +189,7 @@ export default function MicCamera() {
         "error",
         () => {
           window.clearTimeout(t);
-          reject(new Error("WebSocket connection failed"));
+          reject(new Error(`${retryLabel} connection failed (possible 502)`));
         },
         { once: true }
       );
