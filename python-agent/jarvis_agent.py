@@ -156,11 +156,11 @@ else:
     HAS_BRIGHTNESS = False
 
 # ============== CONFIGURATION ==============
-DEFAULT_JARVIS_URL = "https://pcujviwhmfsvwjvejwfz.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBjdWp2aXdobWZzdndqdmVqd2Z6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1ODM4OTUsImV4cCI6MjA4NzE1OTg5NX0.aoOLQTYUCb2LazVt2Zlf22sq3LezG-q3YfOlEZO1Xqo"
+DEFAULT_JARVIS_URL = "https://mmlbfklxizcuubpwweaj.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1tbGJma2x4aXpjdXVicHd3ZWFqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2NTk0MTQsImV4cCI6MjA4NzIzNTQxNH0.o_YEQEujVVuZuMfrjRCH1E_rF1eNN3ZAeBZkF2Y17QA"
 
 # Optional: where the "Open Web App" button should navigate.
-DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--645a8e66-075c-4000-a3c2-6e14ee0e2393.lovable.app")
+DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--a225ccc9-003e-422d-89f9-f3136f215b76.lovable.app")
 
 SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", DEFAULT_JARVIS_URL)
 SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
@@ -949,92 +949,95 @@ class JarvisAgent:
                 "running": True,
             }
 
+            # FIX: Use SUPABASE_URL (correct project) instead of hardcoded wrong project ID
             def stream_audio():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
-                try:
-                    with ws_client.connect(ws_url) as ws:
-                        self._audio_ws = ws
-                        add_log("info", f"Audio relay connected: session={session_id[:8]}..., direction={direction}", category="audio")
+                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
+                retry_delay = 2
+                max_retry_delay = 30
+                attempt = 0
+                while self._audio_streamer and self._audio_streamer.get("running"):
+                    try:
+                        attempt += 1
+                        add_log("info", f"Audio relay connecting (attempt {attempt})...", category="audio")
+                        with ws_client.connect(ws_url, open_timeout=10) as ws:
+                            self._audio_ws = ws
+                            retry_delay = 2  # reset on success
+                            add_log("info", f"Audio relay connected: session={session_id[:8]}..., direction={direction}", category="audio")
 
-                        if not HAS_PYAUDIO:
-                            add_log("warn", "PyAudio not installed - audio capture/playback limited", category="audio")
-                            # Keep connection alive for signaling even without pyaudio
+                            if not HAS_PYAUDIO:
+                                add_log("warn", "PyAudio not installed - audio capture/playback limited", category="audio")
+                                while self._audio_streamer and self._audio_streamer.get("running"):
+                                    try:
+                                        msg = ws.recv(timeout=1.0)
+                                        if isinstance(msg, str):
+                                            data = json.loads(msg)
+                                            if data.get("type") == "peer_connected":
+                                                add_log("info", "Audio peer connected", category="audio")
+                                    except Exception:
+                                        pass
+                                return
+
+                            pa = pyaudio.PyAudio()
+                            RATE = 16000
+                            CHANNELS = 1
+                            CHUNK = 2048
+                            FORMAT = pyaudio.paInt16
+
+                            mic_stream = None
+                            if direction in ("pc_to_phone", "bidirectional"):
+                                try:
+                                    mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                                    add_log("info", "PC microphone opened for audio relay", category="audio")
+                                except Exception as e:
+                                    add_log("warn", f"Could not open PC microphone: {e}", category="audio")
+
+                            speaker_stream = None
+                            if direction in ("phone_to_pc", "bidirectional"):
+                                try:
+                                    speaker_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True, frames_per_buffer=CHUNK)
+                                    add_log("info", "PC speakers opened for audio relay", category="audio")
+                                except Exception as e:
+                                    add_log("warn", f"Could not open PC speakers: {e}", category="audio")
+
+                            def send_mic():
+                                while self._audio_streamer and self._audio_streamer.get("running") and mic_stream:
+                                    try:
+                                        data = mic_stream.read(CHUNK, exception_on_overflow=False)
+                                        ws.send(data)
+                                    except Exception:
+                                        break
+
+                            if mic_stream:
+                                threading.Thread(target=send_mic, daemon=True).start()
+
                             while self._audio_streamer and self._audio_streamer.get("running"):
                                 try:
-                                    msg = ws.recv(timeout=1.0)
-                                    if isinstance(msg, str):
+                                    msg = ws.recv(timeout=0.1)
+                                    if isinstance(msg, bytes) and speaker_stream:
+                                        speaker_stream.write(msg)
+                                    elif isinstance(msg, str):
                                         data = json.loads(msg)
                                         if data.get("type") == "peer_connected":
                                             add_log("info", "Audio peer connected", category="audio")
                                 except Exception:
                                     pass
-                            return
 
-                        pa = pyaudio.PyAudio()
-                        RATE = 16000
-                        CHANNELS = 1
-                        CHUNK = 2048
-                        FORMAT = pyaudio.paInt16
+                            if mic_stream:
+                                mic_stream.stop_stream()
+                                mic_stream.close()
+                            if speaker_stream:
+                                speaker_stream.stop_stream()
+                                speaker_stream.close()
+                            pa.terminate()
 
-                        # Capture mic if PC is sending audio
-                        mic_stream = None
-                        if direction in ("pc_to_phone", "bidirectional"):
-                            try:
-                                mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
-                                add_log("info", "PC microphone opened for audio relay", category="audio")
-                            except Exception as e:
-                                add_log("warn", f"Could not open PC microphone: {e}", category="audio")
-
-                        # Playback if PC is receiving audio
-                        speaker_stream = None
-                        if direction in ("phone_to_pc", "bidirectional"):
-                            try:
-                                speaker_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True, frames_per_buffer=CHUNK)
-                                add_log("info", "PC speakers opened for audio relay", category="audio")
-                            except Exception as e:
-                                add_log("warn", f"Could not open PC speakers: {e}", category="audio")
-
-                        # Sender thread
-                        def send_mic():
-                            while self._audio_streamer and self._audio_streamer.get("running") and mic_stream:
-                                try:
-                                    data = mic_stream.read(CHUNK, exception_on_overflow=False)
-                                    ws.send(data)
-                                except Exception:
-                                    break
-
-                        send_thread = None
-                        if mic_stream:
-                            send_thread = threading.Thread(target=send_mic, daemon=True)
-                            send_thread.start()
-
-                        # Receiver loop
-                        while self._audio_streamer and self._audio_streamer.get("running"):
-                            try:
-                                msg = ws.recv(timeout=0.1)
-                                if isinstance(msg, bytes) and speaker_stream:
-                                    speaker_stream.write(msg)
-                                elif isinstance(msg, str):
-                                    data = json.loads(msg)
-                                    if data.get("type") == "peer_connected":
-                                        add_log("info", "Audio peer connected", category="audio")
-                            except Exception:
-                                pass
-
-                        # Cleanup
-                        if mic_stream:
-                            mic_stream.stop_stream()
-                            mic_stream.close()
-                        if speaker_stream:
-                            speaker_stream.stop_stream()
-                            speaker_stream.close()
-                        pa.terminate()
-
-                except Exception as e:
-                    add_log("error", f"Audio relay error: {e}", category="audio")
-                finally:
-                    add_log("info", "Audio relay ended", category="audio")
+                    except Exception as e:
+                        if not (self._audio_streamer and self._audio_streamer.get("running")):
+                            break
+                        add_log("warn", f"Audio relay error (attempt {attempt}): {e} — retrying in {retry_delay}s", category="audio")
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_retry_delay)
+                add_log("info", "Audio relay ended", category="audio")
 
             threading.Thread(target=stream_audio, daemon=True).start()
             add_log("info", f"Audio relay started: direction={direction}", category="audio")
@@ -1448,27 +1451,38 @@ class JarvisAgent:
             
             self._camera_streamer = {"cap": cap, "session_id": session_id, "fps": fps, "quality": quality, "running": True}
             
+            # FIX: Use SUPABASE_URL (correct project) + retry with exponential backoff
             def stream_camera():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
-                try:
-                    with ws_client.connect(ws_url) as ws:
-                        self._camera_ws = ws
-                        add_log("info", f"Camera stream connected: session={session_id[:8]}...", category="camera")
-                        interval = 1.0 / max(1, fps)
-                        while self._camera_streamer and self._camera_streamer.get("running"):
-                            ret, frame = cap.read()
-                            if not ret:
-                                continue
-                            encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._camera_streamer.get("quality", quality)]
-                            _, buffer = cv2.imencode(".jpg", frame, encode_params)
-                            ws.send(buffer.tobytes())
-                            time.sleep(interval)
-                except Exception as e:
-                    add_log("error", f"Camera stream error: {e}", category="camera")
-                finally:
-                    cap.release()
-                    add_log("info", "Camera stream ended", category="camera")
+                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                retry_delay = 2
+                max_retry_delay = 30
+                attempt = 0
+                while self._camera_streamer and self._camera_streamer.get("running"):
+                    try:
+                        attempt += 1
+                        add_log("info", f"Camera stream connecting (attempt {attempt})...", category="camera")
+                        with ws_client.connect(ws_url, open_timeout=10) as ws:
+                            self._camera_ws = ws
+                            retry_delay = 2  # reset on success
+                            add_log("info", f"Camera stream connected: session={session_id[:8]}...", category="camera")
+                            interval = 1.0 / max(1, fps)
+                            while self._camera_streamer and self._camera_streamer.get("running"):
+                                ret, frame = cap.read()
+                                if not ret:
+                                    continue
+                                encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._camera_streamer.get("quality", quality)]
+                                _, buffer = cv2.imencode(".jpg", frame, encode_params)
+                                ws.send(buffer.tobytes())
+                                time.sleep(interval)
+                    except Exception as e:
+                        if not (self._camera_streamer and self._camera_streamer.get("running")):
+                            break
+                        add_log("warn", f"Camera stream error (attempt {attempt}): {e} — retrying in {retry_delay}s", category="camera")
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_retry_delay)
+                cap.release()
+                add_log("info", "Camera stream ended", category="camera")
             
             threading.Thread(target=stream_camera, daemon=True).start()
             add_log("info", f"Camera stream started: camera={camera_index}, fps={fps}, quality={quality}", category="camera")
@@ -1526,32 +1540,43 @@ class JarvisAgent:
             
             self._screen_streamer = {"session_id": session_id, "fps": fps, "quality": quality, "scale": scale, "monitor_index": monitor_index, "running": True}
             
+            # FIX: Use SUPABASE_URL (correct project) + retry with exponential backoff
             def stream_screen():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://gkppopjoedadacolxufi.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
-                try:
-                    with ws_client.connect(ws_url) as ws:
-                        self._screen_ws = ws
-                        add_log("info", f"Screen stream connected: session={session_id[:8]}...", category="screen")
-                        with mss.mss() as sct:
-                            monitors = sct.monitors
-                            idx = monitor_index if 0 < monitor_index < len(monitors) else 1
-                            monitor = monitors[idx]
-                            interval = 1.0 / max(1, fps)
-                            while self._screen_streamer and self._screen_streamer.get("running"):
-                                screenshot = sct.grab(monitor)
-                                img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
-                                current_scale = self._screen_streamer.get("scale", scale)
-                                new_size = (int(img.width * current_scale), int(img.height * current_scale))
-                                img = img.resize(new_size, Image.LANCZOS)
-                                buffer = io.BytesIO()
-                                img.save(buffer, format="JPEG", quality=self._screen_streamer.get("quality", quality), optimize=True)
-                                ws.send(buffer.getvalue())
-                                time.sleep(interval)
-                except Exception as e:
-                    add_log("error", f"Screen stream error: {e}", category="screen")
-                finally:
-                    add_log("info", "Screen stream ended", category="screen")
+                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                retry_delay = 2
+                max_retry_delay = 30
+                attempt = 0
+                while self._screen_streamer and self._screen_streamer.get("running"):
+                    try:
+                        attempt += 1
+                        add_log("info", f"Screen stream connecting (attempt {attempt})...", category="screen")
+                        with ws_client.connect(ws_url, open_timeout=10) as ws:
+                            self._screen_ws = ws
+                            retry_delay = 2  # reset on success
+                            add_log("info", f"Screen stream connected: session={session_id[:8]}...", category="screen")
+                            with mss.mss() as sct:
+                                monitors = sct.monitors
+                                idx = monitor_index if 0 < monitor_index < len(monitors) else 1
+                                monitor = monitors[idx]
+                                interval = 1.0 / max(1, fps)
+                                while self._screen_streamer and self._screen_streamer.get("running"):
+                                    screenshot = sct.grab(monitor)
+                                    img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
+                                    current_scale = self._screen_streamer.get("scale", scale)
+                                    new_size = (int(img.width * current_scale), int(img.height * current_scale))
+                                    img = img.resize(new_size, Image.LANCZOS)
+                                    buffer = io.BytesIO()
+                                    img.save(buffer, format="JPEG", quality=self._screen_streamer.get("quality", quality), optimize=True)
+                                    ws.send(buffer.getvalue())
+                                    time.sleep(interval)
+                    except Exception as e:
+                        if not (self._screen_streamer and self._screen_streamer.get("running")):
+                            break
+                        add_log("warn", f"Screen stream error (attempt {attempt}): {e} — retrying in {retry_delay}s", category="screen")
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_retry_delay)
+                add_log("info", "Screen stream ended", category="screen")
             
             threading.Thread(target=stream_screen, daemon=True).start()
             add_log("info", f"Screen stream started: fps={fps}, quality={quality}, scale={scale}", category="screen")
@@ -1610,9 +1635,11 @@ class JarvisAgent:
                 self._stop_camera_stream()
                 self._camera_streamer = {"session_id": session_id, "fps": fps, "quality": quality, "running": True}
             
+            # FIX 1: Removed extra indentation on ws_url line (was causing IndentationError / auto-close)
+            # FIX 2: Use SUPABASE_URL (correct project) instead of hardcoded wrong project ID
             def stream_test_pattern():
                 import websockets.sync.client as ws_client
-                    ws_url = f"wss://pcujviwhmfsvwjvejwfz.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 try:
                     with ws_client.connect(ws_url) as ws:
                         add_log("info", f"Test pattern connected: session={session_id[:8]}...", category="test")
