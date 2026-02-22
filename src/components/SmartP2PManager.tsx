@@ -183,7 +183,7 @@ export function SmartP2PManager({
           )}
           {pingResult && !localP2PState.pcIp && (
             <p className={cn("text-[10px] font-mono", pingResult.success ? "text-emerald-500" : "text-destructive")}>
-              {pingResult.success ? `✓ Ping verified: ${pingResult.ms}ms` : "✗ Connection failed – check IP/firewall"}
+              {pingResult.success ? `✓ Ping verified: ${pingResult.ms}ms` : window.location.protocol === "https:" ? "✗ HTTPS blocks local ws:// — use APK for P2P" : "✗ Connection failed – check IP/firewall & port 9876"}
             </p>
           )}
         </div>
