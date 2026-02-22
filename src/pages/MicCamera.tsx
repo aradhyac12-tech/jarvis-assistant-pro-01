@@ -434,7 +434,9 @@ export default function MicCamera() {
       await waitForWsOpen(ws);
 
       // 2) Then tell PC agent to connect and start sending
-      const started = await sendCommand(
+      // Use fire-and-forget: don't block on result since the agent may be slow (high CPU).
+      // The WS is already connected and will start receiving frames as soon as the agent streams.
+      sendCommand(
         "start_camera_stream",
         {
           session_id: sessionId,
@@ -442,26 +444,16 @@ export default function MicCamera() {
           fps: cameraFpsSetting,
           quality: cameraQualitySetting,
         },
-        { awaitResult: true, timeoutMs: 30000 }
-      );
-
-      if (!started.success) {
-        const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
-        setPcCameraError(msg);
-        addLog("error", "agent", `Camera open failed: ${msg}`);
-        toast({ title: "PC Camera Error", description: msg, variant: "destructive" });
-        try {
-          ws.close();
-        } catch {
-          // ignore
+        { awaitResult: false }
+      ).then((result) => {
+        if (!result.success) {
+          addLog("warn", "agent", `Camera command queuing issue: ${result.error}`);
+        } else {
+          addLog("info", "agent", "Camera command sent to PC");
         }
-        setPcCameraSessionId(null);
-        return;
-      }
+      });
 
-      addLog("info", "agent", "PC camera opened successfully");
-
-      toast({ title: "PC Camera Started", description: "PC webcam is streaming to your phone" });
+      toast({ title: "PC Camera Starting", description: "Waiting for PC to begin streaming..." });
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       addLog("error", "web", `PC Camera error: ${errMsg}`);
@@ -495,25 +487,22 @@ export default function MicCamera() {
       setAudioSessionId(sessionId);
       addLog("info", "web", `Starting audio relay (direction: ${audioDirection})`);
 
-      // Tell PC to start audio relay
-      const started = await sendCommand(
+      // Fire-and-forget: don't block on result since agent may be slow (high CPU)
+      sendCommand(
         "start_audio_relay",
         {
           session_id: sessionId,
           direction: audioDirection,
           use_system_audio: useSystemAudio,
         },
-        { awaitResult: true, timeoutMs: 20000 }
-      );
-
-      if (!started.success) {
-        const msg = typeof started.error === "string" ? started.error : "PC failed to start audio relay";
-        addLog("error", "agent", `Audio relay failed: ${msg}`);
-        toast({ title: "Audio Relay Error", description: msg, variant: "destructive" });
-        return;
-      }
-
-      addLog("info", "agent", "PC audio relay started");
+        { awaitResult: false }
+      ).then((result) => {
+        if (!result.success) {
+          addLog("warn", "agent", `Audio relay command queuing issue: ${result.error}`);
+        } else {
+          addLog("info", "agent", "Audio relay command sent to PC");
+        }
+      });
 
       // Connect WebSocket with binary support
       const ws = new WebSocket(`${WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}&session_token=${session?.session_token || ''}`);
@@ -880,8 +869,8 @@ export default function MicCamera() {
 
       await waitForWsOpen(ws);
 
-      // 2) Then tell PC to start screen stream via relay
-      const started = await sendCommand(
+      // 2) Fire-and-forget: don't block on result since agent may be slow (high CPU)
+      sendCommand(
         "start_screen_stream",
         {
           session_id: sessionId,
@@ -889,26 +878,16 @@ export default function MicCamera() {
           quality: screenMirrorQuality,
           scale: 0.5,
         },
-        { awaitResult: true, timeoutMs: 15000 }
-      );
-
-      if (!started.success) {
-        const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
-        setScreenMirrorError(msg);
-        addLog("error", "agent", msg);
-        toast({ title: "Screen Mirror Error", description: msg, variant: "destructive" });
-        try {
-          ws.close();
-        } catch {
-          // ignore
+        { awaitResult: false }
+      ).then((result) => {
+        if (!result.success) {
+          addLog("warn", "agent", `Screen command queuing issue: ${result.error}`);
+        } else {
+          addLog("info", "agent", "Screen stream command sent to PC");
         }
-        setScreenMirrorSessionId(null);
-        return;
-      }
+      });
 
-      addLog("info", "agent", "PC screen stream started");
-
-      toast({ title: "Screen Mirroring Started", description: `Streaming at up to ${screenMirrorFps} FPS` });
+      toast({ title: "Screen Mirroring Starting", description: "Waiting for PC to begin streaming..." });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       addLog("error", "web", `Screen mirror error: ${errMsg}`);

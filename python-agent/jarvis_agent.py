@@ -2303,6 +2303,23 @@ class JarvisAgent:
                 payload = cmd.get("payload") or {}
                 cmd_id = cmd.get("id")
                 
+                # Skip stale commands older than 60 seconds to prevent ghost execution
+                created_str = cmd.get("created_at", "")
+                if created_str:
+                    try:
+                        created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                        age_seconds = (datetime.now(timezone.utc) - created_dt).total_seconds()
+                        if age_seconds > 60:
+                            self.supabase.table("commands").update({
+                                "status": "expired",
+                                "result": {"error": f"Stale command ({int(age_seconds)}s old)"},
+                                "executed_at": datetime.now(timezone.utc).isoformat(),
+                            }).eq("id", cmd_id).execute()
+                            add_log("warn", f"Skipped stale command: {command_type} ({int(age_seconds)}s old)", category="command")
+                            continue
+                    except Exception:
+                        pass
+                
                 try:
                     self.supabase.table("commands").update({"status": "executing"}).eq("id", cmd_id).execute()
                     
