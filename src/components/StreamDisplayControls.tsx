@@ -11,9 +11,9 @@ import {
   GripVertical,
   ZoomIn,
   ZoomOut,
-  RotateCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useGlobalPiP } from "@/contexts/GlobalPiPContext";
 
 interface StreamDisplayControlsProps {
   frame: string | null;
@@ -22,6 +22,8 @@ interface StreamDisplayControlsProps {
   latency?: number;
   title: string;
   error?: string | null;
+  streamId?: string;
+  streamType?: "camera" | "screen" | "phone";
   onClose?: () => void;
   className?: string;
 }
@@ -33,23 +35,52 @@ export function StreamDisplayControls({
   latency = 0,
   title,
   error,
+  streamId,
+  streamType = "camera",
   onClose,
   className,
 }: StreamDisplayControlsProps) {
-  const [displayMode, setDisplayMode] = useState<"normal" | "fullscreen" | "floating">("normal");
-  const [floatingPos, setFloatingPos] = useState({ x: 20, y: 20 });
-  const [floatingSize, setFloatingSize] = useState({ width: 480, height: 270 });
-  const [isDragging, setIsDragging] = useState(false);
-  const [isResizing, setIsResizing] = useState(false);
+  const pip = useGlobalPiP();
+  const [displayMode, setDisplayMode] = useState<"normal" | "fullscreen">("normal");
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const floatingRef = useRef<HTMLDivElement>(null);
-  const dragStartRef = useRef({ x: 0, y: 0 });
-  const resizeStartRef = useRef({ width: 0, height: 0, x: 0, y: 0 });
-  const panStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const lastTouchDistRef = useRef<number | null>(null);
+  const panStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const imgContainerRef = useRef<HTMLDivElement>(null);
+
+  const effectiveStreamId = streamId || `stream-${title.replace(/\s/g, "-")}`;
+
+  // Register/update stream in GlobalPiP context
+  useEffect(() => {
+    if (isActive) {
+      pip.registerStream({
+        id: effectiveStreamId,
+        title,
+        frame,
+        fps,
+        latency,
+        isActive: true,
+        type: streamType,
+      });
+    } else {
+      pip.setStreamActive(effectiveStreamId, false);
+    }
+  }, [isActive, effectiveStreamId, title, streamType]);
+
+  // Update frame in GlobalPiP
+  useEffect(() => {
+    if (isActive && frame) {
+      pip.updateStreamFrame(effectiveStreamId, frame, fps, latency);
+    }
+  }, [frame, fps, latency, isActive, effectiveStreamId]);
+
+  // Unregister on unmount
+  useEffect(() => {
+    return () => {
+      pip.unregisterStream(effectiveStreamId);
+    };
+  }, [effectiveStreamId]);
 
   // Exit fullscreen when stream stops
   useEffect(() => {
@@ -70,7 +101,6 @@ export function StreamDisplayControls({
         setDisplayMode("normal");
         setZoomLevel(1);
         setPanOffset({ x: 0, y: 0 });
-        // Unlock orientation
         try {
           (screen.orientation as any)?.unlock?.();
         } catch {}
@@ -95,10 +125,8 @@ export function StreamDisplayControls({
         (screen.orientation as any)?.unlock?.();
       } catch {}
     } else {
-      if (displayMode === "floating") setDisplayMode("normal");
       try {
         await container.requestFullscreen();
-        // Lock to landscape for fullscreen
         try {
           await (screen.orientation as any)?.lock?.("landscape");
         } catch {}
@@ -110,46 +138,18 @@ export function StreamDisplayControls({
   }, [displayMode, title]);
 
   const toggleFloating = useCallback(() => {
-    if (displayMode === "floating") {
-      setDisplayMode("normal");
+    const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
+    if (isPinned) {
+      pip.setFloating(false);
+      pip.pinStream(null);
     } else {
       if (displayMode === "fullscreen" && document.fullscreenElement) {
         document.exitFullscreen().catch(() => {});
+        setDisplayMode("normal");
       }
-      setDisplayMode("floating");
-      setFloatingPos({
-        x: window.innerWidth - floatingSize.width - 24,
-        y: window.innerHeight - floatingSize.height - 80,
-      });
+      pip.pinStream(effectiveStreamId);
     }
-  }, [displayMode, floatingSize]);
-
-  // Touch support for dragging
-  const handleDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (displayMode !== "floating") return;
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-    const point = "touches" in e ? e.touches[0] : e;
-    dragStartRef.current = {
-      x: point.clientX - floatingPos.x,
-      y: point.clientY - floatingPos.y,
-    };
-  }, [displayMode, floatingPos]);
-
-  // Touch support for resizing
-  const handleResizeStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizing(true);
-    const point = "touches" in e ? e.touches[0] : e;
-    resizeStartRef.current = {
-      width: floatingSize.width,
-      height: floatingSize.height,
-      x: point.clientX,
-      y: point.clientY,
-    };
-  }, [floatingSize]);
+  }, [displayMode, effectiveStreamId, pip]);
 
   // Pinch zoom for fullscreen
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -195,42 +195,7 @@ export function StreamDisplayControls({
     setIsPanning(false);
   }, []);
 
-  useEffect(() => {
-    if (!isDragging && !isResizing) return;
-
-    const handleMove = (e: MouseEvent | TouchEvent) => {
-      const point = "touches" in e ? e.touches[0] : e;
-      if (isDragging) {
-        setFloatingPos({
-          x: Math.max(0, Math.min(window.innerWidth - floatingSize.width, point.clientX - dragStartRef.current.x)),
-          y: Math.max(0, Math.min(window.innerHeight - floatingSize.height - 40, point.clientY - dragStartRef.current.y)),
-        });
-      }
-      if (isResizing) {
-        const deltaX = point.clientX - resizeStartRef.current.x;
-        const deltaY = point.clientY - resizeStartRef.current.y;
-        const newWidth = Math.max(200, Math.min(800, resizeStartRef.current.width + deltaX));
-        const newHeight = Math.max(120, Math.min(600, resizeStartRef.current.height + deltaY));
-        setFloatingSize({ width: newWidth, height: newHeight });
-      }
-    };
-
-    const handleEnd = () => {
-      setIsDragging(false);
-      setIsResizing(false);
-    };
-
-    document.addEventListener("mousemove", handleMove);
-    document.addEventListener("mouseup", handleEnd);
-    document.addEventListener("touchmove", handleMove, { passive: false });
-    document.addEventListener("touchend", handleEnd);
-    return () => {
-      document.removeEventListener("mousemove", handleMove);
-      document.removeEventListener("mouseup", handleEnd);
-      document.removeEventListener("touchmove", handleMove);
-      document.removeEventListener("touchend", handleEnd);
-    };
-  }, [isDragging, isResizing, floatingSize]);
+  const isPipActive = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
 
   const renderStreamContent = (isFullscreenMode = false) => {
     if (!isActive) {
@@ -285,7 +250,7 @@ export function StreamDisplayControls({
   const renderControls = (isFullscreenMode = false) => (
     <div className={cn(
       "absolute top-2 right-2 flex gap-1 z-10",
-      isFullscreenMode ? "opacity-0 group-hover:opacity-100 transition-opacity" : "opacity-0 group-hover:opacity-100 transition-opacity"
+      "opacity-0 group-hover:opacity-100 transition-opacity"
     )}>
       {isFullscreenMode && zoomLevel > 1 && (
         <Button
@@ -301,9 +266,12 @@ export function StreamDisplayControls({
       <Button
         variant="ghost"
         size="icon"
-        className="h-8 w-8 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+        className={cn(
+          "h-8 w-8 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white",
+          isPipActive && "bg-primary/50"
+        )}
         onClick={toggleFloating}
-        title={displayMode === "floating" ? "Exit floating" : "Floating window"}
+        title={isPipActive ? "Exit floating" : "Float across pages"}
       >
         <PictureInPicture2 className="h-4 w-4" />
       </Button>
@@ -356,6 +324,24 @@ export function StreamDisplayControls({
     );
   };
 
+  // If this stream is pinned to global PiP, show placeholder in-page
+  if (isPipActive && displayMode === "normal") {
+    return (
+      <div
+        id={`stream-fullscreen-${title.replace(/\s/g, "-")}`}
+        className={cn(
+          "relative aspect-video rounded-xl border-2 border-dashed border-primary/30 overflow-hidden bg-primary/5",
+          className
+        )}
+      >
+        <div className="absolute inset-0 flex items-center justify-center text-primary/60 text-sm">
+          <PictureInPicture2 className="h-5 w-5 mr-2" />
+          Floating on all pages
+        </div>
+      </div>
+    );
+  }
+
   // Normal mode
   if (displayMode === "normal") {
     return (
@@ -373,82 +359,7 @@ export function StreamDisplayControls({
     );
   }
 
-  // Floating mode
-  if (displayMode === "floating") {
-    return (
-      <>
-        <div
-          className={cn(
-            "relative aspect-video rounded-xl border-2 border-dashed border-primary/30 overflow-hidden bg-primary/5",
-            className
-          )}
-        >
-          <div className="absolute inset-0 flex items-center justify-center text-primary/60 text-sm">
-            <PictureInPicture2 className="h-5 w-5 mr-2" />
-            Floating mode
-          </div>
-        </div>
-
-        <div
-          ref={floatingRef}
-          className="fixed z-[9999] rounded-xl border border-white/10 shadow-2xl overflow-hidden bg-black group"
-          style={{
-            left: floatingPos.x,
-            top: floatingPos.y,
-            width: floatingSize.width,
-            height: floatingSize.height,
-            transition: isDragging || isResizing ? "none" : "box-shadow 0.2s",
-          }}
-        >
-          {/* Draggable header */}
-          <div
-            className="absolute top-0 left-0 right-0 flex items-center justify-between px-3 py-2 bg-gradient-to-b from-black/80 to-transparent cursor-move z-20"
-            onMouseDown={handleDragStart}
-            onTouchStart={handleDragStart}
-          >
-            <div className="flex items-center gap-2 text-white/80 text-xs font-medium">
-              <Move className="h-3 w-3" />
-              {title}
-            </div>
-            <div className="flex gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
-                onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}
-              >
-                <Maximize2 className="h-3 w-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
-                onClick={(e) => { e.stopPropagation(); setDisplayMode("normal"); }}
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            </div>
-          </div>
-
-          <div className="relative w-full h-full">
-            {renderStreamContent()}
-            {renderStats()}
-          </div>
-
-          {/* Resize handle - touch supported */}
-          <div
-            className="absolute bottom-0 right-0 w-8 h-8 cursor-se-resize z-20 flex items-end justify-end p-1"
-            onMouseDown={handleResizeStart}
-            onTouchStart={handleResizeStart}
-          >
-            <GripVertical className="h-4 w-4 text-white/30 rotate-[-45deg]" />
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  // Fullscreen mode - landscape with zoom
+  // Fullscreen mode
   return (
     <div
       id={`stream-fullscreen-${title.replace(/\s/g, "-")}`}
