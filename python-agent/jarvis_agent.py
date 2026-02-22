@@ -167,7 +167,7 @@ SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
 
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
-POLL_INTERVAL = 0.5
+POLL_INTERVAL = 0.3
 HEARTBEAT_INTERVAL = 5
 LOCAL_P2P_PORT = 9876
 PAIRING_CODE_LIFETIME_MINUTES = 30
@@ -952,7 +952,9 @@ class JarvisAgent:
             # FIX: Use SUPABASE_URL (correct project) instead of hardcoded wrong project ID
             def stream_audio():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
+                # CRITICAL: Use functions subdomain for WebSocket streaming
+                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
+                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
                 attempt = 0
@@ -1454,7 +1456,9 @@ class JarvisAgent:
             # FIX: Use SUPABASE_URL (correct project) + retry with exponential backoff
             def stream_camera():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                # CRITICAL: Use functions subdomain for WebSocket streaming, NOT the REST host
+                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
+                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
                 attempt = 0
@@ -1543,7 +1547,9 @@ class JarvisAgent:
             # FIX: Use SUPABASE_URL (correct project) + retry with exponential backoff
             def stream_screen():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                # CRITICAL: Use functions subdomain for WebSocket streaming
+                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
+                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
                 attempt = 0
@@ -1639,7 +1645,9 @@ class JarvisAgent:
             # FIX 2: Use SUPABASE_URL (correct project) instead of hardcoded wrong project ID
             def stream_test_pattern():
                 import websockets.sync.client as ws_client
-                ws_url = f"wss://{SUPABASE_URL.replace('https://', '')}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                # CRITICAL: Use functions subdomain for WebSocket streaming
+                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
+                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 try:
                     with ws_client.connect(ws_url) as ws:
                         add_log("info", f"Test pattern connected: session={session_id[:8]}...", category="test")

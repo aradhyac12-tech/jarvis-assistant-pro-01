@@ -76,7 +76,7 @@ function AppRoutes() {
           <Route path="/apps" element={<Navigate to="/hub" replace />} />
           
           {/* Specialized pages - no sidebar wrapper */}
-          <Route path="/assistant" element={<ProtectedRoute><AIAssistant /></ProtectedRoute>} />
+          <Route path="/assistant" element={<Navigate to="/voice" replace />} />
           <Route path="/voice" element={<ProtectedRoute><VoiceAI /></ProtectedRoute>} />
           <Route path="/files" element={<ProtectedRoute><Files /></ProtectedRoute>} />
           <Route path="/miccamera" element={<ProtectedRoute><MicCamera /></ProtectedRoute>} />

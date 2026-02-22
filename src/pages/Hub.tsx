@@ -116,7 +116,10 @@ export default function Hub() {
   } = useP2PCommand();
   const { toast } = useToast();
 
-  const [activeTab, setActiveTab] = useState<Tab>("control");
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const saved = localStorage.getItem("hub_active_tab");
+    return (saved as Tab) || "control";
+  });
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   
   const [volume, setVolume] = useState(50);
@@ -149,6 +152,11 @@ export default function Hub() {
   useEffect(() => {
     document.documentElement.classList.add("dark");
   }, []);
+
+  // Persist active tab
+  useEffect(() => {
+    localStorage.setItem("hub_active_tab", activeTab);
+  }, [activeTab]);
 
   const getConnectionStatus = useCallback(() => {
     if (!selectedDevice) return { text: "No Device", color: "text-muted-foreground", dot: "bg-muted-foreground" };
@@ -478,8 +486,7 @@ export default function Hub() {
   const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
 
   const quickLinks = [
-    { title: "AI", icon: Bot, href: "/assistant" },
-    { title: "Voice", icon: Mic, href: "/voice" },
+    { title: "AI", icon: Bot, href: "/voice" },
     { title: "Files", icon: FolderOpen, href: "/files" },
     { title: "Camera", icon: Camera, href: "/miccamera" },
     { title: "Settings", icon: Settings, href: "/settings" },
@@ -662,7 +669,7 @@ export default function Hub() {
                 {/* Quick Links */}
                 <Card className="border-border/20 bg-card/50 md:col-span-2">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-5 gap-2">
+                    <div className="grid grid-cols-4 gap-2">
                       {quickLinks.map((link) => (
                         <Link key={link.href} to={link.href}>
                           <Button variant="ghost" className="w-full h-auto flex-col gap-1.5 py-3 hover:bg-secondary/50 border border-transparent hover:border-border/20">
