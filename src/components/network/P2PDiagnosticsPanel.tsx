@@ -190,9 +190,9 @@ export function P2PDiagnosticsPanel({
   return (
     <Card className={cn("border-border/50 bg-card/40", className)}>
       <CardContent className="p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
               <p className="text-sm font-medium">Local P2P Diagnostics</p>
               <Badge variant={summaryBadge.variant} className="text-[10px]">
                 {summaryBadge.label}
@@ -202,14 +202,14 @@ export function P2PDiagnosticsPanel({
               Phone: {networkState.phone?.localIp || "—"} • PC: {networkState.pc?.localIp || localP2PState.pcIp || "—"} • Port: {localP2PState.port}
             </p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <Button variant="outline" size="sm" onClick={handleAutoFix} disabled={autoFixing}>
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+            <Button variant="outline" size="sm" className="h-7 text-xs px-2" onClick={handleAutoFix} disabled={autoFixing}>
               {autoFixing ? "Fixing..." : "Auto-Fix"}
             </Button>
-            <Button variant="outline" size="sm" onClick={handleCopy}>
+            <Button variant="outline" size="sm" className="h-7 text-xs px-2" onClick={handleCopy}>
               Copy
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => setExpanded((v) => !v)}>
+            <Button variant="secondary" size="sm" className="h-7 text-xs px-2" onClick={() => setExpanded((v) => !v)}>
               {expanded ? "Hide" : "Details"}
             </Button>
           </div>

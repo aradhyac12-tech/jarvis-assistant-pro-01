@@ -23,6 +23,8 @@ import {
   Mic,
   MicOff,
   Zap,
+  Siren,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -144,6 +146,12 @@ export function SurveillancePanel({ className }: { className?: string }) {
       });
     }
   }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
+
+  const triggerSiren = useCallback(async () => {
+    toast({ title: "🚨 SIREN ACTIVATED", description: "Max volume + theft alert on PC" });
+    await sendCommand("set_volume", { level: 100 }, { awaitResult: true, timeoutMs: 3000 });
+    await sendCommand("play_alarm", { type: "siren" }, { awaitResult: true, timeoutMs: 5000 });
+  }, [sendCommand, toast]);
 
   const startSurveillance = useCallback(async () => {
     setIsStarting(true);
@@ -337,7 +345,18 @@ export function SurveillancePanel({ className }: { className?: string }) {
               else stopSurveillance();
             }}
           />
-        </div>
+          </div>
+
+        {/* Siren Button */}
+        <Button
+          variant="destructive"
+          className="w-full h-12 text-sm font-bold gap-2 animate-none hover:animate-pulse"
+          onClick={triggerSiren}
+          disabled={!monitoring}
+        >
+          <AlertTriangle className="h-5 w-5" />
+          🚨 SIREN — Theft Detected
+        </Button>
 
         {/* Live Video Preview */}
         {currentFrame ? (
