@@ -1041,7 +1041,7 @@ export default function MicCamera() {
             </Card>
           )}
 
-          <Tabs defaultValue="audio" className="w-full">
+          <Tabs defaultValue={localStorage.getItem("mic_camera_tab") || "audio"} onValueChange={(v) => localStorage.setItem("mic_camera_tab", v)} className="w-full">
             <TabsList className="grid w-full grid-cols-5 mb-4">
               <TabsTrigger value="audio" className="text-sm">
                 <Volume2 className="h-4 w-4 mr-1.5" />

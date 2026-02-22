@@ -25,6 +25,7 @@ import {
   Zap,
   Siren,
   AlertTriangle,
+  Gauge,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -45,7 +46,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const { toast } = useToast();
 
   // Persisted Settings
-  const [enabled, setEnabled] = useState(() => localStorage.getItem("surveillance_enabled") === "true");
   const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
   const [endTime, setEndTime] = useState(() => localStorage.getItem("surveillance_end") || "06:00");
   const [sensitivity, setSensitivity] = useState<"low" | "medium" | "high">(() =>
@@ -55,9 +55,11 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenEnabled, setSirenEnabled] = useState(() => localStorage.getItem("surveillance_siren") === "true");
   const [autoCall, setAutoCall] = useState(() => localStorage.getItem("surveillance_autocall") === "true");
   const [micEnabled, setMicEnabled] = useState(() => localStorage.getItem("surveillance_mic") === "true");
+  const [survFps, setSurvFps] = useState(() => parseInt(localStorage.getItem("surveillance_fps") || "15"));
+  const [survQuality, setSurvQuality] = useState(() => parseInt(localStorage.getItem("surveillance_quality") || "50"));
 
   // Runtime State
-  const [monitoring, setMonitoring] = useState(false);
+  const [monitoring, setMonitoring] = useState(() => localStorage.getItem("surveillance_monitoring") === "true");
   const [motionEvents, setMotionEvents] = useState<MotionEvent[]>([]);
   const [currentFrame, setCurrentFrame] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
@@ -74,7 +76,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const sensitivityThreshold = { low: 30, medium: 15, high: 5 };
 
   // Persistence Effects
-  useEffect(() => localStorage.setItem("surveillance_enabled", String(enabled)), [enabled]);
   useEffect(() => localStorage.setItem("surveillance_start", startTime), [startTime]);
   useEffect(() => localStorage.setItem("surveillance_end", endTime), [endTime]);
   useEffect(() => localStorage.setItem("surveillance_sensitivity", sensitivity), [sensitivity]);
@@ -82,6 +83,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_siren", String(sirenEnabled)), [sirenEnabled]);
   useEffect(() => localStorage.setItem("surveillance_autocall", String(autoCall)), [autoCall]);
   useEffect(() => localStorage.setItem("surveillance_mic", String(micEnabled)), [micEnabled]);
+  useEffect(() => localStorage.setItem("surveillance_fps", String(survFps)), [survFps]);
+  useEffect(() => localStorage.setItem("surveillance_quality", String(survQuality)), [survQuality]);
+  useEffect(() => localStorage.setItem("surveillance_monitoring", String(monitoring)), [monitoring]);
 
   const cleanupWs = useCallback(() => {
     if (currentBlobUrlRef.current) {
@@ -162,17 +166,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
         return;
       }
 
-      // Ping agent
-      const ping = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
-      if (!ping?.success) {
-        toast({ title: "Agent not responding", description: "Start jarvis_agent.py on your PC", variant: "destructive" });
-        setIsStarting(false);
-        return;
-      }
-
       const sessionId = crypto.randomUUID();
       const WS_BASE = getFunctionsWsBase();
-      const wsUrl = `${WS_BASE}/functions/v1/camera-relay?sessionId=${sessionId}&type=pc&fps=10&quality=50&binary=true&session_token=${session.session_token}`;
+      const wsUrl = `${WS_BASE}/functions/v1/camera-relay?sessionId=${sessionId}&type=pc&fps=${survFps}&quality=${survQuality}&binary=true&session_token=${session.session_token}`;
 
       // Connect WebSocket with retry
       let ws: WebSocket | null = null;
@@ -185,7 +181,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
             ws!.addEventListener("open", () => { clearTimeout(t); resolve(); }, { once: true });
             ws!.addEventListener("error", () => { clearTimeout(t); reject(new Error("ws error")); }, { once: true });
           });
-          break; // connected
+          break;
         } catch {
           addLog("warn", "web", `Surveillance WS attempt ${attempt + 1} failed, retrying...`);
           if (attempt === 2) {
@@ -218,7 +214,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
             currentBlobUrlRef.current = newUrl;
             setCurrentFrame(newUrl);
 
-            // FPS tracking
             fpsCounterRef.current.frames++;
             const elapsed = now - fpsCounterRef.current.lastCheck;
             if (elapsed >= 1000) {
@@ -226,14 +221,12 @@ export function SurveillancePanel({ className }: { className?: string }) {
               fpsCounterRef.current = { frames: 0, lastCheck: now };
             }
 
-            // Motion detection (every 3rd frame to save CPU)
             if (fpsCounterRef.current.frames % 3 === 0) {
               detectMotion(newUrl);
             }
             return;
           }
 
-          // Handle JSON messages
           if (typeof event.data === "string") {
             const data = JSON.parse(event.data);
             if (data.type === "camera_frame" && data.data) {
@@ -253,36 +246,35 @@ export function SurveillancePanel({ className }: { className?: string }) {
         setMonitoring(false);
       };
 
-      // Tell agent to start camera stream
-      const started = await sendCommand("start_camera_stream", {
+      // Fire-and-forget: don't block on result since agent may be slow
+      sendCommand("start_camera_stream", {
         session_id: sessionId,
         camera_index: 0,
-        fps: 10,
-        quality: 50,
-      }, { awaitResult: true, timeoutMs: 20000 });
-
-      if (!started.success) {
-        toast({ title: "Camera Failed", description: "Could not start PC camera", variant: "destructive" });
-        cleanupWs();
-        setIsStarting(false);
-        return;
-      }
+        fps: survFps,
+        quality: survQuality,
+      }, { awaitResult: false }).then((result) => {
+        if (!result.success) {
+          addLog("warn", "agent", `Surveillance camera command queuing issue: ${result.error}`);
+        } else {
+          addLog("info", "agent", "Surveillance camera command sent to PC");
+        }
+      });
 
       // Start audio if enabled
       if (micEnabled) {
         sendCommand("start_audio_relay", {
           session_id: crypto.randomUUID(),
           direction: "pc_to_phone",
-        });
+        }, { awaitResult: false });
       }
 
       setMonitoring(true);
-      toast({ title: "Surveillance Active", description: "Live camera + motion detection running" });
+      toast({ title: "Surveillance Active", description: `Live camera + motion detection at ${survFps} FPS` });
     } catch (err) {
       toast({ title: "Surveillance error", description: err instanceof Error ? err.message : "Failed", variant: "destructive" });
     }
     setIsStarting(false);
-  }, [sendCommand, toast, session, micEnabled, cleanupWs, detectMotion, monitoring]);
+  }, [sendCommand, toast, session, micEnabled, cleanupWs, detectMotion, monitoring, survFps, survQuality]);
 
   const stopSurveillance = useCallback(() => {
     sendCommand("stop_camera_stream", {});
@@ -294,22 +286,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
     setLiveFps(0);
     toast({ title: "Surveillance Stopped" });
   }, [sendCommand, toast, micEnabled, cleanupWs]);
-
-  // Auto-start on mount if previously enabled
-  useEffect(() => {
-    if (enabled && !monitoring && !isStarting) {
-      const now = new Date();
-      const currentMins = now.getHours() * 60 + now.getMinutes();
-      const [startH, startM] = startTime.split(":").map(Number);
-      const [endH, endM] = endTime.split(":").map(Number);
-      const startMins = startH * 60 + startM;
-      const endMins = endH * 60 + endM;
-      const inSchedule = startMins <= endMins
-        ? currentMins >= startMins && currentMins <= endMins
-        : currentMins >= startMins || currentMins <= endMins;
-      if (inSchedule) startSurveillance();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cleanup on unmount
   useEffect(() => () => { cleanupWs(); }, [cleanupWs]);
@@ -329,30 +305,38 @@ export function SurveillancePanel({ className }: { className?: string }) {
         <CardDescription>Continuous camera monitoring with motion detection</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Main Toggle */}
-        <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-secondary/50 to-secondary/30 border border-border/50">
-          <div className="space-y-1">
-            <Label className="text-base">Guard Mode</Label>
-            <p className="text-xs text-muted-foreground">
-              {monitoring ? `Active · ${liveFps} FPS` : "System disabled"}
-            </p>
-          </div>
-          <Switch
-            checked={enabled}
-            onCheckedChange={(checked) => {
-              setEnabled(checked);
-              if (checked) startSurveillance();
-              else stopSurveillance();
-            }}
-          />
-          </div>
+        {/* Start / Stop Button */}
+        <div className="flex gap-2">
+          {!monitoring ? (
+            <Button
+              onClick={startSurveillance}
+              disabled={isStarting}
+              className="flex-1 h-12 gradient-primary"
+            >
+              {isStarting ? (
+                <Loader2 className="h-5 w-5 animate-spin mr-2" />
+              ) : (
+                <Play className="h-5 w-5 mr-2" />
+              )}
+              {isStarting ? "Connecting..." : "Start Surveillance"}
+            </Button>
+          ) : (
+            <Button
+              onClick={stopSurveillance}
+              variant="destructive"
+              className="flex-1 h-12"
+            >
+              <Square className="h-5 w-5 mr-2" />
+              Stop Surveillance
+            </Button>
+          )}
+        </div>
 
         {/* Siren Button */}
         <Button
           variant="destructive"
           className="w-full h-12 text-sm font-bold gap-2 animate-none hover:animate-pulse"
           onClick={triggerSiren}
-          disabled={!monitoring}
         >
           <AlertTriangle className="h-5 w-5" />
           🚨 SIREN — Theft Detected
@@ -372,7 +356,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 </Badge>
               )}
             </div>
-            {/* Motion bar */}
             {motionEvents.length > 0 && (
               <div className="absolute bottom-2 left-2 right-2">
                 <div className="flex gap-1 overflow-x-auto pb-1">
@@ -417,6 +400,42 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
           {showConfig && (
             <div className="p-3 space-y-4 border-t border-border/50 animate-in slide-in-from-top-2">
+              {/* FPS/Quality Settings */}
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs flex items-center gap-1">
+                      <Gauge className="h-3 w-3" /> Target FPS
+                    </Label>
+                    <span className="font-mono text-xs font-bold text-primary">{survFps}</span>
+                  </div>
+                  <Slider
+                    value={[survFps]}
+                    onValueChange={([v]) => setSurvFps(v)}
+                    min={5}
+                    max={60}
+                    step={5}
+                    className="w-full"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs flex items-center gap-1">
+                      <Video className="h-3 w-3" /> JPEG Quality
+                    </Label>
+                    <span className="font-mono text-xs font-bold text-primary">{survQuality}%</span>
+                  </div>
+                  <Slider
+                    value={[survQuality]}
+                    onValueChange={([v]) => setSurvQuality(v)}
+                    min={10}
+                    max={100}
+                    step={5}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
                   <Label className="text-xs">Start Time</Label>
