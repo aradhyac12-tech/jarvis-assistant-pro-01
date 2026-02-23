@@ -19,7 +19,7 @@ const AIAssistant = lazy(() => import("./pages/AIAssistant"));
 // Apps route redirects to Hub now
 const Files = lazy(() => import("./pages/Files"));
 const MicCamera = lazy(() => import("./pages/MicCamera"));
-const Webcam = lazy(() => import("./pages/Webcam"));
+// Webcam merged into MicCamera
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
@@ -81,7 +81,7 @@ function AppRoutes() {
           <Route path="/voice" element={<ProtectedRoute><VoiceAI /></ProtectedRoute>} />
           <Route path="/files" element={<ProtectedRoute><Files /></ProtectedRoute>} />
           <Route path="/miccamera" element={<ProtectedRoute><MicCamera /></ProtectedRoute>} />
-          <Route path="/webcam" element={<ProtectedRoute><Webcam /></ProtectedRoute>} />
+          <Route path="/webcam" element={<Navigate to="/miccamera" replace />} />
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="*" element={<NotFound />} />
         </Routes>

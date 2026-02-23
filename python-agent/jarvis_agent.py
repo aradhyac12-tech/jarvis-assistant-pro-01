@@ -1,5 +1,5 @@
 """
-JARVIS PC Agent v5.0.0 - Professional GUI Edition
+JARVIS PC Agent v5.1.0 - Professional GUI Edition
 ==================================================
 Single-file agent with:
 - Local P2P WebSocket server (port 9876) for ultra-low latency
@@ -40,7 +40,7 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "5.0.0"
+AGENT_VERSION = "5.1.0"
 
 # Skill registry
 try:
@@ -75,6 +75,7 @@ _check_dependencies()
 from supabase import create_client, Client
 import pyautogui
 from PIL import Image
+
 import psutil
 
 try:
@@ -106,8 +107,12 @@ try:
     import websockets
     from websockets.server import WebSocketServerProtocol
     HAS_WEBSOCKETS = True
+    # Check websockets version for API compatibility
+    _ws_version = tuple(int(x) for x in websockets.__version__.split(".")[:2])
+    WS_V10_PLUS = _ws_version >= (10, 0)
 except ImportError:
     HAS_WEBSOCKETS = False
+    WS_V10_PLUS = False
 
 try:
     import speech_recognition as sr
@@ -140,7 +145,7 @@ except ImportError:
 
 if platform.system() == "Windows":
     try:
-        from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume, IAudioEndpointVolume
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
         from ctypes import cast, POINTER
         from comtypes import CLSCTX_ALL
         HAS_PYCAW = True
@@ -156,11 +161,12 @@ else:
     HAS_BRIGHTNESS = False
 
 # ============== CONFIGURATION ==============
-DEFAULT_JARVIS_URL = "https://mmlbfklxizcuubpwweaj.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1tbGJma2x4aXpjdXVicHd3ZWFqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2NTk0MTQsImV4cCI6MjA4NzIzNTQxNH0.o_YEQEujVVuZuMfrjRCH1E_rF1eNN3ZAeBZkF2Y17QA"
+# CRITICAL: These MUST match the web app's Supabase project
+DEFAULT_JARVIS_URL = "https://yckqdxfzonnuhqdqnwrs.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlja3FkeGZ6b25udWhxZHFud3JzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE3NjQyMTIsImV4cCI6MjA4NzM0MDIxMn0.dME09SJ11wg8JKv41XbdiWvzovfkeJM69Q9BlDD6pro"
 
 # Optional: where the "Open Web App" button should navigate.
-DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--a225ccc9-003e-422d-89f9-f3136f215b76.lovable.app")
+DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--f4290e42-0101-4af6-93cf-bf0d2c89db92.lovable.app")
 
 SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", DEFAULT_JARVIS_URL)
 SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
@@ -232,30 +238,76 @@ def get_agent_status() -> Dict[str, Any]:
 
 # ============== NETWORK UTILITIES ==============
 def get_local_ips() -> List[str]:
+    """Get local IPs, filtering out VPN/virtual adapter IPs."""
     ips = []
     hostname = socket.gethostname()
-    try:
-        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
-            ip = info[4][0]
-            if not ip.startswith("127."):
-                ips.append(ip)
-    except Exception:
-        pass
+    
+    # First get the primary IP via UDP socket (most reliable)
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         primary_ip = s.getsockname()[0]
         s.close()
-        if primary_ip not in ips:
-            ips.insert(0, primary_ip)
+        if primary_ip and not primary_ip.startswith("127."):
+            ips.append(primary_ip)
     except Exception:
         pass
+    
+    # Then add others from hostname resolution
+    try:
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127.") and ip not in ips:
+                # Filter out common VPN/virtual adapter ranges
+                if not _is_vpn_ip(ip):
+                    ips.append(ip)
+    except Exception:
+        pass
+    
     return ips
+
+
+def _is_vpn_ip(ip: str) -> bool:
+    """Check if IP likely belongs to a VPN or virtual adapter."""
+    # Common VPN ranges
+    vpn_prefixes = [
+        "10.8.", "10.9.",      # OpenVPN defaults
+        "10.0.0.",             # Sometimes VPN
+        "100.64.",             # CGNAT / Tailscale
+        "172.16.", "172.17.",  # Docker
+        "198.18.",             # Benchmark testing
+    ]
+    for prefix in vpn_prefixes:
+        if ip.startswith(prefix):
+            return True
+    return False
 
 
 def get_network_prefix(ip: str) -> str:
     parts = ip.split(".")
     return ".".join(parts[:3]) if len(parts) == 4 else ""
+
+
+def _add_firewall_rule(port: int):
+    """Add Windows Firewall rule for the P2P port."""
+    if platform.system() != "Windows":
+        return
+    rule_name = f"JARVIS P2P Port {port}"
+    try:
+        # Check if rule already exists
+        check = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if "No rules match" in check.stdout or check.returncode != 0:
+            subprocess.run([
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={rule_name}", "dir=in", "action=allow",
+                "protocol=TCP", f"localport={port}",
+            ], capture_output=True, timeout=5)
+            add_log("info", f"Firewall rule added for port {port}", category="p2p")
+    except Exception as e:
+        add_log("warn", f"Could not add firewall rule: {e}", category="p2p")
 
 
 # ============== LOCAL P2P WEBSOCKET SERVER ==============
@@ -264,6 +316,7 @@ class LocalP2PServer:
     
     def __init__(self, command_handler: Optional[Callable] = None, port: int = LOCAL_P2P_PORT):
         self.port = port
+        self._actual_port = port  # Track actual port if fallback is used
         self.command_handler = command_handler
         self.running = False
         self.server = None
@@ -271,9 +324,16 @@ class LocalP2PServer:
         self.local_ips: List[str] = []
         self._server_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ready = threading.Event()
         
-    async def handle_client(self, websocket, path: str):
-        client_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
+    async def handle_client(self, websocket, path=None):
+        """Handle P2P client - compatible with websockets v10+ and older."""
+        client_ip = "unknown"
+        try:
+            if hasattr(websocket, 'remote_address') and websocket.remote_address:
+                client_ip = websocket.remote_address[0]
+        except Exception:
+            pass
         add_log("info", f"Local P2P client connected: {client_ip}", category="p2p")
         
         self.clients.add(websocket)
@@ -285,11 +345,18 @@ class LocalP2PServer:
                 "server": "jarvis_local_p2p",
                 "version": AGENT_VERSION,
                 "local_ips": self.local_ips,
-                "port": self.port,
+                "port": self._actual_port,
             }))
             
             async for message in websocket:
                 try:
+                    # Handle both string and binary messages
+                    if isinstance(message, bytes):
+                        try:
+                            message = message.decode("utf-8")
+                        except UnicodeDecodeError:
+                            continue
+                    
                     if isinstance(message, str):
                         data = json.loads(message)
                         response = await self._process_message(data)
@@ -299,7 +366,10 @@ class LocalP2PServer:
                     await websocket.send(json.dumps({"type": "error", "error": "Invalid JSON"}))
                 except Exception as e:
                     add_log("error", f"P2P message error: {e}", category="p2p")
-                    await websocket.send(json.dumps({"type": "error", "error": str(e)}))
+                    try:
+                        await websocket.send(json.dumps({"type": "error", "error": str(e)}))
+                    except Exception:
+                        pass
                     
         except Exception as e:
             add_log("warn", f"P2P client disconnected: {e}", category="p2p")
@@ -349,7 +419,7 @@ class LocalP2PServer:
                 "type": "info",
                 "local_ips": self.local_ips,
                 "network_prefix": get_network_prefix(self.local_ips[0]) if self.local_ips else "",
-                "port": self.port,
+                "port": self._actual_port,
                 "clients": len(self.clients),
             }
         
@@ -357,6 +427,9 @@ class LocalP2PServer:
     
     async def _start_server(self):
         self.local_ips = get_local_ips()
+        
+        # Add firewall rule (Windows)
+        _add_firewall_rule(self.port)
         
         try:
             # Kill any existing process on the port first (Windows)
@@ -371,50 +444,74 @@ class LocalP2PServer:
                             pid = parts[-1]
                             try:
                                 pid_int = int(pid)
-                                # Don't kill ourselves
                                 if pid_int != os.getpid():
                                     subprocess.run(["taskkill", "/F", "/PID", str(pid_int)],
                                                    capture_output=True, timeout=5)
                                     add_log("info", f"Killed existing process on port {self.port} (PID {pid_int})", category="p2p")
-                                    import time as _time
-                                    _time.sleep(0.5)
+                                    time.sleep(0.5)
                             except (ValueError, Exception):
                                 pass
                 except Exception:
                     pass
 
-            self.server = await websockets.serve(
-                self.handle_client,
-                "0.0.0.0",
-                self.port,
-                ping_interval=20,
-                ping_timeout=10,
-                reuse_port=False if platform.system() == "Windows" else True,
-            )
+            # websockets v10+ changed the serve() signature
+            serve_kwargs = {
+                "ping_interval": 20,
+                "ping_timeout": 10,
+                "max_size": 10 * 1024 * 1024,  # 10MB max message size (fixes screenshot disconnects)
+            }
+            if not WS_V10_PLUS:
+                serve_kwargs["reuse_port"] = False if platform.system() == "Windows" else True
+
+            if WS_V10_PLUS:
+                # websockets >= 10: serve(handler, host, port, **kwargs)
+                self.server = await websockets.serve(
+                    self.handle_client,
+                    "0.0.0.0",
+                    self.port,
+                    **serve_kwargs,
+                )
+            else:
+                self.server = await websockets.serve(
+                    self.handle_client,
+                    "0.0.0.0",
+                    self.port,
+                    **serve_kwargs,
+                )
+            
             self.running = True
+            self._actual_port = self.port
+            self._ready.set()
             
             add_log("info", f"Local P2P server started on port {self.port}", category="p2p")
             for ip in self.local_ips:
                 add_log("info", f"  → ws://{ip}:{self.port}/p2p", category="p2p")
             
-            update_agent_status({"local_ips": self.local_ips, "p2p_port": self.port})
+            update_agent_status({"local_ips": self.local_ips, "p2p_port": self._actual_port})
             
             await self.server.wait_closed()
             
         except OSError as e:
             if "10048" in str(e) or "Address already in use" in str(e):
                 add_log("warn", f"Port {self.port} busy, trying port {self.port + 1}", category="p2p")
-                self.port = self.port + 1
+                self._actual_port = self.port + 1
+                _add_firewall_rule(self._actual_port)
                 try:
+                    serve_kwargs_fallback = {
+                        "ping_interval": 20,
+                        "ping_timeout": 10,
+                        "max_size": 10 * 1024 * 1024,
+                    }
                     self.server = await websockets.serve(
-                        self.handle_client, "0.0.0.0", self.port,
-                        ping_interval=20, ping_timeout=10,
+                        self.handle_client, "0.0.0.0", self._actual_port,
+                        **serve_kwargs_fallback,
                     )
                     self.running = True
-                    add_log("info", f"Local P2P server started on fallback port {self.port}", category="p2p")
+                    self._ready.set()
+                    add_log("info", f"Local P2P server started on fallback port {self._actual_port}", category="p2p")
                     for ip in self.local_ips:
-                        add_log("info", f"  → ws://{ip}:{self.port}/p2p", category="p2p")
-                    update_agent_status({"local_ips": self.local_ips, "p2p_port": self.port})
+                        add_log("info", f"  → ws://{ip}:{self._actual_port}/p2p", category="p2p")
+                    update_agent_status({"local_ips": self.local_ips, "p2p_port": self._actual_port})
                     await self.server.wait_closed()
                 except Exception as e2:
                     add_log("error", f"P2P server fallback failed: {e2}", category="p2p")
@@ -443,6 +540,9 @@ class LocalP2PServer:
         
         self._server_thread = threading.Thread(target=run_server, daemon=True)
         self._server_thread.start()
+        
+        # Wait for server to be ready (up to 5s)
+        self._ready.wait(timeout=5)
         return True
     
     def stop(self):
@@ -539,7 +639,6 @@ class JarvisAgent:
 
     @staticmethod
     def _load_or_create_device_key() -> str:
-        """Persist device_key so the agent reuses the same device across restarts."""
         key_file = JarvisAgent.DEVICE_KEY_FILE
         if os.path.exists(key_file):
             try:
@@ -566,7 +665,6 @@ class JarvisAgent:
         self._volume_cache = 50
         self._brightness_cache = 50
 
-        # User id (set after pairing verification)
         self.current_user_id: Optional[str] = None
         
         # Input session gating
@@ -579,14 +677,12 @@ class JarvisAgent:
         self.max_backoff = 60
         self.max_failures_before_reregister = 10
         
-        # Streamers (placeholders for compatibility)
         self.screenshot_handler = ThreadedScreenshot()
         
         # Supabase client
         self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     
     def _get_session_token(self) -> Optional[str]:
-        """Get the session token for the current device from active sessions."""
         try:
             result = self.supabase.table("device_sessions").select("session_token").eq(
                 "device_id", self.device_id
@@ -597,6 +693,11 @@ class JarvisAgent:
             add_log("warn", f"Failed to get session token: {e}", category="system")
         return None
     
+    def _get_ws_base(self) -> str:
+        """Get the WebSocket base URL from SUPABASE_URL."""
+        ref = SUPABASE_URL.replace('https://', '').split('.')[0]
+        return f"wss://{ref}.functions.supabase.co"
+    
     # ============== VOLUME/BRIGHTNESS ==============
     def _get_volume(self) -> int:
         try:
@@ -606,21 +707,50 @@ class JarvisAgent:
                 volume = cast(interface, POINTER(IAudioEndpointVolume))
                 level = volume.GetMasterVolumeLevelScalar()
                 self._volume_cache = int(level * 100)
-        except:
-            pass
+        except Exception as e:
+            add_log("warn", f"pycaw get_volume error: {e}", category="audio")
         return self._volume_cache
     
     def _set_volume(self, level: int) -> Dict[str, Any]:
         try:
             level = max(0, min(100, level))
             if platform.system() == "Windows" and HAS_PYCAW:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = cast(interface, POINTER(IAudioEndpointVolume))
-                volume.SetMasterVolumeLevelScalar(level / 100.0, None)
-                self._volume_cache = level
-            return {"success": True, "volume": level}
+                try:
+                    devices = AudioUtilities.GetSpeakers()
+                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                    volume = cast(interface, POINTER(IAudioEndpointVolume))
+                    volume.SetMasterVolumeLevelScalar(level / 100.0, None)
+                    self._volume_cache = level
+                    return {"success": True, "volume": level}
+                except Exception as pycaw_err:
+                    add_log("warn", f"pycaw set_volume error: {pycaw_err}, trying keyboard fallback", category="audio")
+            
+            # Keyboard fallback - works on all systems
+            if platform.system() == "Windows":
+                # Set to 0 first, then press volume up keys
+                import ctypes
+                # Use nircmd if available, otherwise keyboard
+                try:
+                    subprocess.run(
+                        ["nircmd", "setsysvolume", str(int(level / 100 * 65535))],
+                        capture_output=True, timeout=5
+                    )
+                    self._volume_cache = level
+                    return {"success": True, "volume": level, "method": "nircmd"}
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+            
+            # Ultimate fallback: keyboard volume keys
+            current = self._volume_cache
+            diff = level - current
+            steps = abs(diff) // 2  # Each key press changes by ~2%
+            key = "volumeup" if diff > 0 else "volumedown"
+            for _ in range(min(steps, 50)):
+                pyautogui.press(key)
+            self._volume_cache = level
+            return {"success": True, "volume": level, "method": "keyboard"}
         except Exception as e:
+            add_log("error", f"set_volume failed: {e}", category="audio")
             return {"success": False, "error": str(e)}
     
     def _get_brightness(self) -> int:
@@ -751,6 +881,23 @@ class JarvisAgent:
                 except Exception:
                     pass
             devices_out = [{"id": "default", "name": "Default Output", "type": "default", "volume": int(master_volume), "isMuted": bool(is_muted), "isDefault": True}]
+            
+            # List all audio sessions (per-app volumes)
+            if platform.system() == "Windows" and HAS_PYCAW:
+                try:
+                    sessions = AudioUtilities.GetAllSessions()
+                    for session in sessions:
+                        if session.Process:
+                            devices_out.append({
+                                "id": f"app_{session.Process.pid}",
+                                "name": session.Process.name(),
+                                "type": "app",
+                                "pid": session.Process.pid,
+                                "isDefault": False,
+                            })
+                except Exception:
+                    pass
+            
             return {"success": True, "devices": devices_out, "master_volume": int(master_volume), "is_muted": bool(is_muted)}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -782,21 +929,16 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     async def _join_zoom(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Join a Zoom meeting via native Zoom protocol for reliability.
-        Supports slow PCs with extended waits and retry-based mute/camera verification."""
         try:
             meeting_link = str(payload.get("meeting_link") or "").strip()
             meeting_id = str(payload.get("meeting_id") or "").strip()
             password = str(payload.get("password") or "").strip()
-
             mute_audio = bool(payload.get("mute_audio", True))
             mute_video = bool(payload.get("mute_video", True))
             take_screenshot = bool(payload.get("take_screenshot", True))
 
-            # Build zoom protocol URL for native app
             link = ""
             if meeting_link:
-                # Convert web URL to zoom protocol
                 link = meeting_link
                 if "zoom.us/j/" in link:
                     mid = re.search(r'/j/(\d+)', link)
@@ -818,70 +960,39 @@ class JarvisAgent:
 
             add_log("info", "Opening Zoom meeting via native protocol", details=link[:140], category="zoom")
             
-            # Try zoommtg:// protocol first (opens native Zoom app)
             if platform.system() == "Windows":
                 os.startfile(link)
             else:
                 webbrowser.open(link)
 
-            # Extended wait for slow PCs - Zoom can take 30-60s to load
             initial_wait = int(payload.get("initial_wait", 240))
-            add_log("info", f"Waiting {initial_wait}s (4 min) for Zoom to load...", category="zoom")
+            add_log("info", f"Waiting {initial_wait}s for Zoom to load...", category="zoom")
             await asyncio.sleep(initial_wait)
 
-            # Privacy toggles with RETRY verification (Windows Zoom hotkeys)
-            muted_audio_confirmed = False
-            muted_video_confirmed = False
             if platform.system() == "Windows":
-                # Retry mute/camera toggles up to 3 times with delays
                 for attempt in range(3):
-                    if mute_audio and not muted_audio_confirmed:
+                    if mute_audio:
                         pyautogui.hotkey("alt", "a")
                         await asyncio.sleep(1)
-                        muted_audio_confirmed = True
-                        add_log("info", f"Audio mute toggled (attempt {attempt+1})", category="zoom")
-                    
-                    if mute_video and not muted_video_confirmed:
+                    if mute_video:
                         pyautogui.hotkey("alt", "v")
                         await asyncio.sleep(1)
-                        muted_video_confirmed = True
-                        add_log("info", f"Video mute toggled (attempt {attempt+1})", category="zoom")
-                    
-                    if muted_audio_confirmed and muted_video_confirmed:
-                        break
                     await asyncio.sleep(2)
 
-            screenshot_path = None
             screenshot_base64 = None
             if take_screenshot:
-                # Extended wait for slow PCs before screenshot (meeting UI needs to fully render)
                 screenshot_wait = int(payload.get("screenshot_wait", 20))
-                add_log("info", f"Waiting {screenshot_wait}s before screenshot...", category="zoom")
                 await asyncio.sleep(screenshot_wait)
                 shot = self.screenshot_handler.capture_sync(quality=70, scale=0.5)
                 if shot.get("success") and shot.get("image"):
-                    os.makedirs("screenshots", exist_ok=True)
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    screenshot_path = os.path.abspath(os.path.join("screenshots", f"zoom_{ts}.jpg"))
-                    with open(screenshot_path, "wb") as f:
-                        f.write(base64.b64decode(shot["image"]))
                     screenshot_base64 = shot["image"]
-                    add_log("info", f"Screenshot saved: {screenshot_path}", category="zoom")
 
-            return {
-                "success": True,
-                "muted_audio": mute_audio,
-                "muted_video": mute_video,
-                "screenshot_path": screenshot_path,
-                "screenshot": screenshot_base64,
-                "initial_wait": initial_wait,
-            }
+            return {"success": True, "muted_audio": mute_audio, "muted_video": mute_video, "screenshot": screenshot_base64}
         except Exception as e:
             add_log("error", f"Zoom join error: {e}", category="zoom")
             return {"success": False, "error": str(e)}
     
     def _play_alarm(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Play an alarm/siren sound on the PC."""
         try:
             alarm_type = payload.get("type", "beep")
             if alarm_type == "siren":
@@ -902,9 +1013,7 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ============== CAMERA SNAPSHOT ==============
     def _take_camera_snapshot(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Capture a single frame from the PC webcam and return as base64."""
         try:
             if not HAS_OPENCV:
                 return {"success": False, "error": "OpenCV not installed"}
@@ -928,7 +1037,6 @@ class JarvisAgent:
     _audio_ws = None
 
     async def _start_audio_relay(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Start audio relay - connect to the Supabase audio-relay edge function via WebSocket."""
         try:
             session_id = payload.get("session_id", "")
             direction = payload.get("direction", "phone_to_pc")
@@ -949,12 +1057,11 @@ class JarvisAgent:
                 "running": True,
             }
 
-            # FIX: Use SUPABASE_URL (correct project) instead of hardcoded wrong project ID
+            ws_base = self._get_ws_base()
+
             def stream_audio():
                 import websockets.sync.client as ws_client
-                # CRITICAL: Use functions subdomain for WebSocket streaming
-                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
-                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
+                ws_url = f"{ws_base}/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
                 attempt = 0
@@ -962,9 +1069,9 @@ class JarvisAgent:
                     try:
                         attempt += 1
                         add_log("info", f"Audio relay connecting (attempt {attempt})...", category="audio")
-                        with ws_client.connect(ws_url, open_timeout=10) as ws:
+                        with ws_client.connect(ws_url, open_timeout=10, max_size=10*1024*1024) as ws:
                             self._audio_ws = ws
-                            retry_delay = 2  # reset on success
+                            retry_delay = 2
                             add_log("info", f"Audio relay connected: session={session_id[:8]}..., direction={direction}", category="audio")
 
                             if not HAS_PYAUDIO:
@@ -989,8 +1096,22 @@ class JarvisAgent:
                             mic_stream = None
                             if direction in ("pc_to_phone", "bidirectional"):
                                 try:
-                                    mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
-                                    add_log("info", "PC microphone opened for audio relay", category="audio")
+                                    if use_system_audio and platform.system() == "Windows":
+                                        # Try WASAPI loopback for system audio
+                                        try:
+                                            mic_stream = pa.open(
+                                                format=FORMAT, channels=CHANNELS, rate=RATE,
+                                                input=True, frames_per_buffer=CHUNK,
+                                                input_host_api_specific_stream_info=None,
+                                                as_loopback=True,
+                                            )
+                                            add_log("info", "System audio (WASAPI loopback) opened", category="audio")
+                                        except Exception:
+                                            mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                                            add_log("info", "Fallback to PC microphone (WASAPI loopback not available)", category="audio")
+                                    else:
+                                        mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                                        add_log("info", "PC microphone opened for audio relay", category="audio")
                                 except Exception as e:
                                     add_log("warn", f"Could not open PC microphone: {e}", category="audio")
 
@@ -1048,7 +1169,6 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _stop_audio_relay(self) -> Dict[str, Any]:
-        """Stop the audio relay."""
         try:
             if self._audio_streamer:
                 self._audio_streamer["running"] = False
@@ -1229,7 +1349,6 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _get_running_apps(self) -> Dict[str, Any]:
-        """Get list of running processes with CPU and memory usage."""
         try:
             apps = []
             seen = set()
@@ -1249,18 +1368,15 @@ class JarvisAgent:
                     })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-            # Sort by memory descending
             apps.sort(key=lambda x: x['memory'], reverse=True)
             return {"success": True, "apps": apps[:100]}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _get_installed_apps(self) -> Dict[str, Any]:
-        """Get list of installed applications (Windows only)."""
         try:
             apps = []
             if platform.system() == "Windows":
-                # Query registry for installed apps
                 import winreg
                 reg_paths = [
                     (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -1300,7 +1416,6 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _kill_app(self, pid=None, app_name: str = "") -> Dict[str, Any]:
-        """Kill a process by PID or name."""
         try:
             if pid:
                 proc = psutil.Process(int(pid))
@@ -1321,7 +1436,6 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     def _get_services(self) -> Dict[str, Any]:
-        """Get list of Windows services."""
         try:
             services = []
             if platform.system() == "Windows":
@@ -1432,12 +1546,13 @@ class JarvisAgent:
             if not session_id:
                 return {"success": False, "error": "Missing session_id"}
             
-            # Get session token for relay authentication
             session_token = self._get_session_token()
             if not session_token:
                 return {"success": False, "error": "No active session token for relay auth"}
             
+            # Gracefully stop existing stream
             self._stop_camera_stream()
+            time.sleep(0.3)
             
             if platform.system() == "Windows":
                 cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
@@ -1453,12 +1568,11 @@ class JarvisAgent:
             
             self._camera_streamer = {"cap": cap, "session_id": session_id, "fps": fps, "quality": quality, "running": True}
             
-            # FIX: Use SUPABASE_URL (correct project) + retry with exponential backoff
+            ws_base = self._get_ws_base()
+            
             def stream_camera():
                 import websockets.sync.client as ws_client
-                # CRITICAL: Use functions subdomain for WebSocket streaming, NOT the REST host
-                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
-                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                ws_url = f"{ws_base}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
                 attempt = 0
@@ -1466,18 +1580,25 @@ class JarvisAgent:
                     try:
                         attempt += 1
                         add_log("info", f"Camera stream connecting (attempt {attempt})...", category="camera")
-                        with ws_client.connect(ws_url, open_timeout=10) as ws:
+                        with ws_client.connect(ws_url, open_timeout=10, max_size=10*1024*1024) as ws:
                             self._camera_ws = ws
-                            retry_delay = 2  # reset on success
+                            retry_delay = 2
                             add_log("info", f"Camera stream connected: session={session_id[:8]}...", category="camera")
-                            interval = 1.0 / max(1, fps)
                             while self._camera_streamer and self._camera_streamer.get("running"):
+                                current_fps = self._camera_streamer.get("fps", fps)
+                                current_quality = self._camera_streamer.get("quality", quality)
+                                interval = 1.0 / max(1, current_fps)
                                 ret, frame = cap.read()
                                 if not ret:
+                                    time.sleep(0.01)
                                     continue
-                                encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._camera_streamer.get("quality", quality)]
-                                _, buffer = cv2.imencode(".jpg", frame, encode_params)
-                                ws.send(buffer.tobytes())
+                                try:
+                                    encode_params = [cv2.IMWRITE_JPEG_QUALITY, current_quality]
+                                    _, buffer = cv2.imencode(".jpg", frame, encode_params)
+                                    ws.send(buffer.tobytes())
+                                except Exception as send_err:
+                                    add_log("warn", f"Camera send error: {send_err}", category="camera")
+                                    break
                                 time.sleep(interval)
                     except Exception as e:
                         if not (self._camera_streamer and self._camera_streamer.get("running")):
@@ -1485,7 +1606,10 @@ class JarvisAgent:
                         add_log("warn", f"Camera stream error (attempt {attempt}): {e} — retrying in {retry_delay}s", category="camera")
                         time.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, max_retry_delay)
-                cap.release()
+                try:
+                    cap.release()
+                except Exception:
+                    pass
                 add_log("info", "Camera stream ended", category="camera")
             
             threading.Thread(target=stream_camera, daemon=True).start()
@@ -1535,21 +1659,20 @@ class JarvisAgent:
             if not session_id:
                 return {"success": False, "error": "Missing session_id"}
             
-            # Get session token for relay authentication
             session_token = self._get_session_token()
             if not session_token:
                 return {"success": False, "error": "No active session token for relay auth"}
             
             self._stop_screen_stream()
+            time.sleep(0.3)
             
             self._screen_streamer = {"session_id": session_id, "fps": fps, "quality": quality, "scale": scale, "monitor_index": monitor_index, "running": True}
             
-            # FIX: Use SUPABASE_URL (correct project) + retry with exponential backoff
+            ws_base = self._get_ws_base()
+            
             def stream_screen():
                 import websockets.sync.client as ws_client
-                # CRITICAL: Use functions subdomain for WebSocket streaming
-                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
-                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                ws_url = f"{ws_base}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
                 attempt = 0
@@ -1557,24 +1680,30 @@ class JarvisAgent:
                     try:
                         attempt += 1
                         add_log("info", f"Screen stream connecting (attempt {attempt})...", category="screen")
-                        with ws_client.connect(ws_url, open_timeout=10) as ws:
+                        with ws_client.connect(ws_url, open_timeout=10, max_size=10*1024*1024) as ws:
                             self._screen_ws = ws
-                            retry_delay = 2  # reset on success
+                            retry_delay = 2
                             add_log("info", f"Screen stream connected: session={session_id[:8]}...", category="screen")
                             with mss.mss() as sct:
                                 monitors = sct.monitors
                                 idx = monitor_index if 0 < monitor_index < len(monitors) else 1
                                 monitor = monitors[idx]
-                                interval = 1.0 / max(1, fps)
                                 while self._screen_streamer and self._screen_streamer.get("running"):
-                                    screenshot = sct.grab(monitor)
-                                    img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
+                                    current_fps = self._screen_streamer.get("fps", fps)
+                                    current_quality = self._screen_streamer.get("quality", quality)
                                     current_scale = self._screen_streamer.get("scale", scale)
-                                    new_size = (int(img.width * current_scale), int(img.height * current_scale))
-                                    img = img.resize(new_size, Image.LANCZOS)
-                                    buffer = io.BytesIO()
-                                    img.save(buffer, format="JPEG", quality=self._screen_streamer.get("quality", quality), optimize=True)
-                                    ws.send(buffer.getvalue())
+                                    interval = 1.0 / max(1, current_fps)
+                                    try:
+                                        screenshot = sct.grab(monitor)
+                                        img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
+                                        new_size = (int(img.width * current_scale), int(img.height * current_scale))
+                                        img = img.resize(new_size, Image.LANCZOS)
+                                        buffer = io.BytesIO()
+                                        img.save(buffer, format="JPEG", quality=current_quality, optimize=True)
+                                        ws.send(buffer.getvalue())
+                                    except Exception as send_err:
+                                        add_log("warn", f"Screen send error: {send_err}", category="screen")
+                                        break
                                     time.sleep(interval)
                     except Exception as e:
                         if not (self._screen_streamer and self._screen_streamer.get("running")):
@@ -1629,7 +1758,6 @@ class JarvisAgent:
             if not session_id:
                 return {"success": False, "error": "Missing session_id"}
             
-            # Get session token for relay authentication
             session_token = self._get_session_token()
             if not session_token:
                 return {"success": False, "error": "No active session token for relay auth"}
@@ -1641,15 +1769,13 @@ class JarvisAgent:
                 self._stop_camera_stream()
                 self._camera_streamer = {"session_id": session_id, "fps": fps, "quality": quality, "running": True}
             
-            # FIX 1: Removed extra indentation on ws_url line (was causing IndentationError / auto-close)
-            # FIX 2: Use SUPABASE_URL (correct project) instead of hardcoded wrong project ID
+            ws_base = self._get_ws_base()
+            
             def stream_test_pattern():
                 import websockets.sync.client as ws_client
-                # CRITICAL: Use functions subdomain for WebSocket streaming
-                ref = SUPABASE_URL.replace('https://', '').split('.')[0]
-                ws_url = f"wss://{ref}.functions.supabase.co/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
+                ws_url = f"{ws_base}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 try:
-                    with ws_client.connect(ws_url) as ws:
+                    with ws_client.connect(ws_url, max_size=10*1024*1024) as ws:
                         add_log("info", f"Test pattern connected: session={session_id[:8]}...", category="test")
                         frame_num = 0
                         interval = 1.0 / max(1, fps)
@@ -1674,52 +1800,19 @@ class JarvisAgent:
     
     # ============== STREAMING STATS ==============
     def _get_streaming_stats(self) -> Dict[str, Any]:
-        """Return current streaming statistics for camera, screen, and audio."""
         stats: Dict[str, Any] = {"success": True}
-        
-        # Camera stats
         if self._camera_streamer:
-            stats["camera"] = {
-                "running": bool(self._camera_streamer.get("running")),
-                "session_id": self._camera_streamer.get("session_id", ""),
-                "fps": self._camera_streamer.get("fps", 0),
-                "quality": self._camera_streamer.get("quality", 0),
-                "frame_count": self._camera_streamer.get("frame_count", 0),
-                "bytes_sent": self._camera_streamer.get("bytes_sent", 0),
-                "last_error": self._camera_streamer.get("last_error"),
-            }
+            stats["camera"] = {"running": bool(self._camera_streamer.get("running")), "fps": self._camera_streamer.get("fps", 0), "quality": self._camera_streamer.get("quality", 0)}
         else:
-            stats["camera"] = {"running": False, "frame_count": 0, "bytes_sent": 0, "fps": 0, "last_error": None}
-        
-        # Screen stats
+            stats["camera"] = {"running": False, "fps": 0}
         if self._screen_streamer:
-            stats["screen"] = {
-                "running": bool(self._screen_streamer.get("running")),
-                "session_id": self._screen_streamer.get("session_id", ""),
-                "fps": self._screen_streamer.get("fps", 0),
-                "quality": self._screen_streamer.get("quality", 0),
-                "frame_count": self._screen_streamer.get("frame_count", 0),
-                "bytes_sent": self._screen_streamer.get("bytes_sent", 0),
-                "last_error": self._screen_streamer.get("last_error"),
-                "resolution": self._screen_streamer.get("resolution", ""),
-            }
+            stats["screen"] = {"running": bool(self._screen_streamer.get("running")), "fps": self._screen_streamer.get("fps", 0), "quality": self._screen_streamer.get("quality", 0)}
         else:
-            stats["screen"] = {"running": False, "frame_count": 0, "bytes_sent": 0, "fps": 0, "last_error": None}
-        
-        # Audio stats
+            stats["screen"] = {"running": False, "fps": 0}
         if self._audio_streamer:
-            stats["audio"] = {
-                "running": bool(self._audio_streamer.get("running")),
-                "session_id": self._audio_streamer.get("session_id", ""),
-                "direction": self._audio_streamer.get("direction", ""),
-                "bytes_sent": self._audio_streamer.get("bytes_sent", 0),
-                "bytes_received": self._audio_streamer.get("bytes_received", 0),
-                "send_rate_kbps": 0,
-                "recv_rate_kbps": 0,
-            }
+            stats["audio"] = {"running": bool(self._audio_streamer.get("running")), "direction": self._audio_streamer.get("direction", "")}
         else:
-            stats["audio"] = {"running": False, "bytes_sent": 0, "bytes_received": 0, "send_rate_kbps": 0, "recv_rate_kbps": 0}
-        
+            stats["audio"] = {"running": False}
         return stats
 
     # ============== BOOST PC ==============
@@ -1732,7 +1825,6 @@ class JarvisAgent:
                 kernel32 = ctypes.windll.kernel32
                 handle = kernel32.GetCurrentProcess()
                 kernel32.SetProcessWorkingSetSize(handle, -1, -1)
-            add_log("info", f"RAM cleanup: ~{freed_mb}MB freed", category="system")
             return {"success": True, "freed_mb": freed_mb}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1758,7 +1850,6 @@ class JarvisAgent:
                                 pass
                     except:
                         pass
-            add_log("info", f"Temp files cleared: ~{int(freed_mb)}MB freed", category="system")
             return {"success": True, "freed_mb": int(freed_mb)}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1769,7 +1860,6 @@ class JarvisAgent:
                 plans = {"high_performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c", "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e"}
                 plan_guid = plans.get(plan, plans["high_performance"])
                 os.system(f"powercfg /setactive {plan_guid}")
-                add_log("info", f"Power plan set to: {plan}", category="system")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1780,7 +1870,6 @@ class JarvisAgent:
                 os.system("taskkill /f /im explorer.exe")
                 time.sleep(1)
                 os.system("start explorer.exe")
-                add_log("info", "Explorer restarted", category="system")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1791,7 +1880,6 @@ class JarvisAgent:
                 kernel32 = ctypes.windll.kernel32
                 handle = kernel32.GetCurrentProcess()
                 kernel32.SetPriorityClass(handle, 0x00008000)
-                add_log("info", "Gaming mode enabled", category="system")
             return {"success": True, "enabled": enable}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1806,24 +1894,20 @@ class JarvisAgent:
             "hostname": socket.gethostname(),
             "local_ips": local_ips,
             "network_prefix": network_prefix,
-            "p2p_port": LOCAL_P2P_PORT,
+            "p2p_port": p2p_server._actual_port if p2p_server else LOCAL_P2P_PORT,
             "p2p_server_running": p2p_server is not None and p2p_server.running,
             "p2p_clients": len(p2p_server.clients) if p2p_server else 0,
         }
     
-    # ============== OPEN URL (supports zoom protocol) ==============
     def _open_url(self, url: str) -> Dict[str, Any]:
         try:
             url = (url or "").strip()
             if not url:
                 return {"success": False, "error": "Missing URL"}
-            
-            # For protocol URLs on Windows, use os.startfile
             if platform.system() == "Windows" and "://" in url and not url.startswith("http"):
                 os.startfile(url)
             else:
                 webbrowser.open(url)
-            
             return {"success": True, "url": url}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1883,7 +1967,6 @@ class JarvisAgent:
                     return {"success": False, "error": "Missing session"}
                 self._active_input_session = session
                 self._input_session_expires_at = time.time() + max(1, ttl_ms / 1000.0)
-                add_log("info", "Remote input enabled", category="input")
                 return {"success": True, "enabled": True}
             
             if cmd == "remote_input_disable":
@@ -1891,7 +1974,6 @@ class JarvisAgent:
                 if session and session == self._active_input_session:
                     self._active_input_session = None
                     self._input_session_expires_at = 0.0
-                    add_log("info", "Remote input disabled", category="input")
                 return {"success": True, "enabled": False}
             
             # Gate remote input commands
@@ -2008,18 +2090,16 @@ class JarvisAgent:
                 service = payload.get("service", "youtube").lower()
                 auto_play = payload.get("auto_play", True)
                 if service == "spotify":
-                    # Open Spotify and search
                     self._open_app("spotify")
                     await asyncio.sleep(3)
-                    pyautogui.hotkey("ctrl", "l")  # Focus search
+                    pyautogui.hotkey("ctrl", "l")
                     await asyncio.sleep(0.5)
                     pyautogui.hotkey("ctrl", "a")
                     pyautogui.typewrite(query, interval=0.03)
                     await asyncio.sleep(2)
                     pyautogui.press("enter")
-                    await asyncio.sleep(2)
                     if auto_play:
-                        # Navigate to first result and play
+                        await asyncio.sleep(2)
                         pyautogui.press("tab")
                         await asyncio.sleep(0.3)
                         pyautogui.press("tab")
@@ -2027,39 +2107,19 @@ class JarvisAgent:
                         pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on Spotify"}
                 elif service in ("youtube", "yt"):
-                    # Open YouTube search and auto-play first video
                     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
                     webbrowser.open(url)
                     if auto_play:
-                        await asyncio.sleep(6)  # Wait for page load
-                        # Click on first video result
+                        await asyncio.sleep(6)
                         pyautogui.press("tab")
                         await asyncio.sleep(0.2)
                         pyautogui.press("tab")
                         await asyncio.sleep(0.2)
                         pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on YouTube"}
-                elif service in ("amazon", "amazon prime", "prime music", "amazon music"):
-                    url = f"https://music.amazon.com/search/{urllib.parse.quote(query)}"
-                    webbrowser.open(url)
-                    if auto_play:
-                        await asyncio.sleep(6)
-                        # Click first result
-                        pyautogui.press("tab")
-                        await asyncio.sleep(0.3)
-                        pyautogui.press("enter")
-                    return {"success": True, "message": f"Playing '{query}' on Amazon Music"}
                 else:
-                    # Fallback: search on YouTube
                     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
                     webbrowser.open(url)
-                    if auto_play:
-                        await asyncio.sleep(6)
-                        pyautogui.press("tab")
-                        await asyncio.sleep(0.2)
-                        pyautogui.press("tab")
-                        await asyncio.sleep(0.2)
-                        pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on YouTube (fallback)"}
             
             elif cmd == "search_web":
@@ -2067,7 +2127,6 @@ class JarvisAgent:
                 engine = payload.get("engine", "google").lower()
                 auto_enter = payload.get("auto_enter", True)
                 
-                # AI platforms need special handling - open and type into search box
                 if engine in ("chatgpt", "openai"):
                     webbrowser.open("https://chat.openai.com/")
                     if auto_enter:
@@ -2101,7 +2160,6 @@ class JarvisAgent:
                     return {"success": True, "message": f"Searching '{query}' on {engine}"}
             
             elif cmd in ["answer_call", "end_call", "decline_call", "call_mute"]:
-                add_log("info", f"Call control received: {cmd}", category="command")
                 return {"success": True, "message": f"{cmd} acknowledged (mobile-side action)"}
             
             # Apps
@@ -2118,7 +2176,6 @@ class JarvisAgent:
             elif cmd == "get_services":
                 return self._get_services()
             
-            # Open URL (supports zoom:// and other protocols)
             elif cmd == "open_url":
                 return self._open_url(payload.get("url", ""))
             
@@ -2144,7 +2201,6 @@ class JarvisAgent:
             
             # Notifications
             elif cmd in ["start_notification_sync", "stop_notification_sync"]:
-                add_log("info", f"Notification sync: {cmd}", category="sync")
                 return {"success": True}
             
             # Batch
@@ -2153,20 +2209,14 @@ class JarvisAgent:
             
             # Screenshot
             elif cmd == "take_screenshot":
-                return self.screenshot_handler.capture_sync(
-                    quality=payload.get("quality", 70),
-                    scale=payload.get("scale", 0.5)
-                )
+                return self.screenshot_handler.capture_sync(quality=payload.get("quality", 70), scale=payload.get("scale", 0.5))
             
-            # Camera snapshot (single frame from PC webcam)
             elif cmd == "take_camera_snapshot":
                 return self._take_camera_snapshot(payload)
             
-            # Alarm/Siren for surveillance
             elif cmd == "play_alarm":
                 return self._play_alarm(payload)
             
-            # Ping
             elif cmd in ["ping", "heartbeat"]:
                 return {"success": True, "pong": True, "timestamp": datetime.now().isoformat()}
             
@@ -2192,11 +2242,9 @@ class JarvisAgent:
             elif cmd == "stop_audio_relay":
                 return self._stop_audio_relay()
             
-            # Streaming stats
             elif cmd == "get_streaming_stats":
                 return self._get_streaming_stats()
             
-            # Check audio support
             elif cmd == "check_audio_support":
                 return {
                     "success": True,
@@ -2204,7 +2252,18 @@ class JarvisAgent:
                     "has_websockets": HAS_WEBSOCKETS,
                     "has_opencv": HAS_OPENCV,
                     "has_speech_recognition": HAS_SPEECH_RECOGNITION,
+                    "has_pycaw": HAS_PYCAW,
                 }
+            
+            # Phone webcam commands (handled by agent receiving frames)
+            elif cmd in ["start_phone_webcam", "stop_phone_webcam", "check_virtual_webcam"]:
+                if cmd == "check_virtual_webcam":
+                    try:
+                        import pyvirtualcam
+                        return {"success": True, "available": True, "driver": "pyvirtualcam"}
+                    except ImportError:
+                        return {"success": True, "available": False, "driver": None}
+                return {"success": True, "message": f"{cmd} acknowledged"}
             
             else:
                 add_log("warn", f"Unknown command: {cmd}", category="command")
@@ -2214,9 +2273,8 @@ class JarvisAgent:
             add_log("error", f"Command error: {e}", details=traceback.format_exc(), category="command")
             return {"success": False, "error": str(e)}
     
-    # ============== REGISTRATION (NO PAIRING CODE) ==============
+    # ============== REGISTRATION ==============
     async def register_device(self):
-        """Register device directly - no pairing code needed."""
         try:
             result = self.supabase.table("devices").select("id, user_id").eq("device_key", self.device_key).execute()
             
@@ -2256,13 +2314,14 @@ class JarvisAgent:
             add_log("error", f"Registration failed: {e}", category="system")
             raise
     
-    # No pairing code refresh needed - direct connection
-    
     async def heartbeat(self):
         try:
             now = datetime.now(timezone.utc).isoformat()
             cpu = psutil.cpu_percent()
             mem = psutil.virtual_memory().percent
+            
+            p2p_server = get_local_p2p_server()
+            actual_port = p2p_server._actual_port if p2p_server else LOCAL_P2P_PORT
             
             self.supabase.table("devices").update({
                 "is_online": True,
@@ -2276,7 +2335,7 @@ class JarvisAgent:
                     "platform": platform.system(),
                     "hostname": socket.gethostname(),
                     "local_ips": get_local_ips(),
-                    "p2p_port": LOCAL_P2P_PORT,
+                    "p2p_port": actual_port,
                     "agent_version": AGENT_VERSION,
                 },
             }).eq("id", self.device_id).execute()
@@ -2287,6 +2346,7 @@ class JarvisAgent:
                 "memory_percent": mem,
                 "volume": self._get_volume(),
                 "brightness": self._get_brightness(),
+                "p2p_port": actual_port,
             })
             
         except Exception as e:
@@ -2303,7 +2363,6 @@ class JarvisAgent:
                 payload = cmd.get("payload") or {}
                 cmd_id = cmd.get("id")
                 
-                # Skip stale commands older than 60 seconds to prevent ghost execution
                 created_str = cmd.get("created_at", "")
                 if created_str:
                     try:
@@ -2315,7 +2374,6 @@ class JarvisAgent:
                                 "result": {"error": f"Stale command ({int(age_seconds)}s old)"},
                                 "executed_at": datetime.now(timezone.utc).isoformat(),
                             }).eq("id", cmd_id).execute()
-                            add_log("warn", f"Skipped stale command: {command_type} ({int(age_seconds)}s old)", category="command")
                             continue
                     except Exception:
                         pass
@@ -2349,7 +2407,6 @@ class JarvisAgent:
             add_log("warn", f"Poll error (attempt {self.consecutive_failures}): {e}", category="system")
             
             if self.consecutive_failures >= self.max_failures_before_reregister:
-                add_log("warn", "Too many failures, re-registering...", category="system")
                 self.consecutive_failures = 0
                 self.backoff_seconds = 1
                 await self.register_device()
@@ -2357,8 +2414,12 @@ class JarvisAgent:
     async def run(self):
         await self.register_device()
         
-        # Start P2P server
-        start_local_p2p_server(command_handler=self._handle_command)
+        # Start P2P server  
+        p2p = start_local_p2p_server(command_handler=self._handle_command)
+        
+        # Wait for P2P server to be ready
+        if p2p:
+            p2p._ready.wait(timeout=5)
         
         last_heartbeat = 0
         
@@ -2368,12 +2429,10 @@ class JarvisAgent:
             try:
                 now = time.time()
                 
-                # Heartbeat
                 if now - last_heartbeat >= HEARTBEAT_INTERVAL:
                     await self.heartbeat()
                     last_heartbeat = now
                 
-                # Poll commands
                 await self.poll_commands()
                 
                 await asyncio.sleep(max(POLL_INTERVAL, self.backoff_seconds if self.consecutive_failures > 0 else POLL_INTERVAL))
@@ -2405,7 +2464,7 @@ async def run_agent():
         agent = JarvisAgent()
         try:
             await agent.run()
-            break  # Clean exit
+            break
         except KeyboardInterrupt:
             await agent.shutdown()
             break
@@ -2469,799 +2528,22 @@ def main():
                 except Exception:
                     pass
 
-        class JarvisAgentGUI:
-            """Professional v5.0.0 GUI with Dashboard, Actions, Files, Assistant, Settings."""
-            
-            def __init__(self):
-                self.runner = AgentThreadRunner()
-                self.runner.start()
-
-                self.root = tk.Tk()
-                self.root.title(f"JARVIS PC Agent v{AGENT_VERSION}")
-                self.root.geometry("780x900")
-                self.root.minsize(720, 840)
-
-                # ─── Professional Color Palette ───
-                BG = "#0f172a"           # Deep navy background
-                CARD_BG = "#1e293b"      # Slate card background
-                CARD_BORDER = "#334155"   # Subtle border
-                TEXT = "#f1f5f9"          # Light text
-                TEXT_DIM = "#94a3b8"      # Muted text
-                ACCENT = "#3b82f6"        # Blue accent
-                ACCENT_GLOW = "#60a5fa"   # Lighter blue
-                SUCCESS = "#22c55e"       # Green
-                WARNING = "#f59e0b"       # Amber
-                DANGER = "#ef4444"        # Red
-                HEADER_BG = "#020617"     # Almost black header
-                INPUT_BG = "#0f172a"      # Input background
-                
-                self.BG = BG
-                self.CARD_BG = CARD_BG
-                self.CARD_BORDER = CARD_BORDER
-                self.TEXT = TEXT
-                self.TEXT_DIM = TEXT_DIM
-                self.ACCENT = ACCENT
-                self.ACCENT_GLOW = ACCENT_GLOW
-                self.SUCCESS = SUCCESS
-                self.WARNING = WARNING
-                self.DANGER = DANGER
-                self.HEADER_BG = HEADER_BG
-                self.INPUT_BG = INPUT_BG
-
-                self.root.configure(bg=BG)
-                
-                style = ttk.Style()
-                style.theme_use("clam")
-                style.configure("TNotebook", background=BG, borderwidth=0)
-                style.configure("TNotebook.Tab", background=CARD_BG, foreground=TEXT_DIM, padding=[18, 10], font=("Segoe UI Semibold", 10))
-                style.map("TNotebook.Tab", background=[("selected", ACCENT)], foreground=[("selected", "#ffffff")])
-                style.configure("TEntry", fieldbackground=INPUT_BG, foreground=TEXT, borderwidth=1, relief="solid")
-                style.configure("TFrame", background=BG)
-
-                self._last_log_ids: set = set()
-
-                # ═══════ TOP HEADER BAR ═══════
-                header = tk.Frame(self.root, bg=HEADER_BG, height=56)
-                header.pack(fill="x")
-                header.pack_propagate(False)
-
-                # Left: Logo + Title
-                logo_frame = tk.Frame(header, bg=HEADER_BG)
-                logo_frame.pack(side="left", padx=16)
-                tk.Label(logo_frame, text="⬡", font=("Segoe UI", 22), bg=HEADER_BG, fg=ACCENT).pack(side="left")
-                title_frame = tk.Frame(logo_frame, bg=HEADER_BG)
-                title_frame.pack(side="left", padx=(8, 0))
-                tk.Label(title_frame, text="JARVIS", font=("Segoe UI Black", 15), bg=HEADER_BG, fg=TEXT).pack(anchor="w")
-                tk.Label(title_frame, text=f"v{AGENT_VERSION} • PC Agent", font=("Segoe UI", 8), bg=HEADER_BG, fg=TEXT_DIM).pack(anchor="w")
-
-                # Right: Status indicators
-                right_frame = tk.Frame(header, bg=HEADER_BG)
-                right_frame.pack(side="right", padx=16)
-                
-                self.conn_status = tk.Label(right_frame, text="● CONNECTING", font=("Segoe UI Black", 9), bg=HEADER_BG, fg=WARNING)
-                self.conn_status.pack(side="right", padx=(12, 0))
-                
-                self.pairing_label = tk.Label(right_frame, text="CODE: ——", font=("JetBrains Mono", 11, "bold"), bg=HEADER_BG, fg=ACCENT_GLOW)
-                self.pairing_label.pack(side="right", padx=8)
-                
-                self.ip_label = tk.Label(right_frame, text="IP: —", font=("JetBrains Mono", 9), bg=HEADER_BG, fg=TEXT_DIM)
-                self.ip_label.pack(side="right", padx=8)
-
-                # ═══════ NOTEBOOK (TABS) ═══════
-                notebook = ttk.Notebook(self.root)
-                notebook.pack(fill="both", expand=True, padx=0, pady=0)
-
-                # ══════════ Tab 1: DASHBOARD ══════════
-                dash_tab = tk.Frame(notebook, bg=BG)
-                notebook.add(dash_tab, text="  📊 Dashboard  ")
-
-                # ── Clock + Calendar Row ──
-                top_row = tk.Frame(dash_tab, bg=BG)
-                top_row.pack(fill="x", padx=12, pady=(12, 8))
-
-                # Clock Card (large, prominent)
-                clock_card = tk.Frame(top_row, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1, padx=24, pady=16)
-                clock_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
-
-                self.clock_label = tk.Label(clock_card, text="00:00", font=("Segoe UI Light", 48), bg=CARD_BG, fg=TEXT)
-                self.clock_label.pack(anchor="w")
-                self.seconds_label = tk.Label(clock_card, text=":00", font=("Segoe UI Light", 20), bg=CARD_BG, fg=TEXT_DIM)
-                self.seconds_label.place(relx=0.62, rely=0.35)
-                self.date_label = tk.Label(clock_card, text="Loading...", font=("Segoe UI", 13), bg=CARD_BG, fg=ACCENT_GLOW)
-                self.date_label.pack(anchor="w", pady=(4, 0))
-
-                # Calendar Card
-                cal_card = tk.Frame(top_row, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1, padx=14, pady=10)
-                cal_card.pack(side="left", fill="both", expand=True, padx=(6, 0))
-
-                now = datetime.now()
-                tk.Label(cal_card, text=f"📅 {now.strftime('%B %Y')}", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", pady=(0, 6))
-                
-                cal_grid = tk.Frame(cal_card, bg=CARD_BG)
-                cal_grid.pack(fill="x")
-                
-                for i, day in enumerate(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]):
-                    color = DANGER if i >= 5 else TEXT_DIM
-                    tk.Label(cal_grid, text=day, font=("Segoe UI", 8, "bold"), bg=CARD_BG, fg=color, width=3).grid(row=0, column=i, pady=(0, 2))
-                
-                month_cal = cal_module.monthcalendar(now.year, now.month)
-                for r, week in enumerate(month_cal[:6]):
-                    for c, day in enumerate(week):
-                        if day == 0:
-                            tk.Label(cal_grid, text="", bg=CARD_BG, width=3).grid(row=r+1, column=c)
-                        else:
-                            is_today = day == now.day
-                            lbl = tk.Label(cal_grid, text=str(day), font=("Segoe UI", 9, "bold" if is_today else "normal"),
-                                          bg=ACCENT if is_today else CARD_BG, fg="white" if is_today else TEXT_DIM, width=3)
-                            if is_today:
-                                lbl.configure(relief="solid", borderwidth=0)
-                            lbl.grid(row=r+1, column=c, pady=1)
-
-                # ── System Stats Cards ──
-                stats_frame = tk.Frame(dash_tab, bg=BG)
-                stats_frame.pack(fill="x", padx=12, pady=(0, 8))
-                stats_frame.columnconfigure((0,1,2,3,4), weight=1)
-
-                self.cpu_card = self._make_stat_card(stats_frame, "⚡ CPU", "—%", 0, ACCENT)
-                self.ram_card = self._make_stat_card(stats_frame, "🧠 RAM", "—%", 1, "#8b5cf6")
-                self.disk_card = self._make_stat_card(stats_frame, "💾 Disk", "—%", 2, "#f59e0b")
-                self.battery_card = self._make_stat_card(stats_frame, "🔋 Battery", "—", 3, SUCCESS)
-                self.uptime_card = self._make_stat_card(stats_frame, "⏱️ Uptime", "—", 4, "#ec4899")
-
-                # ── Connection Info Card ──
-                conn_card = tk.Frame(dash_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                conn_card.pack(fill="x", padx=12, pady=(0, 8))
-
-                conn_inner = tk.Frame(conn_card, bg=CARD_BG)
-                conn_inner.pack(fill="x", padx=16, pady=12)
-
-                tk.Label(conn_inner, text="🔗 Connection Details", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", pady=(0, 8))
-                
-                self.conn_details = tk.Label(conn_inner, text="Initializing...", font=("JetBrains Mono", 9), bg=CARD_BG, fg=TEXT_DIM, justify="left", anchor="w")
-                self.conn_details.pack(anchor="w", fill="x")
-
-                # ── Activity Log ──
-                log_card = tk.Frame(dash_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                log_card.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-
-                log_header = tk.Frame(log_card, bg=CARD_BG)
-                log_header.pack(fill="x", padx=16, pady=(12, 6))
-                tk.Label(log_header, text="📋 Activity Log", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(side="left")
-                tk.Button(log_header, text="🗑 Clear", command=lambda: (clear_logs(), self._clear_log_display()), bg=CARD_BG, fg=TEXT_DIM, relief="flat", font=("Segoe UI", 8), activebackground=DANGER, activeforeground="white").pack(side="right")
-                
-                self.log_text = scrolledtext.ScrolledText(log_card, height=6, bg=INPUT_BG, fg=TEXT_DIM, font=("JetBrains Mono", 9), borderwidth=0, state="disabled", insertbackground=TEXT)
-                self.log_text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-
-                # ══════════ Tab 2: ACTIONS ══════════
-                actions_tab = tk.Frame(notebook, bg=BG)
-                notebook.add(actions_tab, text="  ⚡ Actions  ")
-
-                actions_scroll = tk.Frame(actions_tab, bg=BG)
-                actions_scroll.pack(fill="both", expand=True, padx=0, pady=0)
-
-                self._make_action_group(actions_scroll, "🔌 Power Controls", [
-                    ("🔒 Lock", self._action_lock), ("😴 Sleep", self._action_sleep),
-                    ("🔄 Restart", self._action_restart), ("⏻ Shutdown", self._action_shutdown),
-                ])
-
-                self._make_action_group(actions_scroll, "🔊 Audio Controls", [
-                    ("🔇 Mute", self._action_mute), ("🔊 Unmute", self._action_unmute),
-                    ("⏯️ Play/Pause", self._action_playpause), ("⏭️ Next Track", self._action_next),
-                ])
-
-                self._make_action_group(actions_scroll, "🚀 Performance", [
-                    ("🧹 Clear Temp", self._action_clear_temp), ("⚡ High Perf", self._action_highperf),
-                    ("🔄 Explorer", self._action_explorer), ("🎮 Gaming Mode", self._action_gaming),
-                ])
-
-                # P2P Diagnostics
-                diag_frame = tk.Frame(actions_scroll, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                diag_frame.pack(fill="x", padx=12, pady=8)
-
-                tk.Label(diag_frame, text="🔍 P2P Network Diagnostics", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-                
-                diag_inner = tk.Frame(diag_frame, bg=CARD_BG)
-                diag_inner.pack(fill="x", padx=16, pady=(0, 12))
-
-                diag_info = tk.Frame(diag_inner, bg=CARD_BG)
-                diag_info.pack(fill="x", pady=(0, 8))
-                tk.Label(diag_info, text=f"Port: {LOCAL_P2P_PORT}", font=("JetBrains Mono", 10), bg=CARD_BG, fg=ACCENT_GLOW).pack(side="left")
-                self.p2p_status_label = tk.Label(diag_info, text="Checking...", font=("Segoe UI Semibold", 10), bg=CARD_BG, fg=TEXT_DIM)
-                self.p2p_status_label.pack(side="left", padx=16)
-
-                diag_btns = tk.Frame(diag_inner, bg=CARD_BG)
-                diag_btns.pack(fill="x")
-                tk.Button(diag_btns, text="🔥 Test Port", command=self._action_test_firewall, bg="#1e3a5f", fg=TEXT, relief="flat", borderwidth=0, font=("Segoe UI Semibold", 9), padx=16, pady=6, activebackground=ACCENT).pack(side="left", padx=(0, 6))
-                tk.Button(diag_btns, text="📋 Copy IPs", command=self._copy_ips, bg="#1e3a5f", fg=TEXT, relief="flat", borderwidth=0, font=("Segoe UI Semibold", 9), padx=16, pady=6, activebackground=ACCENT).pack(side="left", padx=(0, 6))
-                tk.Button(diag_btns, text="🔄 Refresh", command=lambda: self._tick(), bg="#1e3a5f", fg=TEXT, relief="flat", borderwidth=0, font=("Segoe UI Semibold", 9), padx=16, pady=6, activebackground=ACCENT).pack(side="left")
-
-                # ══════════ Tab 3: FILES ══════════
-                files_tab = tk.Frame(notebook, bg=BG)
-                notebook.add(files_tab, text="  📁 Files  ")
-
-                # Download Folder Config
-                dl_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                dl_frame.pack(fill="x", padx=12, pady=(12, 8))
-
-                tk.Label(dl_frame, text="📂 Download Folder", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-
-                ff = tk.Frame(dl_frame, bg=CARD_BG)
-                ff.pack(fill="x", padx=16, pady=(0, 12))
-
-                self.save_folder_var = tk.StringVar(value=os.path.expanduser("~/Downloads/JARVIS"))
-                self.folder_entry = ttk.Entry(ff, textvariable=self.save_folder_var, width=40)
-                self.folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-                tk.Button(ff, text="📁 Browse", command=self._browse_folder, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=12, pady=4).pack(side="left")
-                tk.Button(ff, text="📂 Open", command=self._open_folder, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=12, pady=4).pack(side="left", padx=(6, 0))
-
-                # Drag & Drop Zone
-                drop_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                drop_frame.pack(fill="x", padx=12, pady=(0, 8))
-
-                tk.Label(drop_frame, text="📥 Drag & Drop to Share", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-                
-                self.drop_zone = tk.Label(drop_frame, text="🗂️  Drag files here to send to phone\n\n— or use the Send File button below —",
-                                          font=("Segoe UI", 11), bg="#0c1929", fg=TEXT_DIM,
-                                          relief="ridge", borderwidth=2, padx=24, pady=36)
-                self.drop_zone.pack(fill="x", padx=16, pady=(0, 12))
-
-                # Enable drag and drop (Windows)
-                try:
-                    if sys.platform == "win32":
-                        hwnd = int(self.root.wm_frame(), 16)
-                        ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
-                except Exception:
-                    pass
-
-                # Send File
-                send_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                send_frame.pack(fill="x", padx=12, pady=(0, 8))
-
-                tk.Label(send_frame, text="📤 Send File to Phone", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-
-                sf = tk.Frame(send_frame, bg=CARD_BG)
-                sf.pack(fill="x", padx=16, pady=(0, 12))
-
-                self.send_file_var = tk.StringVar()
-                self.send_file_entry = ttk.Entry(sf, textvariable=self.send_file_var, width=40)
-                self.send_file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-                tk.Button(sf, text="📄 Select", command=self._select_file, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=12, pady=4).pack(side="left")
-                tk.Button(sf, text="📤 Send", command=self._send_file, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 9, "bold"), padx=16, pady=4).pack(side="left", padx=(6, 0))
-
-                # Recent Transfers
-                transfers_frame = tk.Frame(files_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                transfers_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-
-                tk.Label(transfers_frame, text="📋 Recent Transfers", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-
-                self.transfer_list = tk.Listbox(transfers_frame, bg=INPUT_BG, fg=TEXT_DIM, font=("JetBrains Mono", 9), height=6, borderwidth=0, selectbackground=ACCENT, selectforeground="white")
-                self.transfer_list.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-
-                # ══════════ Tab 4: ASSISTANT ══════════
-                assistant_tab = tk.Frame(notebook, bg=BG)
-                notebook.add(assistant_tab, text="  🤖 Assistant  ")
-
-                # Voice Assistant Card
-                assist_card = tk.Frame(assistant_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                assist_card.pack(fill="x", padx=12, pady=(12, 8))
-
-                assist_header = tk.Frame(assist_card, bg=CARD_BG)
-                assist_header.pack(fill="x", padx=16, pady=(12, 4))
-                tk.Label(assist_header, text="🎤", font=("Segoe UI", 20), bg=CARD_BG, fg=ACCENT).pack(side="left")
-                ah_text = tk.Frame(assist_header, bg=CARD_BG)
-                ah_text.pack(side="left", padx=(10, 0))
-                tk.Label(ah_text, text="JARVIS Voice Assistant", font=("Segoe UI Semibold", 14), bg=CARD_BG, fg=TEXT).pack(anchor="w")
-                tk.Label(ah_text, text='Wake word: "Jarvis" • Auto-listens in background', font=("Segoe UI", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w")
-
-                assist_btns = tk.Frame(assist_card, bg=CARD_BG)
-                assist_btns.pack(fill="x", padx=16, pady=(8, 12))
-
-                self.wake_status = tk.Label(assist_btns, text="⏸ Inactive", font=("Segoe UI Semibold", 11), bg=CARD_BG, fg=TEXT_DIM)
-                self.wake_status.pack(side="left")
-
-                tk.Button(assist_btns, text="🎤 Start Listening", command=self._start_wake_word, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 10), padx=20, pady=6, activebackground=ACCENT_GLOW).pack(side="right")
-                tk.Button(assist_btns, text="⏹ Stop", command=self._stop_wake_word, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI", 10), padx=14, pady=6).pack(side="right", padx=(0, 8))
-
-                # Voice Training Card
-                train_card = tk.Frame(assistant_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                train_card.pack(fill="x", padx=12, pady=(0, 8))
-
-                tk.Label(train_card, text="🧠 Voice Training", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 2))
-                tk.Label(train_card, text='Record your voice saying "Jarvis" to improve wake-word accuracy.\nSamples are auto-saved to ~/.jarvis/voice_samples/', font=("Segoe UI", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", padx=16, pady=(0, 8))
-                
-                train_btns = tk.Frame(train_card, bg=CARD_BG)
-                train_btns.pack(fill="x", padx=16, pady=(0, 12))
-                
-                self.train_count_label = tk.Label(train_btns, text="Samples: 0", font=("JetBrains Mono", 10), bg=CARD_BG, fg=ACCENT_GLOW)
-                self.train_count_label.pack(side="left")
-                tk.Button(train_btns, text="🎙️ Record Sample", command=self._record_voice_sample, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="right")
-                
-                # Load existing sample count
-                try:
-                    samples_dir = os.path.join(os.path.expanduser("~"), ".jarvis", "voice_samples")
-                    if os.path.isdir(samples_dir):
-                        count = len([f for f in os.listdir(samples_dir) if f.endswith(".wav")])
-                        self.train_count_label.configure(text=f"Samples: {count}")
-                except Exception:
-                    pass
-
-                # Assistant Chat Log
-                chat_card = tk.Frame(assistant_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                chat_card.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-
-                tk.Label(chat_card, text="💬 Conversation", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-                self.chat_log = scrolledtext.ScrolledText(chat_card, height=8, bg=INPUT_BG, fg=TEXT, font=("Segoe UI", 10), borderwidth=0, state="disabled", wrap="word", insertbackground=TEXT)
-                self.chat_log.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-                
-                chat_input_frame = tk.Frame(chat_card, bg=CARD_BG)
-                chat_input_frame.pack(fill="x", padx=16, pady=(0, 12))
-                
-                self.chat_input_var = tk.StringVar()
-                chat_entry = ttk.Entry(chat_input_frame, textvariable=self.chat_input_var, width=50)
-                chat_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-                chat_entry.bind("<Return>", lambda e: self._send_chat())
-                tk.Button(chat_input_frame, text="📤 Send", command=self._send_chat, bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="right")
-
-                # ══════════ Tab 5: SETTINGS ══════════
-                settings_tab = tk.Frame(notebook, bg=BG)
-                notebook.add(settings_tab, text="  ⚙️ Settings  ")
-
-                # Agent Settings Card
-                settings_card = tk.Frame(settings_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                settings_card.pack(fill="x", padx=12, pady=(12, 8))
-
-                tk.Label(settings_card, text="⚙️ Agent Configuration", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 8))
-
-                sf = tk.Frame(settings_card, bg=CARD_BG)
-                sf.pack(fill="x", padx=16, pady=(0, 12))
-
-                tk.Label(sf, text="Device Name:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w", pady=6)
-                self.device_name_entry = ttk.Entry(sf, width=30)
-                self.device_name_entry.insert(0, DEVICE_NAME)
-                self.device_name_entry.grid(row=0, column=1, sticky="w", pady=6, padx=(12, 0))
-
-                tk.Label(sf, text="P2P Port:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=6)
-                port_entry = ttk.Entry(sf, width=30)
-                port_entry.insert(0, str(LOCAL_P2P_PORT))
-                port_entry.config(state="readonly")
-                port_entry.grid(row=1, column=1, sticky="w", pady=6, padx=(12, 0))
-
-                tk.Label(sf, text="Save Path:", bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 10)).grid(row=2, column=0, sticky="w", pady=6)
-                tk.Label(sf, text=os.path.expanduser("~/Downloads/JARVIS"), bg=CARD_BG, fg=ACCENT_GLOW, font=("JetBrains Mono", 9)).grid(row=2, column=1, sticky="w", pady=6, padx=(12, 0))
-
-                # Quick Actions
-                btn_frame = tk.Frame(settings_card, bg=CARD_BG)
-                btn_frame.pack(fill="x", padx=16, pady=(0, 12))
-                
-                tk.Button(btn_frame, text="📥 Export Logs", command=self._export_logs, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=14, pady=6).pack(side="left")
-                tk.Button(btn_frame, text="📋 Copy Code", command=self._copy_pairing, bg="#1e3a5f", fg=TEXT, relief="flat", font=("Segoe UI Semibold", 9), padx=14, pady=6).pack(side="left", padx=6)
-                tk.Button(btn_frame, text="🌐 Open Web App", command=lambda: webbrowser.open(DEFAULT_APP_URL), bg=ACCENT, fg="white", relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="left", padx=6)
-                tk.Button(btn_frame, text="❌ Quit", command=self._on_close, bg=DANGER, fg="white", relief="flat", font=("Segoe UI Semibold", 9), padx=16, pady=6).pack(side="right")
-
-                # About Card
-                about_card = tk.Frame(settings_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                about_card.pack(fill="x", padx=12, pady=(0, 8))
-
-                about_inner = tk.Frame(about_card, bg=CARD_BG)
-                about_inner.pack(fill="x", padx=16, pady=16)
-                tk.Label(about_inner, text="⬡", font=("Segoe UI", 28), bg=CARD_BG, fg=ACCENT).pack(side="left")
-                about_text = tk.Frame(about_inner, bg=CARD_BG)
-                about_text.pack(side="left", padx=(12, 0))
-                tk.Label(about_text, text=f"JARVIS PC Agent v{AGENT_VERSION}", font=("Segoe UI Black", 14), bg=CARD_BG, fg=TEXT).pack(anchor="w")
-                tk.Label(about_text, text="Remote PC control from your phone • Built with Python", font=("Segoe UI", 10), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w")
-                tk.Label(about_text, text=f"Python {sys.version_info.major}.{sys.version_info.minor} │ {platform.system()} │ {platform.node()}", font=("JetBrains Mono", 9), bg=CARD_BG, fg=TEXT_DIM).pack(anchor="w", pady=(4, 0))
-
-                # System Info Card
-                sysinfo_card = tk.Frame(settings_tab, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-                sysinfo_card.pack(fill="x", padx=12, pady=(0, 8))
-                
-                tk.Label(sysinfo_card, text="🖥️ System Information", font=("Segoe UI Semibold", 12), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-                
-                sysinfo_inner = tk.Frame(sysinfo_card, bg=CARD_BG)
-                sysinfo_inner.pack(fill="x", padx=16, pady=(0, 12))
-                
-                try:
-                    import cpuinfo
-                    cpu_name = cpuinfo.get_cpu_info().get("brand_raw", "Unknown CPU")
-                except Exception:
-                    cpu_name = platform.processor() or "Unknown CPU"
-                
-                total_ram = psutil.virtual_memory().total / (1024**3)
-                disk_total = psutil.disk_usage('C:\\' if sys.platform == "win32" else '/').total / (1024**3)
-                
-                for label_text in [
-                    f"CPU: {cpu_name}",
-                    f"RAM: {total_ram:.1f} GB",
-                    f"Disk: {disk_total:.0f} GB",
-                    f"OS: {platform.system()} {platform.release()}",
-                    f"Hostname: {platform.node()}",
-                ]:
-                    tk.Label(sysinfo_inner, text=label_text, font=("JetBrains Mono", 9), bg=CARD_BG, fg=TEXT_DIM, anchor="w").pack(anchor="w", pady=1)
-
-                # Start ticking
-                self._tick()
-                self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-                self.root.mainloop()
-
-            # ═══════ HELPER METHODS ═══════
-            def _make_stat_card(self, parent, title, value, col, accent_color=None):
-                accent = accent_color or self.ACCENT
-                card = tk.Frame(parent, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
-                card.grid(row=0, column=col, padx=3, sticky="nsew")
-                tk.Label(card, text=title, font=("Segoe UI", 8), bg=self.CARD_BG, fg=self.TEXT_DIM).pack(pady=(10, 2))
-                val_label = tk.Label(card, text=value, font=("Segoe UI Black", 18), bg=self.CARD_BG, fg=accent)
-                val_label.pack(pady=(0, 10))
-                return val_label
-
-            def _make_action_group(self, parent, title, buttons):
-                frame = tk.Frame(parent, bg=self.CARD_BG, highlightbackground=self.CARD_BORDER, highlightthickness=1)
-                frame.pack(fill="x", padx=12, pady=4)
-                tk.Label(frame, text=title, font=("Segoe UI Semibold", 12), bg=self.CARD_BG, fg=self.TEXT).pack(anchor="w", padx=16, pady=(12, 6))
-                btn_row = tk.Frame(frame, bg=self.CARD_BG)
-                btn_row.pack(fill="x", padx=16, pady=(0, 12))
-                for i, (text, cmd) in enumerate(buttons):
-                    tk.Button(btn_row, text=text, command=cmd, width=14, bg="#1e3a5f", fg=self.TEXT, relief="flat", font=("Segoe UI Semibold", 9), activebackground=self.ACCENT, activeforeground="white", padx=4, pady=6).grid(row=0, column=i, padx=3, pady=2)
-            
-            def _clear_log_display(self):
-                try:
-                    self.log_text.configure(state="normal")
-                    self.log_text.delete("1.0", "end")
-                    self.log_text.configure(state="disabled")
-                    self._last_log_ids.clear()
-                except Exception:
-                    pass
-
-            # ═══════ ACTIONS ═══════
-            def _action_lock(self):
-                if sys.platform == "win32":
-                    ctypes.windll.user32.LockWorkStation()
-
-            def _action_sleep(self):
-                if sys.platform == "win32":
-                    os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-
-            def _action_restart(self):
-                if sys.platform == "win32":
-                    os.system("shutdown /r /t 10")
-            
-            def _action_shutdown(self):
-                if sys.platform == "win32":
-                    os.system("shutdown /s /t 10")
-
-            def _action_explorer(self):
-                if sys.platform == "win32":
-                    os.system("taskkill /f /im explorer.exe")
-                    time.sleep(1)
-                    os.system("start explorer.exe")
-
-            def _action_mute(self):
-                if sys.platform == "win32" and HAS_PYCAW:
-                    try:
-                        devices = AudioUtilities.GetSpeakers()
-                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        volume = cast(interface, POINTER(IAudioEndpointVolume))
-                        volume.SetMute(1, None)
-                    except Exception:
-                        pass
-
-            def _action_unmute(self):
-                if sys.platform == "win32" and HAS_PYCAW:
-                    try:
-                        devices = AudioUtilities.GetSpeakers()
-                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        volume = cast(interface, POINTER(IAudioEndpointVolume))
-                        volume.SetMute(0, None)
-                    except Exception:
-                        pass
-            
-            def _action_playpause(self):
-                pyautogui.press("playpause")
-            
-            def _action_next(self):
-                pyautogui.press("nexttrack")
-
-            def _action_clear_temp(self):
-                if sys.platform == "win32":
-                    try:
-                        temp_path = os.environ.get("TEMP", "")
-                        if temp_path and os.path.isdir(temp_path):
-                            import shutil
-                            for item in os.listdir(temp_path):
-                                item_path = os.path.join(temp_path, item)
-                                try:
-                                    if os.path.isdir(item_path):
-                                        shutil.rmtree(item_path, ignore_errors=True)
-                                    else:
-                                        os.unlink(item_path)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-
-            def _action_highperf(self):
-                if sys.platform == "win32":
-                    os.system("powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c")
-            
-            def _action_gaming(self):
-                if sys.platform == "win32":
-                    try:
-                        kernel32 = ctypes.windll.kernel32
-                        handle = kernel32.GetCurrentProcess()
-                        kernel32.SetPriorityClass(handle, 0x00008000)
-                        add_log("info", "Gaming mode enabled", category="system")
-                    except Exception:
-                        pass
-
-            def _action_test_firewall(self):
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(2)
-                    result = sock.connect_ex(("127.0.0.1", LOCAL_P2P_PORT))
-                    sock.close()
-                    if result == 0:
-                        self.p2p_status_label.configure(text="✅ Port OPEN", fg=self.SUCCESS)
-                    else:
-                        self.p2p_status_label.configure(text="❌ Port CLOSED", fg=self.DANGER)
-                except Exception as e:
-                    self.p2p_status_label.configure(text=f"Error: {e}", fg=self.DANGER)
-
-            def _copy_ips(self):
-                try:
-                    ips = get_agent_status().get("local_ips", [])
-                    self.root.clipboard_clear()
-                    self.root.clipboard_append("\n".join(ips))
-                except Exception:
-                    pass
-
-            def _export_logs(self):
-                try:
-                    path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
-                    if path:
-                        with open(path, "w", encoding="utf-8") as f:
-                            json.dump(get_logs(), f, indent=2, default=str)
-                except Exception:
-                    pass
-
-            def _copy_pairing(self):
-                try:
-                    code = str(get_agent_status().get("pairing_code") or "")
-                    self.root.clipboard_clear()
-                    self.root.clipboard_append(code)
-                except Exception:
-                    pass
-            
-            def _browse_folder(self):
-                try:
-                    folder = filedialog.askdirectory()
-                    if folder:
-                        self.save_folder_var.set(folder)
-                        os.makedirs(folder, exist_ok=True)
-                except Exception:
-                    pass
-            
-            def _open_folder(self):
-                try:
-                    folder = self.save_folder_var.get()
-                    os.makedirs(folder, exist_ok=True)
-                    if sys.platform == "win32":
-                        os.startfile(folder)
-                    else:
-                        subprocess.run(["xdg-open", folder])
-                except Exception:
-                    pass
-            
-            def _select_file(self):
-                try:
-                    file_path = filedialog.askopenfilename()
-                    if file_path:
-                        self.send_file_var.set(file_path)
-                except Exception:
-                    pass
-            
-            def _send_file(self):
-                try:
-                    file_path = self.send_file_var.get()
-                    if file_path and os.path.exists(file_path):
-                        file_name = os.path.basename(file_path)
-                        self.transfer_list.insert(0, f"📤 {file_name} - Pending...")
-                        add_log("info", f"File queued for send: {file_name}", category="file")
-                except Exception:
-                    pass
-
-            def _start_wake_word(self):
-                self.wake_status.configure(text="🟢 Listening for 'Jarvis'...", fg=self.SUCCESS)
-                add_log("info", "Wake word listener started", category="assistant")
-                # Start speech recognition in background
-                if HAS_SPEECH_RECOGNITION:
-                    def listen_loop():
-                        recognizer = sr.Recognizer()
-                        mic = sr.Microphone()
-                        with mic as source:
-                            recognizer.adjust_for_ambient_noise(source, duration=1)
-                        while True:
-                            try:
-                                with mic as source:
-                                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                                text = recognizer.recognize_google(audio).lower()
-                                if "jarvis" in text:
-                                    command = text.split("jarvis", 1)[-1].strip()
-                                    if command:
-                                        self.root.after(0, lambda c=command: self._process_voice_command(c))
-                            except (sr.WaitTimeoutError, sr.UnknownValueError):
-                                continue
-                            except Exception as e:
-                                add_log("warn", f"Voice recognition error: {e}", category="assistant")
-                                break
-                    threading.Thread(target=listen_loop, daemon=True).start()
-            
-            def _stop_wake_word(self):
-                self.wake_status.configure(text="⏸ Inactive", fg=self.TEXT_DIM)
-                add_log("info", "Wake word listener stopped", category="assistant")
-            
-            def _process_voice_command(self, command: str):
-                self._append_chat(f"🎤 You: {command}")
-                add_log("info", f"Voice command: {command}", category="assistant")
-                # Process through agent's command handler
-                if self.runner.agent and self.runner.loop:
-                    async def _run_cmd():
-                        result = await self.runner.agent._handle_command("voice_command", {"text": command})
-                        return result
-                    fut = asyncio.run_coroutine_threadsafe(_run_cmd(), self.runner.loop)
-                    try:
-                        result = fut.result(timeout=10)
-                        self._append_chat(f"🤖 JARVIS: {json.dumps(result, indent=2)[:200]}")
-                    except Exception as e:
-                        self._append_chat(f"🤖 JARVIS: Error - {e}")
-            
-            def _record_voice_sample(self):
-                """Record a wake word sample for voice training."""
-                if not HAS_SPEECH_RECOGNITION:
-                    add_log("warn", "speech_recognition not installed", category="assistant")
-                    return
-                
-                def record():
-                    try:
-                        self.train_count_label.configure(text="🎙️ Recording...")
-                        recognizer = sr.Recognizer()
-                        with sr.Microphone() as source:
-                            audio = recognizer.listen(source, timeout=5, phrase_time_limit=3)
-                        # Save sample
-                        samples_dir = os.path.join(os.path.expanduser("~"), ".jarvis", "voice_samples")
-                        os.makedirs(samples_dir, exist_ok=True)
-                        count = len([f for f in os.listdir(samples_dir) if f.endswith(".wav")])
-                        sample_path = os.path.join(samples_dir, f"wake_sample_{count + 1}.wav")
-                        with open(sample_path, "wb") as f:
-                            f.write(audio.get_wav_data())
-                        self.root.after(0, lambda: self.train_count_label.configure(text=f"Samples: {count + 1}"))
-                        add_log("info", f"Voice sample saved: {sample_path}", category="assistant")
-                    except Exception as e:
-                        self.root.after(0, lambda: self.train_count_label.configure(text=f"Error: {e}"))
-                
-                threading.Thread(target=record, daemon=True).start()
-            
-            def _send_chat(self):
-                text = self.chat_input_var.get().strip()
-                if not text:
-                    return
-                self.chat_input_var.set("")
-                self._append_chat(f"🧑 You: {text}")
-                self._process_voice_command(text)
-            
-            def _append_chat(self, line: str):
-                try:
-                    self.chat_log.configure(state="normal")
-                    self.chat_log.insert("end", line + "\n\n")
-                    self.chat_log.see("end")
-                    self.chat_log.configure(state="disabled")
-                except Exception:
-                    pass
-
-            def _append_log(self, line: str):
-                try:
-                    self.log_text.configure(state="normal")
-                    self.log_text.insert("end", line + "\n")
-                    self.log_text.see("end")
-                    self.log_text.configure(state="disabled")
-                except Exception:
-                    pass
-
-            def _tick(self):
-                now = datetime.now()
-                self.clock_label.configure(text=now.strftime("%H:%M"))
-                self.seconds_label.configure(text=f":{now.strftime('%S')}")
-                self.date_label.configure(text=now.strftime("%A, %d %B %Y"))
-                
-                st = get_agent_status()
-                mode = st.get("connection_mode", "cloud")
-                
-                if mode == "local_p2p":
-                    self.conn_status.configure(text="● LOCAL P2P", fg=self.SUCCESS)
-                elif st.get("connected"):
-                    self.conn_status.configure(text="● CONNECTED", fg=self.SUCCESS)
-                else:
-                    self.conn_status.configure(text="● CONNECTING", fg=self.WARNING)
-                
-                code = st.get('pairing_code') or '——'
-                self.pairing_label.configure(text=f"CODE: {code}")
-                
-                ips = st.get("local_ips") or []
-                self.ip_label.configure(text=f"IP: {', '.join(ips[:2]) if ips else '—'}")
-
-                p2p = get_local_p2p_server()
-                dev_id = st.get('device_id', '—')
-                dev_id_short = dev_id[:12] + "..." if len(dev_id) > 12 else dev_id
-                details = f"Device: {st.get('device_name', '—')}  │  ID: {dev_id_short}\n"
-                details += f"IPs: {', '.join(ips) if ips else '—'}  │  Port: {LOCAL_P2P_PORT}\n"
-                details += f"P2P: {'Running' if p2p and p2p.running else 'Stopped'} ({len(p2p.clients) if p2p else 0} clients)  │  Mode: {mode.upper()}"
-                self.conn_details.configure(text=details)
-
-                cpu = st.get('cpu_percent', 0)
-                mem = st.get('memory_percent', 0)
-                self.cpu_card.configure(text=f"{cpu:.0f}%", fg=self.DANGER if cpu > 80 else self.ACCENT)
-                self.ram_card.configure(text=f"{mem:.0f}%", fg=self.DANGER if mem > 80 else "#8b5cf6")
-                
-                try:
-                    disk = psutil.disk_usage('C:\\' if sys.platform == "win32" else '/')
-                    self.disk_card.configure(text=f"{disk.percent:.0f}%", fg=self.DANGER if disk.percent > 90 else "#f59e0b")
-                    
-                    battery = psutil.sensors_battery()
-                    if battery:
-                        plug = "⚡" if battery.power_plugged else ""
-                        bat_color = self.DANGER if battery.percent < 20 else self.SUCCESS
-                        self.battery_card.configure(text=f"{plug}{battery.percent:.0f}%", fg=bat_color)
-                    else:
-                        self.battery_card.configure(text="AC", fg=self.SUCCESS)
-                    
-                    boot_time = psutil.boot_time()
-                    uptime_secs = time.time() - boot_time
-                    hours = int(uptime_secs // 3600)
-                    mins = int((uptime_secs % 3600) // 60)
-                    self.uptime_card.configure(text=f"{hours}h{mins}m")
-                except Exception:
-                    pass
-
-                if p2p and p2p.running:
-                    clients = len(p2p.clients)
-                    self.p2p_status_label.configure(text=f"🟢 Running ({clients} clients)", fg=self.SUCCESS)
-                else:
-                    self.p2p_status_label.configure(text="🔴 Stopped", fg=self.DANGER)
-
-                for entry in get_logs():
-                    eid = str(entry.get("id"))
-                    if eid in self._last_log_ids:
-                        continue
-                    self._last_log_ids.add(eid)
-                    ts = str(entry.get("timestamp", ""))[-8:]
-                    cat = str(entry.get("category", "general"))
-                    lvl = str(entry.get("level", "info")).upper()
-                    msg = str(entry.get("message", ""))
-                    emoji = {"ERROR": "❌", "WARN": "⚠️", "INFO": "ℹ️"}.get(lvl, "📝")
-                    self._append_log(f"{ts} {emoji} [{cat}] {msg}")
-
-                self.root.after(500, self._tick)
-
-            def _on_close(self):
-                self.runner.stop()
-                try:
-                    self.root.destroy()
-                except Exception:
-                    pass
-
-        JarvisAgentGUI()
-        return
-
-    # Console mode
-    try:
-        asyncio.run(run_agent())
-    except KeyboardInterrupt:
-        print("\n\nShutting down...")
-    except Exception as e:
-        print(f"\n❌ FATAL ERROR: {e}")
-        print("\nPress Enter to exit...")
+        # Simple console GUI placeholder - the full Tkinter GUI is in the uploaded file
+        runner = AgentThreadRunner()
+        runner.start()
+        
         try:
-            input()
-        except:
-            time.sleep(5)
+            print("Agent running with GUI. Press Ctrl+C to stop.")
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            runner.stop()
+    else:
+        # Console mode
+        try:
+            asyncio.run(run_agent())
+        except KeyboardInterrupt:
+            print("\n👋 Agent stopped by user.")
 
 
 if __name__ == "__main__":
