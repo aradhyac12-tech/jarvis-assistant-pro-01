@@ -141,7 +141,8 @@ export default function Hub() {
   const [installedApps, setInstalledApps] = useState<AppInfo[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
   const [appSearch, setAppSearch] = useState("");
-  const [appView, setAppView] = useState<"running" | "installed">("running");
+  const [appView, setAppView] = useState<"running" | "installed" | "services">("running");
+  const [services, setServices] = useState<Array<{ name: string; display_name: string; status: string; start_type: string; pid: number | null }>>([]);
 
   const volumeCommitRef = useRef<number | null>(null);
   const brightnessCommitRef = useRef<number | null>(null);
@@ -384,6 +385,18 @@ export default function Hub() {
     setAppsLoading(false);
   }, [sendCommand]);
 
+  const fetchServices = useCallback(async () => {
+    setAppsLoading(true);
+    try {
+      const result = await sendCommand("get_services", {}, { awaitResult: true, timeoutMs: 15000 });
+      if (result.success && "result" in result) {
+        const data = result.result as { services?: any[] };
+        setServices(data?.services || []);
+      }
+    } catch {}
+    setAppsLoading(false);
+  }, [sendCommand]);
+
   useEffect(() => {
     if (activeTab === "apps" && isConnected) {
       fetchRunningApps();
@@ -489,6 +502,7 @@ export default function Hub() {
     { title: "AI", icon: Bot, href: "/voice" },
     { title: "Files", icon: FolderOpen, href: "/files" },
     { title: "Camera", icon: Camera, href: "/miccamera" },
+    { title: "Webcam", icon: Mic, href: "/webcam" },
     { title: "Settings", icon: Settings, href: "/settings" },
   ];
 
@@ -669,7 +683,7 @@ export default function Hub() {
                 {/* Quick Links */}
                 <Card className="border-border/20 bg-card/50 md:col-span-2">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-5 gap-2">
                       {quickLinks.map((link) => (
                         <Link key={link.href} to={link.href}>
                           <Button variant="ghost" className="w-full h-auto flex-col gap-1.5 py-3 hover:bg-secondary/50 border border-transparent hover:border-border/20">
@@ -823,25 +837,28 @@ export default function Hub() {
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
-                    placeholder="Search apps..."
+                    placeholder="Search apps & services..."
                     value={appSearch}
                     onChange={(e) => setAppSearch(e.target.value)}
                     className="pl-9 h-9 bg-card border-border/30 text-sm"
                   />
                 </div>
 
-                {/* App View Toggle */}
+                {/* App View Toggle - 3 tabs */}
                 <div className="flex gap-1 p-0.5 bg-card/50 rounded-lg border border-border/20">
-                  {(["running", "installed"] as const).map((v) => (
+                  {(["running", "installed", "services"] as const).map((v) => (
                     <button
                       key={v}
-                      onClick={() => setAppView(v)}
+                      onClick={() => {
+                        setAppView(v as any);
+                        if (v === "services" && services.length === 0) fetchServices();
+                      }}
                       className={cn(
-                        "flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all capitalize",
+                        "flex-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all capitalize",
                         appView === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
                       )}
                     >
-                      {v === "running" ? `Running (${filteredRunning.length})` : `Installed (${filteredInstalled.length})`}
+                      {v === "running" ? `Running (${filteredRunning.length})` : v === "installed" ? `Installed (${filteredInstalled.length})` : `Services (${services.length})`}
                     </button>
                   ))}
                 </div>
@@ -851,79 +868,128 @@ export default function Hub() {
                     <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
                   </div>
                 ) : (
-                  <div className="space-y-1">
-                    {appView === "running" ? (
-                      filteredRunning.length === 0 ? (
-                        <Card className="border-border/20 bg-card/50">
-                          <CardContent className="p-4 text-center text-xs text-muted-foreground">
-                            {appSearch ? "No matching running apps" : "No running apps found"}
-                          </CardContent>
-                        </Card>
-                      ) : (
-                        filteredRunning.map((app) => (
-                          <Card key={`${app.name}-${app.pid}`} className="border-border/20 bg-card/50">
-                            <CardContent className="p-2 flex items-center justify-between">
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-medium truncate">{app.name}</p>
-                                <div className="flex gap-2 text-[10px] text-muted-foreground">
-                                  {app.cpu !== undefined && <span>CPU: {app.cpu}%</span>}
-                                  {app.memory !== undefined && <span>RAM: {app.memory}%</span>}
-                                  <span className={cn(
-                                    app.status === "running" ? "text-emerald-400" : "text-muted-foreground"
-                                  )}>{app.status}</span>
+                  <ScrollArea className="h-[50vh]">
+                    <div className="space-y-1 pr-2">
+                      {appView === "running" ? (
+                        filteredRunning.length === 0 ? (
+                          <Card className="border-border/20 bg-card/50">
+                            <CardContent className="p-4 text-center text-xs text-muted-foreground">
+                              {appSearch ? "No matching running apps" : "No running apps found"}
+                            </CardContent>
+                          </Card>
+                        ) : (
+                          filteredRunning.map((app) => (
+                            <Card key={`${app.name}-${app.pid}`} className="border-border/20 bg-card/50">
+                              <CardContent className="p-2 flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <div className="w-7 h-7 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
+                                    <AppWindow className="w-3 h-3 text-muted-foreground" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-medium truncate">{app.name}</p>
+                                    <div className="flex gap-2 text-[10px] text-muted-foreground">
+                                      {app.cpu !== undefined && <span className={cn(app.cpu > 50 && "text-destructive")}>CPU: {app.cpu}%</span>}
+                                      {app.memory !== undefined && <span className={cn(app.memory > 50 && "text-[hsl(var(--warning))]")}>RAM: {app.memory}%</span>}
+                                      <span className={cn(app.status === "running" ? "text-[hsl(var(--success))]" : "text-muted-foreground")}>{app.status}</span>
+                                    </div>
+                                  </div>
                                 </div>
-                              </div>
-                              <div className="flex gap-1 shrink-0">
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleRestartApp(app.name, app.pid)}>
-                                      <RotateCcw className="w-3 h-3" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent className="text-xs">Restart</TooltipContent>
-                                </Tooltip>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleCloseApp(app.name, app.pid)}>
-                                      <XCircle className="w-3 h-3" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent className="text-xs">Close</TooltipContent>
-                                </Tooltip>
-                              </div>
+                                <div className="flex gap-0.5 shrink-0">
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleRestartApp(app.name, app.pid)}>
+                                        <RotateCcw className="w-3 h-3" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="text-xs">Restart</TooltipContent>
+                                  </Tooltip>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleCloseApp(app.name, app.pid)}>
+                                        <XCircle className="w-3 h-3" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="text-xs">Kill</TooltipContent>
+                                  </Tooltip>
+                                </div>
+                              </CardContent>
+                            </Card>
+                          ))
+                        )
+                      ) : appView === "installed" ? (
+                        filteredInstalled.length === 0 ? (
+                          <Card className="border-border/20 bg-card/50">
+                            <CardContent className="p-4 text-center text-xs text-muted-foreground">
+                              {appSearch ? "No matching installed apps" : "No installed apps found"}
                             </CardContent>
                           </Card>
-                        ))
-                      )
-                    ) : (
-                      filteredInstalled.length === 0 ? (
-                        <Card className="border-border/20 bg-card/50">
-                          <CardContent className="p-4 text-center text-xs text-muted-foreground">
-                            {appSearch ? "No matching installed apps" : "No installed apps found"}
-                          </CardContent>
-                        </Card>
+                        ) : (
+                          filteredInstalled.map((app) => (
+                            <Card key={app.app_id || app.name} className="border-border/20 bg-card/50">
+                              <CardContent className="p-2 flex items-center justify-between">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <div className="w-7 h-7 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
+                                    <AppWindow className="w-3 h-3 text-muted-foreground" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-medium truncate">{app.name}</p>
+                                    {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
+                                  </div>
+                                </div>
+                                <Button variant="outline" size="sm" className="h-7 text-xs shrink-0" onClick={() => handleOpenApp(app.name)}>
+                                  Open
+                                </Button>
+                              </CardContent>
+                            </Card>
+                          ))
+                        )
                       ) : (
-                        filteredInstalled.map((app) => (
-                          <Card key={app.app_id || app.name} className="border-border/20 bg-card/50">
-                            <CardContent className="p-2 flex items-center justify-between">
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-medium truncate">{app.name}</p>
-                                {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
-                              </div>
-                              <Button variant="outline" size="sm" className="h-7 text-xs shrink-0" onClick={() => handleOpenApp(app.name)}>
-                                Open
-                              </Button>
+                        /* Services tab */
+                        services.length === 0 ? (
+                          <Card className="border-border/20 bg-card/50">
+                            <CardContent className="p-4 text-center text-xs text-muted-foreground">
+                              No services detected. Click refresh.
                             </CardContent>
                           </Card>
-                        ))
-                      )
-                    )}
-                  </div>
+                        ) : (
+                          services
+                            .filter(s => !appSearch || s.display_name?.toLowerCase().includes(appSearch.toLowerCase()) || s.name?.toLowerCase().includes(appSearch.toLowerCase()))
+                            .slice(0, 100)
+                            .map((svc) => (
+                              <Card key={svc.name} className="border-border/20 bg-card/50">
+                                <CardContent className="p-2 flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                    <div className={cn("w-7 h-7 rounded-md flex items-center justify-center shrink-0",
+                                      svc.status === "running" ? "bg-[hsl(var(--success))]/10" : "bg-secondary/50"
+                                    )}>
+                                      <Activity className={cn("w-3 h-3", svc.status === "running" ? "text-[hsl(var(--success))]" : "text-muted-foreground")} />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs font-medium truncate">{svc.display_name || svc.name}</p>
+                                      <div className="flex gap-2 text-[10px] text-muted-foreground">
+                                        <span className="truncate">{svc.name}</span>
+                                        <span>{svc.start_type}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <Badge
+                                    variant={svc.status === "running" ? "default" : "secondary"}
+                                    className={cn("text-[10px] shrink-0", svc.status === "running" && "bg-[hsl(var(--success))]/20 text-[hsl(var(--success))]")}
+                                  >
+                                    {svc.status}
+                                  </Badge>
+                                </CardContent>
+                              </Card>
+                            ))
+                        )
+                      )}
+                    </div>
+                  </ScrollArea>
                 )}
 
-                <Button variant="outline" className="w-full text-xs h-8" onClick={() => { fetchRunningApps(); fetchInstalledApps(); }} disabled={appsLoading}>
+                <Button variant="outline" className="w-full text-xs h-8" onClick={() => { fetchRunningApps(); fetchInstalledApps(); fetchServices(); }} disabled={appsLoading}>
                   <RefreshCw className={cn("w-3 h-3 mr-1", appsLoading && "animate-spin")} />
-                  Refresh Apps
+                  Refresh All
                 </Button>
               </div>
             )}

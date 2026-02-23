@@ -283,9 +283,27 @@ export default function MicCamera() {
 
   useEffect(() => { fetchPcCameras(); }, [fetchPcCameras]);
 
+  // Prevent rapid-fire camera starts (agent crash prevention)
+  const camStartLockRef = useRef(false);
+  const screenStartLockRef = useRef(false);
+
   const startPcCamera = useCallback(async () => {
+    if (camStartLockRef.current) {
+      toast({ title: "Please wait...", description: "Camera is still starting" });
+      return;
+    }
+    camStartLockRef.current = true;
     try {
       setPcCamError(null);
+      
+      // Stop any existing stream first to prevent agent overload
+      if (pcCamWsRef.current) {
+        pcCamWsRef.current.close();
+        pcCamWsRef.current = null;
+        sendCommand("stop_camera_stream", {});
+        await new Promise(r => setTimeout(r, 500));
+      }
+
       const sessionId = crypto.randomUUID();
       pcCamSessionRef.current = sessionId;
 
@@ -314,6 +332,9 @@ export default function MicCamera() {
     } catch (err) {
       setPcCamError(err instanceof Error ? err.message : String(err));
       toast({ title: "Camera Error", variant: "destructive" });
+    } finally {
+      // Release lock after delay to prevent rapid re-clicks
+      setTimeout(() => { camStartLockRef.current = false; }, 2000);
     }
   }, [sendCommand, selectedPcCam, camFps, camQuality, CAMERA_WS_URL, session, toast, waitForWsOpen, processFrames]);
 
@@ -331,8 +352,22 @@ export default function MicCamera() {
 
   // ==================== SCREEN MIRROR ====================
   const startScreen = useCallback(async () => {
+    if (screenStartLockRef.current) {
+      toast({ title: "Please wait...", description: "Screen mirror is still starting" });
+      return;
+    }
+    screenStartLockRef.current = true;
     try {
       setScreenError(null);
+      
+      // Stop any existing stream first
+      if (screenWsRef.current) {
+        screenWsRef.current.close();
+        screenWsRef.current = null;
+        sendCommand("stop_screen_stream", {});
+        await new Promise(r => setTimeout(r, 500));
+      }
+
       const sessionId = crypto.randomUUID();
       screenSessionRef.current = sessionId;
 
@@ -361,6 +396,8 @@ export default function MicCamera() {
     } catch (err) {
       setScreenError(err instanceof Error ? err.message : String(err));
       toast({ title: "Screen Error", variant: "destructive" });
+    } finally {
+      setTimeout(() => { screenStartLockRef.current = false; }, 2000);
     }
   }, [sendCommand, screenFps, screenQuality, CAMERA_WS_URL, session, toast, waitForWsOpen, processFrames]);
 
