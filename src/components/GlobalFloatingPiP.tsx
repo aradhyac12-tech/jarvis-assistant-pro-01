@@ -39,7 +39,7 @@ export function GlobalFloatingPiP() {
   const pinnedStream = pinnedStreamId ? activeStreams.get(pinnedStreamId) : null;
   const streamList = Array.from(activeStreams.values()).filter(s => s.isActive);
 
-  // Mouse/touch dragging
+  // Touch/mouse dragging with proper touch support
   const handleDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -51,7 +51,7 @@ export function GlobalFloatingPiP() {
     };
   }, [floatingPosition]);
 
-  // Resize logic
+  // Resize logic with touch support
   const handleResizeStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -69,6 +69,7 @@ export function GlobalFloatingPiP() {
     if (!isDragging && !isResizing) return;
 
     const handleMove = (e: MouseEvent | TouchEvent) => {
+      e.preventDefault(); // Prevent scrolling while dragging/resizing
       const point = "touches" in e ? e.touches[0] : e;
       
       if (isDragging) {
@@ -80,8 +81,8 @@ export function GlobalFloatingPiP() {
       if (isResizing) {
         const deltaX = point.clientX - resizeStartRef.current.x;
         const deltaY = point.clientY - resizeStartRef.current.y;
-        const newWidth = Math.max(200, Math.min(960, resizeStartRef.current.width + deltaX));
-        const newHeight = Math.max(120, Math.min(720, resizeStartRef.current.height + deltaY));
+        const newWidth = Math.max(160, Math.min(960, resizeStartRef.current.width + deltaX));
+        const newHeight = Math.max(100, Math.min(720, resizeStartRef.current.height + deltaY));
         setFloatingSize({ width: newWidth, height: newHeight });
       }
     };
@@ -91,7 +92,6 @@ export function GlobalFloatingPiP() {
       setIsResizing(false);
     };
 
-    // Add both mouse and touch listeners
     document.addEventListener("mousemove", handleMove);
     document.addEventListener("mouseup", handleEnd);
     document.addEventListener("touchmove", handleMove, { passive: false });
@@ -105,22 +105,17 @@ export function GlobalFloatingPiP() {
     };
   }, [isDragging, isResizing, floatingSize, setFloatingPosition, setFloatingSize]);
 
-  // Switch to next/prev stream
   const switchStream = useCallback((direction: "next" | "prev") => {
     const idx = streamList.findIndex(s => s.id === pinnedStreamId);
     if (idx === -1) return;
-    
     const newIdx = direction === "next" 
       ? (idx + 1) % streamList.length
       : (idx - 1 + streamList.length) % streamList.length;
-    
     pinStream(streamList[newIdx].id);
   }, [streamList, pinnedStreamId, pinStream]);
 
-  // Hide if no pinned stream or not floating
   if (!isFloating || !pinnedStream) return null;
 
-  // Minimized state
   if (isMinimized) {
     return (
       <div
@@ -148,80 +143,50 @@ export function GlobalFloatingPiP() {
         width: floatingSize.width,
         height: floatingSize.height,
         transition: isDragging || isResizing ? "none" : "box-shadow 0.2s",
+        touchAction: "none", // Prevent browser touch actions on PiP
       }}
     >
-      {/* Draggable header */}
+      {/* Draggable header - larger touch target */}
       <div
-        className="absolute top-0 left-0 right-0 flex items-center justify-between px-3 py-2 bg-gradient-to-b from-black/90 to-transparent cursor-grab z-20"
+        className="absolute top-0 left-0 right-0 flex items-center justify-between px-3 py-2.5 bg-gradient-to-b from-black/90 to-transparent cursor-grab z-20"
         onMouseDown={handleDragStart}
         onTouchStart={handleDragStart}
+        style={{ touchAction: "none" }}
       >
         <div className="flex items-center gap-2 text-white/80 text-xs font-medium">
-          <Move className="h-3 w-3" />
-          <span className="truncate max-w-[120px]">{pinnedStream.title}</span>
+          <Move className="h-4 w-4" />
+          <span className="truncate max-w-[100px]">{pinnedStream.title}</span>
           {pinnedStream.fps > 0 && (
             <Badge variant="outline" className="bg-black/50 border-white/20 text-white/70 text-[10px] px-1.5 py-0">
               {pinnedStream.fps} FPS
-            </Badge>
-          )}
-          {pinnedStream.latency > 0 && (
-            <Badge 
-              variant="outline" 
-              className={cn(
-                "bg-black/50 border-transparent text-[10px] px-1.5 py-0",
-                pinnedStream.latency > 100 ? "text-destructive" : 
-                pinnedStream.latency > 50 ? "text-warning" : "text-primary"
-              )}
-            >
-              {pinnedStream.latency}ms
             </Badge>
           )}
         </div>
         <div className="flex gap-0.5">
           {streamList.length > 1 && (
             <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
-                onClick={(e) => { e.stopPropagation(); switchStream("prev"); }}
-              >
-                <ChevronLeft className="h-3 w-3" />
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-white/80 hover:text-white hover:bg-white/10"
+                onClick={(e) => { e.stopPropagation(); switchStream("prev"); }}>
+                <ChevronLeft className="h-3.5 w-3.5" />
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
-                onClick={(e) => { e.stopPropagation(); switchStream("next"); }}
-              >
-                <ChevronRight className="h-3 w-3" />
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-white/80 hover:text-white hover:bg-white/10"
+                onClick={(e) => { e.stopPropagation(); switchStream("next"); }}>
+                <ChevronRight className="h-3.5 w-3.5" />
               </Button>
             </>
           )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-white/80 hover:text-white hover:bg-white/10"
             onClick={(e) => { e.stopPropagation(); toggleLandscape(); }}
-            title={isLandscape ? "Portrait" : "Landscape"}
-          >
-            <RotateCw className="h-3 w-3" />
+            title={isLandscape ? "Portrait" : "Landscape"}>
+            <RotateCw className="h-3.5 w-3.5" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
-            onClick={(e) => { e.stopPropagation(); setIsMinimized(true); }}
-          >
-            <Minimize2 className="h-3 w-3" />
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-white/80 hover:text-white hover:bg-white/10"
+            onClick={(e) => { e.stopPropagation(); setIsMinimized(true); }}>
+            <Minimize2 className="h-3.5 w-3.5" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-white/80 hover:text-white hover:bg-white/10"
-            onClick={(e) => { e.stopPropagation(); setFloating(false); }}
-          >
-            <X className="h-3 w-3" />
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-white/80 hover:text-white hover:bg-white/10"
+            onClick={(e) => { e.stopPropagation(); setFloating(false); }}>
+            <X className="h-3.5 w-3.5" />
           </Button>
         </div>
       </div>
@@ -234,7 +199,7 @@ export function GlobalFloatingPiP() {
             alt={pinnedStream.title}
             className="w-full h-full object-contain"
             draggable={false}
-            style={{ imageRendering: "auto" }}
+            style={{ imageRendering: "auto", pointerEvents: "none" }}
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-white/50 text-sm">
@@ -246,24 +211,25 @@ export function GlobalFloatingPiP() {
         )}
       </div>
 
-      {/* Resize handle */}
+      {/* Resize handle - larger for touch */}
       <div
-        className="absolute bottom-0 right-0 w-8 h-8 cursor-se-resize z-20 flex items-end justify-end p-1"
+        className="absolute bottom-0 right-0 w-10 h-10 cursor-se-resize z-20 flex items-end justify-end p-1.5"
         onMouseDown={handleResizeStart}
         onTouchStart={handleResizeStart}
+        style={{ touchAction: "none" }}
       >
-        <GripVertical className="h-4 w-4 text-white/30 rotate-[-45deg]" />
+        <GripVertical className="h-5 w-5 text-white/40 rotate-[-45deg]" />
       </div>
 
       {/* Stream indicator dots */}
       {streamList.length > 1 && (
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1 z-20">
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1.5 z-20">
           {streamList.map((s) => (
             <button
               key={s.id}
               onClick={(e) => { e.stopPropagation(); pinStream(s.id); }}
               className={cn(
-                "w-2 h-2 rounded-full transition-all",
+                "w-2.5 h-2.5 rounded-full transition-all",
                 s.id === pinnedStreamId 
                   ? "bg-primary scale-125" 
                   : "bg-white/30 hover:bg-white/50"
