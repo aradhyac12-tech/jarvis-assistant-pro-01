@@ -1867,9 +1867,20 @@ class JarvisAgent:
             file_id = payload.get("file_id", "")
             chunk_index = payload.get("chunk_index", 0)
             total_chunks = payload.get("total_chunks", 1)
-            data_base64 = payload.get("data", "")
+            # Support both field names: "data" (new) and "chunk_data" (old FileTransfer component)
+            data_base64 = payload.get("data", "") or payload.get("chunk_data", "")
             file_name = payload.get("file_name", "received_file")
-            save_folder = payload.get("save_folder") or os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
+            # Support both field names: "save_folder" (new) and "save_path" (old)
+            save_folder = payload.get("save_folder") or payload.get("save_path") or ""
+            
+            # Default save location: ~/Downloads/Jarvis
+            if not save_folder or save_folder.strip() == "":
+                save_folder = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
+            elif save_folder.startswith("~"):
+                save_folder = os.path.expanduser(save_folder)
+            
+            if not data_base64:
+                return {"success": False, "error": "No file data received (missing 'data' or 'chunk_data' field)"}
             
             chunk_data = base64.b64decode(data_base64)
             os.makedirs(save_folder, exist_ok=True)
@@ -1883,8 +1894,9 @@ class JarvisAgent:
             completed = chunk_index + 1 == total_chunks
             
             if completed:
-                add_log("info", f"File received: {file_name}", category="file")
-                notification_manager.notify("File Received", f"{file_name} saved")
+                file_size = os.path.getsize(file_path)
+                add_log("info", f"File received: {file_name} ({file_size} bytes) -> {file_path}", category="file")
+                notification_manager.notify("File Received", f"{file_name} saved to {save_folder}")
             
             return {"success": True, "completed": completed, "progress": progress, "path": file_path if completed else None}
         except Exception as e:
@@ -2841,12 +2853,53 @@ if HAS_PYCAW:
         pass
 
 
+# ============== DRAG-TO-AGENT FILE HANDLER ==============
+def handle_dragged_files(file_paths: list):
+    """Handle files dragged onto the .py/.exe — queue them for transfer."""
+    save_folder = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis", "Received")
+    os.makedirs(save_folder, exist_ok=True)
+    
+    for src_path in file_paths:
+        if not os.path.exists(src_path):
+            print(f"[Drag] File not found: {src_path}")
+            continue
+        
+        file_name = os.path.basename(src_path)
+        dest_path = os.path.join(save_folder, file_name)
+        
+        try:
+            import shutil
+            file_size = os.path.getsize(src_path)
+            print(f"[Drag] Transferring: {file_name} ({file_size:,} bytes)")
+            
+            start_time = time.time()
+            shutil.copy2(src_path, dest_path)
+            elapsed = time.time() - start_time
+            speed = file_size / elapsed if elapsed > 0 else 0
+            
+            speed_str = f"{speed / 1024:.1f} KB/s" if speed < 1024 * 1024 else f"{speed / (1024*1024):.1f} MB/s"
+            print(f"[Drag] ✓ {file_name} -> {dest_path} ({speed_str})")
+            add_log("info", f"Drag-received: {file_name} ({speed_str})", category="file")
+            
+            if HAS_TOAST:
+                notification_manager.notify("File Received", f"{file_name} ({speed_str})")
+        except Exception as e:
+            print(f"[Drag] ✗ Failed to copy {file_name}: {e}")
+            add_log("error", f"Drag-receive failed: {file_name}: {e}", category="file")
+
+
 # ============== MAIN ENTRY ==============
 def main():
     parser = argparse.ArgumentParser(description="JARVIS PC Agent")
     parser.add_argument("--gui", action="store_true", help="Launch with GUI")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument("files", nargs="*", help="Files dragged onto the agent")
     args = parser.parse_args()
+    
+    # Handle dragged files first
+    if args.files:
+        handle_dragged_files(args.files)
+        # If only dragging files (no --gui/--headless), still start the agent
     
     agent = JarvisAgent()
     
