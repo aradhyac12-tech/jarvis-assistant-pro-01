@@ -48,6 +48,7 @@ export function StreamDisplayControls({
   const lastTouchDistRef = useRef<number | null>(null);
   const panStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const imgContainerRef = useRef<HTMLDivElement>(null);
+  const fullscreenContainerRef = useRef<HTMLDivElement>(null);
 
   const effectiveStreamId = streamId || `stream-${title.replace(/\s/g, "-")}`;
 
@@ -85,12 +86,7 @@ export function StreamDisplayControls({
   // Exit fullscreen when stream stops
   useEffect(() => {
     if (!isActive && displayMode === "fullscreen") {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      }
-      setDisplayMode("normal");
-      setZoomLevel(1);
-      setPanOffset({ x: 0, y: 0 });
+      exitFullscreenSafe();
     }
   }, [isActive, displayMode]);
 
@@ -110,21 +106,25 @@ export function StreamDisplayControls({
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, [displayMode]);
 
-  const toggleFullscreen = useCallback(async () => {
-    const container = document.getElementById(`stream-fullscreen-${title.replace(/\s/g, "-")}`);
-    if (!container) return;
+  const exitFullscreenSafe = useCallback(() => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+    setDisplayMode("normal");
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+    try {
+      (screen.orientation as any)?.unlock?.();
+    } catch {}
+  }, []);
 
+  const toggleFullscreen = useCallback(async () => {
     if (displayMode === "fullscreen") {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen().catch(() => {});
-      }
-      setDisplayMode("normal");
-      setZoomLevel(1);
-      setPanOffset({ x: 0, y: 0 });
-      try {
-        (screen.orientation as any)?.unlock?.();
-      } catch {}
+      exitFullscreenSafe();
     } else {
+      // Use a dedicated fullscreen container to avoid page refresh
+      const container = fullscreenContainerRef.current;
+      if (!container) return;
       try {
         await container.requestFullscreen();
         try {
@@ -135,7 +135,7 @@ export function StreamDisplayControls({
         console.error("Fullscreen failed:", err);
       }
     }
-  }, [displayMode, title]);
+  }, [displayMode, exitFullscreenSafe]);
 
   const toggleFloating = useCallback(() => {
     const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
@@ -143,13 +143,12 @@ export function StreamDisplayControls({
       pip.setFloating(false);
       pip.pinStream(null);
     } else {
-      if (displayMode === "fullscreen" && document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-        setDisplayMode("normal");
+      if (displayMode === "fullscreen") {
+        exitFullscreenSafe();
       }
       pip.pinStream(effectiveStreamId);
     }
-  }, [displayMode, effectiveStreamId, pip]);
+  }, [displayMode, effectiveStreamId, pip, exitFullscreenSafe]);
 
   // Pinch zoom for fullscreen
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -250,42 +249,42 @@ export function StreamDisplayControls({
   const renderControls = (isFullscreenMode = false) => (
     <div className={cn(
       "absolute top-2 right-2 flex gap-1 z-10",
-      "opacity-0 group-hover:opacity-100 transition-opacity"
+      isFullscreenMode ? "opacity-100" : "opacity-0 group-hover:opacity-100 transition-opacity"
     )}>
       {isFullscreenMode && zoomLevel > 1 && (
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+          className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
           onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }}
           title="Reset zoom"
         >
-          <ZoomOut className="h-4 w-4" />
+          <ZoomOut className="h-5 w-5" />
         </Button>
       )}
       <Button
         variant="ghost"
         size="icon"
         className={cn(
-          "h-8 w-8 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white",
+          "h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white",
           isPipActive && "bg-primary/50"
         )}
         onClick={toggleFloating}
         title={isPipActive ? "Exit floating" : "Float across pages"}
       >
-        <PictureInPicture2 className="h-4 w-4" />
+        <PictureInPicture2 className="h-5 w-5" />
       </Button>
       <Button
         variant="ghost"
         size="icon"
-        className="h-8 w-8 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+        className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
         onClick={toggleFullscreen}
         title={displayMode === "fullscreen" ? "Exit fullscreen" : "Fullscreen"}
       >
         {displayMode === "fullscreen" ? (
-          <Minimize2 className="h-4 w-4" />
+          <Minimize2 className="h-5 w-5" />
         ) : (
-          <Maximize2 className="h-4 w-4" />
+          <Maximize2 className="h-5 w-5" />
         )}
       </Button>
     </div>
@@ -328,7 +327,7 @@ export function StreamDisplayControls({
   if (isPipActive && displayMode === "normal") {
     return (
       <div
-        id={`stream-fullscreen-${title.replace(/\s/g, "-")}`}
+        ref={fullscreenContainerRef}
         className={cn(
           "relative aspect-video rounded-xl border-2 border-dashed border-primary/30 overflow-hidden bg-primary/5",
           className
@@ -346,7 +345,7 @@ export function StreamDisplayControls({
   if (displayMode === "normal") {
     return (
       <div
-        id={`stream-fullscreen-${title.replace(/\s/g, "-")}`}
+        ref={fullscreenContainerRef}
         className={cn(
           "group relative aspect-video rounded-xl overflow-hidden bg-black/90",
           className
@@ -362,32 +361,32 @@ export function StreamDisplayControls({
   // Fullscreen mode
   return (
     <div
-      id={`stream-fullscreen-${title.replace(/\s/g, "-")}`}
+      ref={fullscreenContainerRef}
       className="relative w-full h-full bg-black group"
     >
       {renderStreamContent(true)}
-      <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+      <div className="absolute top-4 right-4 flex gap-2 z-20">
         {zoomLevel > 1 && (
           <Button
             variant="ghost"
             size="icon"
-            className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+            className="h-12 w-12 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
             onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }}
           >
-            <ZoomOut className="h-5 w-5" />
+            <ZoomOut className="h-6 w-6" />
           </Button>
         )}
         <Button
           variant="ghost"
           size="icon"
-          className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+          className="h-12 w-12 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
           onClick={toggleFullscreen}
         >
-          <Minimize2 className="h-5 w-5" />
+          <Minimize2 className="h-6 w-6" />
         </Button>
       </div>
       {renderStats()}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/40 text-sm opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/40 text-sm">
         {zoomLevel > 1 ? "Pinch or tap reset to zoom out" : "Pinch to zoom · Press ESC to exit"}
       </div>
     </div>
