@@ -5,6 +5,7 @@ import { useFastCommand } from "@/hooks/useFastCommand";
 import { useNetworkMonitor, NetworkInfo } from "@/hooks/useNetworkMonitor";
 import { useLocalP2P } from "@/hooks/useLocalP2P";
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
+import { useAppNotifications } from "@/hooks/useAppNotifications";
 
 export type ConnectionMode = "local_p2p" | "p2p" | "websocket" | "fallback" | "disconnected";
 
@@ -25,6 +26,7 @@ export function useP2PCommand() {
   const networkMonitor = useNetworkMonitor(5000); // Check every 5 seconds (reduced from 2s)
   const localP2P = useLocalP2P(); // Local P2P WebSocket server
   const haptics = useHapticFeedback();
+  const { notifyP2PUpgrade } = useAppNotifications();
   
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("disconnected");
   const [latency, setLatency] = useState(0);
@@ -304,11 +306,11 @@ export function useP2PCommand() {
     if (localP2P.isReady && connectionMode !== "local_p2p") {
       setConnectionMode("local_p2p");
       setLatency(localP2P.state.latency);
+      notifyP2PUpgrade("Local P2P");
     } else if (!localP2P.isReady && connectionMode === "local_p2p") {
-      // Local P2P disconnected, fall back to cloud
       setConnectionMode("fallback");
     }
-  }, [localP2P.isReady, localP2P.state.latency, connectionMode]);
+  }, [localP2P.isReady, localP2P.state.latency, connectionMode, notifyP2PUpgrade]);
 
   // Connect on mount and start monitoring
   // Only re-run when session/device changes, not on every callback recreation
