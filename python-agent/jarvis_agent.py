@@ -2807,14 +2807,21 @@ class JarvisAgent:
                         pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on Spotify"}
                 elif service in ("youtube", "yt"):
+                    # Open YouTube search results
                     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
                     webbrowser.open(url)
                     if auto_play:
-                        await asyncio.sleep(6)
-                        pyautogui.press("tab")
-                        await asyncio.sleep(0.2)
-                        pyautogui.press("tab")
-                        await asyncio.sleep(0.2)
+                        # Wait for page to fully load
+                        await asyncio.sleep(5)
+                        # Use / to focus search (clears focus from search bar), then Escape to unfocus
+                        # Then use Tab navigation to reach the first video thumbnail
+                        pyautogui.press("escape")
+                        await asyncio.sleep(0.3)
+                        # Skip to content: the first video link is typically reachable via Tab
+                        # On YouTube search results, pressing Tab multiple times reaches the first video
+                        for _ in range(5):
+                            pyautogui.press("tab")
+                            await asyncio.sleep(0.1)
                         pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on YouTube"}
                 else:
@@ -2830,20 +2837,32 @@ class JarvisAgent:
                 if engine in ("chatgpt", "openai"):
                     webbrowser.open("https://chat.openai.com/")
                     if auto_enter:
-                        await asyncio.sleep(5)
-                        pyautogui.typewrite(query, interval=0.02)
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(7)
+                        # Use clipboard paste for reliable text input (supports all characters)
+                        try:
+                            import pyperclip
+                            pyperclip.copy(query)
+                            pyautogui.hotkey("ctrl", "v")
+                        except ImportError:
+                            pyautogui.typewrite(query, interval=0.02)
+                        await asyncio.sleep(0.5)
                         pyautogui.press("enter")
                     return {"success": True, "message": f"Searching '{query}' on ChatGPT"}
                 elif engine == "gemini":
                     webbrowser.open("https://gemini.google.com/app")
                     if auto_enter:
-                        await asyncio.sleep(5)
-                        pyautogui.typewrite(query, interval=0.02)
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(7)
+                        try:
+                            import pyperclip
+                            pyperclip.copy(query)
+                            pyautogui.hotkey("ctrl", "v")
+                        except ImportError:
+                            pyautogui.typewrite(query, interval=0.02)
+                        await asyncio.sleep(0.5)
                         pyautogui.press("enter")
                     return {"success": True, "message": f"Searching '{query}' on Gemini"}
                 elif engine == "perplexity":
+                    # Perplexity supports direct URL query - auto submits
                     webbrowser.open(f"https://www.perplexity.ai/search?q={urllib.parse.quote(query)}")
                     return {"success": True, "message": f"Searching '{query}' on Perplexity"}
                 elif engine == "wikipedia":
