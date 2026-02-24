@@ -162,20 +162,31 @@ else:
     HAS_BRIGHTNESS = False
 
 
+def _get_speaker_endpoint():
+    """Get IAudioEndpointVolume with proper COM init, handling both old and new pycaw."""
+    comtypes.CoInitialize()
+    speakers = AudioUtilities.GetSpeakers()
+    # Newer pycaw wraps in AudioDevice; need the raw IMMDevice
+    raw_device = getattr(speakers, '_dev', None) or getattr(speakers, 'dev', None) or speakers
+    interface = raw_device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    return cast(interface, POINTER(IAudioEndpointVolume))
+
+
 def _safe_pycaw_get_volume():
     """Get volume using pycaw with proper COM initialization for threading."""
     if not HAS_PYCAW:
         return None
     try:
-        comtypes.CoInitialize()
+        endpoint = _get_speaker_endpoint()
         try:
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            return int(volume.GetMasterVolumeLevelScalar() * 100)
+            return int(endpoint.GetMasterVolumeLevelScalar() * 100)
         finally:
             comtypes.CoUninitialize()
     except Exception as e:
+        try:
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
         add_log("warn", f"pycaw get_volume error: {e}", category="audio")
         return None
 
@@ -185,16 +196,17 @@ def _safe_pycaw_set_volume(level: int):
     if not HAS_PYCAW:
         return False
     try:
-        comtypes.CoInitialize()
+        endpoint = _get_speaker_endpoint()
         try:
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            volume.SetMasterVolumeLevelScalar(level / 100.0, None)
+            endpoint.SetMasterVolumeLevelScalar(level / 100.0, None)
             return True
         finally:
             comtypes.CoUninitialize()
     except Exception as e:
+        try:
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
         add_log("warn", f"pycaw set_volume error: {e}", category="audio")
         return False
 
@@ -204,15 +216,16 @@ def _safe_pycaw_get_mute():
     if not HAS_PYCAW:
         return None
     try:
-        comtypes.CoInitialize()
+        endpoint = _get_speaker_endpoint()
         try:
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            endpoint = cast(interface, POINTER(IAudioEndpointVolume))
             return bool(endpoint.GetMute())
         finally:
             comtypes.CoUninitialize()
     except Exception:
+        try:
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
         return None
 
 
@@ -221,17 +234,18 @@ def _safe_pycaw_toggle_mute():
     if not HAS_PYCAW:
         return None
     try:
-        comtypes.CoInitialize()
+        endpoint = _get_speaker_endpoint()
         try:
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            endpoint = cast(interface, POINTER(IAudioEndpointVolume))
             current = bool(endpoint.GetMute())
             endpoint.SetMute(0 if current else 1, None)
             return not current
         finally:
             comtypes.CoUninitialize()
     except Exception:
+        try:
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
         return None
 
 
@@ -2156,12 +2170,9 @@ class JarvisAgent:
             elif cmd in ["mute_pc", "mute"]:
                 if HAS_PYCAW and sys.platform == "win32":
                     try:
-                        comtypes.CoInitialize()
+                        endpoint = _get_speaker_endpoint()
                         try:
-                            devices = AudioUtilities.GetSpeakers()
-                            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                            volume = cast(interface, POINTER(IAudioEndpointVolume))
-                            volume.SetMute(1, None)
+                            endpoint.SetMute(1, None)
                         finally:
                             comtypes.CoUninitialize()
                     except Exception as e:
@@ -2170,12 +2181,9 @@ class JarvisAgent:
             elif cmd in ["unmute_pc", "unmute"]:
                 if HAS_PYCAW and sys.platform == "win32":
                     try:
-                        comtypes.CoInitialize()
+                        endpoint = _get_speaker_endpoint()
                         try:
-                            devices = AudioUtilities.GetSpeakers()
-                            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                            volume = cast(interface, POINTER(IAudioEndpointVolume))
-                            volume.SetMute(0, None)
+                            endpoint.SetMute(0, None)
                         finally:
                             comtypes.CoUninitialize()
                     except Exception as e:
