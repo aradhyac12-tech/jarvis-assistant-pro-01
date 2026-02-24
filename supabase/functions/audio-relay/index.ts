@@ -3,11 +3,14 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+// Extract project ref for WS URL construction
+const PROJECT_REF = new URL(SUPABASE_URL).hostname.split(".")[0];
 
 // Store active audio sessions
 const audioSessions = new Map<string, {
@@ -17,6 +20,20 @@ const audioSessions = new Map<string, {
   lastActivity: number;
   deviceId?: string;
 }>();
+
+// Cleanup stale sessions every 60s
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of audioSessions) {
+    if (now - session.lastActivity > 300_000) { // 5 min stale
+      [session.phoneSocket, session.pcSocket].forEach(s => {
+        if (s && s.readyState === WebSocket.OPEN) try { s.close(); } catch {}
+      });
+      audioSessions.delete(id);
+      console.log(`[audio-relay] Cleaned stale session ${id}`);
+    }
+  }
+}, 60_000);
 
 serve(async (req) => {
   const { headers, method } = req;
@@ -74,7 +91,9 @@ serve(async (req) => {
 
     console.log(`[audio-relay] Authenticated WebSocket upgrade: session=${sessionId}, type=${clientType}, device=${session.device_id}`);
 
-    const { socket, response } = Deno.upgradeWebSocket(req);
+    const { socket, response } = Deno.upgradeWebSocket(req, {
+      idleTimeout: 120, // 2 min idle timeout (default is 30s which is too short)
+    });
 
     // Initialize or get session
     if (!audioSessions.has(sessionId)) {
@@ -92,6 +111,12 @@ serve(async (req) => {
     socket.onopen = () => {
       console.log(`[audio-relay] ${clientType} connected to session ${sessionId}`);
       
+      // Close any existing socket for this client type (prevent duplicates)
+      const existingSocket = clientType === 'phone' ? audioSession.phoneSocket : audioSession.pcSocket;
+      if (existingSocket && existingSocket.readyState === WebSocket.OPEN) {
+        try { existingSocket.close(); } catch {}
+      }
+
       if (clientType === 'phone') {
         audioSession.phoneSocket = socket;
       } else {
@@ -102,11 +127,19 @@ serve(async (req) => {
       // Notify the other party
       const otherSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
       if (otherSocket && otherSocket.readyState === WebSocket.OPEN) {
-        otherSocket.send(JSON.stringify({ 
-          type: 'peer_connected', 
-          peer: clientType,
-          direction: audioSession.direction 
-        }));
+        try {
+          otherSocket.send(JSON.stringify({ 
+            type: 'peer_connected', 
+            peer: clientType,
+            direction: audioSession.direction 
+          }));
+          // Also tell the newly connected client about the existing peer
+          socket.send(JSON.stringify({
+            type: 'peer_connected',
+            peer: clientType === 'phone' ? 'pc' : 'phone',
+            direction: audioSession.direction,
+          }));
+        } catch {}
       }
     };
 
@@ -120,7 +153,7 @@ serve(async (req) => {
           
           // Control messages
           if (msg.type === 'ping') {
-            socket.send(JSON.stringify({ type: 'pong' }));
+            try { socket.send(JSON.stringify({ type: 'pong' })); } catch {}
             return;
           }
           
@@ -129,7 +162,7 @@ serve(async (req) => {
             // Notify both parties
             [audioSession.phoneSocket, audioSession.pcSocket].forEach(s => {
               if (s && s.readyState === WebSocket.OPEN) {
-                s.send(JSON.stringify({ type: 'direction_changed', direction: msg.direction }));
+                try { s.send(JSON.stringify({ type: 'direction_changed', direction: msg.direction })); } catch {}
               }
             });
             return;
@@ -138,7 +171,7 @@ serve(async (req) => {
           // Forward JSON messages to the appropriate peer
           const targetSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
           if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-            targetSocket.send(event.data);
+            try { targetSocket.send(event.data); } catch {}
           }
         } else {
           // Binary audio data - forward based on direction
@@ -150,7 +183,7 @@ serve(async (req) => {
           if (shouldForward) {
             const targetSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
             if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-              targetSocket.send(event.data);
+              try { targetSocket.send(event.data); } catch {}
             }
           }
         }
@@ -171,7 +204,7 @@ serve(async (req) => {
       // Notify the other party
       const otherSocket = clientType === 'phone' ? audioSession.pcSocket : audioSession.phoneSocket;
       if (otherSocket && otherSocket.readyState === WebSocket.OPEN) {
-        otherSocket.send(JSON.stringify({ type: 'peer_disconnected', peer: clientType }));
+        try { otherSocket.send(JSON.stringify({ type: 'peer_disconnected', peer: clientType })); } catch {}
       }
 
       // Clean up empty sessions
@@ -182,7 +215,7 @@ serve(async (req) => {
     };
 
     socket.onerror = (e) => {
-      console.error(`[audio-relay] Socket error:`, e);
+      console.error(`[audio-relay] Socket error for ${clientType} in session ${sessionId}:`, e);
     };
 
     return response;
@@ -192,7 +225,7 @@ serve(async (req) => {
   if (method === 'POST') {
     try {
       const body = await req.json();
-      const { action, sessionId, deviceId } = body;
+      const { action, sessionId } = body;
 
       if (action === 'create_session') {
         const newSessionId = sessionId || crypto.randomUUID();
@@ -203,14 +236,11 @@ serve(async (req) => {
           lastActivity: Date.now(),
         });
 
-        const host = new URL(req.url).host;
-        const ref = host.split(".")[0];
-
         return new Response(
           JSON.stringify({
             success: true,
             sessionId: newSessionId,
-            wsUrl: `wss://${ref}.functions.supabase.co/functions/v1/audio-relay?sessionId=${newSessionId}`,
+            wsUrl: `wss://${PROJECT_REF}.functions.supabase.co/functions/v1/audio-relay?sessionId=${newSessionId}`,
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
@@ -237,7 +267,7 @@ serve(async (req) => {
         if (session) {
           [session.phoneSocket, session.pcSocket].forEach(s => {
             if (s && s.readyState === WebSocket.OPEN) {
-              s.close();
+              try { s.close(); } catch {}
             }
           });
           audioSessions.delete(sessionId);
