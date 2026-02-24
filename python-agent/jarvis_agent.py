@@ -2963,6 +2963,82 @@ class JarvisAgent:
             "p2p_clients": len(p2p_server.clients) if p2p_server else 0,
         }
     
+    # ============== P2P FIREWALL & DIAGNOSTICS ==============
+    def _open_p2p_firewall_ports(self) -> Dict[str, Any]:
+        """Open firewall ports 9876 and 9877 for P2P connections."""
+        if platform.system() != "Windows":
+            return {"success": True, "message": "Not Windows, no firewall changes needed"}
+        
+        results = []
+        for port in [LOCAL_P2P_PORT, LOCAL_P2P_PORT + 1]:
+            rule_name = f"JARVIS_P2P_{port}"
+            try:
+                # Delete existing rule first
+                subprocess.run(
+                    ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule_name}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                # Add inbound TCP rule
+                result = subprocess.run([
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    f"name={rule_name}", "dir=in", "action=allow",
+                    "protocol=TCP", f"localport={port}", "profile=private,domain",
+                ], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    results.append(f"Port {port} opened")
+                    add_log("info", f"Firewall rule added for port {port}", category="p2p")
+                else:
+                    results.append(f"Port {port} failed: {result.stderr.strip()}")
+                    add_log("warn", f"Firewall rule failed for port {port}: {result.stderr}", category="p2p")
+            except Exception as e:
+                results.append(f"Port {port} error: {str(e)}")
+        
+        return {"success": True, "results": results, "hint": "If failed, run agent as Administrator"}
+    
+    def _test_p2p_server_status(self) -> Dict[str, Any]:
+        """Test if the local P2P server is running and accessible."""
+        p2p = get_local_p2p_server()
+        local_ips = get_local_ips()
+        
+        ws_port = p2p._actual_port if p2p else LOCAL_P2P_PORT
+        http_port = ws_port + 1
+        
+        # Test if ports are listening
+        port_status = {}
+        for port in [ws_port, http_port]:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(("127.0.0.1", port))
+                port_status[str(port)] = "listening" if result == 0 else "closed"
+                sock.close()
+            except Exception:
+                port_status[str(port)] = "error"
+        
+        # Check firewall rules
+        fw_rules = {}
+        if platform.system() == "Windows":
+            for port in [ws_port, http_port]:
+                try:
+                    check = subprocess.run(
+                        ["netsh", "advfirewall", "firewall", "show", "rule", f"name=JARVIS_P2P_{port}"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    fw_rules[str(port)] = "exists" if check.returncode == 0 and "No rules match" not in check.stdout else "missing"
+                except Exception:
+                    fw_rules[str(port)] = "unknown"
+        
+        return {
+            "success": True,
+            "p2p_running": p2p is not None and p2p.running,
+            "ws_port": ws_port,
+            "http_port": http_port,
+            "local_ips": local_ips,
+            "port_status": port_status,
+            "firewall_rules": fw_rules,
+            "clients": len(p2p.clients) if p2p else 0,
+        }
+    
     def _open_url(self, url: str) -> Dict[str, Any]:
         try:
             url = (url or "").strip()
@@ -3074,6 +3150,12 @@ class JarvisAgent:
             
             elif cmd == "get_agent_version":
                 return {"success": True, "version": AGENT_VERSION, "has_auto_updater": HAS_AUTO_UPDATER}
+
+            elif cmd == "open_p2p_ports":
+                return self._open_p2p_firewall_ports()
+
+            elif cmd == "test_p2p_server":
+                return self._test_p2p_server_status()
 
             # ============== ROUTE COMMANDS ==============
             if cmd == "get_system_stats":

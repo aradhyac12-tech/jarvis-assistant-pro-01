@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import type { ConnectionMode } from "@/hooks/useP2PCommand";
 import type { NetworkState } from "@/hooks/useNetworkMonitor";
 import type { LocalP2PState } from "@/hooks/useLocalP2P";
+import { supabase } from "@/integrations/supabase/client";
 
 type Severity = "info" | "warn" | "error";
 
@@ -89,8 +90,8 @@ export function P2PDiagnosticsPanel({
           f.push({
             severity: "error",
             title: "Agent not found on LAN",
-            detail: "Discovery did not find an agent responding on port 9876.",
-            hint: "Confirm the agent is running, port 9876 is allowed in Windows Firewall, and both devices are on the same Wi‑Fi network.",
+            detail: "Discovery did not find an agent responding on port 9876 or 9877.",
+            hint: "Click 'Fix Firewall' below to remotely open the ports on your PC, then retry.",
           });
         } else {
           f.push({
@@ -121,8 +122,8 @@ export function P2PDiagnosticsPanel({
       f.push({
         severity: "warn",
         title: "Same network, but not using Local P2P",
-        detail: "The app will fall back to cloud mode if Local P2P can’t connect.",
-        hint: "Use the findings above to fix discovery/handshake issues.",
+        detail: "The app will fall back to cloud mode if Local P2P can't connect.",
+        hint: "Use 'Fix Firewall' then 'Retry P2P' to establish direct connection.",
       });
     }
 
@@ -145,6 +146,78 @@ export function P2PDiagnosticsPanel({
         ? { variant: "secondary" as const, label: "Needs attention" }
         : { variant: "outline" as const, label: "OK" };
 
+  /** Send a command via cloud relay to the agent */
+  const sendCloudCommand = async (commandType: string) => {
+    const sessionToken = localStorage.getItem("jarvis_session_token") || "";
+    const res = await supabase.functions.invoke("device-commands", {
+      body: { action: "insert", commandType, payload: {} },
+      headers: { "x-session-token": sessionToken },
+    });
+    if (res.error) throw new Error(res.error.message);
+    const commandId = res.data?.commandId;
+    if (!commandId) throw new Error("No command ID returned");
+
+    // Poll for result
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const poll = await supabase.functions.invoke("device-commands", {
+        body: { action: "poll", commandId },
+        headers: { "x-session-token": sessionToken },
+      });
+      if (poll.data?.status === "completed") return poll.data.result;
+    }
+    throw new Error("Command timed out");
+  };
+
+  const handleFixFirewall = async () => {
+    setAutoFixing(true);
+    const log = (msg: string) => setAutoFixLog((prev) => [...prev, msg]);
+    setAutoFixLog([]);
+
+    try {
+      log("🔧 Sending firewall fix command to PC via cloud...");
+      const result = await sendCloudCommand("open_p2p_ports");
+      if (result?.results) {
+        for (const r of result.results) {
+          log(r);
+        }
+      }
+      if (result?.hint) log(`💡 ${result.hint}`);
+      log("🔄 Now retrying P2P connection...");
+      await new Promise((r) => setTimeout(r, 1000));
+      onAutoFix?.();
+      await new Promise((r) => setTimeout(r, 3000));
+      log(localP2PState.isConnected ? "✅ P2P connected!" : "⏳ May take a moment. Try 'Retry P2P' again.");
+    } catch (e: any) {
+      log(`❌ ${e.message || "Failed to send command"}`);
+      log("💡 Make sure agent is running. If firewall fix fails, run agent as Administrator.");
+    }
+    setAutoFixing(false);
+  };
+
+  const handleTestP2P = async () => {
+    setAutoFixing(true);
+    const log = (msg: string) => setAutoFixLog((prev) => [...prev, msg]);
+    setAutoFixLog([]);
+
+    try {
+      log("🔍 Testing P2P server status on PC...");
+      const result = await sendCloudCommand("test_p2p_server");
+      log(`P2P Server: ${result?.p2p_running ? "✅ Running" : "❌ Not running"}`);
+      log(`WS Port ${result?.ws_port}: ${result?.port_status?.[result?.ws_port] || "unknown"}`);
+      log(`HTTP Port ${result?.http_port}: ${result?.port_status?.[result?.http_port] || "unknown"}`);
+      if (result?.firewall_rules) {
+        for (const [port, status] of Object.entries(result.firewall_rules)) {
+          log(`Firewall rule for ${port}: ${status === "exists" ? "✅" : "❌ Missing"}`);
+        }
+      }
+      log(`Local IPs: ${result?.local_ips?.join(", ") || "none"}`);
+    } catch (e: any) {
+      log(`❌ ${e.message || "Failed"}`);
+    }
+    setAutoFixing(false);
+  };
+
   const handleAutoFix = async () => {
     setAutoFixing(true);
     setAutoFixLog([]);
@@ -153,18 +226,11 @@ export function P2PDiagnosticsPanel({
     try {
       if (!networkState.sameNetwork) {
         log("⚠️ Devices not on same network - connect both to the same Wi-Fi");
-      } else if (!localP2PState.pcIp) {
-        log("🔍 Re-scanning LAN for agent...");
-        onAutoFix?.();
-        await new Promise((r) => setTimeout(r, 3000));
-        log(localP2PState.isConnected ? "✅ Agent found!" : "❌ Agent not found. Check port 9876 in firewall.");
-      } else if (!localP2PState.isConnected) {
-        log("🔄 Retrying connection to " + localP2PState.pcIp + "...");
-        onAutoFix?.();
-        await new Promise((r) => setTimeout(r, 2000));
-        log(localP2PState.isConnected ? "✅ Connected!" : "❌ Still failing. Check firewall or try APK.");
       } else {
-        log("✅ P2P connection is healthy.");
+        log("🔄 Retrying P2P discovery...");
+        onAutoFix?.();
+        await new Promise((r) => setTimeout(r, 4000));
+        log(localP2PState.isConnected ? "✅ P2P connected!" : "❌ Still can't connect. Try 'Fix Firewall' first.");
       }
     } catch {
       log("❌ Auto-fix encountered an error");
@@ -203,12 +269,6 @@ export function P2PDiagnosticsPanel({
             </p>
           </div>
           <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
-            <Button variant="outline" size="sm" className="h-7 text-xs px-2" onClick={handleAutoFix} disabled={autoFixing}>
-              {autoFixing ? "Fixing..." : "Auto-Fix"}
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-xs px-2" onClick={handleCopy}>
-              Copy
-            </Button>
             <Button variant="secondary" size="sm" className="h-7 text-xs px-2" onClick={() => setExpanded((v) => !v)}>
               {expanded ? "Hide" : "Details"}
             </Button>
@@ -241,9 +301,25 @@ export function P2PDiagnosticsPanel({
               </div>
             ))}
 
+            {/* Action buttons */}
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              <Button variant="default" size="sm" className="h-7 text-xs px-3" onClick={handleFixFirewall} disabled={autoFixing}>
+                🔧 Fix Firewall
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs px-3" onClick={handleAutoFix} disabled={autoFixing}>
+                🔄 Retry P2P
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs px-3" onClick={handleTestP2P} disabled={autoFixing}>
+                🔍 Test P2P
+              </Button>
+              <Button variant="ghost" size="sm" className="h-7 text-xs px-2" onClick={handleCopy}>
+                📋 Copy
+              </Button>
+            </div>
+
             {autoFixLog.length > 0 && (
               <div className="rounded-md border border-border/50 bg-muted/20 p-2 space-y-1">
-                <p className="text-[10px] font-medium">Auto-Fix Log</p>
+                <p className="text-[10px] font-medium">Log</p>
                 {autoFixLog.map((msg, i) => (
                   <p key={i} className="text-[11px] text-muted-foreground">{msg}</p>
                 ))}
