@@ -20,7 +20,7 @@ class SystemControlSkill(Skill):
         return cmd_lower in [
             "system_control", "system", "power",
             "lock", "sleep", "restart", "shutdown", "hibernate", "boost",
-            "lock_screen", "power_options", "boost_pc"
+            "lock_screen", "power_options", "boost_pc", "optimize_drives"
         ]
 
     async def execute(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -43,6 +43,8 @@ class SystemControlSkill(Skill):
                 return await self._cancel_shutdown()
             elif action == "screen_off":
                 return await self._screen_off()
+            elif action == "optimize_drives":
+                return await self._optimize_drives(payload.get("drive", "C:"), payload.get("flags", "/O"))
             else:
                 return {"success": False, "error": f"Unknown action: {action}"}
 
@@ -181,3 +183,17 @@ class SystemControlSkill(Skill):
 
         except Exception as e:
             return {"success": False, "error": str(e), "partial_results": results}
+
+    async def _optimize_drives(self, drive: str = "C:", flags: str = "/O") -> Dict[str, Any]:
+        """Run defrag/TRIM optimization on a drive"""
+        try:
+            result = subprocess.run(
+                ["defrag", drive, flags],
+                capture_output=True, text=True, timeout=300
+            )
+            output = result.stdout or result.stderr or "Optimization complete"
+            return {"success": result.returncode == 0, "message": f"Drive {drive} optimized", "output": output.strip()[:500]}
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Optimization timed out (5 min limit)"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
