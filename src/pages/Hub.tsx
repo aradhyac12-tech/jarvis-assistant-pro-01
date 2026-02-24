@@ -1143,7 +1143,7 @@ export default function Hub() {
 
             {/* Network Tab */}
             {activeTab === "network" && (
-              <div className="space-y-3">
+              <div className="space-y-3 max-w-full overflow-hidden">
                 <SmartP2PManager
                   connectionMode={connectionMode}
                   latency={p2pLatency}

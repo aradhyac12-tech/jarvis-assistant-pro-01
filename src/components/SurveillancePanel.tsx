@@ -6,6 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Shield,
   Eye,
@@ -28,6 +29,9 @@ import {
   Gauge,
   Stethoscope,
   PersonStanding,
+  Download,
+  Film,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -43,6 +47,15 @@ interface MotionEvent {
   id: string;
   timestamp: Date;
   confidence: number;
+}
+
+interface SurveillanceClip {
+  id: string;
+  timestamp: Date;
+  thumbnail: string; // data URL
+  frames: Blob[];
+  duration: number; // seconds
+  trigger: "motion" | "human" | "manual";
 }
 
 export function SurveillancePanel({ className }: { className?: string }) {
@@ -77,6 +90,23 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [poseEnabled, setPoseEnabled] = useState(() => localStorage.getItem("surveillance_pose") === "true");
   const [humanPresent, setHumanPresent] = useState(false);
 
+  // Clip recording state
+  const [clips, setClips] = useState<SurveillanceClip[]>(() => {
+    try {
+      const saved = localStorage.getItem("surveillance_clips_meta");
+      if (saved) {
+        const parsed = JSON.parse(saved) as Array<Omit<SurveillanceClip, "frames" | "timestamp"> & { timestamp: string }>;
+        return parsed.map(c => ({ ...c, timestamp: new Date(c.timestamp), frames: [] }));
+      }
+    } catch {}
+    return [];
+  });
+  const [isRecording, setIsRecording] = useState(false);
+  const [showClips, setShowClips] = useState(false);
+  const recordingFramesRef = useRef<Blob[]>([]);
+  const recordingStartRef = useRef<number>(0);
+  const clipThumbnailRef = useRef<string>("");
+
   // Audio call refs
   const audioWsRef = useRef<WebSocket | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
@@ -91,6 +121,82 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const sensitivityThreshold = { low: 30, medium: 15, high: 5 };
+
+  // Persist clips metadata (without frame blobs)
+  useEffect(() => {
+    try {
+      const meta = clips.map(c => ({
+        id: c.id,
+        timestamp: c.timestamp.toISOString(),
+        thumbnail: c.thumbnail,
+        duration: c.duration,
+        trigger: c.trigger,
+      }));
+      localStorage.setItem("surveillance_clips_meta", JSON.stringify(meta.slice(0, 20)));
+    } catch {}
+  }, [clips]);
+
+  // Start/stop clip recording
+  const startClipRecording = useCallback((trigger: "motion" | "human" | "manual" = "manual") => {
+    if (isRecording) return;
+    setIsRecording(true);
+    recordingFramesRef.current = [];
+    recordingStartRef.current = Date.now();
+    clipThumbnailRef.current = currentFrame || "";
+    addLog("info", "web", `Clip recording started (${trigger})`);
+  }, [isRecording, currentFrame]);
+
+  const stopClipRecording = useCallback(() => {
+    if (!isRecording) return;
+    setIsRecording(false);
+    const duration = Math.round((Date.now() - recordingStartRef.current) / 1000);
+    const clip: SurveillanceClip = {
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+      thumbnail: clipThumbnailRef.current,
+      frames: [...recordingFramesRef.current],
+      duration,
+      trigger: "manual",
+    };
+    setClips(prev => [clip, ...prev].slice(0, 20));
+    recordingFramesRef.current = [];
+    toast({ title: "📹 Clip Saved", description: `${duration}s clip saved (${clip.frames.length} frames)` });
+    addLog("info", "web", `Clip saved: ${duration}s, ${clip.frames.length} frames`);
+  }, [isRecording, toast]);
+
+  // Auto-record on motion/human detection (5s clips)
+  const autoRecordTimeoutRef = useRef<number | null>(null);
+  const triggerAutoClip = useCallback((trigger: "motion" | "human") => {
+    if (isRecording || autoRecordTimeoutRef.current) return;
+    startClipRecording(trigger);
+    autoRecordTimeoutRef.current = window.setTimeout(() => {
+      stopClipRecording();
+      autoRecordTimeoutRef.current = null;
+    }, 5000);
+  }, [isRecording, startClipRecording, stopClipRecording]);
+
+  // Download clip as video (MJPEG sequence saved as zip or individual frames)
+  const downloadClip = useCallback((clip: SurveillanceClip) => {
+    if (clip.thumbnail) {
+      // Download thumbnail as snapshot
+      const link = document.createElement("a");
+      link.href = clip.thumbnail;
+      link.download = `surveillance_${clip.timestamp.toISOString().replace(/[:.]/g, "-")}.jpg`;
+      link.click();
+      toast({ title: "Downloading snapshot" });
+    }
+    // Also try to send to PC for saving
+    sendCommand("save_surveillance_clip", {
+      clip_id: clip.id,
+      timestamp: clip.timestamp.toISOString(),
+      duration: clip.duration,
+      trigger: clip.trigger,
+    }, { awaitResult: false });
+  }, [sendCommand, toast]);
+
+  const deleteClip = useCallback((clipId: string) => {
+    setClips(prev => prev.filter(c => c.id !== clipId));
+  }, []);
 
   // Persistence Effects
   useEffect(() => localStorage.setItem("surveillance_start", startTime), [startTime]);
@@ -153,6 +259,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
           };
           setMotionEvents(prev => [event, ...prev].slice(0, 50));
           triggerAlerts(event);
+          triggerAutoClip("motion");
         }
       }
       previousFrameRef.current = frame;
@@ -355,6 +462,11 @@ export function SurveillancePanel({ className }: { className?: string }) {
             currentBlobUrlRef.current = newUrl;
             setCurrentFrame(newUrl);
 
+            // Capture frames for clip recording (every 3rd frame to save memory)
+            if (recordingFramesRef.current && fpsCounterRef.current.frames % 3 === 0) {
+              recordingFramesRef.current.push(blob);
+            }
+
             // Latency tracking
             frameTimesRef.current.push(now);
             if (frameTimesRef.current.length > 10) frameTimesRef.current.shift();
@@ -499,7 +611,27 @@ export function SurveillancePanel({ className }: { className?: string }) {
           )}
         </div>
 
-        {/* Siren Toggle */}
+        {/* Clip Recording Controls */}
+        {monitoring && (
+          <div className="flex gap-2">
+            <Button
+              variant={isRecording ? "destructive" : "outline"}
+              className={cn("flex-1 h-10 text-xs gap-2", isRecording && "animate-pulse")}
+              onClick={isRecording ? stopClipRecording : () => startClipRecording("manual")}
+            >
+              {isRecording ? <Square className="h-4 w-4" /> : <Film className="h-4 w-4" />}
+              {isRecording ? `Recording (${Math.round((Date.now() - recordingStartRef.current) / 1000)}s)` : "Record Clip"}
+            </Button>
+            <Button
+              variant="outline"
+              className="h-10 text-xs gap-1 px-3"
+              onClick={() => setShowClips(!showClips)}
+            >
+              <Film className="h-4 w-4" />
+              {clips.length}
+            </Button>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant={sirenActive ? "default" : "destructive"}
@@ -534,6 +666,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
                   addLog("warn", "web", `Human detected (${confPct}% confidence)`);
                   toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
                   notifyHumanDetected(confPct);
+                  triggerAutoClip("human");
                 }
                 // Reset after 3 seconds of no detection
                 setTimeout(() => setHumanPresent(false), 3000);
@@ -709,6 +842,72 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
         {/* Diagnostics */}
         <InlineDiagnostics type="pc-camera" className="mt-2" />
+
+        {/* Recent Clips */}
+        {(showClips || clips.length > 0) && (
+          <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
+            <button
+              className="w-full flex items-center justify-between p-3 text-sm font-medium hover:bg-secondary/20 transition-colors"
+              onClick={() => setShowClips(!showClips)}
+            >
+              <div className="flex items-center gap-2">
+                <Film className="h-4 w-4 text-muted-foreground" />
+                Recent Clips ({clips.length})
+              </div>
+              {showClips ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+
+            {showClips && (
+              <div className="border-t border-border/50">
+                {clips.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-muted-foreground">
+                    No clips recorded yet. Start surveillance and clips will be auto-captured on motion/human detection.
+                  </div>
+                ) : (
+                  <ScrollArea className="max-h-[300px]">
+                    <div className="p-2 space-y-2">
+                      {clips.map(clip => (
+                        <div key={clip.id} className="flex items-center gap-2 p-2 rounded-lg bg-secondary/20 hover:bg-secondary/30 transition-colors">
+                          {/* Thumbnail */}
+                          <div className="w-16 h-10 rounded bg-black overflow-hidden shrink-0">
+                            {clip.thumbnail ? (
+                              <img src={clip.thumbnail} alt="Clip" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Film className="w-4 h-4 text-muted-foreground" />
+                              </div>
+                            )}
+                          </div>
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <Badge variant={clip.trigger === "human" ? "destructive" : clip.trigger === "motion" ? "secondary" : "outline"} className="text-[9px] px-1 py-0">
+                                {clip.trigger}
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground">{clip.duration}s</span>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">
+                              {clip.timestamp.toLocaleString()}
+                            </p>
+                          </div>
+                          {/* Actions */}
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => downloadClip(clip)}>
+                              <Download className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteClip(clip.id)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

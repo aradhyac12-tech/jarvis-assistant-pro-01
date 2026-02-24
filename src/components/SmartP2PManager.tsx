@@ -118,7 +118,7 @@ export function SmartP2PManager({
   }, [manualIp, onForceLocalP2P, localP2PState.isConnected, localP2PState.latency]);
 
   return (
-    <Card className={cn("border-border/40", className)}>
+    <Card className={cn("border-border/40 max-w-full overflow-hidden", className)}>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -147,7 +147,7 @@ export function SmartP2PManager({
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 overflow-x-hidden">
         {/* Manual PC IP Entry - KDE Connect style */}
         <div className="space-y-2">
           <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
