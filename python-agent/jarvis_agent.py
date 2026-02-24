@@ -1165,24 +1165,69 @@ class JarvisAgent:
             "is_locked": self._detect_lock_state(),
         }
     
-    # ============== CLIPBOARD ==============
+    # ============== CLIPBOARD (KDE Connect / Phone Link style) ==============
+    _last_clipboard_hash: str = ""
+    _last_clipboard_content: str = ""
+    
     def _get_clipboard(self) -> Dict[str, Any]:
+        """Fast clipboard read using pyperclip, with hash for change detection."""
         try:
-            import subprocess
-            result = subprocess.run(["powershell", "-c", "Get-Clipboard"], capture_output=True, text=True, timeout=5)
-            return {"success": True, "content": result.stdout.rstrip("\n")}
+            import pyperclip
+            content = pyperclip.paste() or ""
+            import hashlib
+            content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
+            changed = content_hash != self._last_clipboard_hash
+            self._last_clipboard_hash = content_hash
+            self._last_clipboard_content = content
+            return {"success": True, "content": content, "hash": content_hash, "changed": changed}
+        except Exception:
+            # Fallback to PowerShell
+            try:
+                result = subprocess.run(["powershell", "-c", "Get-Clipboard"], capture_output=True, text=True, timeout=3)
+                content = result.stdout.rstrip("\n")
+                import hashlib
+                content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
+                changed = content_hash != self._last_clipboard_hash
+                self._last_clipboard_hash = content_hash
+                self._last_clipboard_content = content
+                return {"success": True, "content": content, "hash": content_hash, "changed": changed}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+    
+    def _check_clipboard_hash(self) -> Dict[str, Any]:
+        """Ultra-fast hash-only check — no content transfer unless changed."""
+        try:
+            import pyperclip
+            content = pyperclip.paste() or ""
+            import hashlib
+            content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
+            changed = content_hash != self._last_clipboard_hash
+            if changed:
+                self._last_clipboard_hash = content_hash
+                self._last_clipboard_content = content
+                return {"success": True, "changed": True, "content": content, "hash": content_hash}
+            return {"success": True, "changed": False, "hash": content_hash}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     def _set_clipboard(self, text: str) -> Dict[str, Any]:
+        """Fast clipboard write using pyperclip."""
         try:
-            import subprocess
-            process = subprocess.Popen(["powershell", "-c", "Set-Clipboard", "-Value", text],
-                                       stdin=subprocess.PIPE, capture_output=True, timeout=5)
-            process.communicate(timeout=5)
+            import pyperclip
+            pyperclip.copy(text)
+            import hashlib
+            self._last_clipboard_hash = hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()
+            self._last_clipboard_content = text
             return {"success": True}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        except Exception:
+            # Fallback to PowerShell
+            try:
+                process = subprocess.Popen(["powershell", "-c", "Set-Clipboard", "-Value", text],
+                                           stdin=subprocess.PIPE, capture_output=True, timeout=3)
+                process.communicate(timeout=3)
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
     
     # ============== MEDIA ==============
     def _media_control(self, action: str) -> Dict[str, Any]:
@@ -2585,6 +2630,8 @@ class JarvisAgent:
                 return self._get_clipboard()
             elif cmd == "set_clipboard":
                 return self._set_clipboard(payload.get("content", payload.get("text", "")))
+            elif cmd == "clipboard_check":
+                return self._check_clipboard_hash()
             
             # Media
             elif cmd == "media_control":
