@@ -1,49 +1,51 @@
 import { useCallback, useRef, useEffect } from "react";
+import { Capacitor } from "@capacitor/core";
+import { LocalNotifications } from "@capacitor/local-notifications";
 
 /**
- * App notification service — uses native Capacitor push notifications
+ * App notification service — uses native Capacitor local notifications
  * when available, falls back to Web Notification API.
- * 
- * Provides a simple `notify()` function to send local notifications
- * for events like: PC connected, motion detected, human detected, call incoming.
  */
 
-let notificationPermission: NotificationPermission | "unknown" = "unknown";
+const isNative = Capacitor.isNativePlatform();
 
 async function requestPermission(): Promise<boolean> {
-  // Try Capacitor LocalNotifications first
-  try {
-    const { Capacitor } = await import("@capacitor/core");
-    if (Capacitor.isNativePlatform()) {
-      // LocalNotifications not installed — skip native
+  if (isNative) {
+    try {
+      const result = await LocalNotifications.requestPermissions();
+      return result.display === "granted";
+    } catch {
       return false;
     }
-  } catch {
-    // Not available, fall through to web
   }
 
-  // Web Notification API
   if ("Notification" in window) {
     const result = await Notification.requestPermission();
-    notificationPermission = result;
     return result === "granted";
   }
   return false;
 }
 
 async function sendNotification(title: string, body: string, tag?: string) {
-  // Try Capacitor native
-  try {
-    const { Capacitor } = await import("@capacitor/core");
-    if (Capacitor.isNativePlatform()) {
-      // LocalNotifications not installed — skip native
+  if (isNative) {
+    try {
+      await LocalNotifications.schedule({
+        notifications: [{
+          title,
+          body,
+          id: Math.floor(Math.random() * 100000),
+          schedule: { at: new Date(Date.now() + 100) },
+          sound: undefined,
+          smallIcon: "ic_notification",
+          largeIcon: "ic_launcher",
+        }],
+      });
       return;
+    } catch {
+      // fall through to web
     }
-  } catch {
-    // Fall through
   }
 
-  // Web fallback
   if ("Notification" in window && Notification.permission === "granted") {
     new Notification(title, {
       body,
@@ -58,30 +60,21 @@ export function useAppNotifications() {
   const permissionGranted = useRef(false);
   const cooldowns = useRef<Map<string, number>>(new Map());
 
-  // Request permission on first use
   useEffect(() => {
     requestPermission().then(granted => {
       permissionGranted.current = granted;
     });
   }, []);
 
-  /**
-   * Send a notification with cooldown to avoid spam.
-   * @param id Unique ID for cooldown tracking
-   * @param title Notification title
-   * @param body Notification body
-   * @param cooldownMs Minimum ms between notifications with same ID (default 10s)
-   */
   const notify = useCallback((id: string, title: string, body: string, cooldownMs = 10000) => {
     const now = Date.now();
     const lastSent = cooldowns.current.get(id) || 0;
-    if (now - lastSent < cooldownMs) return; // Cooldown active
+    if (now - lastSent < cooldownMs) return;
 
     cooldowns.current.set(id, now);
     sendNotification(title, body, id);
   }, []);
 
-  /** Convenience methods */
   const notifyPcConnected = useCallback((deviceName?: string) => {
     notify("pc-connected", "PC Connected", deviceName ? `${deviceName} is now connected` : "Your PC agent is online", 30000);
   }, [notify]);
