@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   Gauge,
   Stethoscope,
+  PersonStanding,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -35,6 +36,7 @@ import { useToast } from "@/hooks/use-toast";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
+import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
 
 interface MotionEvent {
   id: string;
@@ -69,6 +71,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [liveFps, setLiveFps] = useState(0);
   const [sirenActive, setSirenActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
+  const [poseEnabled, setPoseEnabled] = useState(() => localStorage.getItem("surveillance_pose") === "true");
+  const [humanPresent, setHumanPresent] = useState(false);
+
+  // Audio call refs
+  const audioWsRef = useRef<WebSocket | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   // Refs for streaming
   const wsRef = useRef<WebSocket | null>(null);
@@ -90,6 +99,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_fps", String(survFps)), [survFps]);
   useEffect(() => localStorage.setItem("surveillance_quality", String(survQuality)), [survQuality]);
   useEffect(() => localStorage.setItem("surveillance_monitoring", String(monitoring)), [monitoring]);
+  useEffect(() => localStorage.setItem("surveillance_pose", String(poseEnabled)), [poseEnabled]);
 
   const cleanupWs = useCallback(() => {
     if (currentBlobUrlRef.current) {
@@ -176,21 +186,110 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
   const toggleCall = useCallback(async () => {
     if (callActive) {
-      // Stop call (stop audio relay)
-      await sendCommand("stop_audio_relay", {});
+      // Stop call - close audio WebSocket and mic
+      if (audioWsRef.current) {
+        try { audioWsRef.current.close(); } catch {}
+        audioWsRef.current = null;
+      }
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(t => t.stop());
+        audioStreamRef.current = null;
+      }
+      if (audioContextRef.current) {
+        try { audioContextRef.current.close(); } catch {}
+        audioContextRef.current = null;
+      }
       setCallActive(false);
       toast({ title: "Call Ended" });
-    } else {
-      // Start call via audio relay (bidirectional)
-      const sessionId = crypto.randomUUID();
-      await sendCommand("start_audio_relay", {
-        session_id: sessionId,
-        direction: "bidirectional",
-      });
-      setCallActive(true);
-      toast({ title: "📞 Call Started", description: "Bidirectional audio via relay" });
+      return;
     }
-  }, [sendCommand, toast, callActive]);
+
+    // Start real bidirectional audio call via audio-relay
+    if (!session?.session_token) {
+      toast({ title: "Not Paired", description: "Connect to your PC first", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const callSessionId = crypto.randomUUID();
+      const WS_BASE = getFunctionsWsBase();
+      const wsUrl = `${WS_BASE}/functions/v1/audio-relay?sessionId=${callSessionId}&type=phone&direction=bidirectional&session_token=${session.session_token}`;
+
+      // Get microphone
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 } });
+      audioStreamRef.current = stream;
+
+      // Connect WebSocket
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => { ws.close(); reject(new Error("timeout")); }, 8000);
+        ws.onopen = () => { clearTimeout(t); resolve(); };
+        ws.onerror = () => { clearTimeout(t); reject(new Error("ws error")); };
+      });
+
+      audioWsRef.current = ws;
+
+      // Send mic audio as PCM
+      const ac = new AudioContext({ sampleRate: 16000 });
+      audioContextRef.current = ac;
+      const source = ac.createMediaStreamSource(stream);
+      const processor = ac.createScriptProcessor(4096, 1, 1);
+      source.connect(processor);
+      processor.connect(ac.destination);
+
+      processor.onaudioprocess = (e) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const samples = e.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i++) {
+          pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+        }
+        ws.send(pcm16.buffer);
+      };
+
+      // Play received audio
+      ws.onmessage = async (event) => {
+        if (event.data instanceof ArrayBuffer && event.data.byteLength > 0) {
+          try {
+            const pcm16 = new Int16Array(event.data);
+            const float32 = new Float32Array(pcm16.length);
+            for (let i = 0; i < pcm16.length; i++) {
+              float32[i] = pcm16[i] / 32768;
+            }
+            const buffer = ac.createBuffer(1, float32.length, 16000);
+            buffer.getChannelData(0).set(float32);
+            const bufferSource = ac.createBufferSource();
+            bufferSource.buffer = buffer;
+            bufferSource.connect(ac.destination);
+            bufferSource.start();
+          } catch { /* ignore playback errors */ }
+        }
+      };
+
+      ws.onclose = () => {
+        audioWsRef.current = null;
+        setCallActive(false);
+      };
+
+      // Tell PC agent to start its side of the audio relay
+      sendCommand("start_audio_relay", {
+        session_id: callSessionId,
+        direction: "bidirectional",
+      }, { awaitResult: false });
+
+      setCallActive(true);
+      toast({ title: "📞 Call Started", description: "Bidirectional audio active" });
+    } catch (err) {
+      toast({ title: "Call Failed", description: err instanceof Error ? err.message : "Could not start call", variant: "destructive" });
+      // Cleanup on failure
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(t => t.stop());
+        audioStreamRef.current = null;
+      }
+    }
+  }, [sendCommand, toast, callActive, session]);
 
   const startSurveillance = useCallback(async () => {
     setIsStarting(true);
@@ -333,7 +432,12 @@ export function SurveillancePanel({ className }: { className?: string }) {
   }, [monitoring, session?.session_token]);
 
   // Cleanup on unmount - DON'T reset monitoring state so it persists
-  useEffect(() => () => { cleanupWs(); }, [cleanupWs]);
+  useEffect(() => () => {
+    cleanupWs();
+    if (audioWsRef.current) { try { audioWsRef.current.close(); } catch {} }
+    if (audioStreamRef.current) { audioStreamRef.current.getTracks().forEach(t => t.stop()); }
+    if (audioContextRef.current) { try { audioContextRef.current.close(); } catch {} }
+  }, [cleanupWs]);
 
   return (
     <Card className={cn("glass-dark border-border/50", className)}>
@@ -403,10 +507,29 @@ export function SurveillancePanel({ className }: { className?: string }) {
         {currentFrame ? (
           <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50">
             <img src={currentFrame} alt="Live View" className="w-full h-full object-contain" />
+            {/* Pose Detection Skeleton Overlay */}
+            <PoseDetectionOverlay
+              frameUrl={currentFrame}
+              enabled={poseEnabled && monitoring}
+              onHumanDetected={(lm, conf) => {
+                if (!humanPresent) {
+                  setHumanPresent(true);
+                  addLog("warn", "web", `Human detected (${Math.round(conf * 100)}% confidence)`);
+                  toast({ title: "🧍 Human Detected!", description: `Confidence: ${Math.round(conf * 100)}%` });
+                }
+                // Reset after 3 seconds of no detection
+                setTimeout(() => setHumanPresent(false), 3000);
+              }}
+            />
             <div className="absolute top-2 right-2 flex gap-1">
               <Badge variant="secondary" className="bg-black/50 backdrop-blur text-xs">
                 {liveFps} FPS
               </Badge>
+              {poseEnabled && (
+                <Badge variant="secondary" className="bg-purple-500/80 text-white backdrop-blur text-[10px]">
+                  <PersonStanding className="w-3 h-3 mr-1" /> Pose
+                </Badge>
+              )}
               {micEnabled && (
                 <Badge variant="secondary" className="bg-emerald-500/80 text-white backdrop-blur">
                   <Mic className="w-3 h-3 mr-1" /> ON
@@ -505,6 +628,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
               </div>
 
               <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <PersonStanding className="h-4 w-4 text-muted-foreground" />
+                    <Label className="text-xs">Pose Detection (Skeletal)</Label>
+                  </div>
+                  <Switch checked={poseEnabled} onCheckedChange={setPoseEnabled} />
+                </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Mic className="h-4 w-4 text-muted-foreground" />
