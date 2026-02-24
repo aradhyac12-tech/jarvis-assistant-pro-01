@@ -105,14 +105,20 @@ export default function Hub() {
   } = useP2PCommand();
   const { toast } = useToast();
 
-  const [activeTab, setActiveTab] = useState<Tab>(() => {
-    const saved = localStorage.getItem("hub_active_tab");
-    return (saved as Tab) || "control";
-  });
+  // Helper to load persisted state
+  const loadState = <T,>(key: string, fallback: T): T => {
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null) return fallback;
+      return JSON.parse(v) as T;
+    } catch { return fallback; }
+  };
+
+  const [activeTab, setActiveTab] = useState<Tab>(() => loadState("hub_active_tab", "control" as Tab));
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   
-  const [volume, setVolume] = useState(50);
-  const [brightness, setBrightness] = useState(75);
+  const [volume, setVolume] = useState(() => loadState("hub_volume", 50));
+  const [brightness, setBrightness] = useState(() => loadState("hub_brightness", 75));
   const [isLocked, setIsLocked] = useState(false);
   
   const [cmdInput, setCmdInput] = useState("");
@@ -120,14 +126,14 @@ export default function Hub() {
   const [isBoosting, setIsBoosting] = useState(false);
 
   // Media state
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMuted, setIsMuted] = useState(() => loadState("hub_muted", false));
 
   // Apps state
   const [runningApps, setRunningApps] = useState<AppInfo[]>([]);
   const [installedApps, setInstalledApps] = useState<AppInfo[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
-  const [appSearch, setAppSearch] = useState("");
-  const [appView, setAppView] = useState<"running" | "installed" | "services">("running");
+  const [appSearch, setAppSearch] = useState(() => loadState("hub_app_search", ""));
+  const [appView, setAppView] = useState<"running" | "installed" | "services">(() => loadState("hub_app_view", "running"));
   const [services, setServices] = useState<Array<{ name: string; display_name: string; status: string; start_type: string; pid: number | null }>>([]); 
   const [selectedApp, setSelectedApp] = useState<AppInfo | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
@@ -142,10 +148,13 @@ export default function Hub() {
     document.documentElement.classList.add("dark");
   }, []);
 
-  // Persist active tab
-  useEffect(() => {
-    localStorage.setItem("hub_active_tab", activeTab);
-  }, [activeTab]);
+  // Persist all restorable state
+  useEffect(() => { localStorage.setItem("hub_active_tab", JSON.stringify(activeTab)); }, [activeTab]);
+  useEffect(() => { localStorage.setItem("hub_volume", JSON.stringify(volume)); }, [volume]);
+  useEffect(() => { localStorage.setItem("hub_brightness", JSON.stringify(brightness)); }, [brightness]);
+  useEffect(() => { localStorage.setItem("hub_muted", JSON.stringify(isMuted)); }, [isMuted]);
+  useEffect(() => { localStorage.setItem("hub_app_view", JSON.stringify(appView)); }, [appView]);
+  useEffect(() => { localStorage.setItem("hub_app_search", JSON.stringify(appSearch)); }, [appSearch]);
 
   const getConnectionStatus = useCallback(() => {
     if (!selectedDevice) return { text: "No Device", color: "text-muted-foreground", dot: "bg-muted-foreground" };
