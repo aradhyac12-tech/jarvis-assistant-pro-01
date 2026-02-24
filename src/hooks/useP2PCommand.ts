@@ -301,14 +301,26 @@ export function useP2PCommand() {
     // No cleanup needed - onNetworkChange just stores the callback in a ref
   }, [networkMonitor, tryP2PUpgrade, cleanupP2P, localP2P, tryLocalP2PConnection]);
 
-  // Monitor local P2P state changes
+  // Monitor local P2P state changes — with debounce to prevent rapid switching
+  const stableModeTimerRef = useRef<number | null>(null);
+  
   useEffect(() => {
     if (localP2P.isReady && connectionMode !== "local_p2p") {
+      // Connected! Switch immediately.
+      if (stableModeTimerRef.current) { clearTimeout(stableModeTimerRef.current); stableModeTimerRef.current = null; }
       setConnectionMode("local_p2p");
       setLatency(localP2P.state.latency);
       notifyP2PUpgrade("Local P2P");
     } else if (!localP2P.isReady && connectionMode === "local_p2p") {
-      setConnectionMode("fallback");
+      // Disconnected — wait 5s before switching to fallback to avoid flapping
+      if (!stableModeTimerRef.current) {
+        stableModeTimerRef.current = window.setTimeout(() => {
+          if (!localP2P.isReady) {
+            setConnectionMode("fallback");
+          }
+          stableModeTimerRef.current = null;
+        }, 5000);
+      }
     }
   }, [localP2P.isReady, localP2P.state.latency, connectionMode, notifyP2PUpgrade]);
 
@@ -350,17 +362,17 @@ export function useP2PCommand() {
       }
     }, 1000);
 
-    // Periodic retry: if not on local_p2p yet and autoLocalP2P is on, keep trying
+    // Periodic retry: only retry if NOT connected, with longer interval (30s)
     localP2PRetryRef.current = window.setInterval(() => {
       if (
         autoLocalP2PRef.current &&
         connectionModeRef.current !== "local_p2p" &&
         !localP2P.isReady
       ) {
-        console.log("[P2P] Auto-retry local P2P connection...");
+        console.log("[P2P] Auto-retry local P2P connection (30s interval)...");
         tryLocalP2PConnection();
       }
-    }, 10000);
+    }, 30000); // 30s instead of 10s — much less aggressive
     
     return () => {
       cleanupP2P();

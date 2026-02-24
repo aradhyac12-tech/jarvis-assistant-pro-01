@@ -7,6 +7,7 @@ export interface LocalP2PState {
   port: number;
   lastCheckTime: number;
   latency: number;
+  transport: "ws" | "http" | null;
 }
 
 type PendingRequest = {
@@ -16,9 +17,12 @@ type PendingRequest = {
 };
 
 const LOCAL_P2P_PORT = 9876;
-const LOCAL_P2P_HTTP_PORT = 9877; // HTTP API port (WS port + 1)
-const PROBE_TIMEOUT_MS = 1200; // Increased for reliability on slower LANs
-const KNOWN_IP_TIMEOUT_MS = 2500; // Extra time for known PC IP
+const LOCAL_P2P_HTTP_PORT = 9877;
+const PROBE_TIMEOUT_MS = 1500;
+const KNOWN_IP_TIMEOUT_MS = 3000;
+const KEEPALIVE_INTERVAL_MS = 8000; // Ping every 8s to maintain connection
+const RECONNECT_COOLDOWN_MS = 15000; // Don't retry discovery more than once per 15s
+const CONNECTION_STABLE_MS = 5000; // Wait 5s before declaring disconnected
 
 function isNativeApp(): boolean {
   try {
@@ -28,26 +32,19 @@ function isNativeApp(): boolean {
   }
 }
 
-/** Returns true if ws:// connections are blocked (HTTPS browser, not native) */
 function isWsBlocked(): boolean {
   if (window.location.protocol !== "https:") return false;
   if (isNativeApp()) return false;
   return true;
 }
 
-/**
- * Check if HTTP-based P2P is available.
- * CapacitorHttp routes fetch() through native, bypassing mixed-content.
- * So even on HTTPS, fetch("http://LAN_IP:9877/ping") works in the APK.
- */
 function canUseHttpP2P(): boolean {
   if (window.location.protocol !== "https:") return true;
-  // In Capacitor with CapacitorHttp, fetch is native — mixed content OK
   if (isNativeApp()) return true;
   return false;
 }
 
-/** Probe an IP via HTTP GET (works with CapacitorHttp in APK) */
+/** Probe an IP via HTTP GET */
 async function probeHttpServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   if (!canUseHttpP2P()) return false;
   try {
@@ -66,31 +63,30 @@ async function probeHttpServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promis
   }
 }
 
-/** Probe via WS with configurable timeout */
+/** Probe via WS */
 function probeWsServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   return new Promise((resolve) => {
     try {
       const ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
-      const timeoutId = window.setTimeout(() => {
-        ws.close();
-        resolve(false);
-      }, timeoutMs);
+      const timeoutId = window.setTimeout(() => { ws.close(); resolve(false); }, timeoutMs);
       ws.onopen = () => { clearTimeout(timeoutId); ws.close(); resolve(true); };
       ws.onerror = () => { clearTimeout(timeoutId); resolve(false); };
     } catch { resolve(false); }
   });
 }
 
-/** Try both WS and HTTP probes in parallel, return true if either succeeds */
-async function probeBothTransports(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
-  const results = await Promise.all([
+/** Try both transports */
+async function probeBothTransports(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<"ws" | "http" | null> {
+  const [wsOk, httpOk] = await Promise.all([
     probeWsServer(ip, timeoutMs),
     probeHttpServer(ip, timeoutMs),
   ]);
-  return results.some(Boolean);
+  if (wsOk) return "ws";
+  if (httpOk) return "http";
+  return null;
 }
 
-/** Send a command via HTTP POST (fallback when WS is blocked) */
+/** Send a command via HTTP POST */
 async function httpCommand(
   ip: string,
   commandType: string,
@@ -115,8 +111,8 @@ async function httpCommand(
 }
 
 /**
- * Hook for detecting and connecting to the local P2P WebSocket server
- * running on the Python agent (localhost:9876 when on same network).
+ * Stable P2P hook with keepalive, reconnect cooldown, and debounced state changes.
+ * Prevents rapid switching between P2P and cloud modes.
  */
 export function useLocalP2P() {
   const [state, setState] = useState<LocalP2PState>({
@@ -126,241 +122,276 @@ export function useLocalP2P() {
     port: LOCAL_P2P_PORT,
     lastCheckTime: 0,
     latency: 0,
+    transport: null,
   });
 
   const wsRef = useRef<WebSocket | null>(null);
-  const httpModeRef = useRef<boolean>(false); // true = using HTTP fallback instead of WS
-  const probeTimeoutRef = useRef<number | null>(null);
+  const httpModeRef = useRef<boolean>(false);
+  const keepaliveRef = useRef<number | null>(null);
   const lastPingRef = useRef<number>(0);
-  const reconnectTimerRef = useRef<number | null>(null);
   const pendingRef = useRef<Map<string, PendingRequest>>(new Map());
+  const lastDiscoveryRef = useRef<number>(0); // Cooldown tracker
+  const connectedIpRef = useRef<string | null>(null); // Remember connected IP
+  const disconnectTimerRef = useRef<number | null>(null); // Debounce disconnect
+  const isConnectingRef = useRef<boolean>(false);
 
-  // Probe a specific IP for local P2P server (try both WS + HTTP in parallel)
-  const probeLocalServer = useCallback(async (ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> => {
+  // Save/load known PC IP
+  const saveKnownIp = useCallback((ip: string) => {
+    connectedIpRef.current = ip;
+    try { localStorage.setItem("jarvis_p2p_known_ip", ip); } catch {}
+  }, []);
+
+  const getKnownIp = useCallback((): string | null => {
+    return connectedIpRef.current || localStorage.getItem("jarvis_p2p_known_ip");
+  }, []);
+
+  // Keepalive: ping periodically to maintain the connection
+  const startKeepalive = useCallback((ip: string) => {
+    if (keepaliveRef.current) clearInterval(keepaliveRef.current);
+    
+    keepaliveRef.current = window.setInterval(async () => {
+      // WS keepalive
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        lastPingRef.current = Date.now();
+        wsRef.current.send(JSON.stringify({ type: "ping", t: lastPingRef.current }));
+        return;
+      }
+      
+      // HTTP keepalive
+      if (httpModeRef.current) {
+        const start = Date.now();
+        const ok = await probeHttpServer(ip, 3000);
+        if (ok) {
+          setState(prev => ({ ...prev, latency: Date.now() - start }));
+          return;
+        }
+      }
+      
+      // Both failed — but DON'T immediately disconnect. Give it a grace period.
+      if (!disconnectTimerRef.current) {
+        console.log("[LocalP2P] Keepalive missed, starting grace period...");
+        disconnectTimerRef.current = window.setTimeout(() => {
+          // Re-check before actually disconnecting
+          const wsAlive = wsRef.current?.readyState === WebSocket.OPEN;
+          if (!wsAlive && !httpModeRef.current) {
+            console.log("[LocalP2P] Grace period expired, disconnecting.");
+            handleDisconnect();
+          }
+          disconnectTimerRef.current = null;
+        }, CONNECTION_STABLE_MS);
+      }
+    }, KEEPALIVE_INTERVAL_MS);
+  }, []);
+
+  const stopKeepalive = useCallback(() => {
+    if (keepaliveRef.current) {
+      clearInterval(keepaliveRef.current);
+      keepaliveRef.current = null;
+    }
+    if (disconnectTimerRef.current) {
+      clearTimeout(disconnectTimerRef.current);
+      disconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const handleDisconnect = useCallback(() => {
+    wsRef.current = null;
+    httpModeRef.current = false;
+    stopKeepalive();
+    for (const [id, pending] of pendingRef.current.entries()) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(new Error("Local P2P disconnected"));
+      pendingRef.current.delete(id);
+    }
+    setState(prev => ({ ...prev, isConnected: false, isAvailable: false, transport: null }));
+  }, [stopKeepalive]);
+
+  // Probe with caching — only probe known IP, skip full discovery if within cooldown
+  const probeLocalServer = useCallback(async (ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<"ws" | "http" | null> => {
     return probeBothTransports(ip, timeoutMs);
   }, []);
 
-  // Try to discover local P2P server by probing network IPs
-  // Enhanced: also tries common LAN prefixes if provided prefix is empty (APK fallback)
+  // Discover — with cooldown to prevent spamming
   const discoverLocalServer = useCallback(async (networkPrefix: string): Promise<string | null> => {
-    // Common LAN prefixes to try when we don't have the phone's prefix
-    const COMMON_LAN_PREFIXES = [
-      "192.168.1",
-      "192.168.0",
-      "192.168.2",
-      "10.0.0",
-      "10.0.1",
-      "172.16.0",
-    ];
-
-    // Prefixes to scan - if provided, use it; otherwise scan common ones
-    const prefixesToScan = networkPrefix ? [networkPrefix] : COMMON_LAN_PREFIXES;
-
-    console.log(`[LocalP2P] Discovering server on prefixes:`, prefixesToScan);
-
-    // Common PC IPs to try first — covers DHCP ranges on most routers
-    const prioritySuffixes = [".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9", ".10", ".11", ".12", ".15", ".20", ".25", ".30", ".50", ".100", ".101", ".102", ".150", ".200", ".254"];
-
-    for (const prefix of prefixesToScan) {
-      // Try priority IPs first in parallel
-      const priorityProbes = prioritySuffixes.map(async (suffix) => {
-        const ip = prefix + suffix;
-        const available = await probeLocalServer(ip);
-        return available ? ip : null;
-      });
-
-      const priorityResults = await Promise.all(priorityProbes);
-      const foundPriority = priorityResults.find((ip) => ip !== null);
-      
-      if (foundPriority) {
-        console.log(`[LocalP2P] Found server at ${foundPriority}`);
-        return foundPriority;
-      }
-    }
-
-    // Extended scan on the first prefix only (avoid too many probes)
-    const primaryPrefix = prefixesToScan[0];
-    if (!primaryPrefix) {
-      console.log("[LocalP2P] No prefix available for extended scan");
+    const now = Date.now();
+    if (now - lastDiscoveryRef.current < RECONNECT_COOLDOWN_MS) {
+      console.log("[LocalP2P] Discovery cooldown active, skipping scan.");
       return null;
     }
+    lastDiscoveryRef.current = now;
 
-    const triedSuffixes = new Set(prioritySuffixes.map((s) => parseInt(s.slice(1), 10)));
-    const BATCH_SIZE = 30;
-    const MAX_IP = 254;
+    const COMMON_PREFIXES = ["192.168.1", "192.168.0", "192.168.2", "10.0.0", "10.0.1"];
+    const prefixes = networkPrefix ? [networkPrefix] : COMMON_PREFIXES;
+    const prioritySuffixes = [".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9", ".10", ".11", ".12", ".15", ".20", ".25", ".50", ".100", ".150", ".200", ".254"];
 
-    for (let start = 1; start <= MAX_IP; start += BATCH_SIZE) {
-      const end = Math.min(start + BATCH_SIZE - 1, MAX_IP);
-      const batchProbes: Promise<string | null>[] = [];
-
-      for (let i = start; i <= end; i++) {
-        if (triedSuffixes.has(i)) continue;
-        const ip = `${primaryPrefix}.${i}`;
-        batchProbes.push(probeLocalServer(ip).then((available) => (available ? ip : null)));
-      }
-
-      const batchResults = await Promise.all(batchProbes);
-      const foundBatch = batchResults.find((ip) => ip !== null);
-      if (foundBatch) {
-        console.log(`[LocalP2P] Found server at ${foundBatch}`);
-        return foundBatch;
+    for (const prefix of prefixes) {
+      const probes = prioritySuffixes.map(async (suffix) => {
+        const ip = prefix + suffix;
+        const transport = await probeBothTransports(ip);
+        return transport ? ip : null;
+      });
+      const results = await Promise.all(probes);
+      const found = results.find(ip => ip !== null);
+      if (found) {
+        console.log(`[LocalP2P] Found server at ${found}`);
+        return found;
       }
     }
 
-    console.log("[LocalP2P] No server found on any network");
+    console.log("[LocalP2P] No server found");
     return null;
-  }, [probeLocalServer]);
-
-  // Connect to local P2P WebSocket server
-  const connect = useCallback(async (pcIp: string): Promise<boolean> => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return true;
-    }
-
-    // If WS is blocked, use HTTP-only mode
-    if (isWsBlocked()) {
-      // Verify HTTP probe works
-      const httpOk = await probeHttpServer(pcIp);
-      if (httpOk) {
-        console.log(`[LocalP2P] ✅ Connected via HTTP fallback to ${pcIp}:${LOCAL_P2P_HTTP_PORT}`);
-        httpModeRef.current = true;
-        setState((prev) => ({
-          ...prev,
-          isAvailable: true,
-          isConnected: true,
-          pcIp,
-        }));
-        return true;
-      }
-      return false;
-    }
-
-    return new Promise((resolve) => {
-      console.log(`[LocalP2P] Connecting to ws://${pcIp}:${LOCAL_P2P_PORT}/p2p`);
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(`ws://${pcIp}:${LOCAL_P2P_PORT}/p2p`);
-      } catch {
-        resolve(false);
-        return;
-      }
-
-      const timeoutId = window.setTimeout(() => {
-        ws.close();
-        resolve(false);
-      }, 2000);
-
-      ws.onopen = () => {
-        clearTimeout(timeoutId);
-        console.log("[LocalP2P] ✅ Connected to local P2P server!");
-        wsRef.current = ws;
-        httpModeRef.current = false;
-        setState((prev) => ({
-          ...prev,
-          isAvailable: true,
-          isConnected: true,
-          pcIp,
-        }));
-        resolve(true);
-      };
-
-      ws.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
-          if (msg.type === "pong") {
-            const latency = Date.now() - lastPingRef.current;
-            setState((prev) => ({ ...prev, latency }));
-          } else if ((msg.type === "command_result" || msg.type === "command_error") && msg.requestId) {
-            const pending = pendingRef.current.get(String(msg.requestId));
-            if (pending) {
-              clearTimeout(pending.timeoutId);
-              pendingRef.current.delete(String(msg.requestId));
-              if (msg.type === "command_error") pending.reject(new Error(msg.error || "Command failed"));
-              else pending.resolve(msg.result);
-            }
-          }
-        } catch {}
-      };
-
-      ws.onclose = () => {
-        wsRef.current = null;
-        for (const [id, pending] of pendingRef.current.entries()) {
-          clearTimeout(pending.timeoutId);
-          pending.reject(new Error("Local P2P disconnected"));
-          pendingRef.current.delete(id);
-        }
-        setState((prev) => ({ ...prev, isConnected: false }));
-      };
-
-      ws.onerror = async () => {
-        clearTimeout(timeoutId);
-        // WS failed — try HTTP fallback before giving up
-        console.log(`[LocalP2P] WS failed, trying HTTP fallback to ${pcIp}:${LOCAL_P2P_HTTP_PORT}...`);
-        const httpOk = await probeHttpServer(pcIp, KNOWN_IP_TIMEOUT_MS);
-        if (httpOk) {
-          console.log(`[LocalP2P] ✅ Connected via HTTP fallback to ${pcIp}:${LOCAL_P2P_HTTP_PORT}`);
-          httpModeRef.current = true;
-          setState((prev) => ({
-            ...prev,
-            isAvailable: true,
-            isConnected: true,
-            pcIp,
-          }));
-          resolve(true);
-        } else {
-          setState((prev) => ({ ...prev, isAvailable: false, isConnected: false }));
-          resolve(false);
-        }
-      };
-    });
   }, []);
 
-  // Disconnect from local P2P server
+  // Connect — with lock to prevent concurrent attempts
+  const connect = useCallback(async (pcIp: string): Promise<boolean> => {
+    if (isConnectingRef.current) return false;
+    if (wsRef.current?.readyState === WebSocket.OPEN && connectedIpRef.current === pcIp) return true;
+    if (httpModeRef.current && connectedIpRef.current === pcIp) return true;
+
+    isConnectingRef.current = true;
+
+    // Cancel any pending disconnect
+    if (disconnectTimerRef.current) {
+      clearTimeout(disconnectTimerRef.current);
+      disconnectTimerRef.current = null;
+    }
+
+    try {
+      // If WS is blocked, use HTTP-only
+      if (isWsBlocked()) {
+        const httpOk = await probeHttpServer(pcIp, KNOWN_IP_TIMEOUT_MS);
+        if (httpOk) {
+          console.log(`[LocalP2P] ✅ Connected via HTTP to ${pcIp}:${LOCAL_P2P_HTTP_PORT}`);
+          httpModeRef.current = true;
+          saveKnownIp(pcIp);
+          startKeepalive(pcIp);
+          setState(prev => ({ ...prev, isAvailable: true, isConnected: true, pcIp, transport: "http" }));
+          return true;
+        }
+        return false;
+      }
+
+      // Try WS first
+      const connected = await new Promise<boolean>((resolve) => {
+        let ws: WebSocket;
+        try {
+          ws = new WebSocket(`ws://${pcIp}:${LOCAL_P2P_PORT}/p2p`);
+        } catch { resolve(false); return; }
+
+        const timeoutId = window.setTimeout(() => { ws.close(); resolve(false); }, 3000);
+
+        ws.onopen = () => {
+          clearTimeout(timeoutId);
+          console.log("[LocalP2P] ✅ WS connected!");
+          wsRef.current = ws;
+          httpModeRef.current = false;
+          saveKnownIp(pcIp);
+          startKeepalive(pcIp);
+          setState(prev => ({ ...prev, isAvailable: true, isConnected: true, pcIp, transport: "ws" }));
+          resolve(true);
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === "pong") {
+              const latency = Date.now() - lastPingRef.current;
+              setState(prev => ({ ...prev, latency }));
+              // Cancel any pending disconnect timer on successful pong
+              if (disconnectTimerRef.current) {
+                clearTimeout(disconnectTimerRef.current);
+                disconnectTimerRef.current = null;
+              }
+            } else if ((msg.type === "command_result" || msg.type === "command_error") && msg.requestId) {
+              const pending = pendingRef.current.get(String(msg.requestId));
+              if (pending) {
+                clearTimeout(pending.timeoutId);
+                pendingRef.current.delete(String(msg.requestId));
+                if (msg.type === "command_error") pending.reject(new Error(msg.error || "Command failed"));
+                else pending.resolve(msg.result);
+              }
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          // Don't immediately disconnect — use grace period
+          if (wsRef.current === ws) {
+            console.log("[LocalP2P] WS closed, starting grace period before disconnect...");
+            if (!disconnectTimerRef.current) {
+              disconnectTimerRef.current = window.setTimeout(() => {
+                if (wsRef.current === ws || wsRef.current?.readyState !== WebSocket.OPEN) {
+                  handleDisconnect();
+                }
+                disconnectTimerRef.current = null;
+              }, CONNECTION_STABLE_MS);
+            }
+          }
+        };
+
+        ws.onerror = async () => {
+          clearTimeout(timeoutId);
+          // Try HTTP fallback
+          const httpOk = await probeHttpServer(pcIp, KNOWN_IP_TIMEOUT_MS);
+          if (httpOk) {
+            httpModeRef.current = true;
+            saveKnownIp(pcIp);
+            startKeepalive(pcIp);
+            setState(prev => ({ ...prev, isAvailable: true, isConnected: true, pcIp, transport: "http" }));
+            resolve(true);
+          } else {
+            resolve(false);
+          }
+        };
+      });
+
+      if (!connected) {
+        setState(prev => ({ ...prev, isAvailable: false, isConnected: false }));
+      }
+      return connected;
+    } finally {
+      isConnectingRef.current = false;
+    }
+  }, [saveKnownIp, startKeepalive, handleDisconnect]);
+
+  // Disconnect explicitly
   const disconnect = useCallback(() => {
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
     httpModeRef.current = false;
-
+    stopKeepalive();
     for (const [id, pending] of pendingRef.current.entries()) {
       clearTimeout(pending.timeoutId);
       pending.reject(new Error("Local P2P disconnected"));
       pendingRef.current.delete(id);
     }
+    setState(prev => ({ ...prev, isConnected: false, transport: null }));
+  }, [stopKeepalive]);
 
-    setState((prev) => ({ ...prev, isConnected: false }));
-  }, []);
-
-  // Send command through local P2P (fire-and-forget)
+  // Send command (fire-and-forget)
   const sendCommand = useCallback((commandType: string, payload: Record<string, unknown> = {}): boolean => {
-    // HTTP mode: fire-and-forget via fetch
     if (httpModeRef.current && state.pcIp) {
       httpCommand(state.pcIp, commandType, payload).catch(() => {});
       return true;
     }
-    if (wsRef.current?.readyState !== WebSocket.OPEN) {
-      return false;
-    }
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
     try {
       wsRef.current.send(JSON.stringify({ type: "command", commandType, payload }));
       return true;
-    } catch {
-      return false;
-    }
+    } catch { return false; }
   }, [state.pcIp]);
 
-  // Request/response style command invocation
+  // Request/response command
   const invokeCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, timeoutMs = 30000) => {
-      // HTTP mode: use fetch
       if (httpModeRef.current && state.pcIp) {
         return httpCommand(state.pcIp, commandType, payload, timeoutMs);
       }
       if (wsRef.current?.readyState !== WebSocket.OPEN) {
         throw new Error("Local P2P not connected");
       }
-
       const requestId = crypto.randomUUID();
       const promise = new Promise<any>((resolve, reject) => {
         const timeoutId = window.setTimeout(() => {
@@ -369,19 +400,17 @@ export function useLocalP2P() {
         }, timeoutMs);
         pendingRef.current.set(requestId, { resolve, reject, timeoutId });
       });
-
       wsRef.current.send(JSON.stringify({ type: "command", requestId, commandType, payload }));
       return promise;
     },
     [state.pcIp]
   );
 
-  // Send ping for latency measurement
   const sendPing = useCallback(() => {
     if (httpModeRef.current && state.pcIp) {
       const start = Date.now();
       probeHttpServer(state.pcIp, 2000).then(() => {
-        setState((prev) => ({ ...prev, latency: Date.now() - start }));
+        setState(prev => ({ ...prev, latency: Date.now() - start }));
       });
       return;
     }
@@ -391,47 +420,53 @@ export function useLocalP2P() {
     }
   }, [state.pcIp]);
 
-  // Check availability and connect if possible
+  // Check and connect — with smart prioritization
   const checkAndConnect = useCallback(async (networkPrefix: string, knownPcIp?: string) => {
-    // Also check manual IP from localStorage
-    const manualIp = localStorage.getItem("jarvis_manual_pc_ip") || "";
-    const ipsToTry = [knownPcIp, manualIp].filter(Boolean) as string[];
-
-    // Try known IPs first with generous timeout
-    for (const ip of ipsToTry) {
-      console.log(`[LocalP2P] Probing known IP ${ip} with ${KNOWN_IP_TIMEOUT_MS}ms timeout...`);
-      const available = await probeLocalServer(ip, KNOWN_IP_TIMEOUT_MS);
-      if (available) {
-        console.log(`[LocalP2P] ✅ Known IP ${ip} responded!`);
-        await connect(ip);
-        setState((prev) => ({ ...prev, lastCheckTime: Date.now() }));
-        return;
+    // Already connected and stable? Just verify with a ping.
+    if ((wsRef.current?.readyState === WebSocket.OPEN || httpModeRef.current) && connectedIpRef.current) {
+      // Quick health check
+      const transport = await probeBothTransports(connectedIpRef.current, 2000);
+      if (transport) {
+        setState(prev => ({ ...prev, lastCheckTime: Date.now() }));
+        return; // Still connected, no need to re-discover
       }
-      console.log(`[LocalP2P] ❌ Known IP ${ip} did not respond`);
+      // Lost connection, fall through to reconnect
+      console.log("[LocalP2P] Lost connection to known IP, re-discovering...");
     }
 
-    // Fall back to full discovery
+    // Try known IPs first (saved IP, provided IP, manual IP)
+    const savedIp = getKnownIp();
+    const manualIp = localStorage.getItem("jarvis_manual_pc_ip") || "";
+    const ipsToTry = [...new Set([savedIp, knownPcIp, manualIp].filter(Boolean) as string[])];
+
+    for (const ip of ipsToTry) {
+      console.log(`[LocalP2P] Trying known IP ${ip}...`);
+      const transport = await probeBothTransports(ip, KNOWN_IP_TIMEOUT_MS);
+      if (transport) {
+        const ok = await connect(ip);
+        if (ok) {
+          setState(prev => ({ ...prev, lastCheckTime: Date.now() }));
+          return;
+        }
+      }
+    }
+
+    // Full discovery (with cooldown)
     const pcIp = await discoverLocalServer(networkPrefix);
     if (pcIp) {
       await connect(pcIp);
     } else {
-      setState((prev) => ({
-        ...prev,
-        isAvailable: false,
-        isConnected: false,
-        lastCheckTime: Date.now(),
-      }));
+      setState(prev => ({ ...prev, isAvailable: false, isConnected: false, lastCheckTime: Date.now() }));
     }
-  }, [probeLocalServer, discoverLocalServer, connect]);
+  }, [connect, discoverLocalServer, getKnownIp]);
 
-  // Cleanup on unmount
+  // Cleanup
   useEffect(() => {
     return () => {
       disconnect();
-      if (probeTimeoutRef.current) clearTimeout(probeTimeoutRef.current);
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      stopKeepalive();
     };
-  }, [disconnect]);
+  }, [disconnect, stopKeepalive]);
 
   return {
     state,
