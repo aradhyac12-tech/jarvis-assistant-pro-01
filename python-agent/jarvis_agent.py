@@ -848,7 +848,7 @@ class JarvisAgent:
         self.device_key = self._load_or_create_device_key()
         self.pairing_code = ""
         self.running = True
-        self.is_locked = False
+        self.is_locked = self._detect_lock_state()
         self._volume_cache = 50
         self._brightness_cache = 50
 
@@ -980,11 +980,73 @@ class JarvisAgent:
         self.is_locked = True
         return {"success": True}
     
+    @staticmethod
+    def _detect_lock_state() -> bool:
+        """Detect if Windows workstation is locked using desktop check."""
+        if platform.system() != "Windows":
+            return False
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # OpenInputDesktop returns 0 when the secure desktop (lock screen) is active
+            hDesktop = user32.OpenInputDesktop(0, False, 0x0100)  # DESKTOP_READOBJECTS
+            if hDesktop == 0:
+                return True  # locked – secure desktop is active
+            user32.CloseDesktop(hDesktop)
+            return False
+        except Exception:
+            return False
+
     def _smart_unlock(self, pin: str) -> Dict[str, Any]:
-        if pin == UNLOCK_PIN:
+        """Unlock Windows lock screen: spacebar -> 4s wait -> type PIN -> 2s wait -> Enter"""
+        if pin != UNLOCK_PIN:
+            return {"success": False, "error": "Invalid PIN"}
+        
+        # Check if actually locked
+        if not self._detect_lock_state():
             self.is_locked = False
-            return {"success": True}
-        return {"success": False, "error": "Invalid PIN"}
+            return {"success": True, "message": "PC was already unlocked"}
+        
+        try:
+            def _do_unlock():
+                try:
+                    # Step 1: Press spacebar to dismiss lock screen artwork
+                    pyautogui.press("space")
+                    add_log("info", "Unlock: pressed spacebar, waiting 4s...", category="system")
+                    
+                    # Step 2: Wait 4 seconds for password field to appear
+                    time.sleep(4)
+                    
+                    # Step 3: Type the PIN
+                    pyautogui.typewrite(pin, interval=0.05)
+                    add_log("info", "Unlock: typed PIN, waiting 2s...", category="system")
+                    
+                    # Step 4: Wait 2 seconds
+                    time.sleep(2)
+                    
+                    # Step 5: Press Enter to submit
+                    pyautogui.press("enter")
+                    add_log("info", "Unlock: pressed Enter", category="system")
+                    
+                    # Step 6: Wait and verify
+                    time.sleep(3)
+                    if not JarvisAgent._detect_lock_state():
+                        self.is_locked = False
+                        add_log("info", "PC unlocked successfully", category="system")
+                    else:
+                        self.is_locked = True
+                        add_log("warn", "PC may still be locked after unlock attempt", category="system")
+                except Exception as e:
+                    add_log("error", f"Unlock keystroke error: {e}", category="system")
+            
+            # Run in thread since it has blocking sleeps
+            unlock_thread = threading.Thread(target=_do_unlock, daemon=True)
+            unlock_thread.start()
+            
+            self.is_locked = False  # Optimistically set
+            return {"success": True, "message": "Unlock sequence started (spacebar → 4s → PIN → 2s → Enter)"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def _get_system_stats(self) -> Dict[str, Any]:
         try:
@@ -1011,7 +1073,7 @@ class JarvisAgent:
             "success": True,
             "volume": vol,
             "brightness": bright,
-            "is_locked": self.is_locked,
+            "is_locked": self._detect_lock_state(),
         }
     
     # ============== CLIPBOARD ==============
@@ -2634,7 +2696,7 @@ class JarvisAgent:
                 "system_info": system_info,
                 "current_volume": self._get_volume(),
                 "current_brightness": self._get_brightness(),
-                "is_locked": self.is_locked,
+                "is_locked": self._detect_lock_state(),
             }).eq("id", self.device_id).execute()
             
             update_agent_status({
