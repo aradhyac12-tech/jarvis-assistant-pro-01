@@ -27,6 +27,7 @@ export function GlobalFloatingPiP() {
     setFloatingPosition,
     setFloatingSize,
     toggleLandscape,
+    releaseWebSocketOwnership,
   } = useGlobalPiP();
 
   const [isDragging, setIsDragging] = useState(false);
@@ -39,7 +40,7 @@ export function GlobalFloatingPiP() {
   const pinnedStream = pinnedStreamId ? activeStreams.get(pinnedStreamId) : null;
   const streamList = Array.from(activeStreams.values()).filter(s => s.isActive);
 
-  // Touch/mouse dragging with proper touch support
+  // Drag handlers
   const handleDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -51,7 +52,7 @@ export function GlobalFloatingPiP() {
     };
   }, [floatingPosition]);
 
-  // Resize logic with touch support
+  // Resize handlers
   const handleResizeStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -69,7 +70,7 @@ export function GlobalFloatingPiP() {
     if (!isDragging && !isResizing) return;
 
     const handleMove = (e: MouseEvent | TouchEvent) => {
-      e.preventDefault(); // Prevent scrolling while dragging/resizing
+      e.preventDefault();
       const point = "touches" in e ? e.touches[0] : e;
       
       if (isDragging) {
@@ -114,6 +115,14 @@ export function GlobalFloatingPiP() {
     pinStream(streamList[newIdx].id);
   }, [streamList, pinnedStreamId, pinStream]);
 
+  const handleClose = useCallback(() => {
+    if (pinnedStreamId) {
+      releaseWebSocketOwnership(pinnedStreamId);
+    }
+    setFloating(false);
+    pinStream(null);
+  }, [pinnedStreamId, releaseWebSocketOwnership, setFloating, pinStream]);
+
   if (!isFloating || !pinnedStream) return null;
 
   if (isMinimized) {
@@ -143,10 +152,10 @@ export function GlobalFloatingPiP() {
         width: floatingSize.width,
         height: floatingSize.height,
         transition: isDragging || isResizing ? "none" : "box-shadow 0.2s",
-        touchAction: "none", // Prevent browser touch actions on PiP
+        touchAction: "none",
       }}
     >
-      {/* Draggable header - larger touch target */}
+      {/* Draggable header */}
       <div
         className="absolute top-0 left-0 right-0 flex items-center justify-between px-3 py-2.5 bg-gradient-to-b from-black/90 to-transparent cursor-grab z-20"
         onMouseDown={handleDragStart}
@@ -185,7 +194,7 @@ export function GlobalFloatingPiP() {
             <Minimize2 className="h-3.5 w-3.5" />
           </Button>
           <Button variant="ghost" size="icon" className="h-7 w-7 text-white/80 hover:text-white hover:bg-white/10"
-            onClick={(e) => { e.stopPropagation(); setFloating(false); }}>
+            onClick={(e) => { e.stopPropagation(); handleClose(); }}>
             <X className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -211,7 +220,7 @@ export function GlobalFloatingPiP() {
         )}
       </div>
 
-      {/* Resize handle - larger for touch */}
+      {/* Resize handle */}
       <div
         className="absolute bottom-0 right-0 w-10 h-10 cursor-se-resize z-20 flex items-end justify-end p-1.5"
         onMouseDown={handleResizeStart}

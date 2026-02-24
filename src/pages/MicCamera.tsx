@@ -626,8 +626,10 @@ export default function MicCamera() {
   }, [sendCommand, toast]);
 
   // ==================== CLEANUP ====================
+  // Don't close WebSockets that were handed off to GlobalPiP context
   useEffect(() => {
     return () => {
+      // Only close WS if PiP context hasn't taken ownership (ref will be null if transferred)
       pcCamWsRef.current?.close();
       screenWsRef.current?.close();
       audioWsRef.current?.close();
@@ -886,6 +888,7 @@ export default function MicCamera() {
                     fps={liveCamFps} latency={camLatency}
                     title="PC Camera" error={pcCamError}
                     streamId="pc-camera" streamType="camera"
+                    wsRef={pcCamWsRef}
                   />
 
                   <div className="flex items-center justify-center gap-4">
@@ -924,6 +927,7 @@ export default function MicCamera() {
                     fps={liveScreenFps} latency={screenLatency}
                     title="Screen Mirror" error={screenError}
                     streamId="screen-mirror" streamType="screen"
+                    wsRef={screenWsRef}
                   />
 
                   <div className="flex items-center justify-center gap-4">
