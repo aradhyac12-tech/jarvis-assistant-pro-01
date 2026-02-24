@@ -1,76 +1,53 @@
-# Converting JARVIS to Android APK
+# Converting JARVIS Remote to Android APK
 
-This guide walks you through converting the JARVIS web app into a native Android APK.
+Complete guide to build the JARVIS Remote Android APK with all native plugins and permissions.
 
 ## Prerequisites
 
-1. **Node.js** (v18 or later)
-2. **Android Studio** (latest stable version)
-3. **Java JDK 17+** (required by Android Studio)
-4. **Git** (for cloning the project)
+1. **Node.js** v18+
+2. **Android Studio** (latest stable)
+3. **Java JDK 17+**
+4. **Git**
 
-## Step-by-Step Instructions
-
-### 1. Export and Clone the Project
-
-1. In Lovable, click **"Export to GitHub"** to push your project to a GitHub repository
-2. Clone the repository to your local machine:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-   cd YOUR_REPO_NAME
-   ```
-
-### 2. Install Dependencies
+## Quick Start
 
 ```bash
+# 1. Export from Lovable → GitHub, then clone
+git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
+cd YOUR_REPO
+
+# 2. Install dependencies
 npm install
-```
 
-### 3. Initialize Capacitor (Already Done)
-
-The project already has Capacitor configured. If you need to re-initialize:
-```bash
-npx cap init aradhya-jarvis app.lovable.2d26560bb2f346af9b149a760aa78340
-```
-
-### 4. Add Android Platform
-
-```bash
+# 3. Add Android platform
 npx cap add android
-```
 
-### 5. Build the Web App
-
-```bash
+# 4. Build web assets
 npm run build
-```
 
-### 6. Sync to Android
-
-```bash
+# 5. Sync to Android
 npx cap sync android
-```
 
-### 7. Open in Android Studio
-
-```bash
+# 6. Open in Android Studio
 npx cap open android
 ```
 
-### 8. Configure Android Permissions
+## Android Permissions
 
-Edit `android/app/src/main/AndroidManifest.xml` and add these permissions:
+After `npx cap add android`, edit `android/app/src/main/AndroidManifest.xml` and add these permissions **inside `<manifest>`** before `<application>`:
 
 ```xml
-<!-- Internet access (already included) -->
+<!-- Core -->
 <uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
-<!-- Camera and Microphone -->
+<!-- Camera & Microphone (streaming, surveillance, calls) -->
 <uses-permission android:name="android.permission.CAMERA" />
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
-<!-- Phone state for call detection (KDE Connect-style) -->
+<!-- Phone state detection (KDE Connect-style auto-pause) -->
 <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 <uses-permission android:name="android.permission.READ_CALL_LOG" />
 <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
@@ -78,27 +55,55 @@ Edit `android/app/src/main/AndroidManifest.xml` and add these permissions:
 <!-- Notifications -->
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 <uses-permission android:name="android.permission.VIBRATE" />
+<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-<!-- Network -->
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-
-<!-- Storage (for file transfers) -->
+<!-- Storage (file transfers, clip downloads) -->
 <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
 <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+<uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
-<!-- Contacts (for call/SMS features) -->
+<!-- Contacts & Calendar -->
 <uses-permission android:name="android.permission.READ_CONTACTS" />
-
-<!-- Calendar -->
 <uses-permission android:name="android.permission.READ_CALENDAR" />
 <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 
-<!-- Foreground service for background operation -->
+<!-- Foreground service (background streaming, surveillance) -->
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+
+<!-- Biometric unlock -->
+<uses-permission android:name="android.permission.USE_BIOMETRIC" />
+<uses-permission android:name="android.permission.USE_FINGERPRINT" />
+
+<!-- Notification listener (sync phone notifications to PC) -->
+<uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+
+<!-- Haptics -->
+<uses-permission android:name="android.permission.VIBRATE" />
 ```
 
-### 9. Configure Network Security
+Also add inside `<application>`:
+
+```xml
+<application
+    android:networkSecurityConfig="@xml/network_security_config"
+    android:usesCleartextTraffic="true"
+    ...>
+
+    <!-- Media session for persistent notification controls -->
+    <service
+        android:name="androidx.media.MediaBrowserServiceCompat"
+        android:exported="false" />
+</application>
+```
+
+## Network Security Config
 
 Create `android/app/src/main/res/xml/network_security_config.xml`:
 
@@ -119,119 +124,100 @@ Create `android/app/src/main/res/xml/network_security_config.xml`:
 </network-security-config>
 ```
 
-Reference it in AndroidManifest.xml:
-```xml
-<application
-    android:networkSecurityConfig="@xml/network_security_config"
-    ...>
-```
+## Installed Capacitor Plugins
 
-### 10. Build Debug APK
+These are already in `package.json` and ready to use:
 
-In Android Studio:
-1. Go to **Build → Build Bundle(s) / APK(s) → Build APK(s)**
-2. Wait for the build to complete
-3. Find the APK at `android/app/build/outputs/apk/debug/app-debug.apk`
+| Plugin | Purpose |
+|--------|---------|
+| `@capacitor/core` | Core runtime |
+| `@capacitor/app` | App state (background/foreground) |
+| `@capacitor/haptics` | Haptic feedback on controls |
+| `@capacitor/keyboard` | Keyboard management |
+| `@capacitor/local-notifications` | Local alerts for surveillance |
+| `@capacitor/push-notifications` | Push notification sync |
+| `@capacitor/status-bar` | Status bar styling |
+| `@capgo/capacitor-native-biometric` | Biometric/fingerprint unlock |
+| `capacitor-plugin-incoming-call` | Call detection (auto-pause media) |
+| `@posx/capacitor-notifications-listener` | Read phone notifications |
 
-Or from command line:
+## Build APK
+
+### Debug APK (for testing)
+
 ```bash
+# From project root
 cd android
 ./gradlew assembleDebug
 ```
 
-### 11. Install on Device
+APK location: `android/app/build/outputs/apk/debug/app-debug.apk`
+
+### Release APK (for distribution)
 
 ```bash
-adb install android/app/build/outputs/apk/debug/app-debug.apk
-```
+# Generate signing key (one time)
+keytool -genkey -v -keystore jarvis-release.keystore -alias jarvis -keyalg RSA -keysize 2048 -validity 10000
 
-Or transfer the APK to your phone and install it.
+# Add to android/app/build.gradle
+# signingConfigs {
+#     release {
+#         storeFile file('jarvis-release.keystore')
+#         storePassword 'YOUR_PASSWORD'
+#         keyAlias 'jarvis'
+#         keyPassword 'YOUR_KEY_PASSWORD'
+#     }
+# }
+
+cd android
+./gradlew assembleRelease
+```
 
 ## Development Workflow
 
 ### Hot Reload (Live Development)
 
-The `capacitor.config.ts` is configured to point to the live Lovable preview. This means:
+The app points to the live Lovable preview URL. Changes in Lovable appear instantly in the APK — no rebuild needed.
 
-1. Your APK connects to the live preview server for development
-2. Changes you make in Lovable are reflected immediately in the app
-3. No need to rebuild the APK for code changes
+### Production Build
 
-### For Production
+For a standalone APK (no server dependency):
 
-Update `capacitor.config.ts` to use the built files:
-```typescript
-const config: CapacitorConfig = {
-  appId: 'app.lovable.2d26560bb2f346af9b149a760aa78340',
-  appName: 'aradhya-jarvis',
-  webDir: 'dist',
-  // Remove or comment out the server block for production:
-  // server: {
-  //   url: "...",
-  //   cleartext: true
-  // },
-};
-```
+1. Edit `capacitor.config.ts` — comment out the `server` block
+2. Run `npm run build && npx cap sync android`
+3. Build APK in Android Studio
 
-Then rebuild:
+## After Every Code Change
+
 ```bash
-npm run build
+git pull
 npx cap sync android
-npx cap open android
-# Build release APK in Android Studio
 ```
-
-## Signing for Play Store
-
-1. Generate a keystore:
-   ```bash
-   keytool -genkey -v -keystore jarvis-release-key.keystore -alias jarvis -keyalg RSA -keysize 2048 -validity 10000
-   ```
-
-2. Configure signing in `android/app/build.gradle`:
-   ```gradle
-   android {
-       signingConfigs {
-           release {
-               storeFile file('jarvis-release-key.keystore')
-               storePassword 'YOUR_PASSWORD'
-               keyAlias 'jarvis'
-               keyPassword 'YOUR_KEY_PASSWORD'
-           }
-       }
-       buildTypes {
-           release {
-               signingConfig signingConfigs.release
-           }
-       }
-   }
-   ```
-
-3. Build release APK:
-   ```bash
-   cd android
-   ./gradlew assembleRelease
-   ```
 
 ## Troubleshooting
 
-### WebSocket Connection Issues
-The APK can use `ws://` connections directly (no HTTPS restrictions), enabling ultra-low latency P2P connections to the PC agent.
+| Issue | Fix |
+|-------|-----|
+| WebSocket fails | Ensure `allowMixedContent: true` in capacitor config |
+| Camera/Mic denied | Check Android Settings → Apps → JARVIS → Permissions |
+| Build fails | Run `npx cap sync android`, check JDK 17+ |
+| White screen | Clear app cache, or check `npx cap sync` was run |
+| Notifications not showing | Ensure `POST_NOTIFICATIONS` permission granted (Android 13+) |
+| Call detection not working | Grant `READ_PHONE_STATE` permission |
+| Biometric fails | Ensure fingerprint is enrolled on device |
 
-### Camera/Microphone Not Working
-Ensure permissions are granted in Android Settings → Apps → JARVIS → Permissions.
+## Features in APK
 
-### Build Fails
-- Run `npx cap sync android` after any code changes
-- Make sure Android Studio has downloaded all SDK components
-- Check that JAVA_HOME points to JDK 17+
-
-## Features Available in APK
-
-- ✅ Direct WebSocket connections (bypasses mixed-content restrictions)
-- ✅ Native push notifications
-- ✅ Call detection and auto-mute
-- ✅ Camera and microphone access
+- ✅ WebSocket streaming (camera, screen, audio)
+- ✅ PiP (Picture-in-Picture) floating player
+- ✅ CSS fullscreen (no page refresh)
+- ✅ Surveillance with auto-recording clips
+- ✅ Push & local notifications
+- ✅ Call detection → auto-pause PC media
+- ✅ Biometric/PIN app lock
+- ✅ Haptic feedback on all controls
+- ✅ Notification sync (phone → PC)
+- ✅ Media controls with persistent notification
 - ✅ File transfers
-- ✅ Background operation
-- ✅ Local P2P with 2-5ms latency
+- ✅ Clipboard sync
+- ✅ Background operation via foreground service
