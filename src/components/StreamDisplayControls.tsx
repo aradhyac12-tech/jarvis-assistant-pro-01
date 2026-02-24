@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -90,10 +91,15 @@ export function StreamDisplayControls({
     }
   }, [isActive, displayMode]);
 
-  // Handle fullscreen change events
+  // Handle fullscreen change events (cleanup standalone div)
   useEffect(() => {
     const handleFullscreenChange = () => {
       if (!document.fullscreenElement && displayMode === "fullscreen") {
+        // Clean up the standalone fullscreen div
+        const fsDiv = (fullscreenContainerRef as any)?._fsDiv;
+        if (fsDiv && fsDiv.parentNode) {
+          fsDiv.remove();
+        }
         setDisplayMode("normal");
         setZoomLevel(1);
         setPanOffset({ x: 0, y: 0 });
@@ -110,6 +116,11 @@ export function StreamDisplayControls({
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
+    // Clean up standalone fullscreen div
+    const fsDiv = (fullscreenContainerRef as any)?._fsDiv;
+    if (fsDiv && fsDiv.parentNode) {
+      fsDiv.remove();
+    }
     setDisplayMode("normal");
     setZoomLevel(1);
     setPanOffset({ x: 0, y: 0 });
@@ -122,20 +133,40 @@ export function StreamDisplayControls({
     if (displayMode === "fullscreen") {
       exitFullscreenSafe();
     } else {
-      // Use a dedicated fullscreen container to avoid page refresh
-      const container = fullscreenContainerRef.current;
-      if (!container) return;
+      // Create a standalone DOM element outside React to avoid page refresh
+      const fsDiv = document.createElement("div");
+      fsDiv.id = `fs-${effectiveStreamId}`;
+      fsDiv.style.cssText = "position:fixed;inset:0;z-index:99999;background:#000;";
+      document.body.appendChild(fsDiv);
+      
+      // Store ref for cleanup
+      (fullscreenContainerRef as any)._fsDiv = fsDiv;
+      
       try {
-        await container.requestFullscreen();
+        await fsDiv.requestFullscreen();
         try {
           await (screen.orientation as any)?.lock?.("landscape");
         } catch {}
         setDisplayMode("fullscreen");
+        
+        // Listen for fullscreen exit on this element
+        const onFsChange = () => {
+          if (!document.fullscreenElement) {
+            fsDiv.remove();
+            setDisplayMode("normal");
+            setZoomLevel(1);
+            setPanOffset({ x: 0, y: 0 });
+            try { (screen.orientation as any)?.unlock?.(); } catch {}
+            document.removeEventListener("fullscreenchange", onFsChange);
+          }
+        };
+        document.addEventListener("fullscreenchange", onFsChange);
       } catch (err) {
+        fsDiv.remove();
         console.error("Fullscreen failed:", err);
       }
     }
-  }, [displayMode, exitFullscreenSafe]);
+  }, [displayMode, exitFullscreenSafe, effectiveStreamId]);
 
   const toggleFloating = useCallback(() => {
     const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
@@ -358,37 +389,52 @@ export function StreamDisplayControls({
     );
   }
 
-  // Fullscreen mode
+  // Fullscreen mode - render into the standalone DOM element via portal
+  const fsDiv = (fullscreenContainerRef as any)?._fsDiv;
+  if (displayMode === "fullscreen" && fsDiv) {
+    return (
+      <>
+        {/* Placeholder in normal flow */}
+        <div ref={fullscreenContainerRef} className={cn("relative aspect-video rounded-xl overflow-hidden bg-black/90", className)}>
+          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">
+            <Maximize2 className="h-5 w-5 mr-2" /> Fullscreen Active
+          </div>
+        </div>
+        {createPortal(
+          <div className="relative w-full h-full bg-black group">
+            {renderStreamContent(true)}
+            <div className="absolute top-4 right-4 flex gap-2 z-20">
+              {zoomLevel > 1 && (
+                <Button variant="ghost" size="icon" className="h-12 w-12 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+                  onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }}>
+                  <ZoomOut className="h-6 w-6" />
+                </Button>
+              )}
+              <Button variant="ghost" size="icon" className="h-12 w-12 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+                onClick={toggleFullscreen}>
+                <Minimize2 className="h-6 w-6" />
+              </Button>
+            </div>
+            {renderStats()}
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/40 text-sm">
+              {zoomLevel > 1 ? "Pinch or tap reset to zoom out" : "Pinch to zoom · Press ESC to exit"}
+            </div>
+          </div>,
+          fsDiv
+        )}
+      </>
+    );
+  }
+
+  // Fallback normal when fullscreen but no fsDiv
   return (
     <div
       ref={fullscreenContainerRef}
-      className="relative w-full h-full bg-black group"
+      className={cn("group relative aspect-video rounded-xl overflow-hidden bg-black/90", className)}
     >
-      {renderStreamContent(true)}
-      <div className="absolute top-4 right-4 flex gap-2 z-20">
-        {zoomLevel > 1 && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-12 w-12 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
-            onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }}
-          >
-            <ZoomOut className="h-6 w-6" />
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-12 w-12 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
-          onClick={toggleFullscreen}
-        >
-          <Minimize2 className="h-6 w-6" />
-        </Button>
-      </div>
+      {renderStreamContent()}
+      {isActive && renderControls()}
       {renderStats()}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/40 text-sm">
-        {zoomLevel > 1 ? "Pinch or tap reset to zoom out" : "Pinch to zoom · Press ESC to exit"}
-      </div>
     </div>
   );
 }
