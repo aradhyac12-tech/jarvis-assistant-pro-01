@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
+import { KDENotificationPanel } from "@/components/KDENotificationPanel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -765,6 +766,13 @@ export default function Hub() {
                     </div>
                   </CardContent>
                 </Card>
+
+                {/* KDE Connect-style Notifications + Quick Actions */}
+                <KDENotificationPanel
+                  isConnected={isConnected}
+                  onSendCommand={(cmd, payload) => sendCommand(cmd, payload)}
+                  onOpenFileTransfer={() => setActiveTab("control")}
+                />
               </div>
             )}
 
