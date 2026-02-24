@@ -2921,12 +2921,53 @@ class JarvisAgent:
     
     # ============== GHOST MODE (Background Service) ==============
     def _enable_ghost_mode(self, payload: Dict[str, Any] = {}) -> Dict[str, Any]:
-        """Hide agent GUI and install as Windows startup task for boot-before-login operation."""
+        """Hide agent GUI window and convert to background service. Also install auto-start."""
         try:
             auto_start = payload.get("auto_start", True)
             
             if platform.system() == "Windows":
-                # 1. Install startup scheduled task (runs before login)
+                # 1. HIDE the current GUI window (convert to shadow/background process)
+                try:
+                    # Hide console window
+                    kernel32 = ctypes.windll.kernel32
+                    hwnd = kernel32.GetConsoleWindow()
+                    if hwnd:
+                        ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+                    
+                    # Hide all tkinter windows if GUI is running
+                    try:
+                        import tkinter as _tk
+                        for widget in _tk._default_root.winfo_children() if _tk._default_root else []:
+                            pass
+                        if _tk._default_root:
+                            _tk._default_root.withdraw()
+                    except Exception:
+                        pass
+                    
+                    # Hide any Python window by title
+                    try:
+                        enum_windows = ctypes.windll.user32.EnumWindows
+                        enum_windows_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+                        get_pid = ctypes.windll.user32.GetWindowThreadProcessId
+                        
+                        current_pid = os.getpid()
+                        
+                        def hide_callback(hwnd, lParam):
+                            pid = ctypes.c_ulong()
+                            get_pid(hwnd, ctypes.byref(pid))
+                            if pid.value == current_pid:
+                                ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+                            return True
+                        
+                        enum_windows(enum_windows_proc(hide_callback), 0)
+                    except Exception:
+                        pass
+                    
+                    add_log("info", "Ghost mode: GUI window hidden", category="system")
+                except Exception as hide_err:
+                    add_log("warn", f"Ghost mode: could not hide window: {hide_err}", category="system")
+                
+                # 2. Install startup scheduled task (runs before login)
                 if auto_start:
                     agent_path = os.path.abspath(__file__)
                     python_path = sys.executable
@@ -3017,15 +3058,52 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _disable_ghost_mode(self) -> Dict[str, Any]:
-        """Remove ghost mode startup entries."""
+        """Restore GUI window and remove ghost mode startup entries."""
         try:
             if platform.system() == "Windows":
-                # Remove scheduled task
+                # 1. Restore/show the console window
+                try:
+                    kernel32 = ctypes.windll.kernel32
+                    hwnd = kernel32.GetConsoleWindow()
+                    if hwnd:
+                        ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                    
+                    # Show all windows for this process
+                    try:
+                        current_pid = os.getpid()
+                        enum_windows = ctypes.windll.user32.EnumWindows
+                        enum_windows_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+                        get_pid = ctypes.windll.user32.GetWindowThreadProcessId
+                        
+                        def show_callback(hwnd, lParam):
+                            pid = ctypes.c_ulong()
+                            get_pid(hwnd, ctypes.byref(pid))
+                            if pid.value == current_pid:
+                                ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                            return True
+                        
+                        enum_windows(enum_windows_proc(show_callback), 0)
+                    except Exception:
+                        pass
+                    
+                    # Restore tkinter root if available
+                    try:
+                        import tkinter as _tk
+                        if _tk._default_root:
+                            _tk._default_root.deiconify()
+                    except Exception:
+                        pass
+                    
+                    add_log("info", "Ghost mode: GUI window restored", category="system")
+                except Exception as show_err:
+                    add_log("warn", f"Ghost mode: could not restore window: {show_err}", category="system")
+                
+                # 2. Remove scheduled task
                 subprocess.run(
                     ["schtasks", "/Delete", "/TN", "JARVIS_Ghost_Agent", "/F"],
                     capture_output=True, timeout=10
                 )
-                # Remove registry entry
+                # 3. Remove registry entry
                 try:
                     import winreg
                     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
@@ -3036,8 +3114,8 @@ class JarvisAgent:
                 except Exception:
                     pass
             
-            add_log("info", "Ghost mode disabled — startup entries removed", category="system")
-            return {"success": True, "message": "Ghost mode disabled. Agent will no longer auto-start."}
+            add_log("info", "Ghost mode disabled — window restored, startup entries removed", category="system")
+            return {"success": True, "message": "Ghost mode disabled. GUI restored, agent will no longer auto-start."}
         except Exception as e:
             return {"success": False, "error": str(e)}
     

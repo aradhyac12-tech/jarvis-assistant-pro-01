@@ -53,8 +53,8 @@ import { ZoomMeetings } from "@/components/ZoomMeetings";
 import { BoostPC } from "@/components/BoostPC";
 import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
-import { KDERemoteInput } from "@/components/KDERemoteInput";
-import { KDEKeyboard } from "@/components/KDEKeyboard";
+import { PureTrackpad } from "@/components/PureTrackpad";
+import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -788,7 +788,7 @@ export default function Hub() {
                 </div>
 
                 {remoteSubTab === "mouse" ? (
-                  <KDERemoteInput
+                  <PureTrackpad
                     onMouseMove={fireMouse}
                     onScroll={fireScroll}
                     onZoom={fireZoom}
@@ -798,15 +798,14 @@ export default function Hub() {
                     onDoubleClick={() => fireClick("left")}
                     onDragStart={() => sendCommand("mouse_down", { button: "left" })}
                     onDragEnd={() => sendCommand("mouse_up", { button: "left" })}
-                    onKeyPress={fireKey}
-                    onTypeText={handleTypeText}
                     connectionMode={connectionMode}
                     latency={p2pLatency}
                     isConnected={isConnected}
                   />
                 ) : (
-                  <KDEKeyboard
+                  <MobileKeyboard
                     onKeyPress={fireKey}
+                    onTypeText={handleTypeText}
                     disabled={!isConnected}
                   />
                 )}
