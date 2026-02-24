@@ -1365,6 +1365,7 @@ class JarvisAgent:
                             FORMAT = pyaudio.paInt16
 
                             mic_stream = None
+                            loopback_idx = None
                             if direction in ("pc_to_phone", "bidirectional"):
                                 try:
                                     if use_system_audio and platform.system() == "Windows":

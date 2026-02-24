@@ -312,6 +312,24 @@ export function useP2PCommand() {
 
   // Connect on mount and start monitoring
   // Only re-run when session/device changes, not on every callback recreation
+  // Feed PC info from device's system_info into network monitor for auto-discovery
+  useEffect(() => {
+    if (!selectedDevice?.system_info) return;
+    const sysInfo = selectedDevice.system_info as any;
+    const localIps = sysInfo?.local_ips as string[] | undefined;
+    const p2pPort = sysInfo?.p2p_port as number | undefined;
+    if (localIps && localIps.length > 0) {
+      const pcIp = localIps[0];
+      const prefix = pcIp.split(".").slice(0, 3).join(".");
+      networkMonitor.updatePcInfo({
+        localIp: pcIp,
+        networkPrefix: prefix,
+        connectionType: "ethernet",
+        isOnline: true,
+      });
+    }
+  }, [selectedDevice?.system_info, networkMonitor]);
+
   useEffect(() => {
     if (!sessionToken || !deviceId) return;
 

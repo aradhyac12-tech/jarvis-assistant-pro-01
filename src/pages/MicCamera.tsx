@@ -472,87 +472,95 @@ export default function MicCamera() {
       const sessionId = crypto.randomUUID();
       addLog("info", "web", `Starting audio relay (${audioDirection})`);
 
-      sendCommand("start_audio_relay", {
-        session_id: sessionId,
-        direction: audioDirection,
-        use_system_audio: systemAudio,
-      }, { awaitResult: false });
-
+      // Connect phone WS first
       const ws = new WebSocket(
         `${AUDIO_WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}&session_token=${session?.session_token || ''}`
       );
       audioWsRef.current = ws;
       ws.binaryType = "arraybuffer";
 
-      ws.onopen = async () => {
-        setAudioActive(true);
-        addLog("info", "web", "Audio WS connected");
+      // Wait for WS to open before telling PC agent
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => { ws.close(); reject(new Error("Audio WS timeout")); }, 15000);
+        ws.addEventListener("open", () => { clearTimeout(t); resolve(); }, { once: true });
+        ws.addEventListener("error", () => { clearTimeout(t); reject(new Error("Audio WS error")); }, { once: true });
+      });
 
-        // If sending audio from phone
-        if (audioDirection === "phone_to_pc" || audioDirection === "bidirectional") {
-          try {
-            const constraints: MediaTrackConstraints = {
-              echoCancellation: true, noiseSuppression: true, autoGainControl: true,
-              sampleRate: 16000, channelCount: 1,
-            };
-            if (selectedInput) constraints.deviceId = { exact: selectedInput };
+      setAudioActive(true);
+      addLog("info", "web", "Audio WS connected, telling PC agent to join...");
 
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
-            micStreamRef.current = stream;
+      // Now tell agent to connect to same session
+      sendCommand("start_audio_relay", {
+        session_id: sessionId,
+        direction: audioDirection,
+        use_system_audio: systemAudio,
+      }, { awaitResult: false });
 
-            const ctx = new AudioContext({ sampleRate: 16000 });
-            audioCtxRef.current = ctx;
-            if (ctx.state === "suspended") await ctx.resume();
+      // If sending audio from phone
+      if (audioDirection === "phone_to_pc" || audioDirection === "bidirectional") {
+        try {
+          const constraints: MediaTrackConstraints = {
+            echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+            sampleRate: 16000, channelCount: 1,
+          };
+          if (selectedInput) constraints.deviceId = { exact: selectedInput };
 
-            const source = ctx.createMediaStreamSource(stream);
-            const analyser = ctx.createAnalyser();
-            analyser.fftSize = 256;
-            analyserRef.current = analyser;
-            source.connect(analyser);
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+          micStreamRef.current = stream;
 
-            const processor = ctx.createScriptProcessor(2048, 1, 1);
-            processorRef.current = processor;
+          const ctx = new AudioContext({ sampleRate: 16000 });
+          audioCtxRef.current = ctx;
+          if (ctx.state === "suspended") await ctx.resume();
 
-            processor.onaudioprocess = (e) => {
-              if (ws.readyState !== WebSocket.OPEN) return;
-              const inputData = e.inputBuffer.getChannelData(0);
-              const int16 = new Int16Array(inputData.length);
-              for (let i = 0; i < inputData.length; i++) {
-                const s = Math.max(-1, Math.min(1, inputData[i]));
-                int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-              }
-              try { ws.send(int16.buffer); } catch {}
+          const source = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          analyserRef.current = analyser;
+          source.connect(analyser);
 
-              if (analyserRef.current) {
-                const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-                analyserRef.current.getByteFrequencyData(dataArray);
-                setAudioLevel(dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255);
-              }
-            };
+          const processor = ctx.createScriptProcessor(2048, 1, 1);
+          processorRef.current = processor;
 
-            source.connect(processor);
-            processor.connect(ctx.destination);
-          } catch (err) {
-            addLog("error", "web", `Mic error: ${err}`);
-          }
+          processor.onaudioprocess = (e) => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            const inputData = e.inputBuffer.getChannelData(0);
+            const int16 = new Int16Array(inputData.length);
+            for (let i = 0; i < inputData.length; i++) {
+              const s = Math.max(-1, Math.min(1, inputData[i]));
+              int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+            try { ws.send(int16.buffer); } catch {}
+
+            if (analyserRef.current) {
+              const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+              analyserRef.current.getByteFrequencyData(dataArray);
+              setAudioLevel(dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255);
+            }
+          };
+
+          source.connect(processor);
+          processor.connect(ctx.destination);
+        } catch (err) {
+          addLog("error", "web", `Mic error: ${err}`);
         }
+      }
 
-        // If receiving audio, create a fresh AudioContext at native rate
-        if (audioDirection === "pc_to_phone" || audioDirection === "bidirectional") {
-          if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
-            audioCtxRef.current = new AudioContext();
-          }
-          playbackTimeRef.current = 0;
+      // If receiving audio, create a fresh AudioContext at native rate
+      if (audioDirection === "pc_to_phone" || audioDirection === "bidirectional") {
+        if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+          audioCtxRef.current = new AudioContext();
         }
-
-        toast({ title: "Audio Relay Started", description: audioDirection.replace(/_/g, " ") });
-      };
+        playbackTimeRef.current = 0;
+      }
 
       ws.onmessage = async (event) => {
         try {
           if (typeof event.data === "string") {
             const msg = JSON.parse(event.data);
-            if (msg.type === "peer_connected") addLog("info", "web", "Audio peer connected");
+            if (msg.type === "peer_connected") {
+              addLog("info", "web", "Audio peer connected — audio should flow now");
+              toast({ title: "PC Connected", description: "Audio streaming active" });
+            }
             if (msg.type === "peer_disconnected") addLog("warn", "web", "Audio peer disconnected");
             return;
           }
@@ -567,9 +575,12 @@ export default function MicCamera() {
 
       ws.onerror = () => { addLog("error", "web", "Audio WS error"); toast({ title: "Audio Error", variant: "destructive" }); };
       ws.onclose = () => { setAudioActive(false); setAudioLevel(0); addLog("info", "web", "Audio WS closed"); };
+
+      toast({ title: "Audio Relay Started", description: audioDirection.replace(/_/g, " ") });
     } catch (err) {
       addLog("error", "web", `Audio relay error: ${err}`);
-      toast({ title: "Audio Error", variant: "destructive" });
+      toast({ title: "Audio Error", description: err instanceof Error ? err.message : "Connection failed", variant: "destructive" });
+      setAudioActive(false);
     }
   }, [sendCommand, audioDirection, AUDIO_WS_URL, session, toast, selectedInput, systemAudio, playReceivedAudio]);
 
