@@ -77,7 +77,7 @@ const DAYS_OF_WEEK = [
 ];
 
 export function ZoomMeetings({ className }: ZoomMeetingsProps) {
-  const [activeTab, setActiveTab] = useState<"join" | "saved" | "schedule">("join");
+  const [activeTab, setActiveTab] = useState<"join" | "saved" | "schedule" | "screenshots">("join");
   
   // Join form state
   const [joinMethod, setJoinMethod] = useState<"link" | "id">("link");
@@ -101,8 +101,11 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
   const [liveMicMuted, setLiveMicMuted] = useState(true);
   const [liveVideoOff, setLiveVideoOff] = useState(true);
   
-  // Screenshot preview
+  // Screenshot gallery
+  const [screenshots, setScreenshots] = useState<Array<{ id: string; src: string; timestamp: Date; label?: string }>>([]);
   const [lastScreenshot, setLastScreenshot] = useState<string | null>(null);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
   
   // Schedule editing
   const [editingSchedule, setEditingSchedule] = useState<string | null>(null);
@@ -245,10 +248,12 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         
         // Show screenshot preview with base64 data from agent
         if (result.screenshot) {
-          setLastScreenshot(`data:image/jpeg;base64,${result.screenshot}`);
+          const src = `data:image/jpeg;base64,${result.screenshot}`;
+          setLastScreenshot(src);
+          setScreenshots(prev => [{ id: crypto.randomUUID(), src, timestamp: new Date(), label: "Meeting joined" }, ...prev].slice(0, 50));
           toast({
             title: "✅ Meeting Successfully Joined",
-            description: "Screenshot captured - see preview below",
+            description: "Screenshot captured - see Screenshots tab",
           });
         } else if (result.screenshot_path) {
           setLastScreenshot("captured");
@@ -416,6 +421,49 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
     return date.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   };
 
+  // Take screenshot and add to gallery
+  const captureScreenshot = useCallback(async (label?: string) => {
+    setIsCapturing(true);
+    try {
+      const res = await sendCommand("take_screenshot", { quality: 70, scale: 0.5 }, { awaitResult: true, timeoutMs: 10000 });
+      if (res.success && (res as any).result?.image) {
+        const src = `data:image/jpeg;base64,${(res as any).result.image}`;
+        const entry = { id: crypto.randomUUID(), src, timestamp: new Date(), label };
+        setScreenshots(prev => [entry, ...prev].slice(0, 50));
+        setLastScreenshot(src);
+        toast({ title: "📸 Screenshot Captured", description: label || "Zoom meeting screenshot" });
+        return src;
+      } else {
+        toast({ title: "Screenshot Failed", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Screenshot Error", variant: "destructive" });
+    } finally {
+      setIsCapturing(false);
+    }
+    return null;
+  }, [sendCommand, toast]);
+
+  // Fire-and-forget mic toggle
+  const toggleMic = useCallback(() => {
+    const newState = !liveMicMuted;
+    setLiveMicMuted(newState);
+    toast({ title: newState ? "🔇 Mic Off" : "🎤 Mic On" });
+    sendCommand("zoom_mic_toggle", {}).catch(() => {
+      setLiveMicMuted(!newState); // revert on failure
+    });
+  }, [liveMicMuted, sendCommand, toast]);
+
+  // Fire-and-forget camera toggle
+  const toggleCamera = useCallback(() => {
+    const newState = !liveVideoOff;
+    setLiveVideoOff(newState);
+    toast({ title: newState ? "📷 Camera Off" : "📷 Camera On" });
+    sendCommand("zoom_camera_toggle", {}).catch(() => {
+      setLiveVideoOff(!newState);
+    });
+  }, [liveVideoOff, sendCommand, toast]);
+
   const formatNextSchedule = (meeting: SavedMeeting) => {
     if (!meeting.auto_join_enabled || !meeting.next_scheduled_at) return null;
     const next = new Date(meeting.next_scheduled_at);
@@ -438,24 +486,17 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
             variant="outline"
             size="sm"
             className="ml-auto gap-1"
-            onClick={async () => {
-              const res = await sendCommand("take_screenshot", { quality: 70, scale: 0.5 }, { awaitResult: true, timeoutMs: 10000 });
-              if (res.success && (res as any).result?.image) {
-                setLastScreenshot(`data:image/jpeg;base64,${(res as any).result.image}`);
-                toast({ title: "Screenshot Captured" });
-              } else {
-                toast({ title: "Screenshot Failed", variant: "destructive" });
-              }
-            }}
+            disabled={isCapturing}
+            onClick={() => captureScreenshot("Quick screenshot")}
           >
-            <Image className="h-3 w-3" />
+            {isCapturing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Image className="h-3 w-3" />}
             Screenshot
           </Button>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="join">Join</TabsTrigger>
             <TabsTrigger value="saved">
               Saved
@@ -465,9 +506,18 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                 </Badge>
               )}
             </TabsTrigger>
+            <TabsTrigger value="screenshots">
+              <Image className="h-3 w-3 mr-1" />
+              SS
+              {screenshots.length > 0 && (
+                <Badge variant="secondary" className="ml-1 text-xs h-4 min-w-[16px] p-0 flex items-center justify-center">
+                  {screenshots.length}
+                </Badge>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="schedule">
               <Calendar className="h-3 w-3 mr-1" />
-              Schedule
+              Sched
             </TabsTrigger>
           </TabsList>
 
@@ -624,7 +674,7 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
               <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 space-y-3">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-medium flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block" />
                     Meeting Active
                   </p>
                   <Button
@@ -637,6 +687,7 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                   </Button>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
+                  {/* Mic toggle - instant click */}
                   <Button
                     variant="outline"
                     size="sm"
@@ -644,24 +695,14 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                       "h-auto py-3 flex-col gap-1.5",
                       liveMicMuted 
                         ? "bg-destructive/10 text-destructive border-destructive/30" 
-                        : "bg-green-500/10 text-green-400 border-green-500/30"
+                        : "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
                     )}
-                    onClick={async () => {
-                      const res = await sendCommand("zoom_mic_toggle", {}, { awaitResult: true, timeoutMs: 5000 });
-                      if (res.success) {
-                        setLiveMicMuted(!liveMicMuted);
-                        toast({ 
-                          title: liveMicMuted ? "🎤 Mic On" : "🔇 Mic Off",
-                          description: liveMicMuted ? "Microphone unmuted" : "Microphone muted",
-                        });
-                      } else {
-                        toast({ title: "Failed", description: "Could not toggle mic", variant: "destructive" });
-                      }
-                    }}
+                    onClick={toggleMic}
                   >
                     {liveMicMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
                     <span className="text-[10px] font-medium">{liveMicMuted ? "Mic Off" : "Mic On"}</span>
                   </Button>
+                  {/* Camera toggle - instant click */}
                   <Button
                     variant="outline"
                     size="sm"
@@ -669,41 +710,22 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                       "h-auto py-3 flex-col gap-1.5",
                       liveVideoOff 
                         ? "bg-destructive/10 text-destructive border-destructive/30" 
-                        : "bg-green-500/10 text-green-400 border-green-500/30"
+                        : "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
                     )}
-                    onClick={async () => {
-                      const res = await sendCommand("zoom_camera_toggle", {}, { awaitResult: true, timeoutMs: 5000 });
-                      if (res.success) {
-                        setLiveVideoOff(!liveVideoOff);
-                        toast({ 
-                          title: liveVideoOff ? "📷 Camera On" : "📷 Camera Off",
-                          description: liveVideoOff ? "Camera enabled" : "Camera disabled",
-                        });
-                      } else {
-                        toast({ title: "Failed", description: "Could not toggle camera", variant: "destructive" });
-                      }
-                    }}
+                    onClick={toggleCamera}
                   >
                     {liveVideoOff ? <CameraOff className="h-5 w-5" /> : <Camera className="h-5 w-5" />}
                     <span className="text-[10px] font-medium">{liveVideoOff ? "Cam Off" : "Cam On"}</span>
                   </Button>
+                  {/* Screenshot - captures and adds to gallery */}
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-auto py-3 flex-col gap-1.5 bg-blue-500/10 text-blue-400 border-blue-500/30"
-                    onClick={async () => {
-                      const res = await sendCommand("zoom_screenshot", {}, { awaitResult: true, timeoutMs: 10000 });
-                      if (res.success && (res as any).result?.image) {
-                        setLastScreenshot(`data:image/jpeg;base64,${(res as any).result.image}`);
-                        toast({ title: "📸 Screenshot Captured", description: "Screenshot taken from Zoom meeting" });
-                      } else if (res.success) {
-                        toast({ title: "📸 Screenshot Captured" });
-                      } else {
-                        toast({ title: "Screenshot Failed", variant: "destructive" });
-                      }
-                    }}
+                    className="h-auto py-3 flex-col gap-1.5 bg-primary/10 text-primary border-primary/30"
+                    disabled={isCapturing}
+                    onClick={() => captureScreenshot("Zoom meeting")}
                   >
-                    <Image className="h-5 w-5" />
+                    {isCapturing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Image className="h-5 w-5" />}
                     <span className="text-[10px] font-medium">Screenshot</span>
                   </Button>
                 </div>
@@ -778,6 +800,103 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
+          </TabsContent>
+
+          {/* Screenshots Gallery Tab */}
+          <TabsContent value="screenshots" className="mt-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">Screenshots ({screenshots.length})</p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7"
+                  disabled={isCapturing}
+                  onClick={() => captureScreenshot("Manual capture")}
+                >
+                  {isCapturing ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Image className="h-3 w-3 mr-1" />}
+                  Capture
+                </Button>
+                {screenshots.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-7 text-destructive"
+                    onClick={() => { setScreenshots([]); setSelectedScreenshot(null); }}
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Full-size selected screenshot */}
+            {selectedScreenshot && (
+              <div className="relative rounded-lg overflow-hidden border border-border/50 bg-secondary/30">
+                <img src={selectedScreenshot} alt="Screenshot" className="w-full h-auto" />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 h-7 w-7 bg-background/70"
+                  onClick={() => setSelectedScreenshot(null)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                <div className="absolute bottom-2 left-2">
+                  <Badge className="bg-background/70 text-foreground text-[10px]">
+                    Tap thumbnails to switch
+                  </Badge>
+                </div>
+              </div>
+            )}
+
+            {screenshots.length === 0 ? (
+              <div className="text-center py-8">
+                <Image className="h-10 w-10 text-muted-foreground mx-auto mb-3 opacity-50" />
+                <p className="text-muted-foreground text-sm">No screenshots yet</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Take screenshots during meetings
+                </p>
+              </div>
+            ) : (
+              <ScrollArea className="h-[300px]">
+                <div className="grid grid-cols-2 gap-2 pr-2">
+                  {screenshots.map((ss) => (
+                    <div
+                      key={ss.id}
+                      className={cn(
+                        "relative rounded-lg overflow-hidden border cursor-pointer transition-all",
+                        selectedScreenshot === ss.src
+                          ? "border-primary ring-1 ring-primary/50"
+                          : "border-border/30 hover:border-border/60"
+                      )}
+                      onClick={() => setSelectedScreenshot(ss.src)}
+                    >
+                      <img src={ss.src} alt="Screenshot" className="w-full h-auto aspect-video object-cover" />
+                      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-background/80 to-transparent p-1.5">
+                        <p className="text-[9px] text-muted-foreground truncate">
+                          {ss.timestamp.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                          {ss.label && ` • ${ss.label}`}
+                        </p>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute top-1 right-1 h-5 w-5 bg-background/50 opacity-0 group-hover:opacity-100 hover:opacity-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setScreenshots(prev => prev.filter(s => s.id !== ss.id));
+                          if (selectedScreenshot === ss.src) setSelectedScreenshot(null);
+                        }}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
                     </div>
                   ))}
                 </div>
