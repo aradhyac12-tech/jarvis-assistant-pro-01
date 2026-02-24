@@ -186,7 +186,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
-  // Upload file to PC — matches agent's _receive_file_chunk field names
+  // Upload file to PC — adaptive chunk size based on connection mode
   const uploadFile = useCallback(
     async (file: File, transferId: string) => {
       if (!isConnected) {
@@ -198,10 +198,12 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       setTransfers((prev) => prev.map((t) => (t.id === transferId ? { ...t, status: "transferring" as const, startTime } : t)));
 
       try {
-        const CHUNK_SIZE = 64 * 1024; // 64KB — matches agent default
+        // Use larger chunks for faster transfer — 256KB default, works on both cloud and P2P
+        const CHUNK_SIZE = 256 * 1024;
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         let uploadedBytes = 0;
         const fileId = crypto.randomUUID();
+        let consecutiveErrors = 0;
 
         for (let i = 0; i < totalChunks; i++) {
           const start = i * CHUNK_SIZE;
@@ -218,24 +220,34 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             reader.readAsDataURL(chunk);
           });
 
-          // IMPORTANT: field names must match agent's _receive_file_chunk expectations:
-          // file_id, file_name, chunk_index, total_chunks, data, save_folder
-          const result = await sendCommand(
-            "receive_file_chunk",
-            {
-              file_id: fileId,
-              file_name: file.name,
-              chunk_index: i,
-              total_chunks: totalChunks,
-              data: base64Chunk,
-              // Empty string = agent uses default ~/Downloads/Jarvis
-              save_folder: pcSavePath || "",
-            },
-            { awaitResult: true, timeoutMs: 30000 }
-          );
+          // Retry logic for each chunk (up to 3 attempts)
+          let chunkSuccess = false;
+          for (let attempt = 0; attempt < 3 && !chunkSuccess; attempt++) {
+            try {
+              const result = await sendCommand(
+                "receive_file_chunk",
+                {
+                  file_id: fileId,
+                  file_name: file.name,
+                  chunk_index: i,
+                  total_chunks: totalChunks,
+                  data: base64Chunk,
+                  save_folder: pcSavePath || "",
+                },
+                { awaitResult: true, timeoutMs: 60000 }
+              );
 
-          if (!result?.success) {
-            throw new Error((result?.error as string) || "Chunk upload failed");
+              if (result?.success) {
+                chunkSuccess = true;
+                consecutiveErrors = 0;
+              } else if (attempt === 2) {
+                throw new Error((result?.error as string) || "Chunk upload failed");
+              }
+            } catch (err) {
+              if (attempt === 2) throw err;
+              // Wait before retry
+              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            }
           }
 
           uploadedBytes += chunk.size;
@@ -251,7 +263,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
         setTransfers((prev) =>
           prev.map((t) => (t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t))
         );
-        toast({ title: "Upload complete", description: file.name });
+        toast({ title: "Upload complete", description: `${file.name} (${formatSize(file.size)})` });
       } catch (err) {
         const error = err instanceof Error ? err.message : "Upload failed";
         setTransfers((prev) =>
@@ -263,7 +275,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
     [isConnected, sendCommand, pcSavePath, toast]
   );
 
-  // Download file from PC — matches agent's _send_file_chunk
+  // Download file from PC — with larger chunks and retry logic
   const downloadFileFromPC = useCallback(
     async (pcFile: PCFile) => {
       if (!isConnected || pcFile.is_directory) {
@@ -280,29 +292,41 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       ]);
 
       try {
-        const CHUNK_SIZE = 64 * 1024;
+        const CHUNK_SIZE = 256 * 1024; // 256KB chunks
         const totalChunks = Math.ceil(pcFile.size / CHUNK_SIZE) || 1;
         const chunks: string[] = [];
         let downloadedBytes = 0;
 
         for (let i = 0; i < totalChunks; i++) {
-          // Fields match agent's _send_file_chunk: path, chunk_index, chunk_size
-          const result = await sendCommand(
-            "send_file_chunk",
-            { path: pcFile.path, chunk_index: i, chunk_size: CHUNK_SIZE },
-            { awaitResult: true, timeoutMs: 30000 }
-          );
+          let chunkData: string | null = null;
 
-          if (!result?.success || !result.result) {
-            throw new Error((result?.error as string) || "Chunk download failed");
+          // Retry each chunk up to 3 times
+          for (let attempt = 0; attempt < 3 && !chunkData; attempt++) {
+            try {
+              const result = await sendCommand(
+                "send_file_chunk",
+                { path: pcFile.path, chunk_index: i, chunk_size: CHUNK_SIZE },
+                { awaitResult: true, timeoutMs: 60000 }
+              );
+
+              if (result?.success && result.result) {
+                const data = result.result as { data?: string; file_size?: number };
+                if (data.data) chunkData = data.data;
+              }
+              if (!chunkData && attempt === 2) {
+                throw new Error((result?.error as string) || "Chunk download failed");
+              }
+            } catch (err) {
+              if (attempt === 2) throw err;
+              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            }
           }
 
-          const data = result.result as { data?: string; file_size?: number };
-          if (data.data) chunks.push(data.data);
+          if (chunkData) chunks.push(chunkData);
 
-          downloadedBytes += CHUNK_SIZE;
+          downloadedBytes = Math.min((i + 1) * CHUNK_SIZE, pcFile.size);
           const elapsed = (Date.now() - startTime) / 1000;
-          const speed = elapsed > 0 ? Math.min(downloadedBytes, pcFile.size) / elapsed : 0;
+          const speed = elapsed > 0 ? downloadedBytes / elapsed : 0;
           const progress = Math.round(((i + 1) / totalChunks) * 100);
 
           setTransfers((prev) =>
@@ -329,7 +353,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
         setTransfers((prev) =>
           prev.map((t) => (t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t))
         );
-        toast({ title: "Download complete", description: pcFile.name });
+        toast({ title: "Download complete", description: `${pcFile.name} (${formatSize(pcFile.size)})` });
       } catch (err) {
         const error = err instanceof Error ? err.message : "Download failed";
         setTransfers((prev) =>
