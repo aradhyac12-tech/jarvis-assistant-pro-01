@@ -40,23 +40,32 @@ export function useLocalP2P() {
 
   // Probe a specific IP for local P2P server
   const probeLocalServer = useCallback(async (ip: string): Promise<boolean> => {
+    // Cannot use ws:// from an HTTPS page (browser security restriction)
+    // Only attempt local P2P when running in a native APK (Capacitor) or on HTTP
+    if (window.location.protocol === "https:") {
+      return false;
+    }
     return new Promise((resolve) => {
-      const ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
-      const timeoutId = window.setTimeout(() => {
-        ws.close();
-        resolve(false);
-      }, PROBE_TIMEOUT_MS);
+      try {
+        const ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
+        const timeoutId = window.setTimeout(() => {
+          ws.close();
+          resolve(false);
+        }, PROBE_TIMEOUT_MS);
 
-      ws.onopen = () => {
-        clearTimeout(timeoutId);
-        ws.close();
-        resolve(true);
-      };
+        ws.onopen = () => {
+          clearTimeout(timeoutId);
+          ws.close();
+          resolve(true);
+        };
 
-      ws.onerror = () => {
-        clearTimeout(timeoutId);
+        ws.onerror = () => {
+          clearTimeout(timeoutId);
+          resolve(false);
+        };
+      } catch {
         resolve(false);
-      };
+      }
     });
   }, []);
 
@@ -137,9 +146,20 @@ export function useLocalP2P() {
       return true;
     }
 
+    // Cannot use ws:// from HTTPS pages
+    if (window.location.protocol === "https:") {
+      return false;
+    }
+
     return new Promise((resolve) => {
       console.log(`[LocalP2P] Connecting to ws://${pcIp}:${LOCAL_P2P_PORT}/p2p`);
-      const ws = new WebSocket(`ws://${pcIp}:${LOCAL_P2P_PORT}/p2p`);
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(`ws://${pcIp}:${LOCAL_P2P_PORT}/p2p`);
+      } catch {
+        resolve(false);
+        return;
+      }
 
       const timeoutId = window.setTimeout(() => {
         ws.close();
