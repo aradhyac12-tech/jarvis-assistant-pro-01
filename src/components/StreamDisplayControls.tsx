@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -7,9 +6,7 @@ import {
   Minimize2,
   PictureInPicture2,
   X,
-  Move,
   Loader2,
-  GripVertical,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -25,6 +22,8 @@ interface StreamDisplayControlsProps {
   error?: string | null;
   streamId?: string;
   streamType?: "camera" | "screen" | "phone";
+  /** Pass the WebSocket ref so PiP can take ownership for cross-page persistence */
+  wsRef?: React.MutableRefObject<WebSocket | null>;
   onClose?: () => void;
   className?: string;
 }
@@ -38,18 +37,18 @@ export function StreamDisplayControls({
   error,
   streamId,
   streamType = "camera",
+  wsRef,
   onClose,
   className,
 }: StreamDisplayControlsProps) {
   const pip = useGlobalPiP();
-  const [displayMode, setDisplayMode] = useState<"normal" | "fullscreen">("normal");
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const lastTouchDistRef = useRef<number | null>(null);
   const panStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const imgContainerRef = useRef<HTMLDivElement>(null);
-  const fullscreenContainerRef = useRef<HTMLDivElement>(null);
 
   const effectiveStreamId = streamId || `stream-${title.replace(/\s/g, "-")}`;
 
@@ -70,19 +69,23 @@ export function StreamDisplayControls({
     }
   }, [isActive, effectiveStreamId, title, streamType]);
 
-  // Update frame in GlobalPiP
+  // Update frame in GlobalPiP (only if context doesn't own the WS — otherwise it updates itself)
   useEffect(() => {
-    if (isActive && frame) {
+    if (isActive && frame && !pip.hasWebSocketOwnership(effectiveStreamId)) {
       pip.updateStreamFrame(effectiveStreamId, frame, fps, latency);
     }
   }, [frame, fps, latency, isActive, effectiveStreamId]);
 
-  // Don't unregister on unmount if stream is pinned to PiP - allow persistence across pages
+  // On unmount: if PiP is floating, transfer WS ownership to context
   useEffect(() => {
     return () => {
-      // Only unregister if NOT currently floating as PiP
       const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
-      if (!isPinned) {
+      if (isPinned && wsRef?.current && wsRef.current.readyState === WebSocket.OPEN) {
+        // Transfer WS to context — it will keep receiving frames
+        pip.takeWebSocketOwnership(effectiveStreamId, wsRef.current);
+        // Null out the ref so the source component doesn't close it
+        wsRef.current = null;
+      } else if (!isPinned) {
         pip.unregisterStream(effectiveStreamId);
       }
     };
@@ -90,118 +93,68 @@ export function StreamDisplayControls({
 
   // Exit fullscreen when stream stops
   useEffect(() => {
-    if (!isActive && displayMode === "fullscreen") {
-      exitFullscreenSafe();
+    if (!isActive && isFullscreen) {
+      setIsFullscreen(false);
+      setZoomLevel(1);
+      setPanOffset({ x: 0, y: 0 });
     }
-  }, [isActive, displayMode]);
+  }, [isActive, isFullscreen]);
 
-  // Handle fullscreen change events (cleanup standalone div)
+  // ESC key to exit fullscreen
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      // Only react if there's truly no fullscreen element and we think we're fullscreen
-      if (!document.fullscreenElement && displayMode === "fullscreen") {
-        // Clean up the standalone fullscreen div
-        const fsDiv = (fullscreenContainerRef as any)?._fsDiv;
-        if (fsDiv && fsDiv.parentNode) {
-          fsDiv.remove();
-        }
-        setDisplayMode("normal");
+    if (!isFullscreen) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsFullscreen(false);
         setZoomLevel(1);
         setPanOffset({ x: 0, y: 0 });
-        try {
-          (screen.orientation as any)?.unlock?.();
-        } catch {}
       }
     };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
-    return () => {
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
-      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
-    };
-  }, [displayMode]);
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [isFullscreen]);
 
-  const exitFullscreenSafe = useCallback(() => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
+  // Lock body scroll when fullscreen
+  useEffect(() => {
+    if (isFullscreen) {
+      document.body.style.overflow = "hidden";
+      // Try to lock orientation on mobile
+      try { (screen.orientation as any)?.lock?.("landscape"); } catch { }
+    } else {
+      document.body.style.overflow = "";
+      try { (screen.orientation as any)?.unlock?.(); } catch { }
     }
-    // Clean up standalone fullscreen div
-    const fsDiv = (fullscreenContainerRef as any)?._fsDiv;
-    if (fsDiv && fsDiv.parentNode) {
-      fsDiv.remove();
-    }
-    setDisplayMode("normal");
+    return () => { document.body.style.overflow = ""; };
+  }, [isFullscreen]);
+
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen(prev => !prev);
     setZoomLevel(1);
     setPanOffset({ x: 0, y: 0 });
-    try {
-      (screen.orientation as any)?.unlock?.();
-    } catch {}
   }, []);
-
-  const toggleFullscreen = useCallback(async () => {
-    if (displayMode === "fullscreen") {
-      exitFullscreenSafe();
-    } else {
-      // Create a standalone DOM element outside React to avoid page refresh
-      const fsDiv = document.createElement("div");
-      fsDiv.id = `fs-${effectiveStreamId}`;
-      fsDiv.style.cssText = "position:fixed;inset:0;z-index:99999;background:#000;";
-      document.body.appendChild(fsDiv);
-      
-      // Store ref for cleanup
-      (fullscreenContainerRef as any)._fsDiv = fsDiv;
-      
-      // Try native fullscreen API first, fall back to CSS-only fullscreen
-      let fullscreenSucceeded = false;
-      try {
-        const fsPromise = fsDiv.requestFullscreen?.() 
-          || (fsDiv as any).webkitRequestFullscreen?.()
-          || (fsDiv as any).msRequestFullscreen?.();
-        if (fsPromise) await fsPromise;
-        fullscreenSucceeded = true;
-        try {
-          await (screen.orientation as any)?.lock?.("landscape");
-        } catch {}
-      } catch (err) {
-        // Fullscreen API failed (common on mobile) — use CSS fullscreen instead
-        console.warn("Fullscreen API failed, using CSS fallscreen:", err);
-        fullscreenSucceeded = false;
-      }
-      
-      setDisplayMode("fullscreen");
-      
-      if (fullscreenSucceeded) {
-        const onFsChange = () => {
-          if (!document.fullscreenElement) {
-            fsDiv.remove();
-            setDisplayMode("normal");
-            setZoomLevel(1);
-            setPanOffset({ x: 0, y: 0 });
-            try { (screen.orientation as any)?.unlock?.(); } catch {}
-            document.removeEventListener("fullscreenchange", onFsChange);
-          }
-        };
-        document.addEventListener("fullscreenchange", onFsChange);
-      }
-    }
-  }, [displayMode, exitFullscreenSafe, effectiveStreamId]);
 
   const toggleFloating = useCallback(() => {
     const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
     if (isPinned) {
       pip.setFloating(false);
       pip.pinStream(null);
+      pip.releaseWebSocketOwnership(effectiveStreamId);
     } else {
-      if (displayMode === "fullscreen") {
-        exitFullscreenSafe();
+      if (isFullscreen) {
+        setIsFullscreen(false);
+      }
+      // Transfer WS ownership to context for cross-page persistence
+      if (wsRef?.current && wsRef.current.readyState === WebSocket.OPEN) {
+        pip.takeWebSocketOwnership(effectiveStreamId, wsRef.current);
+        wsRef.current = null;
       }
       pip.pinStream(effectiveStreamId);
     }
-  }, [displayMode, effectiveStreamId, pip, exitFullscreenSafe]);
+  }, [isFullscreen, effectiveStreamId, pip, wsRef]);
 
   // Pinch zoom for fullscreen
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    if (displayMode !== "fullscreen") return;
+    if (!isFullscreen) return;
     if (e.touches.length === 2) {
       e.preventDefault();
       const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -216,10 +169,10 @@ export function StreamDisplayControls({
         offsetY: panOffset.y,
       };
     }
-  }, [displayMode, zoomLevel, panOffset]);
+  }, [isFullscreen, zoomLevel, panOffset]);
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (displayMode !== "fullscreen") return;
+    if (!isFullscreen) return;
     if (e.touches.length === 2 && lastTouchDistRef.current !== null) {
       e.preventDefault();
       const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -236,7 +189,7 @@ export function StreamDisplayControls({
         y: panStartRef.current.offsetY + dy,
       });
     }
-  }, [displayMode, isPanning, zoomLevel]);
+  }, [isFullscreen, isPanning, zoomLevel]);
 
   const handleTouchEnd = useCallback(() => {
     lastTouchDistRef.current = null;
@@ -328,13 +281,9 @@ export function StreamDisplayControls({
         size="icon"
         className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
         onClick={toggleFullscreen}
-        title={displayMode === "fullscreen" ? "Exit fullscreen" : "Fullscreen"}
+        title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
       >
-        {displayMode === "fullscreen" ? (
-          <Minimize2 className="h-5 w-5" />
-        ) : (
-          <Maximize2 className="h-5 w-5" />
-        )}
+        {isFullscreen ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
       </Button>
     </div>
   );
@@ -343,8 +292,8 @@ export function StreamDisplayControls({
     if (!isActive || !frame) return null;
     return (
       <div className="absolute bottom-2 left-2 flex gap-1.5 z-10">
-        <Badge 
-          variant="outline" 
+        <Badge
+          variant="outline"
           className="bg-black/50 backdrop-blur-sm border-transparent text-white font-mono text-[10px] px-1.5 py-0"
         >
           {fps} FPS
@@ -360,7 +309,7 @@ export function StreamDisplayControls({
             {latency}ms
           </Badge>
         )}
-        {zoomLevel > 1 && displayMode === "fullscreen" && (
+        {zoomLevel > 1 && isFullscreen && (
           <Badge
             variant="outline"
             className="bg-black/50 backdrop-blur-sm border-transparent text-white font-mono text-[10px] px-1.5 py-0"
@@ -373,10 +322,9 @@ export function StreamDisplayControls({
   };
 
   // If this stream is pinned to global PiP, show placeholder in-page
-  if (isPipActive && displayMode === "normal") {
+  if (isPipActive && !isFullscreen) {
     return (
       <div
-        ref={fullscreenContainerRef}
         className={cn(
           "relative aspect-video rounded-xl border-2 border-dashed border-primary/30 overflow-hidden bg-primary/5",
           className
@@ -390,36 +338,22 @@ export function StreamDisplayControls({
     );
   }
 
-  // Normal mode
-  if (displayMode === "normal") {
-    return (
-      <div
-        ref={fullscreenContainerRef}
-        className={cn(
-          "group relative aspect-video rounded-xl overflow-hidden bg-black/90",
-          className
-        )}
-      >
-        {renderStreamContent()}
-        {isActive && renderControls()}
-        {renderStats()}
-      </div>
-    );
-  }
-
-  // Fullscreen mode - render into the standalone DOM element via portal
-  const fsDiv = (fullscreenContainerRef as any)?._fsDiv;
-  if (displayMode === "fullscreen" && fsDiv) {
+  // CSS-only fullscreen (no Fullscreen API — avoids mobile refresh issues)
+  if (isFullscreen) {
     return (
       <>
-        {/* Placeholder in normal flow */}
-        <div ref={fullscreenContainerRef} className={cn("relative aspect-video rounded-xl overflow-hidden bg-black/90", className)}>
+        {/* Placeholder in flow */}
+        <div className={cn("relative aspect-video rounded-xl overflow-hidden bg-black/90", className)}>
           <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">
             <Maximize2 className="h-5 w-5 mr-2" /> Fullscreen Active
           </div>
         </div>
-        {createPortal(
-          <div className="relative w-full h-full bg-black group">
+        {/* CSS fullscreen overlay — no DOM manipulation, no Fullscreen API, no refresh */}
+        <div
+          className="fixed inset-0 z-[99999] bg-black"
+          style={{ touchAction: "none" }}
+        >
+          <div className="relative w-full h-full group">
             {renderStreamContent(true)}
             <div className="absolute top-4 right-4 flex gap-2 z-20">
               {zoomLevel > 1 && (
@@ -435,20 +369,21 @@ export function StreamDisplayControls({
             </div>
             {renderStats()}
             <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/40 text-sm">
-              {zoomLevel > 1 ? "Pinch or tap reset to zoom out" : "Pinch to zoom · Press ESC to exit"}
+              {zoomLevel > 1 ? "Pinch or tap reset to zoom out" : "Pinch to zoom · Tap X or ESC to exit"}
             </div>
-          </div>,
-          fsDiv
-        )}
+          </div>
+        </div>
       </>
     );
   }
 
-  // Fallback normal when fullscreen but no fsDiv
+  // Normal mode
   return (
     <div
-      ref={fullscreenContainerRef}
-      className={cn("group relative aspect-video rounded-xl overflow-hidden bg-black/90", className)}
+      className={cn(
+        "group relative aspect-video rounded-xl overflow-hidden bg-black/90",
+        className
+      )}
     >
       {renderStreamContent()}
       {isActive && renderControls()}
