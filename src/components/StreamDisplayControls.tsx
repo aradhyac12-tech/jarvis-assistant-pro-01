@@ -77,10 +77,14 @@ export function StreamDisplayControls({
     }
   }, [frame, fps, latency, isActive, effectiveStreamId]);
 
-  // Unregister on unmount
+  // Don't unregister on unmount if stream is pinned to PiP - allow persistence across pages
   useEffect(() => {
     return () => {
-      pip.unregisterStream(effectiveStreamId);
+      // Only unregister if NOT currently floating as PiP
+      const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
+      if (!isPinned) {
+        pip.unregisterStream(effectiveStreamId);
+      }
     };
   }, [effectiveStreamId]);
 
@@ -94,6 +98,7 @@ export function StreamDisplayControls({
   // Handle fullscreen change events (cleanup standalone div)
   useEffect(() => {
     const handleFullscreenChange = () => {
+      // Only react if there's truly no fullscreen element and we think we're fullscreen
       if (!document.fullscreenElement && displayMode === "fullscreen") {
         // Clean up the standalone fullscreen div
         const fsDiv = (fullscreenContainerRef as any)?._fsDiv;
@@ -109,7 +114,11 @@ export function StreamDisplayControls({
       }
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+    };
   }, [displayMode]);
 
   const exitFullscreenSafe = useCallback(() => {
@@ -142,14 +151,26 @@ export function StreamDisplayControls({
       // Store ref for cleanup
       (fullscreenContainerRef as any)._fsDiv = fsDiv;
       
+      // Try native fullscreen API first, fall back to CSS-only fullscreen
+      let fullscreenSucceeded = false;
       try {
-        await fsDiv.requestFullscreen();
+        const fsPromise = fsDiv.requestFullscreen?.() 
+          || (fsDiv as any).webkitRequestFullscreen?.()
+          || (fsDiv as any).msRequestFullscreen?.();
+        if (fsPromise) await fsPromise;
+        fullscreenSucceeded = true;
         try {
           await (screen.orientation as any)?.lock?.("landscape");
         } catch {}
-        setDisplayMode("fullscreen");
-        
-        // Listen for fullscreen exit on this element
+      } catch (err) {
+        // Fullscreen API failed (common on mobile) — use CSS fullscreen instead
+        console.warn("Fullscreen API failed, using CSS fallscreen:", err);
+        fullscreenSucceeded = false;
+      }
+      
+      setDisplayMode("fullscreen");
+      
+      if (fullscreenSucceeded) {
         const onFsChange = () => {
           if (!document.fullscreenElement) {
             fsDiv.remove();
@@ -161,9 +182,6 @@ export function StreamDisplayControls({
           }
         };
         document.addEventListener("fullscreenchange", onFsChange);
-      } catch (err) {
-        fsDiv.remove();
-        console.error("Fullscreen failed:", err);
       }
     }
   }, [displayMode, exitFullscreenSafe, effectiveStreamId]);

@@ -164,25 +164,7 @@ export const EnhancedTrackpad = memo(function EnhancedTrackpad({
           </Button>
         </div>
 
-        {/* Quick Text Input */}
-        <div className="flex gap-2">
-          <Input
-            placeholder="Type and send..."
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSendText()}
-            className="flex-1 h-9 text-xs bg-background/50"
-            disabled={!isConnected}
-          />
-          <Button 
-            onClick={handleSendText} 
-            disabled={!isConnected || !textInput.trim()} 
-            size="icon" 
-            className="h-9 w-9 shrink-0"
-          >
-            <Send className="w-4 h-4" />
-          </Button>
-        </div>
+        {/* Text input removed - use KDE Keyboard below */}
       </CardContent>
     </Card>
   );

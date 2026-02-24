@@ -26,6 +26,7 @@ import {
   Siren,
   AlertTriangle,
   Gauge,
+  Stethoscope,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -33,6 +34,7 @@ import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useToast } from "@/hooks/use-toast";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
+import { InlineDiagnostics } from "@/components/InlineDiagnostics";
 
 interface MotionEvent {
   id: string;
@@ -106,19 +108,23 @@ export function SurveillancePanel({ className }: { className?: string }) {
     img.onload = () => {
       if (!canvasRef.current) canvasRef.current = document.createElement("canvas");
       const canvas = canvasRef.current;
-      canvas.width = img.width;
-      canvas.height = img.height;
+      // Downsample for faster processing
+      const targetW = Math.min(img.width, 320);
+      const targetH = Math.round((img.height / img.width) * targetW);
+      canvas.width = targetW;
+      canvas.height = targetH;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      ctx.drawImage(img, 0, 0);
-      const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      const frame = ctx.getImageData(0, 0, targetW, targetH);
 
-      if (previousFrameRef.current) {
+      if (previousFrameRef.current && previousFrameRef.current.width === frame.width && previousFrameRef.current.height === frame.height) {
         const prev = previousFrameRef.current;
         let diffPixels = 0;
-        const totalSampled = frame.data.length / 16;
+        const step = 4; // Sample every 4th pixel for speed
+        const totalSampled = Math.floor(frame.data.length / (4 * step));
         const threshold = sensitivityThreshold[sensitivity];
-        for (let i = 0; i < frame.data.length; i += 16) {
+        for (let i = 0; i < frame.data.length; i += 4 * step) {
           const d = Math.abs(frame.data[i] - prev.data[i]) +
                     Math.abs(frame.data[i+1] - prev.data[i+1]) +
                     Math.abs(frame.data[i+2] - prev.data[i+2]);
@@ -316,7 +322,17 @@ export function SurveillancePanel({ className }: { className?: string }) {
     toast({ title: "Surveillance Stopped" });
   }, [sendCommand, toast, micEnabled, cleanupWs]);
 
-  // Cleanup on unmount
+  // Auto-resume surveillance if it was left ON (localStorage persistence)
+  const autoResumedRef = useRef(false);
+  useEffect(() => {
+    if (monitoring && !wsRef.current && !autoResumedRef.current && session?.session_token) {
+      autoResumedRef.current = true;
+      // Re-start surveillance automatically
+      startSurveillance();
+    }
+  }, [monitoring, session?.session_token]);
+
+  // Cleanup on unmount - DON'T reset monitoring state so it persists
   useEffect(() => () => { cleanupWs(); }, [cleanupWs]);
 
   return (
@@ -331,7 +347,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
             </Badge>
           )}
         </CardTitle>
-        <CardDescription>Continuous camera monitoring with motion detection</CardDescription>
+        <CardDescription>
+          Camera monitoring with motion detection • Sensitivity: {sensitivity} • {survFps} FPS
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Start / Stop Button */}
@@ -532,6 +550,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
             </div>
           )}
         </div>
+
+        {/* Diagnostics */}
+        <InlineDiagnostics type="pc-camera" className="mt-2" />
       </CardContent>
     </Card>
   );
