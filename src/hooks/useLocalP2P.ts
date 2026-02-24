@@ -16,12 +16,9 @@ type PendingRequest = {
 };
 
 const LOCAL_P2P_PORT = 9876;
-const PROBE_TIMEOUT_MS = 500; // Very short timeout for local network
+const LOCAL_P2P_HTTP_PORT = 9877; // HTTP API port (WS port + 1)
+const PROBE_TIMEOUT_MS = 500;
 
-/**
- * Detect if running inside a Capacitor native WebView.
- * In native, mixed content (ws:// from https://) is allowed.
- */
 function isNativeApp(): boolean {
   try {
     return !!(window as any).Capacitor?.isNativePlatform?.();
@@ -32,9 +29,64 @@ function isNativeApp(): boolean {
 
 /** Returns true if ws:// connections are blocked (HTTPS browser, not native) */
 function isWsBlocked(): boolean {
-  if (window.location.protocol !== "https:") return false; // HTTP is fine
-  if (isNativeApp()) return false; // Capacitor WebView allows mixed content
-  return true; // Regular browser on HTTPS blocks ws://
+  if (window.location.protocol !== "https:") return false;
+  if (isNativeApp()) return false;
+  return true;
+}
+
+/**
+ * Check if HTTP-based P2P is available.
+ * CapacitorHttp routes fetch() through native, bypassing mixed-content.
+ * So even on HTTPS, fetch("http://LAN_IP:9877/ping") works in the APK.
+ */
+function canUseHttpP2P(): boolean {
+  if (window.location.protocol !== "https:") return true;
+  // In Capacitor with CapacitorHttp, fetch is native — mixed content OK
+  if (isNativeApp()) return true;
+  return false;
+}
+
+/** Probe an IP via HTTP GET (works with CapacitorHttp in APK) */
+async function probeHttpServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+  if (!canUseHttpP2P()) return false;
+  try {
+    const controller = new AbortController();
+    const tid = window.setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`http://${ip}:${LOCAL_P2P_HTTP_PORT}/ping`, {
+      signal: controller.signal,
+      mode: "cors",
+    });
+    clearTimeout(tid);
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.type === "pong";
+  } catch {
+    return false;
+  }
+}
+
+/** Send a command via HTTP POST (fallback when WS is blocked) */
+async function httpCommand(
+  ip: string,
+  commandType: string,
+  payload: Record<string, unknown> = {},
+  timeoutMs = 30000
+): Promise<any> {
+  const requestId = crypto.randomUUID();
+  const controller = new AbortController();
+  const tid = window.setTimeout(() => controller.abort(), timeoutMs);
+  const res = await fetch(`http://${ip}:${LOCAL_P2P_HTTP_PORT}/command`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandType, payload, requestId }),
+    signal: controller.signal,
+    mode: "cors",
+  });
+  clearTimeout(tid);
+  if (!res.ok) throw new Error(`HTTP P2P error: ${res.status}`);
+  const data = await res.json();
+  if (data.type === "command_error") throw new Error(data.error || "Command failed");
+  return data.result;
 }
 
 /**
@@ -52,17 +104,19 @@ export function useLocalP2P() {
   });
 
   const wsRef = useRef<WebSocket | null>(null);
+  const httpModeRef = useRef<boolean>(false); // true = using HTTP fallback instead of WS
   const probeTimeoutRef = useRef<number | null>(null);
   const lastPingRef = useRef<number>(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const pendingRef = useRef<Map<string, PendingRequest>>(new Map());
 
-  // Probe a specific IP for local P2P server
+  // Probe a specific IP for local P2P server (WS or HTTP fallback)
   const probeLocalServer = useCallback(async (ip: string): Promise<boolean> => {
-    // Block ws:// only in regular HTTPS browsers (not in Capacitor native)
+    // If WS is blocked, try HTTP probe (works with CapacitorHttp in APK)
     if (isWsBlocked()) {
-      return false;
+      return probeHttpServer(ip);
     }
+    // WS probe
     return new Promise((resolve) => {
       try {
         const ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
@@ -70,20 +124,9 @@ export function useLocalP2P() {
           ws.close();
           resolve(false);
         }, PROBE_TIMEOUT_MS);
-
-        ws.onopen = () => {
-          clearTimeout(timeoutId);
-          ws.close();
-          resolve(true);
-        };
-
-        ws.onerror = () => {
-          clearTimeout(timeoutId);
-          resolve(false);
-        };
-      } catch {
-        resolve(false);
-      }
+        ws.onopen = () => { clearTimeout(timeoutId); ws.close(); resolve(true); };
+        ws.onerror = () => { clearTimeout(timeoutId); resolve(false); };
+      } catch { resolve(false); }
     });
   }, []);
 
@@ -164,8 +207,21 @@ export function useLocalP2P() {
       return true;
     }
 
-    // Block ws:// only in regular HTTPS browsers (not in Capacitor native)
+    // If WS is blocked, use HTTP-only mode
     if (isWsBlocked()) {
+      // Verify HTTP probe works
+      const httpOk = await probeHttpServer(pcIp);
+      if (httpOk) {
+        console.log(`[LocalP2P] ✅ Connected via HTTP fallback to ${pcIp}:${LOCAL_P2P_HTTP_PORT}`);
+        httpModeRef.current = true;
+        setState((prev) => ({
+          ...prev,
+          isAvailable: true,
+          isConnected: true,
+          pcIp,
+        }));
+        return true;
+      }
       return false;
     }
 
@@ -188,6 +244,7 @@ export function useLocalP2P() {
         clearTimeout(timeoutId);
         console.log("[LocalP2P] ✅ Connected to local P2P server!");
         wsRef.current = ws;
+        httpModeRef.current = false;
         setState((prev) => ({
           ...prev,
           isAvailable: true,
@@ -217,25 +274,17 @@ export function useLocalP2P() {
 
       ws.onclose = () => {
         wsRef.current = null;
-        // Reject any pending requests
         for (const [id, pending] of pendingRef.current.entries()) {
           clearTimeout(pending.timeoutId);
           pending.reject(new Error("Local P2P disconnected"));
           pendingRef.current.delete(id);
         }
-        setState((prev) => ({
-          ...prev,
-          isConnected: false,
-        }));
+        setState((prev) => ({ ...prev, isConnected: false }));
       };
 
       ws.onerror = () => {
         clearTimeout(timeoutId);
-        setState((prev) => ({
-          ...prev,
-          isAvailable: false,
-          isConnected: false,
-        }));
+        setState((prev) => ({ ...prev, isAvailable: false, isConnected: false }));
         resolve(false);
       };
     });
@@ -247,6 +296,7 @@ export function useLocalP2P() {
       wsRef.current.close();
       wsRef.current = null;
     }
+    httpModeRef.current = false;
 
     for (const [id, pending] of pendingRef.current.entries()) {
       clearTimeout(pending.timeoutId);
@@ -254,33 +304,34 @@ export function useLocalP2P() {
       pendingRef.current.delete(id);
     }
 
-    setState((prev) => ({
-      ...prev,
-      isConnected: false,
-    }));
+    setState((prev) => ({ ...prev, isConnected: false }));
   }, []);
 
-  // Send command through local P2P
+  // Send command through local P2P (fire-and-forget)
   const sendCommand = useCallback((commandType: string, payload: Record<string, unknown> = {}): boolean => {
+    // HTTP mode: fire-and-forget via fetch
+    if (httpModeRef.current && state.pcIp) {
+      httpCommand(state.pcIp, commandType, payload).catch(() => {});
+      return true;
+    }
     if (wsRef.current?.readyState !== WebSocket.OPEN) {
       return false;
     }
-
     try {
-      wsRef.current.send(JSON.stringify({
-        type: "command",
-        commandType,
-        payload,
-      }));
+      wsRef.current.send(JSON.stringify({ type: "command", commandType, payload }));
       return true;
     } catch {
       return false;
     }
-  }, []);
+  }, [state.pcIp]);
 
-  // Request/response style command invocation (needed for file transfer speed)
+  // Request/response style command invocation
   const invokeCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, timeoutMs = 30000) => {
+      // HTTP mode: use fetch
+      if (httpModeRef.current && state.pcIp) {
+        return httpCommand(state.pcIp, commandType, payload, timeoutMs);
+      }
       if (wsRef.current?.readyState !== WebSocket.OPEN) {
         throw new Error("Local P2P not connected");
       }
@@ -291,35 +342,32 @@ export function useLocalP2P() {
           pendingRef.current.delete(requestId);
           reject(new Error("Local P2P command timeout"));
         }, timeoutMs);
-
         pendingRef.current.set(requestId, { resolve, reject, timeoutId });
       });
 
-      wsRef.current.send(
-        JSON.stringify({
-          type: "command",
-          requestId,
-          commandType,
-          payload,
-        })
-      );
-
+      wsRef.current.send(JSON.stringify({ type: "command", requestId, commandType, payload }));
       return promise;
     },
-    []
+    [state.pcIp]
   );
 
   // Send ping for latency measurement
   const sendPing = useCallback(() => {
+    if (httpModeRef.current && state.pcIp) {
+      const start = Date.now();
+      probeHttpServer(state.pcIp, 2000).then(() => {
+        setState((prev) => ({ ...prev, latency: Date.now() - start }));
+      });
+      return;
+    }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       lastPingRef.current = Date.now();
       wsRef.current.send(JSON.stringify({ type: "ping", t: lastPingRef.current }));
     }
-  }, []);
+  }, [state.pcIp]);
 
   // Check availability and connect if possible
   const checkAndConnect = useCallback(async (networkPrefix: string, knownPcIp?: string) => {
-    // If we have a known PC IP, try that first
     if (knownPcIp) {
       const available = await probeLocalServer(knownPcIp);
       if (available) {
@@ -329,7 +377,6 @@ export function useLocalP2P() {
       }
     }
 
-    // Otherwise discover
     const pcIp = await discoverLocalServer(networkPrefix);
     if (pcIp) {
       await connect(pcIp);
@@ -347,12 +394,8 @@ export function useLocalP2P() {
   useEffect(() => {
     return () => {
       disconnect();
-      if (probeTimeoutRef.current) {
-        clearTimeout(probeTimeoutRef.current);
-      }
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-      }
+      if (probeTimeoutRef.current) clearTimeout(probeTimeoutRef.current);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
   }, [disconnect]);
 
@@ -365,6 +408,6 @@ export function useLocalP2P() {
     sendPing,
     checkAndConnect,
     discoverLocalServer,
-    isReady: state.isConnected && wsRef.current?.readyState === WebSocket.OPEN,
+    isReady: state.isConnected && (httpModeRef.current || wsRef.current?.readyState === WebSocket.OPEN),
   };
 }
