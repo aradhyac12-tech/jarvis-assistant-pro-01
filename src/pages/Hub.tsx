@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import {
   Bot,
@@ -133,10 +133,15 @@ export default function Hub() {
   const [installedApps, setInstalledApps] = useState<AppInfo[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
   const [appSearch, setAppSearch] = useState(() => loadState("hub_app_search", ""));
-  const [appView, setAppView] = useState<"running" | "installed" | "services">(() => loadState("hub_app_view", "running"));
+  const [appView, setAppView] = useState<"running" | "installed" | "services" | "files">(() => loadState("hub_app_view", "running"));
   const [services, setServices] = useState<Array<{ name: string; display_name: string; status: string; start_type: string; pid: number | null }>>([]); 
   const [selectedApp, setSelectedApp] = useState<AppInfo | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
+
+  // Files state (merged into Apps tab)
+  const [files, setFiles] = useState<Array<{ name: string; path: string; is_directory: boolean; size: number }>>([]);
+  const [filesPath, setFilesPath] = useState(() => loadState("hub_files_path", "~"));
+  const [filesLoading, setFilesLoading] = useState(false);
 
   const volumeCommitRef = useRef<number | null>(null);
   const brightnessCommitRef = useRef<number | null>(null);
@@ -155,6 +160,7 @@ export default function Hub() {
   useEffect(() => { localStorage.setItem("hub_muted", JSON.stringify(isMuted)); }, [isMuted]);
   useEffect(() => { localStorage.setItem("hub_app_view", JSON.stringify(appView)); }, [appView]);
   useEffect(() => { localStorage.setItem("hub_app_search", JSON.stringify(appSearch)); }, [appSearch]);
+  useEffect(() => { localStorage.setItem("hub_files_path", JSON.stringify(filesPath)); }, [filesPath]);
 
   const getConnectionStatus = useCallback(() => {
     if (!selectedDevice) return { text: "No Device", color: "text-muted-foreground", dot: "bg-muted-foreground" };
@@ -373,11 +379,50 @@ export default function Hub() {
     setAppsLoading(false);
   }, [sendCommand]);
 
+  // Files fetching
+  const fetchFiles = useCallback(async (path: string = filesPath) => {
+    if (!isConnected) return;
+    setFilesLoading(true);
+    try {
+      const result = await sendCommand("list_files", { path }, { awaitResult: true, timeoutMs: 15000 });
+      if (result.success && "result" in result && result.result) {
+        const data = result.result as { items?: Array<{ name: string; path: string; is_directory: boolean; size: number }>; current_path?: string };
+        if (data.items) {
+          const items = data.items.sort((a, b) => {
+            if (a.is_directory && !b.is_directory) return -1;
+            if (!a.is_directory && b.is_directory) return 1;
+            return a.name.localeCompare(b.name);
+          });
+          setFiles(items);
+        }
+      }
+    } catch {}
+    setFilesLoading(false);
+  }, [isConnected, filesPath, sendCommand]);
+
+  const handleFileNavigate = useCallback(async (item: { name: string; path: string; is_directory: boolean }) => {
+    haptic.tap();
+    if (item.is_directory) {
+      setFilesPath(item.path);
+      await fetchFiles(item.path);
+    } else {
+      sendCommand("open_file", { path: item.path });
+      toast({ title: "Opening", description: item.name });
+    }
+  }, [haptic, fetchFiles, sendCommand, toast]);
+
+  const handleFilesGoUp = useCallback(() => {
+    const parent = filesPath.split(/[/\\]/).slice(0, -1).join("/") || "/";
+    setFilesPath(parent);
+    fetchFiles(parent);
+  }, [filesPath, fetchFiles]);
+
   useEffect(() => {
     if (activeTab === "apps" && isConnected) {
       fetchRunningApps();
       fetchInstalledApps();
       fetchServices();
+      if (appView === "files") fetchFiles();
     }
   }, [activeTab, isConnected, fetchRunningApps, fetchInstalledApps, fetchServices]);
 
@@ -477,7 +522,6 @@ export default function Hub() {
 
   const quickLinks = [
     { title: "AI", icon: Bot, href: "/voice" },
-    { title: "Files", icon: FolderOpen, href: "/files" },
     { title: "Camera", icon: Camera, href: "/miccamera" },
   ];
 
@@ -485,7 +529,7 @@ export default function Hub() {
     { id: "control" as Tab, label: "Control", icon: Monitor },
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
-    { id: "apps" as Tab, label: "Apps", icon: AppWindow },
+    { id: "apps" as Tab, label: "Apps & Files", icon: AppWindow },
     { id: "zoom" as Tab, label: "Zoom", icon: Video },
     { id: "network" as Tab, label: "Network", icon: Wifi },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
@@ -576,21 +620,21 @@ export default function Hub() {
               </Button>
             </div>
 
-            {/* Tab Navigation */}
-            <div className="grid grid-cols-4 gap-1 p-1 bg-black/80 rounded-lg w-full border border-border/10">
+            {/* Tab Navigation — 3 columns, proper mobile grid */}
+            <div className="grid grid-cols-3 gap-1 p-1 bg-card/30 rounded-xl w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => { setActiveTab(tab.id); haptic.tap(); }}
                   className={cn(
-                    "flex items-center justify-center gap-1 px-1.5 py-2 rounded-md text-xs font-medium transition-all",
+                    "flex items-center justify-center gap-1.5 px-2 py-2.5 rounded-lg text-xs font-medium transition-all",
                     activeTab === tab.id
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground"
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/30"
                   )}
                 >
-                  <tab.icon className="w-3.5 h-3.5" />
-                  <span className="text-[10px]">{tab.label}</span>
+                  <tab.icon className="w-4 h-4 shrink-0" />
+                  <span className="text-[10px] truncate">{tab.label}</span>
                 </button>
               ))}
             </div>
@@ -598,15 +642,31 @@ export default function Hub() {
             {/* Control Tab */}
             {activeTab === "control" && (
               <div className="grid gap-3">
+                {/* Quick Links — above sliders */}
+                <div className="grid grid-cols-2 gap-2">
+                  {quickLinks.map((link) => (
+                    <Link key={link.href} to={link.href}>
+                      <Button
+                        variant="outline"
+                        className="w-full h-12 gap-2 border-border/20 hover:bg-secondary/30"
+                        onClick={() => haptic.tap()}
+                      >
+                        <link.icon className="w-4 h-4 text-primary shrink-0" />
+                        <span className="text-xs">{link.title}</span>
+                      </Button>
+                    </Link>
+                  ))}
+                </div>
+
                 {/* Volume & Brightness */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3 space-y-4">
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs">
                         <span className="flex items-center gap-1.5 text-muted-foreground">
-                          <VolumeIcon className="w-3.5 h-3.5 cursor-pointer" onClick={handleMuteToggle} /> Volume
+                          <VolumeIcon className="w-3.5 h-3.5 cursor-pointer" onClick={() => { handleMuteToggle(); haptic.tap(); }} /> Volume
                         </span>
-                        <span className="font-mono text-muted-foreground w-8 text-right">{volume}%</span>
+                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0">{volume}%</Badge>
                       </div>
                       <Slider
                         value={[volume]}
@@ -624,7 +684,7 @@ export default function Hub() {
                         <span className="flex items-center gap-1.5 text-muted-foreground">
                           <Sun className="w-3.5 h-3.5" /> Brightness
                         </span>
-                        <span className="font-mono text-muted-foreground w-8 text-right">{brightness}%</span>
+                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0">{brightness}%</Badge>
                       </div>
                       <Slider
                         value={[brightness]}
@@ -658,28 +718,12 @@ export default function Hub() {
                             btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30",
                             btn.label === "Boost" && "hover:border-primary/30"
                           )}
-                          onClick={btn.action} 
+                          onClick={() => { btn.action(); haptic.tap(); }} 
                           disabled={!isConnected || (btn.label === "Boost" && isBoosting)}
                         >
                           <btn.icon className="w-4 h-4" />
                           <span className="text-[10px]">{btn.label}</span>
                         </Button>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Quick Links */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-3">
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {quickLinks.map((link) => (
-                        <Link key={link.href} to={link.href}>
-                          <Button variant="ghost" className="w-full h-14 flex-col gap-1 hover:bg-secondary/50 border border-transparent hover:border-border/20">
-                            <link.icon className="w-4 h-4 text-primary" />
-                            <span className="text-[10px] text-muted-foreground">{link.title}</span>
-                          </Button>
-                        </Link>
                       ))}
                     </div>
                   </CardContent>
@@ -726,37 +770,47 @@ export default function Hub() {
               />
             )}
 
-            {/* Apps Tab */}
+            {/* Apps & Files Tab */}
             {activeTab === "apps" && (
               <div className="space-y-3">
                 {/* Search */}
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
-                    placeholder="Search apps & services..."
+                    placeholder={appView === "files" ? "Search files..." : "Search apps & services..."}
                     value={appSearch}
                     onChange={(e) => setAppSearch(e.target.value)}
                     className="pl-9 h-9 bg-card border-border/30 text-sm"
                   />
                 </div>
 
-                {/* App View Toggle */}
-                <div className="flex gap-1 p-0.5 bg-card/50 rounded-lg border border-border/20">
-                  {(["running", "installed", "services"] as const).map((v) => (
-                    <button
-                      key={v}
-                      onClick={() => { setAppView(v); haptic.tap(); }}
-                      className={cn(
-                        "flex-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all capitalize",
-                        appView === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                      )}
-                    >
-                      {v === "running" ? `Running (${filteredRunning.length})` : v === "installed" ? `Installed (${filteredInstalled.length})` : `Services (${services.length})`}
-                    </button>
-                  ))}
-                </div>
+                {/* View Toggle — horizontally scrollable */}
+                <ScrollArea className="w-full">
+                  <div className="flex gap-1 p-0.5 bg-card/50 rounded-lg border border-border/20 min-w-max">
+                    {(["running", "installed", "services", "files"] as const).map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => {
+                          setAppView(v);
+                          haptic.tap();
+                          if (v === "files" && files.length === 0) fetchFiles();
+                        }}
+                        className={cn(
+                          "px-3 py-1.5 rounded-md text-xs font-medium transition-all capitalize whitespace-nowrap",
+                          appView === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {v === "running" ? `Running (${filteredRunning.length})`
+                          : v === "installed" ? `Installed (${filteredInstalled.length})`
+                          : v === "services" ? `Services (${services.length})`
+                          : `Files`}
+                      </button>
+                    ))}
+                  </div>
+                  <ScrollBar orientation="horizontal" />
+                </ScrollArea>
 
-                {appsLoading ? (
+                {(appsLoading || filesLoading) ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
                   </div>
@@ -787,22 +841,23 @@ export default function Hub() {
                             >
                               <div className={cn(
                                 "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
-                                (app.cpu || 0) > 50 ? "bg-destructive/10" : (app.cpu || 0) > 20 ? "bg-yellow-500/10" : "bg-secondary/50"
+                                (app.cpu || 0) > 50 ? "bg-destructive/10" : (app.cpu || 0) > 20 ? "bg-amber-500/10" : "bg-secondary/50"
                               )}>
                                 <AppWindow className={cn("w-3.5 h-3.5",
                                   (app.cpu || 0) > 50 ? "text-destructive" : "text-muted-foreground"
                                 )} />
                               </div>
-                              <div className="flex-1 min-w-0 overflow-hidden">
-                                <p className="text-xs font-medium truncate max-w-[45vw]">{app.name}</p>
-                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground overflow-hidden">
+                              <div className="flex-1 min-w-0">
+                                <ScrollArea className="w-full">
+                                  <p className="text-xs font-medium whitespace-nowrap pr-4">{app.name}</p>
+                                  <ScrollBar orientation="horizontal" className="h-0" />
+                                </ScrollArea>
+                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
                                   {app.cpu !== undefined && (
-                                    <span className={cn("shrink-0", app.cpu > 50 && "text-destructive font-medium")}>
-                                      CPU {app.cpu}%
-                                    </span>
+                                    <span className={cn("shrink-0", app.cpu > 50 && "text-destructive font-medium")}>CPU {app.cpu}%</span>
                                   )}
                                   {app.memory !== undefined && (
-                                    <span className={cn("shrink-0", app.memory > 50 && "text-yellow-400 font-medium")}>
+                                    <span className={cn("shrink-0", app.memory > 50 && "text-amber-400 font-medium")}>
                                       RAM {app.memory}%{app.memory_mb ? ` (${app.memory_mb}MB)` : ""}
                                     </span>
                                   )}
@@ -827,46 +882,44 @@ export default function Hub() {
                           </div>
                         ) : (
                           filteredInstalled.map((app) => (
-                            <div
-                              key={app.app_id || app.name}
-                              className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors"
-                            >
+                            <div key={app.app_id || app.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors">
                               <div className="w-8 h-8 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
                                 <AppWindow className="w-3.5 h-3.5 text-muted-foreground" />
                               </div>
-                              <div className="flex-1 min-w-0 overflow-hidden">
-                                <p className="text-xs font-medium truncate max-w-[45vw]">{app.name}</p>
-                                {app.source && <p className="text-[10px] text-muted-foreground truncate max-w-[40vw]">{app.source}</p>}
+                              <div className="flex-1 min-w-0">
+                                <ScrollArea className="w-full">
+                                  <p className="text-xs font-medium whitespace-nowrap pr-4">{app.name}</p>
+                                  <ScrollBar orientation="horizontal" className="h-0" />
+                                </ScrollArea>
+                                {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
                               </div>
-                              <Button variant="outline" size="sm" className="h-7 text-[10px] px-2 shrink-0" onClick={() => handleOpenApp(app.name)}>
+                              <Button variant="outline" size="sm" className="h-7 text-[10px] px-2 shrink-0" onClick={() => { handleOpenApp(app.name); haptic.tap(); }}>
                                 Open
                               </Button>
                             </div>
                           ))
                         )
-                      ) : (
+                      ) : appView === "services" ? (
                         services.length === 0 ? (
-                          <div className="p-6 text-center text-xs text-muted-foreground">
-                            Loading services...
-                          </div>
+                          <div className="p-6 text-center text-xs text-muted-foreground">Loading services...</div>
                         ) : (
                           services
                             .filter(s => !appSearch || s.display_name?.toLowerCase().includes(appSearch.toLowerCase()) || s.name?.toLowerCase().includes(appSearch.toLowerCase()))
                             .slice(0, 150)
                             .map((svc) => (
-                              <div
-                                key={svc.name}
-                                className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors"
-                              >
+                              <div key={svc.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors">
                                 <div className={cn("w-8 h-8 rounded-md flex items-center justify-center shrink-0",
                                   svc.status === "running" ? "bg-emerald-500/10" : "bg-secondary/50"
                                 )}>
                                   <Activity className={cn("w-3.5 h-3.5", svc.status === "running" ? "text-emerald-400" : "text-muted-foreground")} />
                                 </div>
-                                <div className="flex-1 min-w-0 overflow-hidden">
-                                  <p className="text-xs font-medium truncate max-w-[45vw]">{svc.display_name || svc.name}</p>
+                                <div className="flex-1 min-w-0">
+                                  <ScrollArea className="w-full">
+                                    <p className="text-xs font-medium whitespace-nowrap pr-4">{svc.display_name || svc.name}</p>
+                                    <ScrollBar orientation="horizontal" className="h-0" />
+                                  </ScrollArea>
                                   <div className="flex gap-2 text-[10px] text-muted-foreground">
-                                    <span className="truncate max-w-[30vw]">{svc.name}</span>
+                                    <span className="truncate">{svc.name}</span>
                                     <span className="shrink-0">{svc.start_type}</span>
                                   </div>
                                 </div>
@@ -881,6 +934,69 @@ export default function Hub() {
                               </div>
                             ))
                         )
+                      ) : (
+                        /* Files view */
+                        <>
+                          <div className="flex gap-1.5 mb-2 flex-wrap">
+                            <Button variant="outline" size="sm" className="h-7 text-[10px] px-2" onClick={() => { haptic.tap(); handleFilesGoUp(); }}>
+                              ↑ Up
+                            </Button>
+                            {["Desktop", "Documents", "Downloads", "Pictures"].map(f => (
+                              <Button key={f} variant="secondary" size="sm" className="h-7 text-[10px] px-2" onClick={() => {
+                                haptic.tap();
+                                const p = `~/${f}`;
+                                setFilesPath(p);
+                                fetchFiles(p);
+                              }}>
+                                {f}
+                              </Button>
+                            ))}
+                          </div>
+                          <ScrollArea className="w-full mb-1">
+                            <p className="text-[10px] text-muted-foreground whitespace-nowrap pr-4">{filesPath}</p>
+                            <ScrollBar orientation="horizontal" className="h-0" />
+                          </ScrollArea>
+                          {files.length === 0 ? (
+                            <div className="p-6 text-center text-xs text-muted-foreground">No files found</div>
+                          ) : (
+                            files
+                              .filter(f => !appSearch || f.name.toLowerCase().includes(appSearch.toLowerCase()))
+                              .map((file, i) => (
+                                <div
+                                  key={`${file.name}-${i}`}
+                                  className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors cursor-pointer"
+                                  onClick={() => handleFileNavigate(file)}
+                                >
+                                  <div className={cn("w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                                    file.is_directory ? "bg-primary/10" : "bg-secondary/50"
+                                  )}>
+                                    <FolderOpen className={cn("w-3.5 h-3.5", file.is_directory ? "text-primary" : "text-muted-foreground")} />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <ScrollArea className="w-full">
+                                      <p className="text-xs font-medium whitespace-nowrap pr-4">{file.name}</p>
+                                      <ScrollBar orientation="horizontal" className="h-0" />
+                                    </ScrollArea>
+                                    {!file.is_directory && file.size > 0 && (
+                                      <p className="text-[10px] text-muted-foreground">
+                                        {file.size < 1024 ? `${file.size} B` : file.size < 1048576 ? `${(file.size / 1024).toFixed(1)} KB` : `${(file.size / 1048576).toFixed(1)} MB`}
+                                      </p>
+                                    )}
+                                  </div>
+                                  {!file.is_directory && (
+                                    <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2 shrink-0" onClick={(e) => {
+                                      e.stopPropagation();
+                                      haptic.tap();
+                                      sendCommand("open_file", { path: file.path });
+                                      toast({ title: "Opening", description: file.name });
+                                    }}>
+                                      Open
+                                    </Button>
+                                  )}
+                                </div>
+                              ))
+                          )}
+                        </>
                       )}
                     </div>
                   </ScrollArea>
@@ -904,41 +1020,30 @@ export default function Hub() {
                         </Button>
                       </div>
                       <div className="grid grid-cols-3 gap-1.5">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-9 text-[10px] flex-col gap-0.5"
-                          onClick={() => { handleOpenApp(selectedApp.name); setSelectedApp(null); }}
-                        >
-                          <AppWindow className="w-3.5 h-3.5" />
-                          Open
+                        <Button variant="outline" size="sm" className="h-9 text-[10px] flex-col gap-0.5"
+                          onClick={() => { handleOpenApp(selectedApp.name); setSelectedApp(null); haptic.tap(); }}>
+                          <AppWindow className="w-3.5 h-3.5" /> Open
                         </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-9 text-[10px] flex-col gap-0.5"
-                          onClick={() => { handleRestartApp(selectedApp.name, selectedApp.pid); setSelectedApp(null); }}
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          Restart
+                        <Button variant="outline" size="sm" className="h-9 text-[10px] flex-col gap-0.5"
+                          onClick={() => { handleRestartApp(selectedApp.name, selectedApp.pid); setSelectedApp(null); haptic.tap(); }}>
+                          <RotateCcw className="w-3.5 h-3.5" /> Restart
                         </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-9 text-[10px] flex-col gap-0.5 text-destructive hover:text-destructive"
-                          onClick={() => { handleCloseApp(selectedApp.name, selectedApp.pid); setSelectedApp(null); }}
-                        >
-                          <XCircle className="w-3.5 h-3.5" />
-                          Kill
+                        <Button variant="outline" size="sm" className="h-9 text-[10px] flex-col gap-0.5 text-destructive hover:text-destructive"
+                          onClick={() => { handleCloseApp(selectedApp.name, selectedApp.pid); setSelectedApp(null); haptic.tap(); }}>
+                          <XCircle className="w-3.5 h-3.5" /> Kill
                         </Button>
                       </div>
                     </CardContent>
                   </Card>
                 )}
 
-                <Button variant="outline" className="w-full text-xs h-8" onClick={() => { fetchRunningApps(); fetchInstalledApps(); fetchServices(); }} disabled={appsLoading}>
-                  <RefreshCw className={cn("w-3 h-3 mr-1", appsLoading && "animate-spin")} />
-                  Refresh All
+                <Button variant="outline" className="w-full text-xs h-8" onClick={() => {
+                  haptic.tap();
+                  if (appView === "files") fetchFiles();
+                  else { fetchRunningApps(); fetchInstalledApps(); fetchServices(); }
+                }} disabled={appsLoading || filesLoading}>
+                  <RefreshCw className={cn("w-3 h-3 mr-1", (appsLoading || filesLoading) && "animate-spin")} />
+                  Refresh
                 </Button>
               </div>
             )}
