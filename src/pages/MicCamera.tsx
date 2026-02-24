@@ -499,6 +499,15 @@ export default function MicCamera() {
       setAudioActive(true);
       addLog("info", "web", "Audio WS connected, telling PC agent to join...");
 
+      // Keepalive ping every 30s to prevent idle disconnect
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+        } else {
+          clearInterval(pingInterval);
+        }
+      }, 30000);
+
       // Now tell agent to connect to same session
       sendCommand("start_audio_relay", {
         session_id: sessionId,
@@ -560,6 +569,10 @@ export default function MicCamera() {
         if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
           audioCtxRef.current = new AudioContext();
         }
+        // Resume immediately (we're in a user gesture context)
+        if (audioCtxRef.current.state === "suspended") {
+          await audioCtxRef.current.resume();
+        }
         playbackTimeRef.current = 0;
       }
 
@@ -572,6 +585,7 @@ export default function MicCamera() {
               toast({ title: "PC Connected", description: "Audio streaming active" });
             }
             if (msg.type === "peer_disconnected") addLog("warn", "web", "Audio peer disconnected");
+            if (msg.type === "pong") return; // keepalive response
             return;
           }
           if (audioDirection === "pc_to_phone" || audioDirection === "bidirectional") {
@@ -584,7 +598,7 @@ export default function MicCamera() {
       };
 
       ws.onerror = () => { addLog("error", "web", "Audio WS error"); toast({ title: "Audio Error", variant: "destructive" }); };
-      ws.onclose = () => { setAudioActive(false); setAudioLevel(0); addLog("info", "web", "Audio WS closed"); };
+      ws.onclose = () => { clearInterval(pingInterval); setAudioActive(false); setAudioLevel(0); addLog("info", "web", "Audio WS closed"); };
 
       toast({ title: "Audio Relay Started", description: audioDirection.replace(/_/g, " ") });
     } catch (err) {

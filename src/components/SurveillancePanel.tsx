@@ -304,8 +304,19 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
       audioWsRef.current = ws;
 
+      // Keepalive ping every 30s
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+        } else {
+          clearInterval(pingInterval);
+        }
+      }, 30000);
+
       const ac = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = ac;
+      if (ac.state === "suspended") await ac.resume();
+
       const source = ac.createMediaStreamSource(stream);
       const processor = ac.createScriptProcessor(4096, 1, 1);
       source.connect(processor);
@@ -321,23 +332,50 @@ export function SurveillancePanel({ className }: { className?: string }) {
         ws.send(pcm16.buffer);
       };
 
+      // Playback scheduling state
+      let playbackTime = 0;
+
       ws.onmessage = async (event) => {
+        if (typeof event.data === "string") {
+          // Handle control messages (pong, peer_connected, etc.)
+          return;
+        }
         if (event.data instanceof ArrayBuffer && event.data.byteLength > 0) {
           try {
+            if (ac.state === "suspended") await ac.resume();
             const pcm16 = new Int16Array(event.data);
             const float32 = new Float32Array(pcm16.length);
             for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
-            const buffer = ac.createBuffer(1, float32.length, 16000);
-            buffer.getChannelData(0).set(float32);
+            
+            // Resample from 16kHz to native rate for smooth playback
+            const nativeRate = ac.sampleRate;
+            const ratio = nativeRate / 16000;
+            const outputLen = Math.round(float32.length * ratio);
+            const buffer = ac.createBuffer(1, outputLen, nativeRate);
+            const out = buffer.getChannelData(0);
+            for (let i = 0; i < outputLen; i++) {
+              const srcIdx = i / ratio;
+              const floor = Math.floor(srcIdx);
+              const ceil = Math.min(floor + 1, float32.length - 1);
+              const frac = srcIdx - floor;
+              out[i] = float32[floor] * (1 - frac) + float32[ceil] * frac;
+            }
+            
             const bufferSource = ac.createBufferSource();
             bufferSource.buffer = buffer;
-            bufferSource.connect(ac.destination);
-            bufferSource.start();
+            const gain = ac.createGain();
+            gain.gain.value = 1.5;
+            bufferSource.connect(gain);
+            gain.connect(ac.destination);
+            const now = ac.currentTime;
+            const startAt = Math.max(now + 0.01, playbackTime);
+            bufferSource.start(startAt);
+            playbackTime = startAt + buffer.duration;
           } catch {}
         }
       };
 
-      ws.onclose = () => { audioWsRef.current = null; setCallActive(false); };
+      ws.onclose = () => { clearInterval(pingInterval); audioWsRef.current = null; setCallActive(false); };
 
       sendCommand("start_audio_relay", {
         session_id: callSessionId,
