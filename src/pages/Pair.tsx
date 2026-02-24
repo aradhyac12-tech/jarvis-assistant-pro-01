@@ -41,19 +41,12 @@ const Pair = forwardRef<HTMLDivElement>(function Pair(_, ref) {
     setIsConnecting(false);
   }, [autoPair, navigate, toast]);
 
-  // Auto-connect on mount
+  // Auto-connect on mount — single attempt only
   useEffect(() => {
     if (!sessionLoading && !session && !isConnecting && attempt === 0) {
       tryConnect();
     }
   }, [sessionLoading, session, isConnecting, attempt, tryConnect]);
-
-  // Retry every 5 seconds if failed
-  useEffect(() => {
-    if (!failed || isConnecting || success) return;
-    const timer = setTimeout(() => tryConnect(), 5000);
-    return () => clearTimeout(timer);
-  }, [failed, isConnecting, success, tryConnect]);
 
   if (sessionLoading) {
     return (
@@ -114,9 +107,6 @@ const Pair = forwardRef<HTMLDivElement>(function Pair(_, ref) {
                 <code className="block p-2 bg-secondary/50 rounded-md text-[10px] font-mono">
                   pythonw jarvis_agent.pyw
                 </code>
-                <p className="text-xs text-muted-foreground animate-pulse">
-                  Auto-retrying every 5 seconds...
-                </p>
               </div>
             </>
           )}
