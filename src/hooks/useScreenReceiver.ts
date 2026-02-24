@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { getFunctionsWsBase } from "@/lib/relay";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
+import { useP2PStreaming } from "@/hooks/useP2PStreaming";
 import { useToast } from "@/hooks/use-toast";
 import { addLog } from "@/components/IssueLog";
 
@@ -15,6 +15,7 @@ export interface ScreenReceiverState {
   wsConnected: boolean;
   peerConnected: boolean;
   sessionId: string | null;
+  viaP2P: boolean;
 }
 
 export interface ScreenReceiverOptions {
@@ -28,6 +29,7 @@ export interface ScreenReceiverOptions {
 export function useScreenReceiver() {
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
+  const p2pStreaming = useP2PStreaming();
   const { toast } = useToast();
 
   const [state, setState] = useState<ScreenReceiverState>({
@@ -40,6 +42,7 @@ export function useScreenReceiver() {
     wsConnected: false,
     peerConnected: false,
     sessionId: null,
+    viaP2P: false,
   });
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -48,9 +51,6 @@ export function useScreenReceiver() {
   const frameTimesRef = useRef<number[]>([]);
   const retryCountRef = useRef(0);
   const maxRetries = 3;
-
-  const WS_BASE = getFunctionsWsBase();
-  const CAMERA_WS_URL = `${WS_BASE}/functions/v1/camera-relay`;
 
   const cleanup = useCallback(() => {
     if (currentBlobUrlRef.current) {
@@ -96,21 +96,23 @@ export function useScreenReceiver() {
 
       const sessionId = crypto.randomUUID();
       setState((prev) => ({ ...prev, sessionId, error: null }));
-      addLog("info", "web", `Starting screen receiver (session: ${sessionId.slice(0, 8)}...)`);
 
-      // 1) Connect receiver FIRST with session_token for authentication
+      const useP2P = p2pStreaming.isP2P && !testPattern;
+      
+      addLog("info", "web", `Screen connecting via ${useP2P ? "P2P" : "cloud relay"}...`);
+
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${fps}&quality=${quality}&binary=true&session_token=${session.session_token}`
+        useP2P
+          ? p2pStreaming.getScreenUrl(sessionId, { fps, quality, scale, monitorIndex })
+          : p2pStreaming.getScreenUrl(sessionId, { fps, quality, scale, monitorIndex })
       );
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
 
       ws.onmessage = async (event) => {
         const now = Date.now();
-
         try {
           let arrayBuffer: ArrayBuffer | null = null;
-
           if (event.data instanceof ArrayBuffer) {
             arrayBuffer = event.data;
           } else if (event.data instanceof Blob && event.data.size > 0) {
@@ -120,27 +122,18 @@ export function useScreenReceiver() {
           if (arrayBuffer && arrayBuffer.byteLength > 100) {
             const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
             const newUrl = URL.createObjectURL(blob);
-
-            if (currentBlobUrlRef.current) {
-              URL.revokeObjectURL(currentBlobUrlRef.current);
-            }
+            if (currentBlobUrlRef.current) URL.revokeObjectURL(currentBlobUrlRef.current);
             currentBlobUrlRef.current = newUrl;
 
-            // Track latency
             frameTimesRef.current.push(now);
-            if (frameTimesRef.current.length > 10) {
-              frameTimesRef.current.shift();
-            }
+            if (frameTimesRef.current.length > 10) frameTimesRef.current.shift();
             let latency = 0;
             if (frameTimesRef.current.length >= 2) {
               const gaps: number[] = [];
-              for (let i = 1; i < frameTimesRef.current.length; i++) {
-                gaps.push(frameTimesRef.current[i] - frameTimesRef.current[i - 1]);
-              }
+              for (let i = 1; i < frameTimesRef.current.length; i++) gaps.push(frameTimesRef.current[i] - frameTimesRef.current[i - 1]);
               latency = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
             }
 
-            // Track FPS
             fpsCounterRef.current.frames++;
             const elapsed = now - fpsCounterRef.current.lastCheck;
             let currentFps = 0;
@@ -155,11 +148,11 @@ export function useScreenReceiver() {
               frameCount: prev.frameCount + 1,
               latency,
               fps: currentFps || prev.fps,
+              viaP2P: useP2P,
             }));
             return;
           }
 
-          // Handle JSON messages
           if (typeof event.data === "string") {
             const data = JSON.parse(event.data);
             if (data.type === "screen_frame" && data.data) {
@@ -170,13 +163,10 @@ export function useScreenReceiver() {
               }));
             } else if (data.type === "peer_connected") {
               setState((prev) => ({ ...prev, peerConnected: true }));
-              addLog("info", "agent", "Screen peer connected");
             } else if (data.type === "peer_disconnected") {
               setState((prev) => ({ ...prev, peerConnected: false }));
-              addLog("warn", "agent", "Screen peer disconnected");
             } else if (data.type === "error" && data.message) {
               setState((prev) => ({ ...prev, error: data.message }));
-              addLog("error", "agent", `Screen relay error: ${data.message}`);
             }
           }
         } catch (e) {
@@ -185,68 +175,59 @@ export function useScreenReceiver() {
       };
 
       ws.onopen = () => {
-        setState((prev) => ({ ...prev, active: true, wsConnected: true, error: null }));
-        addLog("info", "web", "Screen WebSocket connected");
+        setState((prev) => ({ ...prev, active: true, wsConnected: true, error: null, viaP2P: useP2P }));
+        addLog("info", "web", `Screen WebSocket connected ${useP2P ? "(P2P direct)" : "(cloud relay)"}`);
       };
 
-      ws.onerror = () => {
-        addLog("error", "web", "Screen WebSocket error");
-      };
+      ws.onerror = () => { addLog("error", "web", "Screen WebSocket error"); };
+      ws.onclose = () => { cleanup(); addLog("info", "web", "Screen WebSocket closed"); };
 
-      ws.onclose = () => {
-        cleanup();
-        addLog("info", "web", "Screen WebSocket closed");
-      };
-
-      // Wait for WS to open with retry on 502
       try {
         await new Promise<void>((resolve, reject) => {
           if (ws.readyState === WebSocket.OPEN) return resolve();
-          const t = window.setTimeout(() => {
-            ws.close();
-            reject(new Error("WebSocket connection timeout"));
-          }, 10000);
+          const t = window.setTimeout(() => { ws.close(); reject(new Error("WebSocket connection timeout")); }, 10000);
           ws.addEventListener("open", () => { window.clearTimeout(t); resolve(); }, { once: true });
-          ws.addEventListener("error", () => { window.clearTimeout(t); reject(new Error("WebSocket error (possible 502)")); }, { once: true });
+          ws.addEventListener("error", () => { window.clearTimeout(t); reject(new Error("WebSocket error")); }, { once: true });
         });
-        retryCountRef.current = 0; // Reset on success
+        retryCountRef.current = 0;
       } catch (err: any) {
-        // Retry on transient 502 errors
         if (retryCountRef.current < maxRetries) {
           retryCountRef.current++;
           addLog("warn", "web", `Screen WS failed, retrying (${retryCountRef.current}/${maxRetries})...`);
           await new Promise(r => setTimeout(r, 1500 * retryCountRef.current));
-          return start(options); // Recursive retry
+          return start(options);
         }
         setState((prev) => ({ ...prev, error: err.message }));
         throw err;
       }
 
-      // 2) Tell PC agent to start sending
-      const commandType = testPattern ? "start_test_pattern" : "start_screen_stream";
-      const payload = testPattern
-        ? { session_id: sessionId, fps, quality, mode: "screen" }
-        : { session_id: sessionId, fps, quality, scale, monitor_index: monitorIndex };
+      // When using P2P, agent streams directly — no separate command needed
+      if (!useP2P) {
+        const commandType = testPattern ? "start_test_pattern" : "start_screen_stream";
+        const payload = testPattern
+          ? { session_id: sessionId, fps, quality, mode: "screen" }
+          : { session_id: sessionId, fps, quality, scale, monitor_index: monitorIndex };
 
-      const started = await sendCommand(commandType, payload, {
-        awaitResult: true,
-        timeoutMs: 15000,
-      });
+        const started = await sendCommand(commandType, payload, {
+          awaitResult: true,
+          timeoutMs: 15000,
+        });
 
-      if (!started.success) {
-        const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
-        setState((prev) => ({ ...prev, error: msg }));
-        addLog("error", "agent", msg);
-        toast({ title: "Screen Error", description: msg, variant: "destructive" });
-        cleanup();
-        return false;
+        if (!started.success) {
+          const msg = typeof started.error === "string" ? started.error : "Failed to start screen stream";
+          setState((prev) => ({ ...prev, error: msg }));
+          addLog("error", "agent", msg);
+          toast({ title: "Screen Error", description: msg, variant: "destructive" });
+          cleanup();
+          return false;
+        }
       }
 
-      addLog("info", "agent", testPattern ? "Test pattern (screen) started" : "PC screen stream started");
-      toast({ title: testPattern ? "Test Pattern Started" : "Screen Mirroring Started", description: `Streaming at up to ${fps} FPS` });
+      addLog("info", "agent", `Screen stream started ${useP2P ? "(P2P)" : "(relay)"}`);
+      toast({ title: `Screen Mirroring Started ${useP2P ? "(P2P)" : ""}`, description: `Streaming at up to ${fps} FPS` });
       return true;
     },
-    [CAMERA_WS_URL, sendCommand, toast, cleanup]
+    [sendCommand, toast, cleanup, p2pStreaming]
   );
 
   const stop = useCallback(async () => {

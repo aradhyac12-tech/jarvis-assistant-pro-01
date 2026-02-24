@@ -40,7 +40,7 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "5.3.0"
+AGENT_VERSION = "5.4.0"
 
 # Auto-updater
 try:
@@ -647,14 +647,42 @@ class LocalP2PServer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._ready = threading.Event()
         
+    # Track streaming clients by path
+    _camera_clients: Set = set()
+    _screen_clients: Set = set()
+    _audio_clients: Dict[str, Any] = {}  # ws -> {direction, ...}
+
     async def handle_client(self, websocket, path=None):
-        """Handle P2P client - compatible with websockets v10+ and older."""
+        """Handle P2P client - routes by path for streaming or commands."""
         client_ip = "unknown"
         try:
             if hasattr(websocket, 'remote_address') and websocket.remote_address:
                 client_ip = websocket.remote_address[0]
         except Exception:
             pass
+
+        # Determine path from websocket
+        ws_path = "/p2p"
+        try:
+            if hasattr(websocket, 'path'):
+                ws_path = websocket.path or "/p2p"
+            elif hasattr(websocket, 'request') and hasattr(websocket.request, 'path'):
+                ws_path = websocket.request.path or "/p2p"
+        except Exception:
+            pass
+
+        # Route based on path
+        if ws_path.startswith("/camera"):
+            await self._handle_camera_client(websocket, client_ip)
+            return
+        elif ws_path.startswith("/screen"):
+            await self._handle_screen_client(websocket, client_ip)
+            return
+        elif ws_path.startswith("/audio"):
+            await self._handle_audio_client(websocket, client_ip, ws_path)
+            return
+
+        # Default: command P2P client
         add_log("info", f"Local P2P client connected: {client_ip}", category="p2p")
         
         self.clients.add(websocket)
@@ -697,7 +725,223 @@ class LocalP2PServer:
             self.clients.discard(websocket)
             if len(self.clients) == 0:
                 update_agent_status({"connection_mode": "cloud"})
-    
+
+    async def _handle_camera_client(self, websocket, client_ip):
+        """Stream camera frames directly to local P2P client."""
+        add_log("info", f"P2P camera client connected: {client_ip}", category="camera")
+        self._camera_clients.add(websocket)
+        try:
+            # Parse query params from path
+            import urllib.parse
+            qs = {}
+            try:
+                path = websocket.path if hasattr(websocket, 'path') else ""
+                if '?' in path:
+                    qs = dict(urllib.parse.parse_qsl(path.split('?', 1)[1]))
+            except Exception:
+                pass
+
+            camera_index = int(qs.get("camera_index", "0"))
+            fps = int(qs.get("fps", "30"))
+            quality = int(qs.get("quality", "70"))
+
+            if not HAS_OPENCV:
+                await websocket.send(json.dumps({"type": "error", "message": "OpenCV not installed"}))
+                return
+
+            if platform.system() == "Windows":
+                cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            else:
+                cap = cv2.VideoCapture(camera_index)
+
+            if not cap.isOpened():
+                await websocket.send(json.dumps({"type": "error", "message": f"Failed to open camera {camera_index}"}))
+                return
+
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+
+            await websocket.send(json.dumps({"type": "peer_connected"}))
+
+            interval = 1.0 / max(1, fps)
+            while websocket in self._camera_clients:
+                ret, frame = cap.read()
+                if not ret:
+                    await asyncio.sleep(0.01)
+                    continue
+                try:
+                    _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                    await websocket.send(buffer.tobytes())
+                except Exception:
+                    break
+                await asyncio.sleep(interval)
+
+            cap.release()
+        except Exception as e:
+            add_log("warn", f"P2P camera client error: {e}", category="camera")
+        finally:
+            self._camera_clients.discard(websocket)
+            add_log("info", f"P2P camera client disconnected: {client_ip}", category="camera")
+
+    async def _handle_screen_client(self, websocket, client_ip):
+        """Stream screen frames directly to local P2P client."""
+        add_log("info", f"P2P screen client connected: {client_ip}", category="screen")
+        self._screen_clients.add(websocket)
+        try:
+            import urllib.parse
+            qs = {}
+            try:
+                path = websocket.path if hasattr(websocket, 'path') else ""
+                if '?' in path:
+                    qs = dict(urllib.parse.parse_qsl(path.split('?', 1)[1]))
+            except Exception:
+                pass
+
+            fps = int(qs.get("fps", "30"))
+            quality = int(qs.get("quality", "70"))
+            scale = float(qs.get("scale", "0.5"))
+            monitor_index = int(qs.get("monitor_index", "1"))
+
+            if not HAS_MSS:
+                await websocket.send(json.dumps({"type": "error", "message": "mss not installed"}))
+                return
+
+            await websocket.send(json.dumps({"type": "peer_connected"}))
+
+            interval = 1.0 / max(1, fps)
+            import mss
+            import numpy as np
+            with mss.mss() as sct:
+                monitors = sct.monitors
+                mon_idx = min(monitor_index, len(monitors) - 1)
+                monitor = monitors[mon_idx]
+
+                while websocket in self._screen_clients:
+                    try:
+                        img = sct.grab(monitor)
+                        frame = np.array(img)
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                        if scale != 1.0:
+                            h, w = frame.shape[:2]
+                            frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                        _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                        await websocket.send(buffer.tobytes())
+                    except Exception:
+                        break
+                    await asyncio.sleep(interval)
+
+        except Exception as e:
+            add_log("warn", f"P2P screen client error: {e}", category="screen")
+        finally:
+            self._screen_clients.discard(websocket)
+            add_log("info", f"P2P screen client disconnected: {client_ip}", category="screen")
+
+    async def _handle_audio_client(self, websocket, client_ip, ws_path):
+        """Bidirectional audio relay directly via local P2P."""
+        add_log("info", f"P2P audio client connected: {client_ip}", category="audio")
+        try:
+            import urllib.parse
+            qs = {}
+            try:
+                if '?' in ws_path:
+                    qs = dict(urllib.parse.parse_qsl(ws_path.split('?', 1)[1]))
+            except Exception:
+                pass
+
+            direction = qs.get("direction", "bidirectional")
+            use_system_audio = qs.get("use_system_audio", "false").lower() == "true"
+
+            if not HAS_PYAUDIO:
+                await websocket.send(json.dumps({"type": "error", "message": "PyAudio not installed"}))
+                return
+
+            await websocket.send(json.dumps({"type": "peer_connected"}))
+
+            FORMAT = pyaudio.paInt16
+            CHANNELS = 1
+            RATE = 16000
+            CHUNK = 1024
+            pa = pyaudio.PyAudio()
+
+            mic_stream = None
+            speaker_stream = None
+            running = True
+
+            if direction in ("pc_to_phone", "bidirectional"):
+                try:
+                    if use_system_audio and platform.system() == "Windows":
+                        # Try WASAPI loopback
+                        loopback_idx = None
+                        for i in range(pa.get_device_count()):
+                            try:
+                                info = pa.get_device_info_by_index(i)
+                                if info.get("maxInputChannels", 0) > 0 and "loopback" in info.get("name", "").lower():
+                                    loopback_idx = i
+                                    break
+                            except Exception:
+                                continue
+                        if loopback_idx is not None:
+                            dev_info = pa.get_device_info_by_index(loopback_idx)
+                            dev_rate = int(dev_info.get("defaultSampleRate", RATE))
+                            dev_channels = min(dev_info.get("maxInputChannels", 1), 2)
+                            mic_stream = pa.open(format=FORMAT, channels=dev_channels, rate=dev_rate,
+                                                 input=True, frames_per_buffer=CHUNK, input_device_index=loopback_idx)
+                        else:
+                            mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                    else:
+                        mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                except Exception as e:
+                    add_log("warn", f"P2P audio input error: {e}", category="audio")
+
+            if direction in ("phone_to_pc", "bidirectional"):
+                try:
+                    speaker_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True, frames_per_buffer=CHUNK)
+                except Exception as e:
+                    add_log("warn", f"P2P audio output error: {e}", category="audio")
+
+            # Send mic data in a background thread
+            def send_mic():
+                while running and mic_stream:
+                    try:
+                        data = mic_stream.read(CHUNK, exception_on_overflow=False)
+                        asyncio.run_coroutine_threadsafe(websocket.send(data), self._loop)
+                    except Exception:
+                        break
+
+            if mic_stream:
+                mic_thread = threading.Thread(target=send_mic, daemon=True)
+                mic_thread.start()
+
+            # Receive audio from phone
+            async for message in websocket:
+                if isinstance(message, bytes) and speaker_stream:
+                    try:
+                        speaker_stream.write(message)
+                    except Exception:
+                        pass
+                elif isinstance(message, str):
+                    try:
+                        data = json.loads(message)
+                        if data.get("type") == "ping":
+                            await websocket.send(json.dumps({"type": "pong"}))
+                    except Exception:
+                        pass
+
+            running = False
+            if mic_stream:
+                try: mic_stream.stop_stream(); mic_stream.close()
+                except Exception: pass
+            if speaker_stream:
+                try: speaker_stream.stop_stream(); speaker_stream.close()
+                except Exception: pass
+            pa.terminate()
+
+        except Exception as e:
+            add_log("warn", f"P2P audio client error: {e}", category="audio")
+        finally:
+            add_log("info", f"P2P audio client disconnected: {client_ip}", category="audio")
+
     async def _process_message(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         msg_type = data.get("type", "")
         request_id = data.get("requestId")
