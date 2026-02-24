@@ -534,8 +534,8 @@ export default function Hub() {
     <TooltipProvider>
       <div className="min-h-screen bg-background">
         {/* Header */}
-        <header className="sticky top-0 z-50 border-b border-border/20 bg-background/80 backdrop-blur-xl">
-          <div className="flex items-center justify-between h-12 px-4 max-w-3xl mx-auto">
+        <header className="sticky top-0 z-50 border-b border-border/20 bg-background/80 backdrop-blur-xl safe-area-top">
+          <div className="flex items-center justify-between h-12 px-3">
             <div className="flex items-center gap-2.5">
               <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
                 <Bot className="w-4 h-4 text-primary-foreground" />
@@ -545,7 +545,7 @@ export default function Hub() {
 
             <div className="flex items-center gap-2">
               {systemStats && (
-                <div className="hidden sm:flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
                   <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />{systemStats.cpu_percent}%</span>
                   <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" />{systemStats.memory_percent}%</span>
                   {systemStats.battery_percent !== undefined && (
@@ -567,7 +567,7 @@ export default function Hub() {
         </header>
 
         <ScrollArea className="h-[calc(100vh-3rem)]">
-          <main className="max-w-3xl mx-auto p-3 space-y-3 pb-6">
+          <main className="p-3 space-y-3 pb-6">
             {/* Command Input */}
             <div className="flex gap-2">
               <Input
@@ -597,7 +597,7 @@ export default function Hub() {
                   )}
                 >
                   <tab.icon className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">{tab.label}</span>
+                  <span className="text-[10px] sm:text-xs">{tab.label}</span>
                 </button>
               ))}
             </div>
