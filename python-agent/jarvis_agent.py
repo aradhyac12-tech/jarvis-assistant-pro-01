@@ -167,7 +167,7 @@ else:
 # types depending on pycaw version. We must get the raw IMMDevice COM pointer.
 
 def _get_volume_interface():
-    """Get IAudioEndpointVolume with proper COM init. Returns (endpoint, needs_uninit)."""
+    """Get IAudioEndpointVolume with proper COM init. Returns volume interface or None."""
     if not HAS_PYCAW:
         return None
     try:
@@ -175,52 +175,30 @@ def _get_volume_interface():
     except Exception:
         pass
     try:
-        # Get the default audio endpoint
-        # Method 1: Direct COM access (works on all pycaw versions)
+        # Use pycaw's AudioUtilities which handles COM internally
+        speakers = AudioUtilities.GetSpeakers()
+        if speakers is None:
+            return None
+        
+        # Try direct Activate on the speakers object
         try:
-            from comtypes import GUID
-            import comtypes.persist
-            
-            CLSID_MMDeviceEnumerator = GUID('{BCDE0395-E52F-467C-8E3D-C4579291692E}')
-            IID_IMMDeviceEnumerator = GUID('{A95664D2-9614-4F35-A746-DE8DB63617E6}')
-            
-            # Create the enumerator directly
-            enumerator = comtypes.CoCreateInstance(
-                CLSID_MMDeviceEnumerator,
-                clsctx=CLSCTX_ALL,
-            )
-            # eRender=0, eMultimedia=1
-            device = enumerator.GetDefaultAudioEndpoint(0, 1)
-            interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
             volume = cast(interface, POINTER(IAudioEndpointVolume))
             return volume
-        except Exception:
+        except (AttributeError, ValueError, OSError):
             pass
         
-        # Method 2: pycaw wrapper with raw device extraction
-        try:
-            speakers = AudioUtilities.GetSpeakers()
-            # Try to get raw IMMDevice from various pycaw wrappers
-            raw = None
-            for attr in ('_dev', 'dev', '_device', 'device'):
-                raw = getattr(speakers, attr, None)
-                if raw is not None and hasattr(raw, 'Activate'):
-                    break
-            if raw is None:
-                # speakers itself might be the raw IMMDevice
-                if hasattr(speakers, 'Activate'):
-                    raw = speakers
-                else:
-                    # Last resort: try calling Activate anyway
-                    raw = speakers
-            
-            interface = raw.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            return volume
-        except Exception:
-            pass
-            
-        # Method 3: PowerShell COM fallback
+        # Try extracting raw device from wrapper attributes
+        for attr in ('_dev', 'dev', '_device', 'device', '_real_device'):
+            raw = getattr(speakers, attr, None)
+            if raw is not None:
+                try:
+                    interface = raw.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                    volume = cast(interface, POINTER(IAudioEndpointVolume))
+                    return volume
+                except (AttributeError, ValueError, OSError):
+                    continue
+        
         return None
     except Exception:
         return None
@@ -2690,11 +2668,17 @@ class JarvisAgent:
                 
                 # Heartbeat
                 if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-                    self.heartbeat()
+                    try:
+                        self.heartbeat()
+                    except Exception as hb_err:
+                        add_log("warn", f"Heartbeat error (non-fatal): {hb_err}", category="system")
                     last_heartbeat = now
                 
                 # Poll commands
-                self.poll_commands()
+                try:
+                    self.poll_commands()
+                except Exception as poll_err:
+                    add_log("warn", f"Poll error (non-fatal): {poll_err}", category="system")
                 
                 # Sleep
                 time.sleep(POLL_INTERVAL)
@@ -2718,6 +2702,35 @@ class JarvisAgent:
             pass
         
         add_log("info", "Agent stopped.", category="system")
+
+
+# ============== SUPPRESS COM CLEANUP ERRORS ==============
+import atexit
+import warnings
+
+def _suppress_com_errors():
+    """Suppress COM VTable errors during Python shutdown."""
+    try:
+        warnings.filterwarnings("ignore", "COM method call without VTable")
+    except Exception:
+        pass
+
+atexit.register(_suppress_com_errors)
+
+# Monkey-patch comtypes __del__ to suppress VTable errors during shutdown
+if HAS_PYCAW:
+    try:
+        import comtypes._post_coinit.unknwn as _unknwn
+        _original_del = getattr(_unknwn._compointer_base, '__del__', None)
+        if _original_del:
+            def _safe_del(self):
+                try:
+                    _original_del(self)
+                except (ValueError, OSError, Exception):
+                    pass
+            _unknwn._compointer_base.__del__ = _safe_del
+    except Exception:
+        pass
 
 
 # ============== MAIN ENTRY ==============
