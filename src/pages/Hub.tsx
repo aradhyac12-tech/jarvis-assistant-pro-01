@@ -35,6 +35,7 @@ import {
   XCircle,
   RotateCcw,
   Activity,
+  Video,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -51,8 +52,9 @@ import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfe
 import { KDERemoteInput } from "@/components/KDERemoteInput";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
+import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
-type Tab = "control" | "remote" | "media" | "apps" | "network" | "tools";
+type Tab = "control" | "remote" | "media" | "apps" | "zoom" | "network" | "settings";
 
 interface SystemStats {
   cpu_percent?: number;
@@ -76,6 +78,7 @@ interface AppInfo {
 }
 
 export default function Hub() {
+  const haptic = useHapticFeedback();
   const { devices, selectedDevice, isLoading, refreshDevices } = useDeviceContext();
   const { isReconnecting } = useDeviceSession();
   const { sendCommand } = useDeviceCommands();
@@ -235,7 +238,8 @@ export default function Hub() {
   // Volume handler
   const handleVolumeSlider = useCallback((v: number[]) => {
     setVolume(v[0]);
-  }, []);
+    haptic.scroll();
+  }, [haptic]);
 
   const handleVolumeCommit = useCallback(async (v: number[]) => {
     if (volumeCommitRef.current !== null) clearTimeout(volumeCommitRef.current);
@@ -254,7 +258,8 @@ export default function Hub() {
 
   const handleBrightnessSlider = useCallback((v: number[]) => {
     setBrightness(v[0]);
-  }, []);
+    haptic.scroll();
+  }, [haptic]);
 
   const handleBrightnessCommit = useCallback(async (v: number[]) => {
     if (brightnessCommitRef.current !== null) clearTimeout(brightnessCommitRef.current);
@@ -461,7 +466,6 @@ export default function Hub() {
     { title: "AI", icon: Bot, href: "/voice" },
     { title: "Files", icon: FolderOpen, href: "/files" },
     { title: "Camera", icon: Camera, href: "/miccamera" },
-    { title: "Settings", icon: Settings, href: "/settings" },
   ];
 
   const tabs = [
@@ -469,8 +473,9 @@ export default function Hub() {
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
     { id: "apps" as Tab, label: "Apps", icon: AppWindow },
+    { id: "zoom" as Tab, label: "Zoom", icon: Video },
     { id: "network" as Tab, label: "Network", icon: Wifi },
-    { id: "tools" as Tab, label: "Tools", icon: Wrench },
+    { id: "settings" as Tab, label: "Settings", icon: Settings },
   ];
 
   // Filter apps by search
@@ -542,13 +547,13 @@ export default function Hub() {
             </div>
 
             {/* Tab Navigation */}
-            <div className="grid grid-cols-3 gap-1 p-1 bg-black/80 rounded-lg w-full border border-border/10">
+            <div className="grid grid-cols-4 gap-1 p-1 bg-black/80 rounded-lg w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => { setActiveTab(tab.id); haptic.tap(); }}
                   className={cn(
-                    "flex items-center justify-center gap-1 px-2 py-2 rounded-md text-xs font-medium transition-all",
+                    "flex items-center justify-center gap-1 px-1.5 py-2 rounded-md text-xs font-medium transition-all",
                     activeTab === tab.id
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:text-foreground"
@@ -637,7 +642,7 @@ export default function Hub() {
                 {/* Quick Links */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-4 gap-1.5">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {quickLinks.map((link) => (
                         <Link key={link.href} to={link.href}>
                           <Button variant="ghost" className="w-full h-14 flex-col gap-1 hover:bg-secondary/50 border border-transparent hover:border-border/20">
@@ -855,15 +860,35 @@ export default function Hub() {
               </div>
             )}
 
-            {/* Tools Tab */}
-            {activeTab === "tools" && (
+            {/* Zoom Tab */}
+            {activeTab === "zoom" && (
               <div className="grid gap-3">
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-0">
                     <ZoomMeetings />
                   </CardContent>
                 </Card>
+              </div>
+            )}
+
+            {/* Settings Tab (merged with tools) */}
+            {activeTab === "settings" && (
+              <div className="grid gap-3">
                 <BidirectionalFileTransfer />
+                <BoostPC />
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-3">
+                    <Link to="/settings" className="flex items-center gap-3 w-full">
+                      <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                        <Settings className="w-4 h-4 text-primary" />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">App Settings</p>
+                        <p className="text-[10px] text-muted-foreground">Voice, security, device config</p>
+                      </div>
+                    </Link>
+                  </CardContent>
+                </Card>
               </div>
             )}
 
