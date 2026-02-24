@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, PhoneOff, Clock, Copy, FileUp, Smartphone, ArrowRight, Activity, CheckCircle, XCircle } from "lucide-react";
+import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, PhoneOff, Clock, Copy, FileUp, Smartphone, ArrowRight, Activity, CheckCircle, XCircle, Fingerprint, Lock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -16,11 +16,18 @@ import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
 import { BackButton } from "@/components/BackButton";
 import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { isAppLockEnabled, getAppLockMethod, getAppPin, setAppLockSettings } from "@/components/AppLockScreen";
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState("Hey Jarvis");
-  const [unlockPin, setUnlockPin] = useState("1212");
   const [notifications, setNotifications] = useState(true);
+  
+  // App Lock state
+  const [appLockEnabled, setAppLockEnabled] = useState(isAppLockEnabled);
+  const [lockMethod, setLockMethod] = useState<"biometric" | "pin" | "both">(getAppLockMethod);
+  const [appPin, setAppPin] = useState(getAppPin);
+  const [biometricAvail, setBiometricAvail] = useState(false);
+  const [biometricTypeName, setBiometricTypeName] = useState("Biometric");
   const { toast } = useToast();
   const { session, unpair } = useDeviceSession();
   const { selectedDevice } = useDeviceContext();
@@ -70,6 +77,27 @@ export default function Settings() {
       initCallDetection();
     }
   }, [isNative, callDetectionActive, initCallDetection]);
+
+  // Check biometric availability
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const { NativeBiometric, BiometryType } = await import("@capgo/capacitor-native-biometric");
+        const result = await NativeBiometric.isAvailable({ useFallback: true });
+        setBiometricAvail(result.isAvailable);
+        switch (result.biometryType) {
+          case BiometryType.TOUCH_ID: setBiometricTypeName("Touch ID"); break;
+          case BiometryType.FACE_ID: setBiometricTypeName("Face ID"); break;
+          case BiometryType.FINGERPRINT: setBiometricTypeName("Fingerprint"); break;
+          case BiometryType.FACE_AUTHENTICATION: setBiometricTypeName("Face Unlock"); break;
+          default: setBiometricTypeName("Biometric"); break;
+        }
+      } catch {
+        setBiometricAvail(false);
+      }
+    };
+    check();
+  }, []);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -130,16 +158,81 @@ export default function Settings() {
           </CardContent>
         </Card>
 
-        {/* Security */}
+        {/* App Lock & Security */}
         <Card className="border-border/30 bg-card/50">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base"><Shield className="h-4 w-4 text-primary" />Security</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-base"><Shield className="h-4 w-4 text-primary" />App Lock & Security</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="space-y-1">
-              <Label className="text-xs">Unlock PIN</Label>
-              <Input type="password" value={unlockPin} onChange={(e) => setUnlockPin(e.target.value)} maxLength={4} className="h-8 text-sm" />
+            {/* Enable/Disable App Lock */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">App Lock</p>
+                <p className="text-[10px] text-muted-foreground">Lock app when returning from background</p>
+              </div>
+              <Switch checked={appLockEnabled} onCheckedChange={(v) => {
+                setAppLockEnabled(v);
+                setAppLockSettings(v, lockMethod, appPin, 0);
+                toast({ title: v ? "App Lock Enabled" : "App Lock Disabled" });
+              }} />
             </div>
+
+            {appLockEnabled && (
+              <>
+                {/* Lock Method */}
+                <div className="space-y-2 pt-2 border-t border-border/20">
+                  <Label className="text-xs">Unlock Method</Label>
+                  <div className="flex gap-2">
+                    {(biometricAvail ? ["biometric", "pin", "both"] as const : ["pin"] as const).map((m) => (
+                      <Button
+                        key={m}
+                        variant={lockMethod === m ? "default" : "outline"}
+                        size="sm"
+                        className="flex-1 h-8 text-xs gap-1"
+                        onClick={() => {
+                          setLockMethod(m);
+                          setAppLockSettings(true, m, appPin, 0);
+                        }}
+                      >
+                        {m === "biometric" && <><Fingerprint className="h-3 w-3" />{biometricTypeName}</>}
+                        {m === "pin" && <><Lock className="h-3 w-3" />PIN</>}
+                        {m === "both" && <><Fingerprint className="h-3 w-3" />Both</>}
+                      </Button>
+                    ))}
+                  </div>
+                  {biometricAvail && (
+                    <p className="text-[10px] text-muted-foreground">
+                      {biometricTypeName} detected on this device
+                    </p>
+                  )}
+                  {!biometricAvail && (
+                    <p className="text-[10px] text-muted-foreground">
+                      No biometric hardware detected. Install as APK for fingerprint/face unlock.
+                    </p>
+                  )}
+                </div>
+
+                {/* PIN Setting */}
+                {(lockMethod === "pin" || lockMethod === "both") && (
+                  <div className="space-y-1">
+                    <Label className="text-xs">App PIN</Label>
+                    <Input
+                      type="password"
+                      inputMode="numeric"
+                      value={appPin}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/\D/g, "").slice(0, 6);
+                        setAppPin(v);
+                        setAppLockSettings(true, lockMethod, v, 0);
+                      }}
+                      maxLength={6}
+                      className="h-8 text-sm"
+                      placeholder="Enter 4-6 digit PIN"
+                    />
+                  </div>
+                )}
+              </>
+            )}
           </CardContent>
         </Card>
 

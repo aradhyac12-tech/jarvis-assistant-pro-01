@@ -2,24 +2,24 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { GlobalPiPProvider } from "@/contexts/GlobalPiPContext";
 import { GlobalFloatingPiP } from "@/components/GlobalFloatingPiP";
 import { LazyLoadErrorBoundary } from "@/components/LazyLoadErrorBoundary";
+import { AppLockScreen, isAppLockEnabled } from "@/components/AppLockScreen";
+import { useAppStatePersistence, getLastRoute } from "@/hooks/useAppState";
 import { Loader2 } from "lucide-react";
-import React, { lazy, Suspense, forwardRef } from "react";
+import React, { lazy, Suspense, forwardRef, useState, useEffect, useCallback } from "react";
 
 // Lazy load pages
 const Pair = lazy(() => import("./pages/Pair"));
 const Hub = lazy(() => import("./pages/Hub"));
 const VoiceAI = lazy(() => import("./pages/VoiceAI"));
 const AIAssistant = lazy(() => import("./pages/AIAssistant"));
-// Apps route redirects to Hub now
 const Files = lazy(() => import("./pages/Files"));
 const MicCamera = lazy(() => import("./pages/MicCamera"));
-// Webcam merged into MicCamera
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
@@ -35,11 +35,10 @@ const LoadingFallback = forwardRef<HTMLDivElement>(function LoadingFallback(_, r
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, isLoading, autoPair } = useDeviceSession();
-  const [autoPairing, setAutoPairing] = React.useState(false);
+  const [autoPairing, setAutoPairing] = useState(false);
   const attemptedRef = React.useRef(false);
 
   React.useEffect(() => {
-    // Zero-access-code auto-connect: if no session & first load, auto-pair to first online device
     if (!isLoading && !session && !autoPairing && !attemptedRef.current) {
       attemptedRef.current = true;
       setAutoPairing(true);
@@ -58,25 +57,109 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/** Saves current route to localStorage for state remembering */
+function StatePersistence() {
+  useAppStatePersistence();
+  return null;
+}
+
+/** Smart redirect: go to last visited page or /hub */
+function SmartRedirect() {
+  const lastRoute = getLastRoute();
+  return <Navigate to={lastRoute || "/hub"} replace />;
+}
+
+/** App lock gate — locks the entire app when returning from background */
+function AppLockGate({ children }: { children: React.ReactNode }) {
+  const [locked, setLocked] = useState(false);
+  const backgroundTimeRef = React.useRef<number>(0);
+
+  useEffect(() => {
+    if (!isAppLockEnabled()) return;
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        // App going to background — record time
+        backgroundTimeRef.current = Date.now();
+      } else {
+        // App coming to foreground — check if we should lock
+        if (backgroundTimeRef.current > 0) {
+          const elapsed = Date.now() - backgroundTimeRef.current;
+          // Lock if gone for more than 2 seconds (prevents locking on quick tab switches)
+          if (elapsed > 2000) {
+            setLocked(true);
+          }
+          backgroundTimeRef.current = 0;
+        }
+      }
+    };
+
+    // Also handle Capacitor app state
+    const initAppListener = async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        App.addListener("appStateChange", ({ isActive }) => {
+          if (!isActive) {
+            backgroundTimeRef.current = Date.now();
+          } else if (backgroundTimeRef.current > 0) {
+            const elapsed = Date.now() - backgroundTimeRef.current;
+            if (elapsed > 2000) {
+              setLocked(true);
+            }
+            backgroundTimeRef.current = 0;
+          }
+        });
+      } catch {
+        // Not in Capacitor — visibility API is enough
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    initAppListener();
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, []);
+
+  // Check on initial mount if lock is enabled
+  useEffect(() => {
+    if (isAppLockEnabled()) {
+      setLocked(true);
+    }
+  }, []);
+
+  const handleUnlock = useCallback(() => {
+    setLocked(false);
+  }, []);
+
+  if (locked) {
+    return <AppLockScreen onUnlock={handleUnlock} />;
+  }
+
+  return <>{children}</>;
+}
+
 function AppRoutes() {
   return (
     <LazyLoadErrorBoundary>
       <Suspense fallback={<LoadingFallback />}>
+        <StatePersistence />
         <Routes>
           <Route path="/pair" element={<Pair />} />
-          <Route path="/" element={<Navigate to="/hub" replace />} />
+          <Route path="/" element={<SmartRedirect />} />
           
-          {/* Main Hub - unified control panel (no sidebar) */}
+          {/* Main Hub */}
           <Route path="/hub" element={<ProtectedRoute><Hub /></ProtectedRoute>} />
           
-          {/* Redirect old routes to Hub */}
+          {/* Redirect old routes */}
           <Route path="/dashboard" element={<Navigate to="/hub" replace />} />
           <Route path="/controls" element={<Navigate to="/hub" replace />} />
           <Route path="/music" element={<Navigate to="/hub" replace />} />
           <Route path="/remote" element={<Navigate to="/hub" replace />} />
           <Route path="/apps" element={<Navigate to="/hub" replace />} />
           
-          {/* Specialized pages - no sidebar wrapper */}
+          {/* Specialized pages */}
           <Route path="/assistant" element={<Navigate to="/voice" replace />} />
           <Route path="/voice" element={<ProtectedRoute><VoiceAI /></ProtectedRoute>} />
           <Route path="/files" element={<ProtectedRoute><Files /></ProtectedRoute>} />
@@ -99,8 +182,10 @@ const App = () => (
             <Toaster />
             <Sonner />
             <BrowserRouter>
-              <AppRoutes />
-              <GlobalFloatingPiP />
+              <AppLockGate>
+                <AppRoutes />
+                <GlobalFloatingPiP />
+              </AppLockGate>
             </BrowserRouter>
           </GlobalPiPProvider>
         </DeviceProvider>
