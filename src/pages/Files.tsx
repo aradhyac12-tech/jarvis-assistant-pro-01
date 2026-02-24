@@ -247,38 +247,44 @@ export default function Files() {
             ))}
           </div>
 
-          {/* Files Grid */}
+          {/* Files List */}
           <Card className="border-border/40">
-            <CardContent className="p-4">
+            <CardContent className="p-2">
               {isLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="h-8 w-8 animate-spin text-primary" />
                 </div>
               ) : filteredFiles.length > 0 ? (
-                <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                <div className="space-y-0.5">
                   {filteredFiles.map((file, index) => {
                     const FileIcon = getFileIcon(file.name, file.is_directory);
                     return (
                       <div
                         key={`${file.name}-${index}`}
-                        className="p-3 rounded-lg bg-muted/30 hover:bg-muted/50 cursor-pointer transition-all hover:scale-[1.02] text-center group"
+                        className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors group"
                         onClick={() => handleNavigate(file)}
                       >
-                        <div className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center mx-auto mb-2 group-hover:bg-primary/10 transition-colors">
-                          <FileIcon
-                            className={cn(
-                              "h-5 w-5",
-                              file.is_directory ? "text-primary" : "text-muted-foreground"
-                            )}
-                          />
+                        <div className={cn(
+                          "w-9 h-9 rounded-lg flex items-center justify-center shrink-0",
+                          file.is_directory ? "bg-primary/10" : "bg-secondary/50"
+                        )}>
+                          <FileIcon className={cn("h-4 w-4", file.is_directory ? "text-primary" : "text-muted-foreground")} />
                         </div>
-                        <p className="font-medium text-xs truncate" title={file.name}>
-                          {file.name}
-                        </p>
-                        {!file.is_directory && file.size > 0 && (
-                          <p className="text-[10px] text-muted-foreground mt-0.5">
-                            {formatSize(file.size)}
-                          </p>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium truncate">{file.name}</p>
+                          {!file.is_directory && file.size > 0 && (
+                            <p className="text-[10px] text-muted-foreground">{formatSize(file.size)}</p>
+                          )}
+                        </div>
+                        {!file.is_directory && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-[10px] px-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                            onClick={(e) => { e.stopPropagation(); handleOpenFile(file); }}
+                          >
+                            Open on PC
+                          </Button>
                         )}
                       </div>
                     );
