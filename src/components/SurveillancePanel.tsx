@@ -7,10 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
   Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
-  AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2,
+  AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2, X, Image as ImageIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -67,6 +68,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenActive, setSirenActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
   const [humanPresent, setHumanPresent] = useState(false);
+  const [survTab, setSurvTab] = useState<"live" | "clips">("live");
+  const [clipFilter, setClipFilter] = useState<"all" | "human" | "motion">("all");
+  const [expandedClip, setExpandedClip] = useState<string | null>(null);
 
   // Single notification guard per session — no spamming
   const humanNotifiedRef = useRef(false);
@@ -122,43 +126,65 @@ export function SurveillancePanel({ className }: { className?: string }) {
     } catch {}
   }, [clips]);
 
-  // Auto-record on detection (5s clips) — always on, no toggle
+  // Auto-record while activity continues — extends recording as long as detections keep coming
   const autoRecordTimeoutRef = useRef<number | null>(null);
+  const recordingTriggerRef = useRef<"motion" | "human">("motion");
+  
   const triggerAutoClip = useCallback((trigger: "motion" | "human") => {
-    if (isRecording || autoRecordTimeoutRef.current) return;
+    // If already recording, extend the timeout (keep recording while activity persists)
+    if (isRecording && autoRecordTimeoutRef.current) {
+      // Upgrade trigger if human detected during motion clip
+      if (trigger === "human") recordingTriggerRef.current = "human";
+      // Extend: reset the "no activity" stop timer to 3s from now
+      clearTimeout(autoRecordTimeoutRef.current);
+      autoRecordTimeoutRef.current = window.setTimeout(() => {
+        // No new activity for 3s — finalize clip
+        finalizeClip();
+      }, 3000);
+      return;
+    }
+    
+    // Start a new recording
     setIsRecording(true);
     recordingFramesRef.current = [];
     recordingStartRef.current = Date.now();
     clipThumbnailRef.current = currentFrame || "";
+    recordingTriggerRef.current = trigger;
     addLog("info", "web", `Auto-clip recording started (${trigger})`);
 
+    // Set initial "no activity" stop timer — if no more detections within 3s, stop
     autoRecordTimeoutRef.current = window.setTimeout(() => {
-      setIsRecording(false);
-      const duration = Math.round((Date.now() - recordingStartRef.current) / 1000);
-      const clip: SurveillanceClip = {
-        id: crypto.randomUUID(),
-        timestamp: new Date(),
-        thumbnail: clipThumbnailRef.current,
-        frames: [...recordingFramesRef.current],
-        duration,
-        trigger,
-      };
-      setClips(prev => [clip, ...prev].slice(0, 50));
-      recordingFramesRef.current = [];
-      autoRecordTimeoutRef.current = null;
+      finalizeClip();
+    }, 3000);
+  }, [isRecording, currentFrame]);
+  
+  const finalizeClip = useCallback(() => {
+    setIsRecording(false);
+    const duration = Math.round((Date.now() - recordingStartRef.current) / 1000);
+    if (duration < 1) { autoRecordTimeoutRef.current = null; return; } // Skip tiny clips
+    
+    const clip: SurveillanceClip = {
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+      thumbnail: clipThumbnailRef.current,
+      frames: [...recordingFramesRef.current],
+      duration,
+      trigger: recordingTriggerRef.current,
+    };
+    setClips(prev => [clip, ...prev].slice(0, 50));
+    recordingFramesRef.current = [];
+    autoRecordTimeoutRef.current = null;
 
-      // Send clip thumbnail to PC agent for saving to surveillance folder
-      sendCommand("save_surveillance_clip", {
-        clip_id: clip.id,
-        timestamp: clip.timestamp.toISOString(),
-        duration: clip.duration,
-        trigger: clip.trigger,
-        image_data: clipThumbnailRef.current,
-      }, { awaitResult: false });
+    sendCommand("save_surveillance_clip", {
+      clip_id: clip.id,
+      timestamp: clip.timestamp.toISOString(),
+      duration: clip.duration,
+      trigger: clip.trigger,
+      image_data: clipThumbnailRef.current,
+    }, { awaitResult: false });
 
-      addLog("info", "web", `Auto-clip saved: ${duration}s (${trigger})`);
-    }, 5000);
-  }, [isRecording, currentFrame, sendCommand]);
+    addLog("info", "web", `Auto-clip saved: ${duration}s (${recordingTriggerRef.current})`);
+  }, [sendCommand]);
 
   // Download clip snapshot
   const downloadClip = useCallback((clip: SurveillanceClip) => {
@@ -596,210 +622,330 @@ export function SurveillancePanel({ className }: { className?: string }) {
           </Button>
         </div>
 
-        {/* Live Video Preview — Pose detection always ON */}
-        {currentFrame ? (
-          <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50">
-            <img src={currentFrame} alt="Live View" className="w-full h-full object-contain" />
-            <PoseDetectionOverlay
-              frameUrl={currentFrame}
-              enabled={monitoring}
-              onHumanDetected={(lm, conf) => {
-                if (!humanNotifiedRef.current) {
-                  humanNotifiedRef.current = true;
-                  const confPct = Math.round(conf * 100);
-                  setHumanPresent(true);
-                  addLog("warn", "web", `Human detected (${confPct}% confidence)`);
-                  toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
-                  notifyHumanDetected(confPct);
-                  triggerAutoClip("human");
-                }
-              }}
-            />
-            <div className="absolute top-2 right-2 flex gap-1">
-              <Badge variant="secondary" className="bg-black/50 backdrop-blur text-xs font-mono">
-                {liveFps} FPS
-              </Badge>
-              {streamLatency > 0 && (
-                <Badge variant="secondary" className={cn(
-                  "bg-black/50 backdrop-blur text-xs font-mono",
-                  streamLatency > 100 ? "text-destructive" : streamLatency > 50 ? "text-yellow-400" : "text-primary"
-                )}>
-                  {streamLatency}ms
+        {/* Subtabs: Live / Clips */}
+        <Tabs value={survTab} onValueChange={(v) => setSurvTab(v as "live" | "clips")}>
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="live" className="gap-1">
+              <Eye className="h-3.5 w-3.5" /> Live
+              {monitoring && <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />}
+            </TabsTrigger>
+            <TabsTrigger value="clips" className="gap-1">
+              <Film className="h-3.5 w-3.5" /> Clips
+              {clips.length > 0 && (
+                <Badge variant="secondary" className="ml-1 text-[10px] h-4 min-w-[16px] p-0 flex items-center justify-center">
+                  {clips.length}
                 </Badge>
               )}
-              <Badge variant="secondary" className="bg-purple-500/80 text-white backdrop-blur text-[10px]">
-                <PersonStanding className="w-3 h-3 mr-1" /> Pose
-              </Badge>
-              {micEnabled && (
-                <Badge variant="secondary" className="bg-emerald-500/80 text-white backdrop-blur">
-                  <Mic className="w-3 h-3 mr-1" /> ON
-                </Badge>
-              )}
-              {isRecording && (
-                <Badge variant="destructive" className="animate-pulse text-[10px]">
-                  ● REC
-                </Badge>
-              )}
-            </div>
-            {motionEvents.length > 0 && (
-              <div className="absolute bottom-2 left-2 right-2">
-                <div className="flex gap-1 overflow-x-auto pb-1">
-                  {motionEvents.slice(0, 8).map(e => (
-                    <div key={e.id} className="h-6 w-10 bg-black/50 rounded border border-red-500/50 shrink-0 relative">
-                      <div className="absolute bottom-0 left-0 h-1 bg-red-500 rounded-b" style={{ width: `${e.confidence}%` }} />
-                    </div>
-                  ))}
+            </TabsTrigger>
+          </TabsList>
+
+          {/* ===== LIVE TAB ===== */}
+          <TabsContent value="live" className="mt-3 space-y-3">
+            {/* Live Video Preview */}
+            {currentFrame ? (
+              <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50">
+                <img src={currentFrame} alt="Live View" className="w-full h-full object-contain" />
+                <PoseDetectionOverlay
+                  frameUrl={currentFrame}
+                  enabled={monitoring}
+                  onHumanDetected={(lm, conf) => {
+                    if (!humanNotifiedRef.current) {
+                      humanNotifiedRef.current = true;
+                      const confPct = Math.round(conf * 100);
+                      setHumanPresent(true);
+                      addLog("warn", "web", `Human detected (${confPct}% confidence)`);
+                      toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
+                      notifyHumanDetected(confPct);
+                      triggerAutoClip("human");
+                    }
+                  }}
+                />
+                <div className="absolute top-2 right-2 flex gap-1">
+                  <Badge variant="secondary" className="bg-black/50 backdrop-blur text-xs font-mono">
+                    {liveFps} FPS
+                  </Badge>
+                  {streamLatency > 0 && (
+                    <Badge variant="secondary" className={cn(
+                      "bg-black/50 backdrop-blur text-xs font-mono",
+                      streamLatency > 100 ? "text-destructive" : "text-primary"
+                    )}>
+                      {streamLatency}ms
+                    </Badge>
+                  )}
+                  <Badge variant="secondary" className="bg-primary/60 text-primary-foreground backdrop-blur text-[10px]">
+                    <PersonStanding className="w-3 h-3 mr-1" /> Pose
+                  </Badge>
+                  {micEnabled && (
+                    <Badge variant="secondary" className="bg-primary/60 text-primary-foreground backdrop-blur">
+                      <Mic className="w-3 h-3 mr-1" /> ON
+                    </Badge>
+                  )}
+                  {isRecording && (
+                    <Badge variant="destructive" className="animate-pulse text-[10px]">
+                      ● REC
+                    </Badge>
+                  )}
                 </div>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="aspect-video rounded-lg bg-secondary/20 border border-dashed border-border/50 flex items-center justify-center text-muted-foreground">
-            <div className="flex flex-col items-center gap-2">
-              {isStarting ? <Loader2 className="w-8 h-8 animate-spin" /> : <Video className="w-8 h-8 opacity-50" />}
-              <span className="text-xs">{isStarting ? "Connecting..." : "No Signal"}</span>
-            </div>
-          </div>
-        )}
-
-        {motionEvents.length > 0 && (
-          <div className="text-xs text-muted-foreground flex justify-between px-1">
-            <span>{motionEvents.length} motion events</span>
-            <span>Last: {motionEvents[0]?.timestamp.toLocaleTimeString()}</span>
-          </div>
-        )}
-
-        {/* Recent Clips — always visible */}
-        <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
-          <div className="flex items-center justify-between p-3 text-sm font-medium">
-            <div className="flex items-center gap-2">
-              <Film className="h-4 w-4 text-muted-foreground" />
-              Recent Clips ({clips.length})
-            </div>
-            <span className="text-[10px] text-muted-foreground">Auto-deletes after 15 days</span>
-          </div>
-          <div className="border-t border-border/50">
-            {clips.length === 0 ? (
-              <div className="p-4 text-center text-xs text-muted-foreground">
-                No clips yet. Clips auto-record on human/motion detection and save to PC's surveillance folder.
+                {motionEvents.length > 0 && (
+                  <div className="absolute bottom-2 left-2 right-2">
+                    <div className="flex gap-1 overflow-x-auto pb-1">
+                      {motionEvents.slice(0, 8).map(e => (
+                        <div key={e.id} className="h-6 w-10 bg-black/50 rounded border border-destructive/50 shrink-0 relative">
+                          <div className="absolute bottom-0 left-0 h-1 bg-destructive rounded-b" style={{ width: `${e.confidence}%` }} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
-              <ScrollArea className="max-h-[300px]">
-                <div className="p-2 space-y-2">
-                  {clips.map(clip => (
-                    <div key={clip.id} className="flex items-center gap-2 p-2 rounded-lg bg-secondary/20 hover:bg-secondary/30 transition-colors">
-                      <div className="w-16 h-10 rounded bg-black overflow-hidden shrink-0">
-                        {clip.thumbnail ? (
-                          <img src={clip.thumbnail} alt="Clip" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <Film className="w-4 h-4 text-muted-foreground" />
-                          </div>
-                        )}
+              <div className="aspect-video rounded-lg bg-secondary/20 border border-dashed border-border/50 flex items-center justify-center text-muted-foreground">
+                <div className="flex flex-col items-center gap-2">
+                  {isStarting ? <Loader2 className="w-8 h-8 animate-spin" /> : <Video className="w-8 h-8 opacity-50" />}
+                  <span className="text-xs">{isStarting ? "Connecting..." : "No Signal"}</span>
+                </div>
+              </div>
+            )}
+
+            {motionEvents.length > 0 && (
+              <div className="text-xs text-muted-foreground flex justify-between px-1">
+                <span>{motionEvents.length} motion events</span>
+                <span>Last: {motionEvents[0]?.timestamp.toLocaleTimeString()}</span>
+              </div>
+            )}
+
+            {/* Config Accordion */}
+            <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
+              <button
+                className="w-full flex items-center justify-between p-3 text-sm font-medium hover:bg-secondary/20 transition-colors"
+                onClick={() => setShowConfig(!showConfig)}
+              >
+                <div className="flex items-center gap-2">
+                  <Settings className="h-4 w-4 text-muted-foreground" />
+                  Configuration
+                </div>
+                {showConfig ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+
+              {showConfig && (
+                <div className="p-3 space-y-4 border-t border-border/50 animate-in slide-in-from-top-2">
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs flex items-center gap-1"><Gauge className="h-3 w-3" /> Target FPS</Label>
+                        <span className="font-mono text-xs font-bold text-primary">{survFps}</span>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <Badge variant={clip.trigger === "human" ? "destructive" : clip.trigger === "motion" ? "secondary" : "outline"} className="text-[9px] px-1 py-0">
-                            {clip.trigger}
-                          </Badge>
-                          <span className="text-[10px] text-muted-foreground">{clip.duration}s</span>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">
-                          {clip.timestamp.toLocaleString()}
-                        </p>
+                      <Slider value={[survFps]} onValueChange={([v]) => setSurvFps(v)} min={5} max={60} step={5} className="w-full" />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs flex items-center gap-1"><Video className="h-3 w-3" /> JPEG Quality</Label>
+                        <span className="font-mono text-xs font-bold text-primary">{survQuality}%</span>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => downloadClip(clip)}>
-                          <Download className="h-3.5 w-3.5" />
+                      <Slider value={[survQuality]} onValueChange={([v]) => setSurvQuality(v)} min={10} max={100} step={5} className="w-full" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label className="text-xs">Start Time</Label>
+                      <Input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className="h-8" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs">End Time</Label>
+                      <Input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} className="h-8" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 pt-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Mic className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Listen (Audio)</Label></div>
+                      <Switch checked={micEnabled} onCheckedChange={setMicEnabled} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Bell className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Play PC Alarm</Label></div>
+                      <Switch checked={alarmEnabled} onCheckedChange={setAlarmEnabled} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Auto-Call Me</Label></div>
+                      <Switch checked={autoCall} onCheckedChange={setAutoCall} />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-2">
+                    <div className="flex justify-between text-xs">
+                      <Label>Sensitivity</Label>
+                      <span className="text-muted-foreground capitalize">{sensitivity}</span>
+                    </div>
+                    <div className="flex gap-1">
+                      {(["low", "medium", "high"] as const).map((s) => (
+                        <Button key={s} variant={sensitivity === s ? "default" : "outline"} size="sm" className="flex-1 h-7 text-xs capitalize" onClick={() => setSensitivity(s)}>
+                          {s}
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteClip(clip.id)}>
-                          <Trash2 className="h-3.5 w-3.5" />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <InlineDiagnostics type="pc-camera" className="mt-2" />
+          </TabsContent>
+
+          {/* ===== CLIPS GALLERY TAB ===== */}
+          <TabsContent value="clips" className="mt-3 space-y-3">
+            {/* Filter bar */}
+            <div className="flex items-center justify-between">
+              <div className="flex gap-1">
+                {(["all", "human", "motion"] as const).map(f => (
+                  <Button
+                    key={f}
+                    variant={clipFilter === f ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs capitalize"
+                    onClick={() => setClipFilter(f)}
+                  >
+                    {f === "human" && <PersonStanding className="h-3 w-3 mr-1" />}
+                    {f === "motion" && <Zap className="h-3 w-3 mr-1" />}
+                    {f}
+                  </Button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground">Auto-deletes 15d</span>
+                {clips.length > 0 && (
+                  <Button variant="ghost" size="sm" className="h-7 text-xs text-destructive" onClick={() => { setClips([]); setExpandedClip(null); }}>
+                    <Trash2 className="h-3 w-3 mr-1" /> Clear All
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Expanded clip preview */}
+            {expandedClip && (() => {
+              const clip = clips.find(c => c.id === expandedClip);
+              if (!clip) return null;
+              return (
+                <div className="relative rounded-lg overflow-hidden border border-border/50 bg-black">
+                  {clip.thumbnail ? (
+                    <img src={clip.thumbnail} alt="Clip preview" className="w-full h-auto" />
+                  ) : (
+                    <div className="aspect-video flex items-center justify-center text-muted-foreground">
+                      <Film className="h-8 w-8 opacity-50" />
+                    </div>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute top-2 right-2 h-8 w-8 bg-background/70"
+                    onClick={() => setExpandedClip(null)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                  <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-background/90 to-transparent p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Badge variant={clip.trigger === "human" ? "destructive" : "secondary"} className="text-xs">
+                          {clip.trigger}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">{clip.duration}s</span>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => downloadClip(clip)}>
+                          <Download className="h-3 w-3 mr-1" /> Save
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs text-destructive" onClick={() => { deleteClip(clip.id); setExpandedClip(null); }}>
+                          <Trash2 className="h-3 w-3" />
                         </Button>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </ScrollArea>
-            )}
-          </div>
-        </div>
-
-        {/* Config Accordion */}
-        <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
-          <button
-            className="w-full flex items-center justify-between p-3 text-sm font-medium hover:bg-secondary/20 transition-colors"
-            onClick={() => setShowConfig(!showConfig)}
-          >
-            <div className="flex items-center gap-2">
-              <Settings className="h-4 w-4 text-muted-foreground" />
-              Configuration
-            </div>
-            {showConfig ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </button>
-
-          {showConfig && (
-            <div className="p-3 space-y-4 border-t border-border/50 animate-in slide-in-from-top-2">
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs flex items-center gap-1"><Gauge className="h-3 w-3" /> Target FPS</Label>
-                    <span className="font-mono text-xs font-bold text-primary">{survFps}</span>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      {clip.timestamp.toLocaleString()}
+                    </p>
                   </div>
-                  <Slider value={[survFps]} onValueChange={([v]) => setSurvFps(v)} min={5} max={60} step={5} className="w-full" />
                 </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs flex items-center gap-1"><Video className="h-3 w-3" /> JPEG Quality</Label>
-                    <span className="font-mono text-xs font-bold text-primary">{survQuality}%</span>
+              );
+            })()}
+
+            {/* Clips grid */}
+            {(() => {
+              const filtered = clipFilter === "all" ? clips : clips.filter(c => c.trigger === clipFilter);
+              if (filtered.length === 0) {
+                return (
+                  <div className="text-center py-8">
+                    <Film className="h-10 w-10 text-muted-foreground mx-auto mb-3 opacity-50" />
+                    <p className="text-muted-foreground text-sm">
+                      {clips.length === 0 ? "No clips yet" : `No ${clipFilter} clips`}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Clips auto-record while motion or humans are detected
+                    </p>
                   </div>
-                  <Slider value={[survQuality]} onValueChange={([v]) => setSurvQuality(v)} min={10} max={100} step={5} className="w-full" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label className="text-xs">Start Time</Label>
-                  <Input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className="h-8" />
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs">End Time</Label>
-                  <Input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} className="h-8" />
-                </div>
-              </div>
-
-              <div className="space-y-3 pt-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2"><Mic className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Listen (Audio)</Label></div>
-                  <Switch checked={micEnabled} onCheckedChange={setMicEnabled} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2"><Bell className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Play PC Alarm</Label></div>
-                  <Switch checked={alarmEnabled} onCheckedChange={setAlarmEnabled} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Auto-Call Me</Label></div>
-                  <Switch checked={autoCall} onCheckedChange={setAutoCall} />
-                </div>
-              </div>
-
-              <div className="space-y-2 pt-2">
-                <div className="flex justify-between text-xs">
-                  <Label>Sensitivity</Label>
-                  <span className="text-muted-foreground capitalize">{sensitivity}</span>
-                </div>
-                <div className="flex gap-1">
-                  {(["low", "medium", "high"] as const).map((s) => (
-                    <Button key={s} variant={sensitivity === s ? "default" : "outline"} size="sm" className="flex-1 h-7 text-xs capitalize" onClick={() => setSensitivity(s)}>
-                      {s}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <InlineDiagnostics type="pc-camera" className="mt-2" />
+                );
+              }
+              return (
+                <ScrollArea className="h-[400px]">
+                  <div className="grid grid-cols-2 gap-2 pr-2">
+                    {filtered.map(clip => (
+                      <div
+                        key={clip.id}
+                        className={cn(
+                          "relative rounded-lg overflow-hidden border cursor-pointer transition-all group",
+                          expandedClip === clip.id
+                            ? "border-primary ring-1 ring-primary/50"
+                            : "border-border/30 hover:border-border/60"
+                        )}
+                        onClick={() => setExpandedClip(expandedClip === clip.id ? null : clip.id)}
+                      >
+                        {clip.thumbnail ? (
+                          <img src={clip.thumbnail} alt="Clip" className="w-full aspect-video object-cover" />
+                        ) : (
+                          <div className="w-full aspect-video bg-secondary/30 flex items-center justify-center">
+                            <Film className="h-6 w-6 text-muted-foreground opacity-50" />
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-gradient-to-t from-background/80 via-transparent to-transparent" />
+                        <div className="absolute bottom-0 inset-x-0 p-1.5">
+                          <div className="flex items-center justify-between">
+                            <Badge
+                              variant={clip.trigger === "human" ? "destructive" : "secondary"}
+                              className="text-[9px] px-1 py-0"
+                            >
+                              {clip.trigger}
+                            </Badge>
+                            <span className="text-[10px] text-muted-foreground font-mono">{clip.duration}s</span>
+                          </div>
+                          <p className="text-[9px] text-muted-foreground mt-0.5 truncate">
+                            {clip.timestamp.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                          </p>
+                        </div>
+                        {/* Quick actions on hover */}
+                        <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 bg-background/60"
+                            onClick={(e) => { e.stopPropagation(); downloadClip(clip); }}
+                          >
+                            <Download className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 bg-background/60 text-destructive"
+                            onClick={(e) => { e.stopPropagation(); deleteClip(clip.id); if (expandedClip === clip.id) setExpandedClip(null); }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              );
+            })()}
+          </TabsContent>
+        </Tabs>
       </CardContent>
     </Card>
   );
