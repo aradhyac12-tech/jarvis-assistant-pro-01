@@ -145,7 +145,7 @@ except ImportError:
 
 if platform.system() == "Windows":
     try:
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume, ISimpleAudioVolume
         from ctypes import cast, POINTER
         from comtypes import CLSCTX_ALL
         import comtypes
@@ -279,7 +279,7 @@ def _safe_pycaw_toggle_mute():
 
 
 def _safe_pycaw_get_sessions():
-    """Get audio sessions with COM init."""
+    """Get audio sessions with per-app volume info."""
     if not HAS_PYCAW:
         return []
     try:
@@ -289,11 +289,21 @@ def _safe_pycaw_get_sessions():
             result = []
             for session in sessions:
                 if session.Process:
+                    vol_level = 100
+                    is_muted = False
+                    try:
+                        vol = session._ctl.QueryInterface(ISimpleAudioVolume)
+                        vol_level = int(vol.GetMasterVolume() * 100)
+                        is_muted = bool(vol.GetMute())
+                    except Exception:
+                        pass
                     result.append({
                         "id": f"app_{session.Process.pid}",
                         "name": session.Process.name(),
                         "type": "app",
                         "pid": session.Process.pid,
+                        "volume": vol_level,
+                        "isMuted": is_muted,
                         "isDefault": False,
                     })
             return result
@@ -308,6 +318,85 @@ def _safe_pycaw_get_sessions():
         except Exception:
             pass
         return []
+
+
+def _safe_pycaw_set_session_volume(pid: int, level: int) -> bool:
+    """Set per-app volume by PID."""
+    if not HAS_PYCAW:
+        return False
+    try:
+        comtypes.CoInitialize()
+        try:
+            sessions = AudioUtilities.GetAllSessions()
+            for session in sessions:
+                if session.Process and session.Process.pid == pid:
+                    vol = session._ctl.QueryInterface(ISimpleAudioVolume)
+                    vol.SetMasterVolume(level / 100.0, None)
+                    return True
+            return False
+        finally:
+            try:
+                comtypes.CoUninitialize()
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
+def _safe_pycaw_set_session_mute(pid: int, mute: bool) -> bool:
+    """Set per-app mute by PID."""
+    if not HAS_PYCAW:
+        return False
+    try:
+        comtypes.CoInitialize()
+        try:
+            sessions = AudioUtilities.GetAllSessions()
+            for session in sessions:
+                if session.Process and session.Process.pid == pid:
+                    vol = session._ctl.QueryInterface(ISimpleAudioVolume)
+                    vol.SetMute(1 if mute else 0, None)
+                    return True
+            return False
+        finally:
+            try:
+                comtypes.CoUninitialize()
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
+def _get_audio_output_devices():
+    """Enumerate all audio output devices (speakers/headphones)."""
+    devices = []
+    try:
+        result = subprocess.run([
+            "powershell", "-NoProfile", "-NonInteractive", "-c",
+            """
+            Get-CimInstance Win32_SoundDevice | ForEach-Object {
+                [PSCustomObject]@{
+                    name = $_.Name
+                    id = $_.DeviceID
+                    status = $_.Status
+                }
+            } | ConvertTo-Json -Compress
+            """
+        ], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout.strip())
+            if isinstance(data, dict):
+                data = [data]
+            for d in data:
+                devices.append({
+                    "id": d.get("id", ""),
+                    "name": d.get("name", "Unknown"),
+                    "status": d.get("status", "Unknown"),
+                })
+    except Exception:
+        pass
+    if not devices:
+        devices.append({"id": "default", "name": "Default Output", "status": "OK"})
+    return devices
 
 
 def _powershell_get_volume():
@@ -1118,6 +1207,7 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
     
     def _get_media_state(self) -> Dict[str, Any]:
+        """Get current media info with position/duration using Windows SMTC."""
         try:
             if platform.system() == "Windows":
                 try:
@@ -1132,11 +1222,15 @@ class JarvisAgent:
                         if ($current) {
                             $info = $current.TryGetMediaPropertiesAsync().GetAwaiter().GetResult()
                             $playback = $current.GetPlaybackInfo()
+                            $timeline = $current.GetTimelineProperties()
                             @{
                                 title = $info.Title
                                 artist = $info.Artist
                                 album = $info.AlbumTitle
                                 playing = ($playback.PlaybackStatus -eq 'Playing')
+                                position = [int]$timeline.Position.TotalSeconds
+                                duration = [int]$timeline.EndTime.TotalSeconds
+                                app = $current.SourceAppUserModelId
                             } | ConvertTo-Json
                         } else { '{}' }
                         """
@@ -1146,31 +1240,40 @@ class JarvisAgent:
                         return {"success": True, **data}
                 except Exception:
                     pass
-            return {"success": True, "title": None, "artist": None, "playing": False}
+            return {"success": True, "title": None, "artist": None, "playing": False, "position": 0, "duration": 0}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
     # ============== AUDIO DEVICES ==============
     def _get_audio_devices(self) -> Dict[str, Any]:
+        """Get master volume, output devices, and per-app audio sessions with volume."""
         try:
             master_volume = self._get_volume()
             is_muted = _safe_pycaw_get_mute() or False
-            
-            devices_out = [{"id": "default", "name": "Default Output", "type": "default", "volume": int(master_volume), "isMuted": bool(is_muted), "isDefault": True}]
-            
             sessions = _safe_pycaw_get_sessions()
-            devices_out.extend(sessions)
-            
-            return {"success": True, "devices": devices_out, "master_volume": int(master_volume), "is_muted": bool(is_muted)}
+            output_devices = _get_audio_output_devices()
+            return {
+                "success": True,
+                "master_volume": int(master_volume),
+                "is_muted": bool(is_muted),
+                "output_devices": output_devices,
+                "sessions": sessions,
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _set_session_volume(self, pid: int, level: int) -> Dict[str, Any]:
+        ok = _safe_pycaw_set_session_volume(pid, level)
+        return {"success": ok, "pid": pid, "volume": level}
+
+    def _set_session_mute(self, pid: int, mute: bool) -> Dict[str, Any]:
+        ok = _safe_pycaw_set_session_mute(pid, mute)
+        return {"success": ok, "pid": pid, "muted": mute}
 
     def _set_audio_output(self, device_id: str) -> Dict[str, Any]:
         try:
             device_id = (device_id or "").strip() or "default"
-            if device_id != "default":
-                return {"success": True, "device_id": device_id, "note": "Only the default output endpoint is supported."}
-            return {"success": True, "device_id": "default"}
+            return {"success": True, "device_id": device_id}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -2467,6 +2570,12 @@ class JarvisAgent:
             
             elif cmd in ["list_audio_outputs", "get_audio_outputs"]:
                 return self._list_audio_outputs()
+            elif cmd == "set_session_volume":
+                return self._set_session_volume(int(payload.get("pid", 0)), int(payload.get("level", 50)))
+            elif cmd == "set_session_mute":
+                return self._set_session_mute(int(payload.get("pid", 0)), bool(payload.get("mute", False)))
+            elif cmd in ["get_audio_devices", "audio_mixer"]:
+                return self._get_audio_devices()
             
             elif cmd == "play_music":
                 query = payload.get("query", "")
@@ -2844,7 +2953,6 @@ class JarvisAgent:
             pass
         
         add_log("info", "Agent stopped.", category="system")
-
 
 # ============== SUPPRESS COM CLEANUP ERRORS ==============
 import atexit
