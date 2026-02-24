@@ -520,16 +520,21 @@ export default function MicCamera() {
         try {
           const constraints: MediaTrackConstraints = {
             echoCancellation: true, noiseSuppression: true, autoGainControl: true,
-            sampleRate: 16000, channelCount: 1,
+            channelCount: 1,
           };
           if (selectedInput) constraints.deviceId = { exact: selectedInput };
 
           const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
           micStreamRef.current = stream;
 
-          const ctx = new AudioContext({ sampleRate: 16000 });
+          // Use browser's native sample rate, then resample to 16kHz before sending
+          const ctx = new AudioContext();
           audioCtxRef.current = ctx;
           if (ctx.state === "suspended") await ctx.resume();
+          
+          const nativeRate = ctx.sampleRate;
+          const TARGET_RATE = 16000;
+          addLog("info", "web", `Mic opened at ${nativeRate}Hz, will resample to ${TARGET_RATE}Hz`);
 
           const source = ctx.createMediaStreamSource(stream);
           const analyser = ctx.createAnalyser();
@@ -537,15 +542,30 @@ export default function MicCamera() {
           analyserRef.current = analyser;
           source.connect(analyser);
 
-          const processor = ctx.createScriptProcessor(2048, 1, 1);
+          const processor = ctx.createScriptProcessor(4096, 1, 1);
           processorRef.current = processor;
 
           processor.onaudioprocess = (e) => {
             if (ws.readyState !== WebSocket.OPEN) return;
             const inputData = e.inputBuffer.getChannelData(0);
-            const int16 = new Int16Array(inputData.length);
-            for (let i = 0; i < inputData.length; i++) {
-              const s = Math.max(-1, Math.min(1, inputData[i]));
+            
+            // Resample from native rate to 16kHz
+            const ratio = TARGET_RATE / nativeRate;
+            const outputLength = Math.round(inputData.length * ratio);
+            const resampled = new Float32Array(outputLength);
+            
+            for (let i = 0; i < outputLength; i++) {
+              const srcIdx = i / ratio;
+              const floor = Math.floor(srcIdx);
+              const ceil = Math.min(floor + 1, inputData.length - 1);
+              const frac = srcIdx - floor;
+              resampled[i] = inputData[floor] * (1 - frac) + inputData[ceil] * frac;
+            }
+            
+            // Convert to Int16
+            const int16 = new Int16Array(resampled.length);
+            for (let i = 0; i < resampled.length; i++) {
+              const s = Math.max(-1, Math.min(1, resampled[i]));
               int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
             }
             try { ws.send(int16.buffer); } catch {}
