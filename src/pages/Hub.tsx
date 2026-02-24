@@ -502,7 +502,6 @@ export default function Hub() {
     { title: "AI", icon: Bot, href: "/voice" },
     { title: "Files", icon: FolderOpen, href: "/files" },
     { title: "Camera", icon: Camera, href: "/miccamera" },
-    { title: "Webcam", icon: Mic, href: "/webcam" },
     { title: "Settings", icon: Settings, href: "/settings" },
   ];
 
@@ -584,27 +583,27 @@ export default function Hub() {
             </div>
 
             {/* Tab Navigation */}
-            <div className="flex items-center gap-0.5 p-0.5 bg-black/80 rounded-lg w-full overflow-x-auto border border-border/10">
+            <div className="grid grid-cols-3 gap-1 p-1 bg-black/80 rounded-lg w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={cn(
-                    "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap flex-shrink-0",
+                    "flex items-center justify-center gap-1 px-2 py-2 rounded-md text-xs font-medium transition-all",
                     activeTab === tab.id
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   )}
                 >
                   <tab.icon className="w-3.5 h-3.5" />
-                  <span className="text-[10px] sm:text-xs">{tab.label}</span>
+                  <span className="text-[10px]">{tab.label}</span>
                 </button>
               ))}
             </div>
 
             {/* Control Tab */}
             {activeTab === "control" && (
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-3">
                 {/* Volume & Brightness */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3 space-y-4">
@@ -613,7 +612,7 @@ export default function Hub() {
                         <span className="flex items-center gap-1.5 text-muted-foreground">
                           <VolumeIcon className="w-3.5 h-3.5 cursor-pointer" onClick={handleMuteToggle} /> Volume
                         </span>
-                        <span className="font-mono text-muted-foreground">{volume}%</span>
+                        <span className="font-mono text-muted-foreground w-8 text-right">{volume}%</span>
                       </div>
                       <Slider
                         value={[volume]}
@@ -622,7 +621,7 @@ export default function Hub() {
                         max={100}
                         step={1}
                         disabled={!isConnected}
-                        className="cursor-pointer"
+                        className="cursor-pointer w-full"
                       />
                     </div>
 
@@ -631,7 +630,7 @@ export default function Hub() {
                         <span className="flex items-center gap-1.5 text-muted-foreground">
                           <Sun className="w-3.5 h-3.5" /> Brightness
                         </span>
-                        <span className="font-mono text-muted-foreground">{brightness}%</span>
+                        <span className="font-mono text-muted-foreground w-8 text-right">{brightness}%</span>
                       </div>
                       <Slider
                         value={[brightness]}
@@ -640,7 +639,7 @@ export default function Hub() {
                         max={100}
                         step={1}
                         disabled={!isConnected}
-                        className="cursor-pointer"
+                        className="cursor-pointer w-full"
                       />
                     </div>
                   </CardContent>
@@ -677,9 +676,9 @@ export default function Hub() {
                 </Card>
 
                 {/* Quick Links */}
-                <Card className="border-border/20 bg-card/50 md:col-span-2">
+                <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-5 gap-1.5">
+                    <div className="grid grid-cols-4 gap-1.5">
                       {quickLinks.map((link) => (
                         <Link key={link.href} to={link.href}>
                           <Button variant="ghost" className="w-full h-14 flex-col gap-1 hover:bg-secondary/50 border border-transparent hover:border-border/20">
@@ -992,14 +991,13 @@ export default function Hub() {
 
             {/* Tools Tab */}
             {activeTab === "tools" && (
-              <div className="grid gap-3 md:grid-cols-2">
-                <Card className="border-border/20 bg-card/50 md:col-span-2">
+              <div className="grid gap-3">
+                <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-0">
                     <ZoomMeetings />
                   </CardContent>
                 </Card>
-                <BidirectionalFileTransfer className="md:col-span-2" />
-                <BoostPC />
+                <BidirectionalFileTransfer />
               </div>
             )}
 

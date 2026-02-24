@@ -250,13 +250,13 @@ export function CommandCenter() {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Service Selector */}
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-4 gap-1.5 w-full">
           {(Object.keys(serviceConfig) as ServiceType[]).map((svc) => (
             <Badge
               key={svc}
               variant="outline"
               className={cn(
-                "cursor-pointer transition-all flex items-center gap-1.5 px-3 py-1",
+                "cursor-pointer transition-all flex items-center justify-center gap-1 px-2 py-1.5 text-[10px]",
                 selectedService === svc
                   ? serviceConfig[svc].color + " border-2"
                   : "hover:bg-secondary/50"
@@ -309,12 +309,12 @@ export function CommandCenter() {
         </div>
 
         {/* Quick examples */}
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-2 gap-1.5 w-full">
           {examples.map((ex) => (
             <Badge
               key={ex}
               variant="outline"
-              className="cursor-pointer hover:bg-primary/10 text-xs"
+              className="cursor-pointer hover:bg-primary/10 text-[10px] justify-center py-1.5 truncate"
               onClick={() => setInput(ex)}
             >
               {ex}

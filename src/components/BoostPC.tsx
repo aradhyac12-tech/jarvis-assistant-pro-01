@@ -38,9 +38,10 @@ export function BoostPC({ className }: { className?: string }) {
   const [results, setResults] = useState<{ step: string; success: boolean; freed?: string }[]>([]);
 
   const [options, setOptions] = useState<BoostOption[]>([
-    { id: "ram", name: "RAM Cleanup", description: "Clear standby memory and close background processes", icon: HardDrive, enabled: true },
-    { id: "temp", name: "Clear Temp Files", description: "Delete temporary files and prefetch data", icon: Trash2, enabled: true },
-    { id: "performance", name: "Performance Mode", description: "Set Windows power plan to high performance", icon: Cpu, enabled: true },
+    { id: "ram", name: "RAM Cleanup", description: "Clear standby memory and background processes", icon: HardDrive, enabled: true },
+    { id: "temp", name: "Clear Temp Files", description: "Delete temporary and prefetch files", icon: Trash2, enabled: true },
+    { id: "performance", name: "Performance Mode", description: "Set power plan to high performance", icon: Cpu, enabled: true },
+    { id: "defrag", name: "Optimize Drives", description: "TRIM for SSDs or defrag for HDDs (C: /O:)", icon: Zap, enabled: false },
     { id: "gaming", name: "Gaming Mode", description: "Disable notifications, prioritize GPU", icon: Gamepad2, enabled: false },
     { id: "explorer", name: "Restart Explorer", description: "Refresh Windows shell and taskbar", icon: RefreshCw, enabled: false },
   ]);
@@ -85,6 +86,9 @@ export function BoostPC({ className }: { className?: string }) {
           case "gaming":
             result = await sendCommand("gaming_mode", { enable: true }, { awaitResult: true, timeoutMs: 15000 });
             break;
+          case "defrag":
+            result = await sendCommand("optimize_drives", { drive: "C:", flags: "/O" }, { awaitResult: true, timeoutMs: 120000 });
+            break;
           case "explorer":
             result = await sendCommand("restart_explorer", {}, { awaitResult: true, timeoutMs: 20000 });
             break;
@@ -124,29 +128,30 @@ export function BoostPC({ className }: { className?: string }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Options */}
-        <div className="space-y-3">
+        <div className="space-y-2">
           {options.map((option) => (
             <div
               key={option.id}
               className={cn(
-                "flex items-center justify-between p-3 rounded-lg border transition-colors",
+                "flex items-center justify-between p-2.5 rounded-lg border transition-colors",
                 option.enabled ? "bg-primary/5 border-primary/20" : "bg-secondary/20 border-border/50"
               )}
             >
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
                 <option.icon className={cn(
-                  "h-5 w-5",
+                  "h-4 w-4 shrink-0",
                   option.enabled ? "text-primary" : "text-muted-foreground"
                 )} />
-                <div>
-                  <p className="font-medium text-sm">{option.name}</p>
-                  <p className="text-xs text-muted-foreground">{option.description}</p>
+                <div className="min-w-0">
+                  <p className="font-medium text-xs">{option.name}</p>
+                  <p className="text-[10px] text-muted-foreground truncate">{option.description}</p>
                 </div>
               </div>
               <Switch
                 checked={option.enabled}
                 onCheckedChange={() => toggleOption(option.id)}
                 disabled={isRunning}
+                className="shrink-0 ml-2"
               />
             </div>
           ))}

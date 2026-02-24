@@ -2269,6 +2269,20 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    def _optimize_drives(self, drive: str = "C:", flags: str = "/O") -> Dict[str, Any]:
+        """Run defrag/TRIM optimization on a drive"""
+        try:
+            result = subprocess.run(
+                ["defrag", drive, flags],
+                capture_output=True, text=True, timeout=300
+            )
+            output = result.stdout or result.stderr or "Optimization complete"
+            return {"success": result.returncode == 0, "message": f"Drive {drive} optimized", "output": output.strip()[:500]}
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Optimization timed out (5 min limit)"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
     # ============== NETWORK INFO ==============
     def _get_network_info(self) -> Dict[str, Any]:
         local_ips = get_local_ips()
@@ -2567,6 +2581,8 @@ class JarvisAgent:
                 return self._restart_explorer()
             elif cmd == "gaming_mode":
                 return self._gaming_mode(payload.get("enable", True))
+            elif cmd == "optimize_drives":
+                return self._optimize_drives(payload.get("drive", "C:"), payload.get("flags", "/O"))
             
             # Notifications
             elif cmd in ["start_notification_sync", "stop_notification_sync"]:
