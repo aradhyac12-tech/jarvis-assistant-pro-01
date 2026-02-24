@@ -57,6 +57,7 @@ import { PureTrackpad } from "@/components/PureTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
+import { GalaxyBudsManager } from "@/components/GalaxyBudsManager";
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
 type Tab = "control" | "remote" | "media" | "apps" | "zoom" | "network" | "settings";
@@ -820,14 +821,17 @@ export default function Hub() {
 
             {/* Media Tab */}
             {activeTab === "media" && (
-              <KDEMediaControl
-                isConnected={isConnected}
-                volume={volume}
-                isMuted={isMuted}
-                onVolumeChange={(v) => { setVolume(v[0]); setIsMuted(v[0] === 0); }}
-                onVolumeCommit={handleVolumeCommit}
-                onMuteToggle={handleMuteToggle}
-              />
+              <div className="space-y-3">
+                <KDEMediaControl
+                  isConnected={isConnected}
+                  volume={volume}
+                  isMuted={isMuted}
+                  onVolumeChange={(v) => { setVolume(v[0]); setIsMuted(v[0] === 0); }}
+                  onVolumeCommit={handleVolumeCommit}
+                  onMuteToggle={handleMuteToggle}
+                />
+                <GalaxyBudsManager />
+              </div>
             )}
 
             {/* Apps & Files Tab */}
