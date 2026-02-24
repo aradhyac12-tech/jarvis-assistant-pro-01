@@ -608,25 +608,22 @@ export default function MicCamera() {
 
   // ==================== RENDER ====================
   return (
-    <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 border-b border-border/40 bg-background/95 backdrop-blur-sm">
-        <div className="flex items-center justify-between h-14 px-4 max-w-4xl mx-auto">
-          <div className="flex items-center gap-3">
+    <div className="min-h-screen bg-black text-foreground">
+      <header className="sticky top-0 z-50 border-b border-border/10 bg-black/90 backdrop-blur-xl safe-area-top">
+        <div className="flex items-center justify-between h-12 px-3">
+          <div className="flex items-center gap-2">
             <BackButton />
-            <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
-              <Camera className="w-5 h-5 text-primary-foreground" />
+            <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
+              <Camera className="w-4 h-4 text-primary-foreground" />
             </div>
-            <div>
-              <h1 className="font-semibold text-sm">Mic & Camera</h1>
-              <p className="text-xs text-muted-foreground">Audio & video streaming</p>
-            </div>
+            <span className="font-semibold text-sm">Mic & Camera</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setShowDebug(!showDebug)} className={showDebug ? "bg-primary/20" : ""}>
+            <Button variant="ghost" size="sm" onClick={() => setShowDebug(!showDebug)} className={cn("h-8 text-xs", showDebug ? "bg-primary/20" : "")}>
               Debug
             </Button>
             {selectedDevice && (
-              <Badge variant="outline" className={cn("gap-1.5 text-xs", selectedDevice.is_online ? "border-primary/50 text-primary" : "border-muted")}>
+              <Badge variant="outline" className={cn("gap-1 text-[10px]", selectedDevice.is_online ? "border-primary/50 text-primary" : "border-muted")}>
                 <span className={cn("w-1.5 h-1.5 rounded-full", selectedDevice.is_online ? "bg-primary" : "bg-muted-foreground")} />
                 {selectedDevice.is_online ? "Online" : "Offline"}
               </Badge>
@@ -635,8 +632,8 @@ export default function MicCamera() {
         </div>
       </header>
 
-      <ScrollArea className="h-[calc(100vh-3.5rem)]">
-        <main className="max-w-4xl mx-auto p-4 space-y-4">
+      <ScrollArea className="h-[calc(100vh-3rem)]">
+        <main className="p-3 space-y-3 pb-6">
           {showDebug && (
             <Card className="border-border/40">
               <CardContent className="p-3">
@@ -651,18 +648,18 @@ export default function MicCamera() {
           )}
 
           <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-            <TabsList className="grid w-full grid-cols-4 mb-4">
-              <TabsTrigger value="audio" className="text-sm">
-                <Volume2 className="h-4 w-4 mr-1.5" /><span className="hidden sm:inline">Audio</span>
+            <TabsList className="grid w-full grid-cols-4 mb-3 h-10">
+              <TabsTrigger value="audio" className="text-xs gap-1">
+                <Volume2 className="h-3.5 w-3.5" />Audio
               </TabsTrigger>
-              <TabsTrigger value="pc-camera" className="text-sm">
-                <Webcam className="h-4 w-4 mr-1.5" /><span className="hidden sm:inline">PC Cam</span>
+              <TabsTrigger value="pc-camera" className="text-xs gap-1">
+                <Webcam className="h-3.5 w-3.5" />Cam
               </TabsTrigger>
-              <TabsTrigger value="screen-mirror" className="text-sm">
-                <ScreenShare className="h-4 w-4 mr-1.5" /><span className="hidden sm:inline">Screen</span>
+              <TabsTrigger value="screen-mirror" className="text-xs gap-1">
+                <ScreenShare className="h-3.5 w-3.5" />Screen
               </TabsTrigger>
-              <TabsTrigger value="surveillance" className="text-sm">
-                <Shield className="h-4 w-4 mr-1.5" /><span className="hidden sm:inline">Guard</span>
+              <TabsTrigger value="surveillance" className="text-xs gap-1">
+                <Shield className="h-3.5 w-3.5" />Guard
               </TabsTrigger>
             </TabsList>
 

@@ -167,7 +167,12 @@ else:
 # types depending on pycaw version. We must get the raw IMMDevice COM pointer.
 
 def _get_volume_interface():
-    """Get IAudioEndpointVolume with proper COM init. Returns volume interface or None."""
+    """Get IAudioEndpointVolume with proper COM init. Returns volume interface or None.
+    
+    IMPORTANT: We do NOT call CoUninitialize here — the caller's thread keeps COM alive
+    until the thread exits. Calling CoUninitialize while COM pointers are still in scope
+    triggers the 0xFFFFFFFF memory-read crash and VTable errors.
+    """
     if not HAS_PYCAW:
         return None
     try:
@@ -175,7 +180,6 @@ def _get_volume_interface():
     except Exception:
         pass
     try:
-        # Use pycaw's AudioUtilities which handles COM internally
         speakers = AudioUtilities.GetSpeakers()
         if speakers is None:
             return None
@@ -212,20 +216,9 @@ def _safe_pycaw_get_volume():
         endpoint = _get_volume_interface()
         if endpoint is None:
             return _powershell_get_volume()
-        try:
-            vol = int(endpoint.GetMasterVolumeLevelScalar() * 100)
-            return vol
-        finally:
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
-    except Exception as e:
-        try:
-            comtypes.CoUninitialize()
-        except Exception:
-            pass
-        # Silently fall back - don't spam logs
+        vol = int(endpoint.GetMasterVolumeLevelScalar() * 100)
+        return vol
+    except Exception:
         return _powershell_get_volume()
 
 
@@ -237,19 +230,9 @@ def _safe_pycaw_set_volume(level: int):
         endpoint = _get_volume_interface()
         if endpoint is None:
             return False
-        try:
-            endpoint.SetMasterVolumeLevelScalar(level / 100.0, None)
-            return True
-        finally:
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
+        endpoint.SetMasterVolumeLevelScalar(level / 100.0, None)
+        return True
     except Exception:
-        try:
-            comtypes.CoUninitialize()
-        except Exception:
-            pass
         return False
 
 
@@ -261,18 +244,8 @@ def _safe_pycaw_get_mute():
         endpoint = _get_volume_interface()
         if endpoint is None:
             return None
-        try:
-            return bool(endpoint.GetMute())
-        finally:
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
+        return bool(endpoint.GetMute())
     except Exception:
-        try:
-            comtypes.CoUninitialize()
-        except Exception:
-            pass
         return None
 
 
@@ -284,19 +257,9 @@ def _safe_pycaw_set_mute(mute: bool):
         endpoint = _get_volume_interface()
         if endpoint is None:
             return False
-        try:
-            endpoint.SetMute(1 if mute else 0, None)
-            return True
-        finally:
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
+        endpoint.SetMute(1 if mute else 0, None)
+        return True
     except Exception:
-        try:
-            comtypes.CoUninitialize()
-        except Exception:
-            pass
         return False
 
 
@@ -308,20 +271,10 @@ def _safe_pycaw_toggle_mute():
         endpoint = _get_volume_interface()
         if endpoint is None:
             return None
-        try:
-            current = bool(endpoint.GetMute())
-            endpoint.SetMute(0 if current else 1, None)
-            return not current
-        finally:
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
+        current = bool(endpoint.GetMute())
+        endpoint.SetMute(0 if current else 1, None)
+        return not current
     except Exception:
-        try:
-            comtypes.CoUninitialize()
-        except Exception:
-            pass
         return None
 
 
@@ -1424,14 +1377,25 @@ class JarvisAgent:
 
                             while self._audio_streamer and self._audio_streamer.get("running"):
                                 try:
-                                    msg = ws.recv(timeout=0.1)
+                                    msg = ws.recv(timeout=1.0)
                                     if isinstance(msg, bytes) and speaker_stream:
                                         speaker_stream.write(msg)
                                     elif isinstance(msg, str):
-                                        data = json.loads(msg)
-                                        if data.get("type") == "peer_connected":
-                                            add_log("info", "Audio peer connected", category="audio")
-                                except Exception:
+                                        try:
+                                            data = json.loads(msg)
+                                            if data.get("type") == "peer_connected":
+                                                add_log("info", "Audio peer connected", category="audio")
+                                        except json.JSONDecodeError:
+                                            pass
+                                except TimeoutError:
+                                    # Normal timeout — no data received, just loop
+                                    pass
+                                except Exception as recv_err:
+                                    err_str = str(recv_err).lower()
+                                    if "closed" in err_str or "eof" in err_str:
+                                        add_log("warn", f"Audio WS closed: {recv_err}", category="audio")
+                                        break
+                                    # Transient error, continue
                                     pass
 
                             if mic_stream:
@@ -2719,18 +2683,12 @@ def _suppress_com_errors():
 
 atexit.register(_suppress_com_errors)
 
-# Monkey-patch comtypes __del__ to suppress VTable errors during shutdown
+# Completely suppress COM __del__ — prevents the 0xFFFFFFFF memory crash
 if HAS_PYCAW:
     try:
         import comtypes._post_coinit.unknwn as _unknwn
-        _original_del = getattr(_unknwn._compointer_base, '__del__', None)
-        if _original_del:
-            def _safe_del(self):
-                try:
-                    _original_del(self)
-                except (ValueError, OSError, Exception):
-                    pass
-            _unknwn._compointer_base.__del__ = _safe_del
+        # Replace __del__ with a no-op to prevent VTable crashes during GC
+        _unknwn._compointer_base.__del__ = lambda self: None
     except Exception:
         pass
 
