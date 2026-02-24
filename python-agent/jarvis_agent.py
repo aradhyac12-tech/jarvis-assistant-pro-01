@@ -148,6 +148,7 @@ if platform.system() == "Windows":
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
         from ctypes import cast, POINTER
         from comtypes import CLSCTX_ALL
+        import comtypes
         HAS_PYCAW = True
     except ImportError:
         HAS_PYCAW = False
@@ -159,6 +160,131 @@ if platform.system() == "Windows":
 else:
     HAS_PYCAW = False
     HAS_BRIGHTNESS = False
+
+
+def _safe_pycaw_get_volume():
+    """Get volume using pycaw with proper COM initialization for threading."""
+    if not HAS_PYCAW:
+        return None
+    try:
+        comtypes.CoInitialize()
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            return int(volume.GetMasterVolumeLevelScalar() * 100)
+        finally:
+            comtypes.CoUninitialize()
+    except Exception as e:
+        add_log("warn", f"pycaw get_volume error: {e}", category="audio")
+        return None
+
+
+def _safe_pycaw_set_volume(level: int):
+    """Set volume using pycaw with proper COM initialization."""
+    if not HAS_PYCAW:
+        return False
+    try:
+        comtypes.CoInitialize()
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            volume.SetMasterVolumeLevelScalar(level / 100.0, None)
+            return True
+        finally:
+            comtypes.CoUninitialize()
+    except Exception as e:
+        add_log("warn", f"pycaw set_volume error: {e}", category="audio")
+        return False
+
+
+def _safe_pycaw_get_mute():
+    """Get mute state with COM init."""
+    if not HAS_PYCAW:
+        return None
+    try:
+        comtypes.CoInitialize()
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            endpoint = cast(interface, POINTER(IAudioEndpointVolume))
+            return bool(endpoint.GetMute())
+        finally:
+            comtypes.CoUninitialize()
+    except Exception:
+        return None
+
+
+def _safe_pycaw_toggle_mute():
+    """Toggle mute with COM init."""
+    if not HAS_PYCAW:
+        return None
+    try:
+        comtypes.CoInitialize()
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            endpoint = cast(interface, POINTER(IAudioEndpointVolume))
+            current = bool(endpoint.GetMute())
+            endpoint.SetMute(0 if current else 1, None)
+            return not current
+        finally:
+            comtypes.CoUninitialize()
+    except Exception:
+        return None
+
+
+def _safe_pycaw_get_sessions():
+    """Get audio sessions with COM init."""
+    if not HAS_PYCAW:
+        return []
+    try:
+        comtypes.CoInitialize()
+        try:
+            sessions = AudioUtilities.GetAllSessions()
+            result = []
+            for session in sessions:
+                if session.Process:
+                    result.append({
+                        "id": f"app_{session.Process.pid}",
+                        "name": session.Process.name(),
+                        "type": "app",
+                        "pid": session.Process.pid,
+                        "isDefault": False,
+                    })
+            return result
+        finally:
+            comtypes.CoUninitialize()
+    except Exception:
+        return []
+
+
+def _find_wasapi_loopback_device(pa):
+    """Find the WASAPI loopback device index for system audio capture."""
+    try:
+        wasapi_info = None
+        for i in range(pa.get_host_api_count()):
+            info = pa.get_host_api_info_by_index(i)
+            if "WASAPI" in info.get("name", ""):
+                wasapi_info = info
+                break
+        if not wasapi_info:
+            return None
+        # Find the default output device on WASAPI and use it as loopback
+        for i in range(pa.get_device_count()):
+            dev = pa.get_device_info_by_index(i)
+            if dev.get("hostApi") == wasapi_info["index"] and dev.get("maxInputChannels") > 0:
+                name = dev.get("name", "").lower()
+                if "loopback" in name or "stereo mix" in name or "what u hear" in name:
+                    return i
+        # Fallback: use default WASAPI output device index as loopback input
+        default_output = wasapi_info.get("defaultOutputDevice", -1)
+        if default_output >= 0:
+            return default_output
+        return None
+    except Exception:
+        return None
 
 # ============== CONFIGURATION ==============
 # CRITICAL: These MUST match the web app's Supabase project
@@ -700,36 +826,19 @@ class JarvisAgent:
     
     # ============== VOLUME/BRIGHTNESS ==============
     def _get_volume(self) -> int:
-        try:
-            if platform.system() == "Windows" and HAS_PYCAW:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = cast(interface, POINTER(IAudioEndpointVolume))
-                level = volume.GetMasterVolumeLevelScalar()
-                self._volume_cache = int(level * 100)
-        except Exception as e:
-            add_log("warn", f"pycaw get_volume error: {e}", category="audio")
+        vol = _safe_pycaw_get_volume()
+        if vol is not None:
+            self._volume_cache = vol
         return self._volume_cache
     
     def _set_volume(self, level: int) -> Dict[str, Any]:
         try:
             level = max(0, min(100, level))
-            if platform.system() == "Windows" and HAS_PYCAW:
-                try:
-                    devices = AudioUtilities.GetSpeakers()
-                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    volume = cast(interface, POINTER(IAudioEndpointVolume))
-                    volume.SetMasterVolumeLevelScalar(level / 100.0, None)
+            if platform.system() == "Windows":
+                if _safe_pycaw_set_volume(level):
                     self._volume_cache = level
                     return {"success": True, "volume": level}
-                except Exception as pycaw_err:
-                    add_log("warn", f"pycaw set_volume error: {pycaw_err}, trying keyboard fallback", category="audio")
-            
-            # Keyboard fallback - works on all systems
-            if platform.system() == "Windows":
-                # Set to 0 first, then press volume up keys
-                import ctypes
-                # Use nircmd if available, otherwise keyboard
+                # nircmd fallback
                 try:
                     subprocess.run(
                         ["nircmd", "setsysvolume", str(int(level / 100 * 65535))],
@@ -740,10 +849,10 @@ class JarvisAgent:
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass
             
-            # Ultimate fallback: keyboard volume keys
+            # Keyboard fallback
             current = self._volume_cache
             diff = level - current
-            steps = abs(diff) // 2  # Each key press changes by ~2%
+            steps = abs(diff) // 2
             key = "volumeup" if diff > 0 else "volumedown"
             for _ in range(min(steps, 50)):
                 pyautogui.press(key)
@@ -871,32 +980,14 @@ class JarvisAgent:
     def _get_audio_devices(self) -> Dict[str, Any]:
         try:
             master_volume = self._get_volume()
-            is_muted = False
-            if platform.system() == "Windows" and HAS_PYCAW:
-                try:
-                    devices = AudioUtilities.GetSpeakers()
-                    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-                    is_muted = bool(endpoint.GetMute())
-                except Exception:
-                    pass
+            is_muted = _safe_pycaw_get_mute()
+            if is_muted is None:
+                is_muted = False
             devices_out = [{"id": "default", "name": "Default Output", "type": "default", "volume": int(master_volume), "isMuted": bool(is_muted), "isDefault": True}]
             
             # List all audio sessions (per-app volumes)
-            if platform.system() == "Windows" and HAS_PYCAW:
-                try:
-                    sessions = AudioUtilities.GetAllSessions()
-                    for session in sessions:
-                        if session.Process:
-                            devices_out.append({
-                                "id": f"app_{session.Process.pid}",
-                                "name": session.Process.name(),
-                                "type": "app",
-                                "pid": session.Process.pid,
-                                "isDefault": False,
-                            })
-                except Exception:
-                    pass
+            sessions = _safe_pycaw_get_sessions()
+            devices_out.extend(sessions)
             
             return {"success": True, "devices": devices_out, "master_volume": int(master_volume), "is_muted": bool(is_muted)}
         except Exception as e:
@@ -916,13 +1007,9 @@ class JarvisAgent:
 
     def _toggle_mute(self) -> Dict[str, Any]:
         try:
-            if platform.system() == "Windows" and HAS_PYCAW:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-                current = bool(endpoint.GetMute())
-                endpoint.SetMute(0 if current else 1, None)
-                return {"success": True, "is_muted": (not current)}
+            result = _safe_pycaw_toggle_mute()
+            if result is not None:
+                return {"success": True, "is_muted": result}
             pyautogui.press("volumemute")
             return {"success": True}
         except Exception as e:
@@ -1098,17 +1185,22 @@ class JarvisAgent:
                                 try:
                                     if use_system_audio and platform.system() == "Windows":
                                         # Try WASAPI loopback for system audio
-                                        try:
-                                            mic_stream = pa.open(
-                                                format=FORMAT, channels=CHANNELS, rate=RATE,
-                                                input=True, frames_per_buffer=CHUNK,
-                                                input_host_api_specific_stream_info=None,
-                                                as_loopback=True,
-                                            )
-                                            add_log("info", "System audio (WASAPI loopback) opened", category="audio")
-                                        except Exception:
+                                        loopback_idx = _find_wasapi_loopback_device(pa)
+                                        if loopback_idx is not None:
+                                            try:
+                                                mic_stream = pa.open(
+                                                    format=FORMAT, channels=2, rate=44100,
+                                                    input=True, frames_per_buffer=CHUNK,
+                                                    input_device_index=loopback_idx,
+                                                )
+                                                add_log("info", f"System audio (WASAPI loopback device {loopback_idx}) opened", category="audio")
+                                            except Exception as loop_err:
+                                                add_log("warn", f"WASAPI loopback open failed: {loop_err}", category="audio")
+                                                mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                                                add_log("info", "Fallback to PC microphone", category="audio")
+                                        else:
                                             mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
-                                            add_log("info", "Fallback to PC microphone (WASAPI loopback not available)", category="audio")
+                                            add_log("info", "No WASAPI loopback found, using PC microphone", category="audio")
                                     else:
                                         mic_stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
                                         add_log("info", "PC microphone opened for audio relay", category="audio")
@@ -2064,20 +2156,28 @@ class JarvisAgent:
             elif cmd in ["mute_pc", "mute"]:
                 if HAS_PYCAW and sys.platform == "win32":
                     try:
-                        devices = AudioUtilities.GetSpeakers()
-                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        volume = cast(interface, POINTER(IAudioEndpointVolume))
-                        volume.SetMute(1, None)
+                        comtypes.CoInitialize()
+                        try:
+                            devices = AudioUtilities.GetSpeakers()
+                            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                            volume = cast(interface, POINTER(IAudioEndpointVolume))
+                            volume.SetMute(1, None)
+                        finally:
+                            comtypes.CoUninitialize()
                     except Exception as e:
                         add_log("warn", f"mute_pc failed: {e}", category="command")
                 return {"success": True}
             elif cmd in ["unmute_pc", "unmute"]:
                 if HAS_PYCAW and sys.platform == "win32":
                     try:
-                        devices = AudioUtilities.GetSpeakers()
-                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        volume = cast(interface, POINTER(IAudioEndpointVolume))
-                        volume.SetMute(0, None)
+                        comtypes.CoInitialize()
+                        try:
+                            devices = AudioUtilities.GetSpeakers()
+                            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                            volume = cast(interface, POINTER(IAudioEndpointVolume))
+                            volume.SetMute(0, None)
+                        finally:
+                            comtypes.CoUninitialize()
                     except Exception as e:
                         add_log("warn", f"unmute_pc failed: {e}", category="command")
                 return {"success": True}
