@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { getFunctionsWsBase } from "@/lib/relay";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
+import { useP2PStreaming } from "@/hooks/useP2PStreaming";
 import { useToast } from "@/hooks/use-toast";
 import { addLog } from "@/components/IssueLog";
 
@@ -15,6 +16,7 @@ export interface CameraReceiverState {
   wsConnected: boolean;
   peerConnected: boolean;
   sessionId: string | null;
+  viaP2P: boolean;
 }
 
 export interface CameraReceiverOptions {
@@ -27,6 +29,7 @@ export interface CameraReceiverOptions {
 export function useCameraReceiver() {
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
+  const p2pStreaming = useP2PStreaming();
   const { toast } = useToast();
 
   const [state, setState] = useState<CameraReceiverState>({
@@ -39,15 +42,13 @@ export function useCameraReceiver() {
     wsConnected: false,
     peerConnected: false,
     sessionId: null,
+    viaP2P: false,
   });
 
   const wsRef = useRef<WebSocket | null>(null);
   const currentBlobUrlRef = useRef<string | null>(null);
   const fpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
   const frameTimesRef = useRef<number[]>([]);
-
-  const WS_BASE = getFunctionsWsBase();
-  const CAMERA_WS_URL = `${WS_BASE}/functions/v1/camera-relay`;
 
   const cleanup = useCallback(() => {
     if (currentBlobUrlRef.current) {
@@ -93,11 +94,19 @@ export function useCameraReceiver() {
 
       const sessionId = crypto.randomUUID();
       setState((prev) => ({ ...prev, sessionId, error: null }));
-      addLog("info", "web", `Starting camera receiver (session: ${sessionId.slice(0, 8)}...)`);
 
-      // 1) Connect receiver FIRST with session_token for authentication
+      // Use P2P streaming if available for direct connection
+      const useP2P = p2pStreaming.isP2P && !testPattern;
+      const wsUrl = useP2P
+        ? p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex })
+        : p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex });
+
+      addLog("info", "web", `Camera connecting via ${useP2P ? "P2P" : "cloud relay"}...`);
+
       const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${fps}&quality=${quality}&binary=true&session_token=${session.session_token}`
+        useP2P
+          ? p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex })
+          : p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex })
       );
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
@@ -123,7 +132,6 @@ export function useCameraReceiver() {
             }
             currentBlobUrlRef.current = newUrl;
 
-            // Track latency
             frameTimesRef.current.push(now);
             if (frameTimesRef.current.length > 10) {
               frameTimesRef.current.shift();
@@ -137,7 +145,6 @@ export function useCameraReceiver() {
               latency = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
             }
 
-            // Track FPS
             fpsCounterRef.current.frames++;
             const elapsed = now - fpsCounterRef.current.lastCheck;
             let currentFps = 0;
@@ -152,11 +159,11 @@ export function useCameraReceiver() {
               frameCount: prev.frameCount + 1,
               latency,
               fps: currentFps || prev.fps,
+              viaP2P: useP2P,
             }));
             return;
           }
 
-          // Handle JSON messages
           if (typeof event.data === "string") {
             const data = JSON.parse(event.data);
             if (data.type === "camera_frame" && data.data) {
@@ -182,8 +189,8 @@ export function useCameraReceiver() {
       };
 
       ws.onopen = () => {
-        setState((prev) => ({ ...prev, active: true, wsConnected: true, error: null }));
-        addLog("info", "web", "Camera WebSocket connected");
+        setState((prev) => ({ ...prev, active: true, wsConnected: true, error: null, viaP2P: useP2P }));
+        addLog("info", "web", `Camera WebSocket connected ${useP2P ? "(P2P direct)" : "(cloud relay)"}`);
       };
 
       ws.onerror = () => {
@@ -195,7 +202,6 @@ export function useCameraReceiver() {
         addLog("info", "web", "Camera WebSocket closed");
       };
 
-      // Wait for WS to open
       await new Promise<void>((resolve, reject) => {
         if (ws.readyState === WebSocket.OPEN) return resolve();
         const t = window.setTimeout(() => {
@@ -209,31 +215,33 @@ export function useCameraReceiver() {
         throw err;
       });
 
-      // 2) Tell PC agent to start sending
-      const commandType = testPattern ? "start_test_pattern" : "start_camera_stream";
-      const payload = testPattern
-        ? { session_id: sessionId, fps, quality }
-        : { session_id: sessionId, camera_index: cameraIndex, fps, quality };
+      // When using P2P, the agent streams directly — no need for separate command
+      if (!useP2P) {
+        const commandType = testPattern ? "start_test_pattern" : "start_camera_stream";
+        const payload = testPattern
+          ? { session_id: sessionId, fps, quality }
+          : { session_id: sessionId, camera_index: cameraIndex, fps, quality };
 
-      const started = await sendCommand(commandType, payload, {
-        awaitResult: true,
-        timeoutMs: 20000,
-      });
+        const started = await sendCommand(commandType, payload, {
+          awaitResult: true,
+          timeoutMs: 20000,
+        });
 
-      if (!started.success) {
-        const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
-        setState((prev) => ({ ...prev, error: msg }));
-        addLog("error", "agent", `Camera open failed: ${msg}`);
-        toast({ title: "Camera Error", description: msg, variant: "destructive" });
-        cleanup();
-        return false;
+        if (!started.success) {
+          const msg = typeof started.error === "string" ? started.error : "PC failed to start camera";
+          setState((prev) => ({ ...prev, error: msg }));
+          addLog("error", "agent", `Camera open failed: ${msg}`);
+          toast({ title: "Camera Error", description: msg, variant: "destructive" });
+          cleanup();
+          return false;
+        }
       }
 
-      addLog("info", "agent", testPattern ? "Test pattern started" : "PC camera opened");
-      toast({ title: testPattern ? "Test Pattern Started" : "Camera Started" });
+      addLog("info", "agent", testPattern ? "Test pattern started" : `PC camera opened ${useP2P ? "(P2P)" : "(relay)"}`);
+      toast({ title: testPattern ? "Test Pattern Started" : `Camera Started ${useP2P ? "(P2P)" : ""}` });
       return true;
     },
-    [CAMERA_WS_URL, sendCommand, toast, cleanup]
+    [sendCommand, toast, cleanup, p2pStreaming]
   );
 
   const stop = useCallback(async () => {

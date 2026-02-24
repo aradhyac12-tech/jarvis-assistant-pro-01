@@ -10,6 +10,7 @@ import { GlobalFloatingPiP } from "@/components/GlobalFloatingPiP";
 import { LazyLoadErrorBoundary } from "@/components/LazyLoadErrorBoundary";
 import { AppLockScreen, isAppLockEnabled } from "@/components/AppLockScreen";
 import { useAppStatePersistence, getLastRoute } from "@/hooks/useAppState";
+import { useBackgroundPersistence } from "@/hooks/useBackgroundPersistence";
 import { Loader2 } from "lucide-react";
 import React, { lazy, Suspense, forwardRef, useState, useEffect, useCallback } from "react";
 
@@ -50,6 +51,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 /** Saves current route to localStorage for state remembering */
 function StatePersistence() {
   useAppStatePersistence();
+  useBackgroundPersistence();
   return null;
 }
 

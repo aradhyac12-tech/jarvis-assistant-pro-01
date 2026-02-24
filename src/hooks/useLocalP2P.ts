@@ -138,7 +138,10 @@ export function useLocalP2P() {
   // Save/load known PC IP
   const saveKnownIp = useCallback((ip: string) => {
     connectedIpRef.current = ip;
-    try { localStorage.setItem("jarvis_p2p_known_ip", ip); } catch {}
+    try {
+      localStorage.setItem("jarvis_p2p_known_ip", ip);
+      localStorage.setItem("jarvis_p2p_connected", "true");
+    } catch {}
   }, []);
 
   const getKnownIp = useCallback((): string | null => {
@@ -198,6 +201,7 @@ export function useLocalP2P() {
     wsRef.current = null;
     httpModeRef.current = false;
     stopKeepalive();
+    try { localStorage.setItem("jarvis_p2p_connected", "false"); } catch {}
     for (const [id, pending] of pendingRef.current.entries()) {
       clearTimeout(pending.timeoutId);
       pending.reject(new Error("Local P2P disconnected"));

@@ -48,6 +48,8 @@ const config: CapacitorConfig = {
       keystorePath: undefined,
       keystoreAlias: undefined,
     },
+    // Keep app alive in background like KDE Connect
+    webContentsDebuggingEnabled: true,
   },
   ios: {
     allowsLinkPreview: false,
