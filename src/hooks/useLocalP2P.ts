@@ -19,6 +19,25 @@ const LOCAL_P2P_PORT = 9876;
 const PROBE_TIMEOUT_MS = 500; // Very short timeout for local network
 
 /**
+ * Detect if running inside a Capacitor native WebView.
+ * In native, mixed content (ws:// from https://) is allowed.
+ */
+function isNativeApp(): boolean {
+  try {
+    return !!(window as any).Capacitor?.isNativePlatform?.();
+  } catch {
+    return false;
+  }
+}
+
+/** Returns true if ws:// connections are blocked (HTTPS browser, not native) */
+function isWsBlocked(): boolean {
+  if (window.location.protocol !== "https:") return false; // HTTP is fine
+  if (isNativeApp()) return false; // Capacitor WebView allows mixed content
+  return true; // Regular browser on HTTPS blocks ws://
+}
+
+/**
  * Hook for detecting and connecting to the local P2P WebSocket server
  * running on the Python agent (localhost:9876 when on same network).
  */
@@ -40,9 +59,8 @@ export function useLocalP2P() {
 
   // Probe a specific IP for local P2P server
   const probeLocalServer = useCallback(async (ip: string): Promise<boolean> => {
-    // Cannot use ws:// from an HTTPS page (browser security restriction)
-    // Only attempt local P2P when running in a native APK (Capacitor) or on HTTP
-    if (window.location.protocol === "https:") {
+    // Block ws:// only in regular HTTPS browsers (not in Capacitor native)
+    if (isWsBlocked()) {
       return false;
     }
     return new Promise((resolve) => {
@@ -146,8 +164,8 @@ export function useLocalP2P() {
       return true;
     }
 
-    // Cannot use ws:// from HTTPS pages
-    if (window.location.protocol === "https:") {
+    // Block ws:// only in regular HTTPS browsers (not in Capacitor native)
+    if (isWsBlocked()) {
       return false;
     }
 
