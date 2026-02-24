@@ -183,7 +183,7 @@ export function SmartP2PManager({
           )}
           {pingResult && !localP2PState.pcIp && (
             <p className={cn("text-[10px] font-mono", pingResult.success ? "text-emerald-500" : "text-destructive")}>
-              {pingResult.success ? `✓ Ping verified: ${pingResult.ms}ms` : window.location.protocol === "https:" ? "✗ HTTPS blocks local ws:// — use APK for P2P" : "✗ Connection failed – check IP/firewall & port 9876"}
+              {pingResult.success ? `✓ Ping verified: ${pingResult.ms}ms` : "✗ Connection failed – check IP/firewall & port 9876"}
             </p>
           )}
         </div>
@@ -290,8 +290,7 @@ export function SmartP2PManager({
           <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 space-y-1.5">
             <p className="text-xs font-medium text-amber-600">Why Local P2P isn't active:</p>
             <ul className="text-[10px] text-muted-foreground space-y-0.5 list-disc list-inside">
-              <li>HTTPS blocks ws:// connections (mixed content)</li>
-              <li>Use the <strong>Capacitor APK</strong> for local P2P</li>
+              <li>Ensure the Python agent's P2P server is running on port 9876</li>
               <li>PC IP: {localP2PState.pcIp || networkState.pc?.localIp || manualIp || "unknown"}</li>
               <li>Port 9876 must be open on PC firewall</li>
             </ul>
