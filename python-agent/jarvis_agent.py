@@ -3377,23 +3377,50 @@ def handle_dragged_files(file_paths: list):
             print(f"[Drag] ✗ Failed to copy {file_name}: {e}")
             add_log("error", f"Drag-receive failed: {file_name}: {e}", category="file")
 
-
 # ============== MAIN ENTRY ==============
 def main():
     parser = argparse.ArgumentParser(description="JARVIS PC Agent")
-    parser.add_argument("--gui", action="store_true", help="Launch with GUI")
-    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument("--gui", action="store_true", help="Launch with GUI (default)")
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode (no GUI)")
+    parser.add_argument("--no-gui", action="store_true", help="Alias for --headless")
     parser.add_argument("files", nargs="*", help="Files dragged onto the agent")
     args = parser.parse_args()
     
     # Handle dragged files first
     if args.files:
         handle_dragged_files(args.files)
-        # If only dragging files (no --gui/--headless), still start the agent
     
     agent = JarvisAgent()
     
-    # Global auto-restart with exception recovery
+    # Determine if GUI should launch
+    headless = args.headless or args.no_gui
+    use_gui = not headless  # GUI is default now
+    
+    if use_gui and HAS_TKINTER:
+        # Launch GUI with agent in background thread
+        try:
+            from jarvis_gui import JarvisGUI
+            
+            # Run agent in background
+            agent_thread = threading.Thread(target=_run_agent_loop, args=(agent,), daemon=True)
+            agent_thread.start()
+            
+            # Launch GUI on main thread
+            gui = JarvisGUI(agent=agent)
+            gui.run()
+        except ImportError:
+            add_log("warn", "jarvis_gui.py not found, falling back to headless mode", category="system")
+            _run_agent_loop(agent)
+        except Exception as e:
+            add_log("error", f"GUI failed: {e}, falling back to headless", category="system")
+            _run_agent_loop(agent)
+    else:
+        # Headless mode
+        _run_agent_loop(agent)
+
+
+def _run_agent_loop(agent):
+    """Auto-restart agent loop with exception recovery."""
     while True:
         try:
             agent.run()

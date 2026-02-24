@@ -37,3 +37,6 @@ win10toast-click>=0.1.2  # Windows 10/11 notifications
 
 # Optional: For music features
 # youtube-search-python>=1.6.6
+
+# GUI (optional but recommended for modern dark UI)
+# customtkinter>=5.2.0     # Modern dark tkinter widgets
