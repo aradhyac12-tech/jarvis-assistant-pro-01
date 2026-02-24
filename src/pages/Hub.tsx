@@ -57,8 +57,7 @@ import { ZoomMeetings } from "@/components/ZoomMeetings";
 import { BoostPC } from "@/components/BoostPC";
 import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
-import { EnhancedTrackpad } from "@/components/EnhancedTrackpad";
-import { MobileKeyboard } from "@/components/MobileKeyboard";
+import { KDERemoteInput } from "@/components/KDERemoteInput";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 
 type Tab = "control" | "remote" | "media" | "apps" | "network" | "tools";
@@ -696,27 +695,22 @@ export default function Hub() {
             {/* Remote Tab */}
             {activeTab === "remote" && (
               <div className="space-y-3">
-                <EnhancedTrackpad
+                <KDERemoteInput
                   onMouseMove={fireMouse}
                   onScroll={fireScroll}
                   onZoom={fireZoom}
                   onGesture3Finger={fireGesture3Finger}
                   onGesture4Finger={fireGesture4Finger}
                   onClick={fireClick}
+                  onDoubleClick={() => fireClick("left")}
+                  onDragStart={() => sendCommand("mouse_down", { button: "left" })}
+                  onDragEnd={() => sendCommand("mouse_up", { button: "left" })}
+                  onKeyPress={fireKey}
                   onTypeText={handleTypeText}
                   connectionMode={connectionMode}
                   latency={p2pLatency}
                   isConnected={isConnected}
                 />
-                <Card className="border-border/30 bg-card/50">
-                  <CardContent className="p-4">
-                    <MobileKeyboard 
-                      onKeyPress={fireKey} 
-                      onTypeText={handleTypeText}
-                      disabled={!isConnected} 
-                    />
-                  </CardContent>
-                </Card>
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
                     <AutoClipboardSync />
