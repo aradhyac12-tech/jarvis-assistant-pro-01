@@ -330,6 +330,9 @@ export function useP2PCommand() {
     }
   }, [selectedDevice?.system_info, networkMonitor]);
 
+  // Periodic local P2P retry — keeps trying every 10s until connected
+  const localP2PRetryRef = useRef<number | null>(null);
+  
   useEffect(() => {
     if (!sessionToken || !deviceId) return;
 
@@ -338,12 +341,24 @@ export function useP2PCommand() {
     networkMonitor.startMonitoring();
     startLatencyMeasurement();
     
-    // Try local P2P after a short delay (use ref to get latest preference)
+    // Try local P2P after a short delay
     localP2PCheckRef.current = window.setTimeout(() => {
       if (autoLocalP2PRef.current) {
         tryLocalP2PConnection();
       }
     }, 1000);
+
+    // Periodic retry: if not on local_p2p yet and autoLocalP2P is on, keep trying
+    localP2PRetryRef.current = window.setInterval(() => {
+      if (
+        autoLocalP2PRef.current &&
+        connectionModeRef.current !== "local_p2p" &&
+        !localP2P.isReady
+      ) {
+        console.log("[P2P] Auto-retry local P2P connection...");
+        tryLocalP2PConnection();
+      }
+    }, 10000);
     
     return () => {
       cleanupP2P();
@@ -354,6 +369,9 @@ export function useP2PCommand() {
       }
       if (localP2PCheckRef.current) {
         clearTimeout(localP2PCheckRef.current);
+      }
+      if (localP2PRetryRef.current) {
+        clearInterval(localP2PRetryRef.current);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
