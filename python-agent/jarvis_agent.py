@@ -1447,6 +1447,66 @@ class JarvisAgent:
     _siren_running = False
     _siren_thread = None
 
+    def _get_surveillance_dir(self) -> str:
+        """Get or create the surveillance folder next to the agent script."""
+        agent_dir = os.path.dirname(os.path.abspath(__file__))
+        surv_dir = os.path.join(agent_dir, "surveillance")
+        os.makedirs(surv_dir, exist_ok=True)
+        # Auto-delete files older than 15 days
+        try:
+            cutoff = time.time() - 15 * 24 * 60 * 60
+            for f in os.listdir(surv_dir):
+                fp = os.path.join(surv_dir, f)
+                if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+                    os.remove(fp)
+        except Exception:
+            pass
+        return surv_dir
+
+    def _save_surveillance_clip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Save a surveillance clip snapshot to the surveillance folder."""
+        try:
+            surv_dir = self._get_surveillance_dir()
+            clip_id = payload.get("clip_id", str(uuid.uuid4()))
+            timestamp = payload.get("timestamp", datetime.now().isoformat())
+            trigger = payload.get("trigger", "unknown")
+            image_data = payload.get("image_data", "")
+            
+            # Save image data (base64 data URL or raw base64)
+            filename = f"clip_{trigger}_{timestamp.replace(':', '-').replace('.', '-')}_{clip_id[:8]}.jpg"
+            filepath = os.path.join(surv_dir, filename)
+            
+            if image_data:
+                # Strip data URL prefix if present
+                if "," in image_data:
+                    image_data = image_data.split(",", 1)[1]
+                img_bytes = base64.b64decode(image_data)
+                with open(filepath, "wb") as f:
+                    f.write(img_bytes)
+                _log("info", f"Surveillance clip saved: {filename}")
+                return {"success": True, "path": filepath, "filename": filename}
+            
+            return {"success": False, "error": "No image data provided"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _delete_surveillance_clip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete a surveillance clip from the surveillance folder."""
+        try:
+            surv_dir = self._get_surveillance_dir()
+            clip_id = payload.get("clip_id", "")
+            if not clip_id:
+                return {"success": False, "error": "No clip_id"}
+            
+            # Find and delete matching file
+            for f in os.listdir(surv_dir):
+                if clip_id[:8] in f:
+                    os.remove(os.path.join(surv_dir, f))
+                    return {"success": True, "deleted": f}
+            return {"success": True, "message": "File not found (may already be deleted)"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _play_alarm(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Play alarm with real siren sound using winsound frequency sweep. Supports start/stop toggle."""
         try:
@@ -2877,6 +2937,12 @@ class JarvisAgent:
                 return self._update_screen_settings(payload)
             elif cmd == "start_test_pattern":
                 return await self._start_test_pattern(payload)
+            
+            # Surveillance clips
+            elif cmd == "save_surveillance_clip":
+                return self._save_surveillance_clip(payload)
+            elif cmd == "delete_surveillance_clip":
+                return self._delete_surveillance_clip(payload)
             
             # Audio relay
             elif cmd == "start_audio_relay":
