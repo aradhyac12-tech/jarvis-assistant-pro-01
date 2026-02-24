@@ -2519,7 +2519,9 @@ class JarvisAgent:
                 "memory_percent": psutil.virtual_memory().percent,
             }
             
-            result = self.supabase.table("devices").select("id, user_id").eq("device_key", self.device_key).maybeSingle().execute()
+            result = self.supabase.table("devices").select("id, user_id").eq("device_key", self.device_key).execute()
+            # Emulate maybeSingle: pick first row or None
+            result.data = result.data[0] if result.data and len(result.data) > 0 else None
             
             if result.data:
                 self.device_id = result.data["id"]

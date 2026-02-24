@@ -521,7 +521,7 @@ export default function Hub() {
 
   if (isLoading && !selectedDevice) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="min-h-screen flex items-center justify-center bg-black">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="w-6 h-6 animate-spin text-primary" />
           <p className="text-xs text-muted-foreground">Connecting...</p>
@@ -532,9 +532,9 @@ export default function Hub() {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-background">
+      <div className="min-h-screen bg-black text-foreground">
         {/* Header */}
-        <header className="sticky top-0 z-50 border-b border-border/20 bg-background/80 backdrop-blur-xl safe-area-top">
+        <header className="sticky top-0 z-50 border-b border-border/10 bg-black/90 backdrop-blur-xl safe-area-top">
           <div className="flex items-center justify-between h-12 px-3">
             <div className="flex items-center gap-2.5">
               <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
@@ -575,7 +575,7 @@ export default function Hub() {
                 value={cmdInput}
                 onChange={(e) => setCmdInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCommand()}
-                className="flex-1 h-9 bg-card border-border/30 focus-visible:ring-1 text-sm"
+                className="flex-1 h-10 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
                 disabled={!isConnected}
               />
               <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-9 w-9 shrink-0">
@@ -584,7 +584,7 @@ export default function Hub() {
             </div>
 
             {/* Tab Navigation */}
-            <div className="flex items-center gap-0.5 p-0.5 bg-card/50 rounded-lg w-full overflow-x-auto border border-border/20">
+            <div className="flex items-center gap-0.5 p-0.5 bg-black/80 rounded-lg w-full overflow-x-auto border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
