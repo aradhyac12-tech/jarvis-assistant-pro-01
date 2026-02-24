@@ -17,7 +17,8 @@ type PendingRequest = {
 
 const LOCAL_P2P_PORT = 9876;
 const LOCAL_P2P_HTTP_PORT = 9877; // HTTP API port (WS port + 1)
-const PROBE_TIMEOUT_MS = 500;
+const PROBE_TIMEOUT_MS = 1200; // Increased for reliability on slower LANs
+const KNOWN_IP_TIMEOUT_MS = 2500; // Extra time for known PC IP
 
 function isNativeApp(): boolean {
   try {
@@ -65,6 +66,30 @@ async function probeHttpServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promis
   }
 }
 
+/** Probe via WS with configurable timeout */
+function probeWsServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
+      const timeoutId = window.setTimeout(() => {
+        ws.close();
+        resolve(false);
+      }, timeoutMs);
+      ws.onopen = () => { clearTimeout(timeoutId); ws.close(); resolve(true); };
+      ws.onerror = () => { clearTimeout(timeoutId); resolve(false); };
+    } catch { resolve(false); }
+  });
+}
+
+/** Try both WS and HTTP probes in parallel, return true if either succeeds */
+async function probeBothTransports(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+  const results = await Promise.all([
+    probeWsServer(ip, timeoutMs),
+    probeHttpServer(ip, timeoutMs),
+  ]);
+  return results.some(Boolean);
+}
+
 /** Send a command via HTTP POST (fallback when WS is blocked) */
 async function httpCommand(
   ip: string,
@@ -110,24 +135,9 @@ export function useLocalP2P() {
   const reconnectTimerRef = useRef<number | null>(null);
   const pendingRef = useRef<Map<string, PendingRequest>>(new Map());
 
-  // Probe a specific IP for local P2P server (WS or HTTP fallback)
-  const probeLocalServer = useCallback(async (ip: string): Promise<boolean> => {
-    // If WS is blocked, try HTTP probe (works with CapacitorHttp in APK)
-    if (isWsBlocked()) {
-      return probeHttpServer(ip);
-    }
-    // WS probe
-    return new Promise((resolve) => {
-      try {
-        const ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
-        const timeoutId = window.setTimeout(() => {
-          ws.close();
-          resolve(false);
-        }, PROBE_TIMEOUT_MS);
-        ws.onopen = () => { clearTimeout(timeoutId); ws.close(); resolve(true); };
-        ws.onerror = () => { clearTimeout(timeoutId); resolve(false); };
-      } catch { resolve(false); }
-    });
+  // Probe a specific IP for local P2P server (try both WS + HTTP in parallel)
+  const probeLocalServer = useCallback(async (ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> => {
+    return probeBothTransports(ip, timeoutMs);
   }, []);
 
   // Try to discover local P2P server by probing network IPs
@@ -148,8 +158,8 @@ export function useLocalP2P() {
 
     console.log(`[LocalP2P] Discovering server on prefixes:`, prefixesToScan);
 
-    // Common PC IPs to try first (most likely)
-    const prioritySuffixes = [".1", ".2", ".100", ".101", ".10", ".50", ".200", ".150", ".5", ".254", ".3", ".4"];
+    // Common PC IPs to try first — covers DHCP ranges on most routers
+    const prioritySuffixes = [".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9", ".10", ".11", ".12", ".15", ".20", ".25", ".30", ".50", ".100", ".101", ".102", ".150", ".200", ".254"];
 
     for (const prefix of prefixesToScan) {
       // Try priority IPs first in parallel
@@ -282,10 +292,25 @@ export function useLocalP2P() {
         setState((prev) => ({ ...prev, isConnected: false }));
       };
 
-      ws.onerror = () => {
+      ws.onerror = async () => {
         clearTimeout(timeoutId);
-        setState((prev) => ({ ...prev, isAvailable: false, isConnected: false }));
-        resolve(false);
+        // WS failed — try HTTP fallback before giving up
+        console.log(`[LocalP2P] WS failed, trying HTTP fallback to ${pcIp}:${LOCAL_P2P_HTTP_PORT}...`);
+        const httpOk = await probeHttpServer(pcIp, KNOWN_IP_TIMEOUT_MS);
+        if (httpOk) {
+          console.log(`[LocalP2P] ✅ Connected via HTTP fallback to ${pcIp}:${LOCAL_P2P_HTTP_PORT}`);
+          httpModeRef.current = true;
+          setState((prev) => ({
+            ...prev,
+            isAvailable: true,
+            isConnected: true,
+            pcIp,
+          }));
+          resolve(true);
+        } else {
+          setState((prev) => ({ ...prev, isAvailable: false, isConnected: false }));
+          resolve(false);
+        }
       };
     });
   }, []);
@@ -368,15 +393,24 @@ export function useLocalP2P() {
 
   // Check availability and connect if possible
   const checkAndConnect = useCallback(async (networkPrefix: string, knownPcIp?: string) => {
-    if (knownPcIp) {
-      const available = await probeLocalServer(knownPcIp);
+    // Also check manual IP from localStorage
+    const manualIp = localStorage.getItem("jarvis_manual_pc_ip") || "";
+    const ipsToTry = [knownPcIp, manualIp].filter(Boolean) as string[];
+
+    // Try known IPs first with generous timeout
+    for (const ip of ipsToTry) {
+      console.log(`[LocalP2P] Probing known IP ${ip} with ${KNOWN_IP_TIMEOUT_MS}ms timeout...`);
+      const available = await probeLocalServer(ip, KNOWN_IP_TIMEOUT_MS);
       if (available) {
-        await connect(knownPcIp);
+        console.log(`[LocalP2P] ✅ Known IP ${ip} responded!`);
+        await connect(ip);
         setState((prev) => ({ ...prev, lastCheckTime: Date.now() }));
         return;
       }
+      console.log(`[LocalP2P] ❌ Known IP ${ip} did not respond`);
     }
 
+    // Fall back to full discovery
     const pcIp = await discoverLocalServer(networkPrefix);
     if (pcIp) {
       await connect(pcIp);
