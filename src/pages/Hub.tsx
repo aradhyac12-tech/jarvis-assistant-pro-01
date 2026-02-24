@@ -578,7 +578,7 @@ export default function Hub() {
                 className="flex-1 h-10 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
                 disabled={!isConnected}
               />
-              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-9 w-9 shrink-0">
+              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-10 w-10 shrink-0">
                 {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </Button>
             </div>
@@ -649,32 +649,28 @@ export default function Hub() {
                 {/* Power Controls */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-5 gap-2">
+                    <div className="grid grid-cols-5 gap-1.5">
                       {[
-                        { icon: Lock, action: handleLock, label: "Lock" },
-                        { icon: Moon, action: () => handlePower("sleep"), label: "Sleep" },
-                        { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart" },
-                        { icon: Power, action: () => handlePower("shutdown"), label: "Shutdown", danger: true },
-                        { icon: Zap, action: handleQuickBoost, label: "Boost" },
+                        { icon: Lock, action: handleLock, label: "Lock", danger: false },
+                        { icon: Moon, action: () => handlePower("sleep"), label: "Sleep", danger: false },
+                        { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart", danger: false },
+                        { icon: Power, action: () => handlePower("shutdown"), label: "Off", danger: true },
+                        { icon: Zap, action: handleQuickBoost, label: "Boost", danger: false },
                       ].map((btn) => (
-                        <Tooltip key={btn.label}>
-                          <TooltipTrigger asChild>
-                            <Button 
-                              variant="outline" 
-                              size="icon" 
-                              className={cn(
-                                "h-10 w-full border-border/20",
-                                btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30",
-                                btn.label === "Boost" && "hover:border-primary/30"
-                              )}
-                              onClick={btn.action} 
-                              disabled={!isConnected || (btn.label === "Boost" && isBoosting)}
-                            >
-                              <btn.icon className="w-4 h-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent className="text-xs">{btn.label}</TooltipContent>
-                        </Tooltip>
+                        <Button 
+                          key={btn.label}
+                          variant="outline" 
+                          className={cn(
+                            "h-14 w-full flex flex-col gap-1 border-border/20 text-xs",
+                            btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30",
+                            btn.label === "Boost" && "hover:border-primary/30"
+                          )}
+                          onClick={btn.action} 
+                          disabled={!isConnected || (btn.label === "Boost" && isBoosting)}
+                        >
+                          <btn.icon className="w-4 h-4" />
+                          <span className="text-[10px]">{btn.label}</span>
+                        </Button>
                       ))}
                     </div>
                   </CardContent>
@@ -683,10 +679,10 @@ export default function Hub() {
                 {/* Quick Links */}
                 <Card className="border-border/20 bg-card/50 md:col-span-2">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-5 gap-2">
+                    <div className="grid grid-cols-5 gap-1.5">
                       {quickLinks.map((link) => (
                         <Link key={link.href} to={link.href}>
-                          <Button variant="ghost" className="w-full h-auto flex-col gap-1.5 py-3 hover:bg-secondary/50 border border-transparent hover:border-border/20">
+                          <Button variant="ghost" className="w-full h-14 flex-col gap-1 hover:bg-secondary/50 border border-transparent hover:border-border/20">
                             <link.icon className="w-4 h-4 text-primary" />
                             <span className="text-[10px] text-muted-foreground">{link.title}</span>
                           </Button>

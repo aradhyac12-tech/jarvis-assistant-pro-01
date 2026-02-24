@@ -1212,35 +1212,76 @@ class JarvisAgent:
             add_log("error", f"Zoom join error: {e}", category="zoom")
             return {"success": False, "error": str(e)}
     
+    _siren_running = False
+    _siren_thread = None
+
     def _play_alarm(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Play alarm with real siren sound using winsound frequency sweep."""
+        """Play alarm with real siren sound using winsound frequency sweep. Supports start/stop toggle."""
         try:
             alarm_type = payload.get("type", "beep")
             duration = int(payload.get("duration", 5))
+            action = payload.get("action", "start")  # "start", "stop", or "toggle"
+            
+            # Handle stop
+            if action == "stop" or (action == "toggle" and self._siren_running):
+                self._siren_running = False
+                return {"success": True, "type": alarm_type, "status": "stopped"}
+            
+            # Handle start
+            if self._siren_running:
+                return {"success": True, "type": alarm_type, "status": "already_running"}
+            
+            self._siren_running = True
             
             def play_siren():
                 if sys.platform == "win32":
                     import winsound
-                    if alarm_type == "siren":
-                        # Real siren: frequency sweep up and down
-                        cycles = max(1, duration)
-                        for _ in range(cycles):
-                            # Sweep up
-                            for freq in range(400, 1600, 100):
-                                winsound.Beep(freq, 50)
-                            # Sweep down
-                            for freq in range(1600, 400, -100):
-                                winsound.Beep(freq, 50)
-                    else:
-                        # Simple beep
-                        winsound.Beep(800, 1000)
+                    try:
+                        # Try to play siren.mp3 if it exists
+                        siren_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "siren.mp3")
+                        if os.path.exists(siren_path) and alarm_type == "siren":
+                            try:
+                                import subprocess
+                                # Use Windows Media Player to play mp3
+                                proc = subprocess.Popen(
+                                    ["powershell", "-NoProfile", "-c",
+                                     f"$player = New-Object System.Media.SoundPlayer; "
+                                     f"Add-Type -AssemblyName presentationCore; "
+                                     f"$mp = New-Object System.Windows.Media.MediaPlayer; "
+                                     f"$mp.Open('{siren_path}'); $mp.Play(); "
+                                     f"while ($true) {{ Start-Sleep -Milliseconds 500 }}"],
+                                    creationflags=subprocess.CREATE_NO_WINDOW
+                                )
+                                while self._siren_running:
+                                    time.sleep(0.5)
+                                proc.terminate()
+                                return
+                            except Exception:
+                                pass
+                        
+                        if alarm_type == "siren":
+                            while self._siren_running:
+                                for freq in range(400, 1600, 100):
+                                    if not self._siren_running:
+                                        return
+                                    winsound.Beep(freq, 50)
+                                for freq in range(1600, 400, -100):
+                                    if not self._siren_running:
+                                        return
+                                    winsound.Beep(freq, 50)
+                        else:
+                            winsound.Beep(800, 1000)
+                    finally:
+                        self._siren_running = False
                 else:
                     print("\a" * 10)
+                    self._siren_running = False
             
-            # Play in background thread so we don't block
-            threading.Thread(target=play_siren, daemon=True).start()
-            return {"success": True, "type": alarm_type}
+            self._siren_thread = threading.Thread(target=play_siren, daemon=True)
+            self._siren_thread.start()
+            return {"success": True, "type": alarm_type, "status": "started"}
         except Exception as e:
+            self._siren_running = False
             return {"success": False, "error": str(e)}
 
     def _take_camera_snapshot(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1364,10 +1405,54 @@ class JarvisAgent:
                                 except Exception as e:
                                     add_log("warn", f"Could not open PC speakers: {e}", category="audio")
 
+                            # Track source audio format for resampling
+                            src_rate = RATE
+                            src_channels = CHANNELS
+                            if mic_stream and use_system_audio and platform.system() == "Windows" and loopback_idx is not None:
+                                try:
+                                    dev_info_mic = pa.get_device_info_by_index(loopback_idx)
+                                    src_rate = int(dev_info_mic.get("defaultSampleRate", RATE))
+                                    src_channels = min(dev_info_mic.get("maxInputChannels", 1), 2)
+                                except Exception:
+                                    pass
+
+                            def _resample_to_16k_mono(raw_bytes, from_rate, from_channels):
+                                """Resample raw int16 audio to 16kHz mono for relay."""
+                                import array
+                                samples = array.array('h')
+                                samples.frombytes(raw_bytes)
+                                
+                                # Convert stereo to mono by averaging pairs
+                                if from_channels == 2:
+                                    mono = array.array('h', [
+                                        (samples[i] + samples[i+1]) // 2
+                                        for i in range(0, len(samples) - 1, 2)
+                                    ])
+                                else:
+                                    mono = samples
+                                
+                                # Resample if rates differ
+                                if from_rate != 16000 and from_rate > 0:
+                                    ratio = 16000 / from_rate
+                                    out_len = int(len(mono) * ratio)
+                                    resampled = array.array('h', [0] * out_len)
+                                    for i in range(out_len):
+                                        src_idx = i / ratio
+                                        idx_floor = int(src_idx)
+                                        idx_ceil = min(idx_floor + 1, len(mono) - 1)
+                                        frac = src_idx - idx_floor
+                                        resampled[i] = int(mono[idx_floor] * (1 - frac) + mono[idx_ceil] * frac)
+                                    return resampled.tobytes()
+                                
+                                return mono.tobytes()
+
                             def send_mic():
                                 while self._audio_streamer and self._audio_streamer.get("running") and mic_stream:
                                     try:
                                         data = mic_stream.read(CHUNK, exception_on_overflow=False)
+                                        # Resample to 16kHz mono if needed
+                                        if src_rate != RATE or src_channels != CHANNELS:
+                                            data = _resample_to_16k_mono(data, src_rate, src_channels)
                                         ws.send(data)
                                     except Exception:
                                         break

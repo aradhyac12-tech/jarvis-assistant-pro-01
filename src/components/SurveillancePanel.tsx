@@ -65,6 +65,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [isStarting, setIsStarting] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [liveFps, setLiveFps] = useState(0);
+  const [sirenActive, setSirenActive] = useState(false);
+  const [callActive, setCallActive] = useState(false);
 
   // Refs for streaming
   const wsRef = useRef<WebSocket | null>(null);
@@ -151,12 +153,38 @@ export function SurveillancePanel({ className }: { className?: string }) {
     }
   }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
 
-  const triggerSiren = useCallback(async () => {
-    toast({ title: "🚨 SIREN ACTIVATED", description: "Max volume + real siren sound on PC" });
-    // Set volume to max first, then play the real frequency-sweep siren
-    await sendCommand("set_volume", { level: 100 }, { awaitResult: true, timeoutMs: 3000 });
-    await sendCommand("play_alarm", { type: "siren", duration: 10 }, { awaitResult: true, timeoutMs: 15000 });
-  }, [sendCommand, toast]);
+  const toggleSiren = useCallback(async () => {
+    if (sirenActive) {
+      // Stop siren
+      await sendCommand("play_alarm", { type: "siren", action: "stop" });
+      setSirenActive(false);
+      toast({ title: "Siren Stopped" });
+    } else {
+      // Start siren - set volume to max first
+      setSirenActive(true);
+      await sendCommand("set_volume", { level: 100 }, { awaitResult: true, timeoutMs: 3000 });
+      await sendCommand("play_alarm", { type: "siren", action: "start" });
+      toast({ title: "🚨 SIREN ACTIVATED", description: "Max volume + siren on PC" });
+    }
+  }, [sendCommand, toast, sirenActive]);
+
+  const toggleCall = useCallback(async () => {
+    if (callActive) {
+      // Stop call (stop audio relay)
+      await sendCommand("stop_audio_relay", {});
+      setCallActive(false);
+      toast({ title: "Call Ended" });
+    } else {
+      // Start call via audio relay (bidirectional)
+      const sessionId = crypto.randomUUID();
+      await sendCommand("start_audio_relay", {
+        session_id: sessionId,
+        direction: "bidirectional",
+      });
+      setCallActive(true);
+      toast({ title: "📞 Call Started", description: "Bidirectional audio via relay" });
+    }
+  }, [sendCommand, toast, callActive]);
 
   const startSurveillance = useCallback(async () => {
     setIsStarting(true);
@@ -333,15 +361,25 @@ export function SurveillancePanel({ className }: { className?: string }) {
           )}
         </div>
 
-        {/* Siren Button */}
-        <Button
-          variant="destructive"
-          className="w-full h-12 text-sm font-bold gap-2 animate-none hover:animate-pulse"
-          onClick={triggerSiren}
-        >
-          <AlertTriangle className="h-5 w-5" />
-          🚨 SIREN — Theft Detected
-        </Button>
+        {/* Siren Toggle */}
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            variant={sirenActive ? "default" : "destructive"}
+            className={cn("h-12 text-sm font-bold gap-2", sirenActive && "bg-destructive animate-pulse")}
+            onClick={toggleSiren}
+          >
+            <AlertTriangle className="h-5 w-5" />
+            {sirenActive ? "🔇 Stop Siren" : "🚨 Start Siren"}
+          </Button>
+          <Button
+            variant={callActive ? "default" : "outline"}
+            className={cn("h-12 text-sm font-bold gap-2", callActive && "bg-primary animate-pulse")}
+            onClick={toggleCall}
+          >
+            <Phone className="h-5 w-5" />
+            {callActive ? "End Call" : "📞 Start Call"}
+          </Button>
+        </div>
 
         {/* Live Video Preview */}
         {currentFrame ? (
