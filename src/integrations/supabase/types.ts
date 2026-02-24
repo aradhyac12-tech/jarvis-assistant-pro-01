@@ -14,6 +14,33 @@ export type Database = {
   }
   public: {
     Tables: {
+      agent_updates: {
+        Row: {
+          created_at: string
+          file_manifest: Json
+          id: string
+          notes: string | null
+          user_id: string
+          version: string
+        }
+        Insert: {
+          created_at?: string
+          file_manifest?: Json
+          id?: string
+          notes?: string | null
+          user_id: string
+          version: string
+        }
+        Update: {
+          created_at?: string
+          file_manifest?: Json
+          id?: string
+          notes?: string | null
+          user_id?: string
+          version?: string
+        }
+        Relationships: []
+      }
       assistant_memories: {
         Row: {
           category: string

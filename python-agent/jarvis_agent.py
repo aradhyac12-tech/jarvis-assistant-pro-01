@@ -40,7 +40,14 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "5.2.0"
+AGENT_VERSION = "5.3.0"
+
+# Auto-updater
+try:
+    from auto_updater import AutoUpdater, get_current_version, save_current_version
+    HAS_AUTO_UPDATER = True
+except ImportError:
+    HAS_AUTO_UPDATER = False
 
 # Skill registry
 try:
@@ -3045,6 +3052,29 @@ class JarvisAgent:
                     ctx = {"supabase": self.supabase, "user_id": self.current_user_id, "device_id": self.device_id}
                     return await registry.dispatch(cmd, payload, ctx)
 
+            # ============== AUTO-UPDATE COMMANDS ==============
+            if cmd == "check_update":
+                if HAS_AUTO_UPDATER and self._auto_updater:
+                    update = self._auto_updater.check_now()
+                    return {
+                        "success": True,
+                        "current_version": AGENT_VERSION,
+                        "update_available": update is not None,
+                        "available_version": update["version"] if update else None,
+                        "last_check": self._auto_updater.last_check,
+                        "last_update": self._auto_updater.last_update,
+                    }
+                return {"success": True, "current_version": AGENT_VERSION, "update_available": False, "auto_updater": False}
+            
+            elif cmd == "apply_update":
+                if HAS_AUTO_UPDATER and self._auto_updater:
+                    success = self._auto_updater.apply_now()
+                    return {"success": success, "message": "Update applied, restart agent to activate" if success else "No update available"}
+                return {"success": False, "error": "Auto-updater not available"}
+            
+            elif cmd == "get_agent_version":
+                return {"success": True, "version": AGENT_VERSION, "has_auto_updater": HAS_AUTO_UPDATER}
+
             # ============== ROUTE COMMANDS ==============
             if cmd == "get_system_stats":
                 return self._get_system_stats()
@@ -3732,6 +3762,23 @@ class JarvisAgent:
                 return
         
         add_log("info", "Agent ready and polling for commands", category="system")
+        
+        # Start auto-updater
+        self._auto_updater = None
+        if HAS_AUTO_UPDATER:
+            try:
+                self._auto_updater = AutoUpdater(
+                    supabase_url=SUPABASE_URL,
+                    supabase_key=SUPABASE_KEY,
+                    device_key=self.device_key,
+                    log_fn=lambda level, msg: add_log(level, f"[AutoUpdate] {msg}", category="system"),
+                    on_update=lambda v: add_log("info", f"Agent updated to v{v}! Restart to activate.", category="system"),
+                )
+                self._auto_updater.start()
+                # Save current version on first run
+                save_current_version(AGENT_VERSION)
+            except Exception as e:
+                add_log("warn", f"Auto-updater init failed: {e}", category="system")
         
         last_heartbeat = 0
         
