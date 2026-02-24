@@ -837,8 +837,133 @@ class LocalP2PServer:
         self._server_thread.start()
         
         self._ready.wait(timeout=5)
+        
+        # Start the HTTP API alongside WebSocket
+        self._start_http_server()
+        
         return True
     
+    def _start_http_server(self):
+        """Start a simple HTTP server for P2P probe/command via fetch() (CapacitorHttp)."""
+        import http.server
+        import urllib.parse as urlparse
+
+        p2p_server = self
+
+        class P2PHttpHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass  # Suppress default logging
+
+            def _send_cors_headers(self):
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+            def do_OPTIONS(self):
+                self.send_response(200)
+                self._send_cors_headers()
+                self.end_headers()
+
+            def do_GET(self):
+                parsed = urlparse.urlparse(self.path)
+                if parsed.path in ("/ping", "/p2p/ping"):
+                    self.send_response(200)
+                    self._send_cors_headers()
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    resp = {
+                        "type": "pong",
+                        "server": "jarvis_local_p2p",
+                        "version": AGENT_VERSION,
+                        "local_ips": p2p_server.local_ips,
+                        "port": p2p_server._actual_port,
+                    }
+                    self.wfile.write(json.dumps(resp).encode())
+                elif parsed.path in ("/info", "/p2p/info"):
+                    self.send_response(200)
+                    self._send_cors_headers()
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    resp = {
+                        "type": "info",
+                        "local_ips": p2p_server.local_ips,
+                        "port": p2p_server._actual_port,
+                        "clients": len(p2p_server.clients),
+                        "network_prefix": get_network_prefix(p2p_server.local_ips[0]) if p2p_server.local_ips else "",
+                    }
+                    self.wfile.write(json.dumps(resp).encode())
+                else:
+                    self.send_response(404)
+                    self._send_cors_headers()
+                    self.end_headers()
+
+            def do_POST(self):
+                parsed = urlparse.urlparse(self.path)
+                if parsed.path in ("/command", "/p2p/command"):
+                    content_length = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(content_length)
+                    try:
+                        data = json.loads(body)
+                        command_type = data.get("commandType", "")
+                        payload = data.get("payload", {})
+                        request_id = data.get("requestId", str(uuid.uuid4()))
+
+                        if p2p_server.command_handler:
+                            if asyncio.iscoroutinefunction(p2p_server.command_handler):
+                                loop = p2p_server._loop
+                                if loop and loop.is_running():
+                                    future = asyncio.run_coroutine_threadsafe(
+                                        p2p_server.command_handler(command_type, payload), loop
+                                    )
+                                    result = future.result(timeout=30)
+                                else:
+                                    result = asyncio.run(p2p_server.command_handler(command_type, payload))
+                            else:
+                                result = p2p_server.command_handler(command_type, payload)
+
+                            self.send_response(200)
+                            self._send_cors_headers()
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({
+                                "type": "command_result",
+                                "requestId": request_id,
+                                "commandType": command_type,
+                                "result": result,
+                            }).encode())
+                        else:
+                            self.send_response(500)
+                            self._send_cors_headers()
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"type": "command_error", "error": "No handler"}).encode())
+                    except Exception as e:
+                        self.send_response(500)
+                        self._send_cors_headers()
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"type": "command_error", "error": str(e)}).encode())
+                else:
+                    self.send_response(404)
+                    self._send_cors_headers()
+                    self.end_headers()
+
+        http_port = self._actual_port + 1  # HTTP on port 9877
+
+        def run_http():
+            try:
+                server = http.server.HTTPServer(("0.0.0.0", http_port), P2PHttpHandler)
+                add_log("info", f"Local P2P HTTP API started on port {http_port}", category="p2p")
+                for ip in self.local_ips:
+                    add_log("info", f"  → http://{ip}:{http_port}/ping", category="p2p")
+                _add_firewall_rule(http_port)
+                server.serve_forever()
+            except Exception as e:
+                add_log("warn", f"P2P HTTP server failed: {e}", category="p2p")
+
+        self._http_thread = threading.Thread(target=run_http, daemon=True)
+        self._http_thread.start()
+
     def stop(self):
         self.running = False
         if self.server:
