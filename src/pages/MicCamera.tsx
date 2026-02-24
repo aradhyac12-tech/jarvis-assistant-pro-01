@@ -69,6 +69,14 @@ function StreamSettingsPanel({
   label: string;
 }) {
   const [open, setOpen] = useState(false);
+
+  // Safe quality cap: agent may crash at 100% quality + high FPS due to memory/CPU
+  // Cap quality at 90 when FPS > 30 to prevent agent overload
+  const applySafe = (f: number, q: number) => {
+    const safeQ = f > 30 ? Math.min(q, 90) : q;
+    onApply(f, safeQ);
+  };
+
   return (
     <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
       <button
@@ -95,11 +103,11 @@ function StreamSettingsPanel({
             <Slider
               value={[fps]}
               onValueChange={([v]) => onFpsChange(v)}
-              onValueCommit={([v]) => { onFpsChange(v); onApply(v, quality); }}
-              min={5} max={90} step={5}
+              onValueCommit={([v]) => { onFpsChange(v); applySafe(v, quality); }}
+              min={5} max={60} step={5}
             />
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>5 (Low)</span><span>30 (Smooth)</span><span>90 (Ultra)</span>
+              <span>5 (Low)</span><span>30 (Smooth)</span><span>60 (Max)</span>
             </div>
           </div>
           <div className="space-y-2">
@@ -110,27 +118,27 @@ function StreamSettingsPanel({
             <Slider
               value={[quality]}
               onValueChange={([v]) => onQualityChange(v)}
-              onValueCommit={([v]) => { onQualityChange(v); onApply(fps, v); }}
-              min={10} max={100} step={5}
+              onValueCommit={([v]) => { onQualityChange(v); applySafe(fps, v); }}
+              min={20} max={95} step={5}
             />
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>10% (Fast)</span><span>50% (Balanced)</span><span>100% (Best)</span>
+              <span>20% (Fast)</span><span>60% (Balanced)</span><span>95% (Best)</span>
             </div>
           </div>
           <div className="flex flex-wrap gap-2 pt-2">
             {[
-              { label: "🐢 Low", fps: 15, q: 50 },
-              { label: "⚖️ Balanced", fps: 30, q: 70 },
-              { label: "🚀 High", fps: 60, q: 85 },
-              { label: "⚡ Ultra", fps: 90, q: 100 },
+              { label: "🐢 Low", fps: 15, q: 40 },
+              { label: "⚖️ Balanced", fps: 30, q: 65 },
+              { label: "🚀 High", fps: 45, q: 80 },
+              { label: "⚡ Ultra", fps: 60, q: 90 },
             ].map(p => (
-              <Button key={p.label} variant="outline" size="sm" onClick={() => { onFpsChange(p.fps); onQualityChange(p.q); onApply(p.fps, p.q); }}>
+              <Button key={p.label} variant="outline" size="sm" onClick={() => { onFpsChange(p.fps); onQualityChange(p.q); applySafe(p.fps, p.q); }}>
                 {p.label}
               </Button>
             ))}
           </div>
           <p className="text-xs text-muted-foreground pt-1">
-            <strong>Tip:</strong> Changes apply instantly without restarting the stream.
+            <strong>Tip:</strong> Quality capped at 90% when FPS &gt; 30 to prevent agent crashes.
           </p>
         </div>
       )}
@@ -165,7 +173,7 @@ export default function MicCamera() {
   const [pcCameras, setPcCameras] = useState<Array<{ index: number; name: string }>>([]);
   const [selectedPcCam, setSelectedPcCam] = useState(0);
   const [camFps, setCamFps] = useState(() => loadSetting("cam_fps", 30));
-  const [camQuality, setCamQuality] = useState(() => loadSetting("cam_quality", 70));
+  const [camQuality, setCamQuality] = useState(() => loadSetting("cam_quality", 65));
   const [liveCamFps, setLiveCamFps] = useState(0);
   const [camLatency, setCamLatency] = useState(0);
   const pcCamWsRef = useRef<WebSocket | null>(null);
@@ -179,7 +187,7 @@ export default function MicCamera() {
   const [screenFrame, setScreenFrame] = useState<string | null>(null);
   const [screenError, setScreenError] = useState<string | null>(null);
   const [screenFps, setScreenFps] = useState(() => loadSetting("screen_fps", 30));
-  const [screenQuality, setScreenQuality] = useState(() => loadSetting("screen_quality", 70));
+  const [screenQuality, setScreenQuality] = useState(() => loadSetting("screen_quality", 65));
   const [liveScreenFps, setLiveScreenFps] = useState(0);
   const [screenLatency, setScreenLatency] = useState(0);
   const screenWsRef = useRef<WebSocket | null>(null);
@@ -347,7 +355,9 @@ export default function MicCamera() {
   }, [sendCommand, toast]);
 
   const updateCamSettings = useCallback(async (fps: number, quality: number) => {
-    if (pcCamActive) sendCommand("update_camera_settings", { fps, quality });
+    // Cap quality when FPS is high to prevent agent crash
+    const safeQ = fps > 30 ? Math.min(quality, 90) : quality;
+    if (pcCamActive) sendCommand("update_camera_settings", { fps, quality: safeQ });
   }, [pcCamActive, sendCommand]);
 
   // ==================== SCREEN MIRROR ====================
@@ -410,7 +420,7 @@ export default function MicCamera() {
   }, [sendCommand, toast]);
 
   const updateScreenSettings = useCallback(async (fps: number, quality: number) => {
-    if (screenActive) sendCommand("update_screen_settings", { fps, quality });
+    if (screenActive) sendCommand("update_screen_settings", { fps, quality: fps > 30 ? Math.min(quality, 90) : quality });
   }, [screenActive, sendCommand]);
 
   // ==================== AUDIO RELAY ====================

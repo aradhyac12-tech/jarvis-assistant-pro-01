@@ -37,6 +37,7 @@ import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
 import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
+import { useAppNotifications } from "@/hooks/useAppNotifications";
 
 interface MotionEvent {
   id: string;
@@ -48,6 +49,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
   const { toast } = useToast();
+  const { notifyMotionDetected, notifyHumanDetected } = useAppNotifications();
 
   // Persisted Settings
   const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
@@ -59,8 +61,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenEnabled, setSirenEnabled] = useState(() => localStorage.getItem("surveillance_siren") === "true");
   const [autoCall, setAutoCall] = useState(() => localStorage.getItem("surveillance_autocall") === "true");
   const [micEnabled, setMicEnabled] = useState(() => localStorage.getItem("surveillance_mic") === "true");
-  const [survFps, setSurvFps] = useState(() => parseInt(localStorage.getItem("surveillance_fps") || "15"));
-  const [survQuality, setSurvQuality] = useState(() => parseInt(localStorage.getItem("surveillance_quality") || "50"));
+  const [survFps, setSurvFps] = useState(() => parseInt(localStorage.getItem("surveillance_fps") || "30"));
+  const [survQuality, setSurvQuality] = useState(() => parseInt(localStorage.getItem("surveillance_quality") || "65"));
 
   // Runtime State
   const [monitoring, setMonitoring] = useState(() => localStorage.getItem("surveillance_monitoring") === "true");
@@ -69,6 +71,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [isStarting, setIsStarting] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [liveFps, setLiveFps] = useState(0);
+  const [streamLatency, setStreamLatency] = useState(0);
   const [sirenActive, setSirenActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
   const [poseEnabled, setPoseEnabled] = useState(() => localStorage.getItem("surveillance_pose") === "true");
@@ -83,6 +86,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const wsRef = useRef<WebSocket | null>(null);
   const currentBlobUrlRef = useRef<string | null>(null);
   const fpsCounterRef = useRef({ frames: 0, lastCheck: Date.now() });
+  const frameTimesRef = useRef<number[]>([]);
   const previousFrameRef = useRef<ImageData | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -157,6 +161,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
   }, [sensitivity]);
 
   const triggerAlerts = useCallback(async (event: MotionEvent) => {
+    // Push notification
+    notifyMotionDetected(event.confidence);
+    
     if (alarmEnabled) {
       await sendCommand("play_alarm", { type: sirenEnabled ? "siren" : "beep" });
     }
@@ -167,7 +174,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
         auto_call: true,
       });
     }
-  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
+  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand, notifyMotionDetected]);
 
   const toggleSiren = useCallback(async () => {
     if (sirenActive) {
@@ -348,6 +355,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
             currentBlobUrlRef.current = newUrl;
             setCurrentFrame(newUrl);
 
+            // Latency tracking
+            frameTimesRef.current.push(now);
+            if (frameTimesRef.current.length > 10) frameTimesRef.current.shift();
+            if (frameTimesRef.current.length >= 2) {
+              const gaps = [];
+              for (let i = 1; i < frameTimesRef.current.length; i++) gaps.push(frameTimesRef.current[i] - frameTimesRef.current[i - 1]);
+              setStreamLatency(Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length));
+            }
+
             fpsCounterRef.current.frames++;
             const elapsed = now - fpsCounterRef.current.lastCheck;
             if (elapsed >= 1000) {
@@ -514,17 +530,27 @@ export function SurveillancePanel({ className }: { className?: string }) {
               onHumanDetected={(lm, conf) => {
                 if (!humanPresent) {
                   setHumanPresent(true);
-                  addLog("warn", "web", `Human detected (${Math.round(conf * 100)}% confidence)`);
-                  toast({ title: "🧍 Human Detected!", description: `Confidence: ${Math.round(conf * 100)}%` });
+                  const confPct = Math.round(conf * 100);
+                  addLog("warn", "web", `Human detected (${confPct}% confidence)`);
+                  toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
+                  notifyHumanDetected(confPct);
                 }
                 // Reset after 3 seconds of no detection
                 setTimeout(() => setHumanPresent(false), 3000);
               }}
             />
             <div className="absolute top-2 right-2 flex gap-1">
-              <Badge variant="secondary" className="bg-black/50 backdrop-blur text-xs">
+              <Badge variant="secondary" className="bg-black/50 backdrop-blur text-xs font-mono">
                 {liveFps} FPS
               </Badge>
+              {streamLatency > 0 && (
+                <Badge variant="secondary" className={cn(
+                  "bg-black/50 backdrop-blur text-xs font-mono",
+                  streamLatency > 100 ? "text-destructive" : streamLatency > 50 ? "text-yellow-400" : "text-primary"
+                )}>
+                  {streamLatency}ms
+                </Badge>
+              )}
               {poseEnabled && (
                 <Badge variant="secondary" className="bg-purple-500/80 text-white backdrop-blur text-[10px]">
                   <PersonStanding className="w-3 h-3 mr-1" /> Pose
