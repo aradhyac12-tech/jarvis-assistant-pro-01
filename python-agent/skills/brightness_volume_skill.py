@@ -103,64 +103,54 @@ class BrightnessVolumeSkill(Skill):
         level = max(0, min(100, int(level)))
         
         try:
-            # Use PowerShell with audio endpoint
-            ps_script = f"""
-$vol = [audio]::new()
-$vol.Volume = {level / 100}
-"""
-            # Alternative: Use nircmd if available
-            # First try with pyautogui/ctypes
-            try:
-                from ctypes import cast, POINTER
-                from comtypes import CLSCTX_ALL
-                from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            from ctypes import cast, POINTER
+            import comtypes
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
+            comtypes.CoInitialize()
+            try:
                 devices = AudioUtilities.GetSpeakers()
                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                 volume = cast(interface, POINTER(IAudioEndpointVolume))
                 volume.SetMasterVolumeLevelScalar(level / 100, None)
-                
                 return {"success": True, "message": f"Volume set to {level}%", "level": level}
-            except ImportError:
-                # Fallback to nircmd
+            finally:
+                comtypes.CoUninitialize()
+        except ImportError:
+            try:
                 subprocess.run(
                     ["nircmd", "setsysvolume", str(int(level * 655.35))],
-                    capture_output=True,
-                    timeout=5
+                    capture_output=True, timeout=5
                 )
                 return {"success": True, "message": f"Volume set to {level}%", "level": level}
-                
-        except Exception as e:
-            # Final fallback: PowerShell
-            try:
-                ps_script = f"""
-$obj = new-object -com wscript.shell
-$target = {level}
-$current = [Audio]::Volume * 100
-while ($current -ne $target) {{
-    if ($current -lt $target) {{ $obj.SendKeys([char]175) }}
-    else {{ $obj.SendKeys([char]174) }}
-    $current = [Audio]::Volume * 100
-}}
-"""
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                import pyautogui
+                key = "volumeup" if level > 50 else "volumedown"
+                for _ in range(abs(level - 50) // 2):
+                    pyautogui.press(key)
                 return {"success": True, "message": f"Volume adjusted towards {level}%", "level": level}
-            except:
-                return {"success": False, "error": str(e)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def _get_volume(self) -> Dict[str, Any]:
         """Get current volume level"""
         try:
             from ctypes import cast, POINTER
+            import comtypes
             from comtypes import CLSCTX_ALL
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            current = int(volume.GetMasterVolumeLevelScalar() * 100)
-            muted = volume.GetMute()
-            
-            return {"success": True, "level": current, "muted": bool(muted)}
+            comtypes.CoInitialize()
+            try:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                current = int(volume.GetMasterVolumeLevelScalar() * 100)
+                muted = volume.GetMute()
+                return {"success": True, "level": current, "muted": bool(muted)}
+            finally:
+                comtypes.CoUninitialize()
         except ImportError:
             return {"success": False, "error": "pycaw not installed - run: pip install pycaw"}
         except Exception as e:
@@ -170,21 +160,23 @@ while ($current -ne $target) {{
         """Mute or unmute system audio"""
         try:
             from ctypes import cast, POINTER
+            import comtypes
             from comtypes import CLSCTX_ALL
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            volume.SetMute(1 if mute else 0, None)
-            
-            return {"success": True, "message": "Muted" if mute else "Unmuted", "muted": mute}
+            comtypes.CoInitialize()
+            try:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                volume.SetMute(1 if mute else 0, None)
+                return {"success": True, "message": "Muted" if mute else "Unmuted", "muted": mute}
+            finally:
+                comtypes.CoUninitialize()
         except ImportError:
-            # Fallback to nircmd
             subprocess.run(
                 ["nircmd", "mutesysvolume", "1" if mute else "0"],
-                capture_output=True,
-                timeout=5
+                capture_output=True, timeout=5
             )
             return {"success": True, "message": "Muted" if mute else "Unmuted", "muted": mute}
         except Exception as e:
@@ -194,16 +186,20 @@ while ($current -ne $target) {{
         """Toggle mute state"""
         try:
             from ctypes import cast, POINTER
+            import comtypes
             from comtypes import CLSCTX_ALL
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            current_mute = volume.GetMute()
-            volume.SetMute(0 if current_mute else 1, None)
-            
-            return {"success": True, "message": "Unmuted" if current_mute else "Muted", "muted": not current_mute}
+            comtypes.CoInitialize()
+            try:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                current_mute = volume.GetMute()
+                volume.SetMute(0 if current_mute else 1, None)
+                return {"success": True, "message": "Unmuted" if current_mute else "Muted", "muted": not current_mute}
+            finally:
+                comtypes.CoUninitialize()
         except ImportError:
             subprocess.run(["nircmd", "mutesysvolume", "2"], capture_output=True, timeout=5)
             return {"success": True, "message": "Mute toggled"}
@@ -214,20 +210,22 @@ while ($current -ne $target) {{
         """Adjust volume by delta amount"""
         try:
             from ctypes import cast, POINTER
+            import comtypes
             from comtypes import CLSCTX_ALL
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            
-            current = volume.GetMasterVolumeLevelScalar() * 100
-            new_level = max(0, min(100, current + delta))
-            volume.SetMasterVolumeLevelScalar(new_level / 100, None)
-            
-            return {"success": True, "message": f"Volume {'increased' if delta > 0 else 'decreased'} to {int(new_level)}%", "level": int(new_level)}
+            comtypes.CoInitialize()
+            try:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                current = volume.GetMasterVolumeLevelScalar() * 100
+                new_level = max(0, min(100, current + delta))
+                volume.SetMasterVolumeLevelScalar(new_level / 100, None)
+                return {"success": True, "message": f"Volume {'increased' if delta > 0 else 'decreased'} to {int(new_level)}%", "level": int(new_level)}
+            finally:
+                comtypes.CoUninitialize()
         except ImportError:
-            # Use keyboard simulation
             import pyautogui
             key = "volumeup" if delta > 0 else "volumedown"
             for _ in range(abs(delta) // 2):
