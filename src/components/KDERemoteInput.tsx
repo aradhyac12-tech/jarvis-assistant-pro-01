@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import {
-  Mouse, Keyboard, Hand, Zap, Wifi, Cloud, Send,
+  Mouse, Keyboard, Hand, Zap, Wifi, Cloud, Send, MessageSquare,
   ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
   Command, CornerDownLeft, Delete,
   Settings, ChevronDown, ChevronUp,
@@ -41,13 +41,16 @@ export const KDERemoteInput = memo(function KDERemoteInput({
   onKeyPress, onTypeText, connectionMode, latency, isConnected, className,
 }: KDERemoteInputProps) {
   const [text, setText] = useState("");
+  const [directMode, setDirectMode] = useState(() => loadSetting("remote_input_direct", true));
   const [sensitivity, setSensitivity] = useState(() => loadSetting("trackpad_sensitivity", 1.0));
   const [showSettings, setShowSettings] = useState(false);
   const [showFKeys, setShowFKeys] = useState(false);
   const [modifiers, setModifiers] = useState({ ctrl: false, shift: false, alt: false, win: false });
   const inputRef = useRef<HTMLInputElement>(null);
+  const lastDirectValueRef = useRef("");
 
   useEffect(() => { localStorage.setItem("trackpad_sensitivity", JSON.stringify(sensitivity)); }, [sensitivity]);
+  useEffect(() => { localStorage.setItem("remote_input_direct", JSON.stringify(directMode)); }, [directMode]);
 
   const gestureInput = useGestureInput({
     onMouseMove,
@@ -72,16 +75,38 @@ export const KDERemoteInput = memo(function KDERemoteInput({
     }
   }, [connectionMode]);
 
+  // Compose mode: send entire text
   const handleSendText = useCallback(() => {
     if (text.trim() && onTypeText) { onTypeText(text); setText(""); }
   }, [text, onTypeText]);
 
+  // Direct mode: send each character as typed
+  const handleDirectInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value;
+    const oldValue = lastDirectValueRef.current;
+
+    if (newValue.length > oldValue.length) {
+      const added = newValue.slice(oldValue.length);
+      for (const char of added) {
+        if (onTypeText) onTypeText(char);
+      }
+    } else if (newValue.length < oldValue.length) {
+      const deleted = oldValue.length - newValue.length;
+      for (let i = 0; i < deleted; i++) onKeyPress("backspace");
+    }
+
+    lastDirectValueRef.current = newValue;
+    setTimeout(() => {
+      if (inputRef.current) { inputRef.current.value = ""; lastDirectValueRef.current = ""; }
+    }, 50);
+  }, [onKeyPress, onTypeText]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") { e.preventDefault(); text.trim() ? handleSendText() : sendKeyWithModifiers("enter"); }
-    else if (e.key === "Backspace" && text === "") sendKeyWithModifiers("backspace");
+    if (e.key === "Enter") { e.preventDefault(); directMode ? sendKeyWithModifiers("enter") : (text.trim() ? handleSendText() : sendKeyWithModifiers("enter")); }
+    else if (e.key === "Backspace" && (directMode || text === "")) sendKeyWithModifiers("backspace");
     else if (e.key === "Tab") { e.preventDefault(); sendKeyWithModifiers("tab"); }
     else if (e.key === "Escape") { e.preventDefault(); sendKeyWithModifiers("escape"); }
-  }, [text, handleSendText]);
+  }, [text, handleSendText, directMode]);
 
   const toggleModifier = useCallback((mod: keyof typeof modifiers) => {
     setModifiers(prev => ({ ...prev, [mod]: !prev[mod] }));
@@ -184,24 +209,56 @@ export const KDERemoteInput = memo(function KDERemoteInput({
       </div>
 
       {/* === KEYBOARD INPUT === */}
-      <div className="relative">
-        <Keyboard className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          ref={inputRef}
-          type="text"
-          placeholder="Type here — sends to PC..."
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          className="pl-10 pr-12 h-11 text-sm bg-card/50 border-border/20"
-          disabled={!isConnected}
-          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
-        />
-        <Button size="icon" variant="ghost"
-          className="absolute right-1 top-1/2 -translate-y-1/2 h-9 w-9"
-          onClick={handleSendText} disabled={!isConnected || !text.trim()}>
-          <Send className="h-4 w-4" />
-        </Button>
+      <div className="space-y-2">
+        {/* Mode toggle */}
+        <div className="flex gap-1 p-0.5 bg-secondary/20 rounded-md">
+          <Button variant={directMode ? "default" : "ghost"} size="sm" className="flex-1 h-7 text-[10px] gap-1"
+            onClick={() => setDirectMode(true)}>
+            <Zap className="h-3 w-3" /> Direct
+          </Button>
+          <Button variant={!directMode ? "default" : "ghost"} size="sm" className="flex-1 h-7 text-[10px] gap-1"
+            onClick={() => setDirectMode(false)}>
+            <MessageSquare className="h-3 w-3" /> Compose
+          </Button>
+        </div>
+
+        {directMode ? (
+          /* Direct mode: each key sent instantly */
+          <div className="relative">
+            <Zap className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-primary" />
+            <Input
+              ref={inputRef}
+              type="text"
+              placeholder="Type — each key goes to PC instantly..."
+              onChange={handleDirectInput}
+              onKeyDown={handleKeyDown}
+              className="pl-10 h-11 text-sm bg-card/50 border-primary/20 focus:border-primary"
+              disabled={!isConnected}
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
+            />
+          </div>
+        ) : (
+          /* Compose mode: type then send */
+          <div className="relative">
+            <Keyboard className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              ref={inputRef}
+              type="text"
+              placeholder="Compose message, then send..."
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              className="pl-10 pr-12 h-11 text-sm bg-card/50 border-border/20"
+              disabled={!isConnected}
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
+            />
+            <Button size="icon" variant="ghost"
+              className="absolute right-1 top-1/2 -translate-y-1/2 h-9 w-9"
+              onClick={handleSendText} disabled={!isConnected || !text.trim()}>
+              <Send className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* === MODIFIER KEYS === */}
