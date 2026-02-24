@@ -2811,17 +2811,16 @@ class JarvisAgent:
                     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
                     webbrowser.open(url)
                     if auto_play:
-                        # Wait for page to fully load
-                        await asyncio.sleep(5)
-                        # Use / to focus search (clears focus from search bar), then Escape to unfocus
-                        # Then use Tab navigation to reach the first video thumbnail
+                        # Wait for page to fully load (20s for slow connections)
+                        await asyncio.sleep(20)
+                        # Click on the first video thumbnail using JavaScript via keyboard
+                        # Press Escape first to clear any focus
                         pyautogui.press("escape")
-                        await asyncio.sleep(0.3)
-                        # Skip to content: the first video link is typically reachable via Tab
-                        # On YouTube search results, pressing Tab multiple times reaches the first video
+                        await asyncio.sleep(0.5)
+                        # Use Tab to navigate to first video result
                         for _ in range(5):
                             pyautogui.press("tab")
-                            await asyncio.sleep(0.1)
+                            await asyncio.sleep(0.15)
                         pyautogui.press("enter")
                     return {"success": True, "message": f"Playing '{query}' on YouTube"}
                 else:
@@ -2837,7 +2836,7 @@ class JarvisAgent:
                 if engine in ("chatgpt", "openai"):
                     webbrowser.open("https://chat.openai.com/")
                     if auto_enter:
-                        await asyncio.sleep(7)
+                        await asyncio.sleep(20)
                         # Use clipboard paste for reliable text input (supports all characters)
                         try:
                             import pyperclip
@@ -2851,7 +2850,7 @@ class JarvisAgent:
                 elif engine == "gemini":
                     webbrowser.open("https://gemini.google.com/app")
                     if auto_enter:
-                        await asyncio.sleep(7)
+                        await asyncio.sleep(20)
                         try:
                             import pyperclip
                             pyperclip.copy(query)
