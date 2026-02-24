@@ -36,6 +36,10 @@ import {
   RotateCcw,
   Activity,
   Video,
+  Ghost,
+  Eye,
+  EyeOff,
+  Keyboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -50,6 +54,7 @@ import { BoostPC } from "@/components/BoostPC";
 import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
 import { KDERemoteInput } from "@/components/KDERemoteInput";
+import { KDEKeyboard } from "@/components/KDEKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -127,6 +132,8 @@ export default function Hub() {
 
   // Media state
   const [isMuted, setIsMuted] = useState(() => loadState("hub_muted", false));
+  const [remoteSubTab, setRemoteSubTab] = useState<"mouse" | "keyboard">(() => loadState("hub_remote_subtab", "mouse"));
+  const [ghostMode, setGhostMode] = useState(false);
 
   // Apps state
   const [runningApps, setRunningApps] = useState<AppInfo[]>([]);
@@ -161,6 +168,7 @@ export default function Hub() {
   useEffect(() => { localStorage.setItem("hub_app_view", JSON.stringify(appView)); }, [appView]);
   useEffect(() => { localStorage.setItem("hub_app_search", JSON.stringify(appSearch)); }, [appSearch]);
   useEffect(() => { localStorage.setItem("hub_files_path", JSON.stringify(filesPath)); }, [filesPath]);
+  useEffect(() => { localStorage.setItem("hub_remote_subtab", JSON.stringify(remoteSubTab)); }, [remoteSubTab]);
 
   const getConnectionStatus = useCallback(() => {
     if (!selectedDevice) return { text: "No Device", color: "text-muted-foreground", dot: "bg-muted-foreground" };
@@ -520,6 +528,19 @@ export default function Hub() {
 
   const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
 
+  const handleGhostMode = useCallback(async () => {
+    if (ghostMode) {
+      await sendCommand("disable_ghost_mode", {}, { awaitResult: true, timeoutMs: 10000 });
+      setGhostMode(false);
+      toast({ title: "Ghost Mode Disabled", description: "Agent UI restored, auto-start removed" });
+    } else {
+      await sendCommand("ghost_mode", { auto_start: true }, { awaitResult: true, timeoutMs: 10000 });
+      setGhostMode(true);
+      toast({ title: "Ghost Mode Enabled", description: "Agent will run as background service on boot" });
+    }
+    haptic.tap();
+  }, [ghostMode, sendCommand, toast, haptic]);
+
   const quickLinks = [
     { title: "AI", icon: Bot, href: "/voice" },
     { title: "Camera", icon: Camera, href: "/miccamera" },
@@ -702,7 +723,7 @@ export default function Hub() {
                 {/* Power Controls */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3">
-                    <div className="grid grid-cols-5 gap-1.5">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {[
                         { icon: Lock, action: handleLock, label: "Lock", danger: false },
                         { icon: Moon, action: () => handlePower("sleep"), label: "Sleep", danger: false },
@@ -726,6 +747,21 @@ export default function Hub() {
                         </Button>
                       ))}
                     </div>
+                    {/* Ghost Mode Button */}
+                    <div className="mt-2">
+                      <Button
+                        variant="outline"
+                        className={cn(
+                          "w-full h-10 gap-2 text-xs border-border/20",
+                          ghostMode && "bg-primary/10 border-primary/30 text-primary"
+                        )}
+                        onClick={handleGhostMode}
+                        disabled={!isConnected}
+                      >
+                        {ghostMode ? <EyeOff className="w-4 h-4" /> : <Ghost className="w-4 h-4" />}
+                        {ghostMode ? "Disable Ghost Mode" : "Ghost Mode"}
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               </div>
@@ -734,22 +770,47 @@ export default function Hub() {
             {/* Remote Tab */}
             {activeTab === "remote" && (
               <div className="space-y-3">
-                <KDERemoteInput
-                  onMouseMove={fireMouse}
-                  onScroll={fireScroll}
-                  onZoom={fireZoom}
-                  onGesture3Finger={fireGesture3Finger}
-                  onGesture4Finger={fireGesture4Finger}
-                  onClick={fireClick}
-                  onDoubleClick={() => fireClick("left")}
-                  onDragStart={() => sendCommand("mouse_down", { button: "left" })}
-                  onDragEnd={() => sendCommand("mouse_up", { button: "left" })}
-                  onKeyPress={fireKey}
-                  onTypeText={handleTypeText}
-                  connectionMode={connectionMode}
-                  latency={p2pLatency}
-                  isConnected={isConnected}
-                />
+                {/* Subtab toggle: Mouse / Keyboard */}
+                <div className="flex gap-1 p-0.5 bg-card/50 rounded-lg border border-border/20">
+                  {(["mouse", "keyboard"] as const).map((sub) => (
+                    <button
+                      key={sub}
+                      onClick={() => { setRemoteSubTab(sub); haptic.tap(); }}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-md text-xs font-medium transition-all capitalize",
+                        remoteSubTab === sub ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {sub === "mouse" ? <Mouse className="w-3.5 h-3.5" /> : <Keyboard className="w-3.5 h-3.5" />}
+                      {sub === "mouse" ? "Trackpad" : "Keyboard"}
+                    </button>
+                  ))}
+                </div>
+
+                {remoteSubTab === "mouse" ? (
+                  <KDERemoteInput
+                    onMouseMove={fireMouse}
+                    onScroll={fireScroll}
+                    onZoom={fireZoom}
+                    onGesture3Finger={fireGesture3Finger}
+                    onGesture4Finger={fireGesture4Finger}
+                    onClick={fireClick}
+                    onDoubleClick={() => fireClick("left")}
+                    onDragStart={() => sendCommand("mouse_down", { button: "left" })}
+                    onDragEnd={() => sendCommand("mouse_up", { button: "left" })}
+                    onKeyPress={fireKey}
+                    onTypeText={handleTypeText}
+                    connectionMode={connectionMode}
+                    latency={p2pLatency}
+                    isConnected={isConnected}
+                  />
+                ) : (
+                  <KDEKeyboard
+                    onKeyPress={fireKey}
+                    disabled={!isConnected}
+                  />
+                )}
+
                 <Card className="border-border/30 bg-card/50">
                   <CardContent className="p-4">
                     <AutoClipboardSync />
@@ -882,7 +943,8 @@ export default function Hub() {
                           </div>
                         ) : (
                           filteredInstalled.map((app) => (
-                            <div key={app.app_id || app.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors">
+                            <div key={app.app_id || app.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors cursor-pointer active:bg-secondary/50"
+                              onClick={() => { handleOpenApp(app.name); haptic.tap(); }}>
                               <div className="w-8 h-8 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
                                 <AppWindow className="w-3.5 h-3.5 text-muted-foreground" />
                               </div>
@@ -893,9 +955,9 @@ export default function Hub() {
                                 </ScrollArea>
                                 {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
                               </div>
-                              <Button variant="outline" size="sm" className="h-7 text-[10px] px-2 shrink-0" onClick={() => { handleOpenApp(app.name); haptic.tap(); }}>
-                                Open
-                              </Button>
+                              <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0 border-primary/20 text-primary/60">
+                                Tap to open
+                              </Badge>
                             </div>
                           ))
                         )

@@ -1859,17 +1859,26 @@ class JarvisAgent:
                 "zoom": "zoom.exe", "teams": "msteams.exe",
                 "vscode": "code.exe", "code": "code.exe",
                 "word": "winword.exe", "excel": "excel.exe", "powerpoint": "powerpnt.exe",
+                "outlook": "outlook.exe", "onenote": "onenote.exe",
+                "obs": "obs64.exe", "obs studio": "obs64.exe",
+                "vlc": "vlc.exe", "steam": "steam.exe", "epic": "EpicGamesLauncher.exe",
+                "whatsapp": "WhatsApp.exe", "telegram": "Telegram.exe",
             }
             
+            # Method 1: Well-known app shortcuts
             target = well_known.get(name)
             if target:
-                if target.startswith("ms-") or target.endswith(":"):
-                    os.startfile(target)
-                else:
-                    subprocess.Popen([target], shell=True)
-                return {"success": True, "app": name}
+                try:
+                    if target.startswith("ms-") or target.endswith(":"):
+                        os.startfile(target)
+                    else:
+                        subprocess.Popen([target], shell=True)
+                    return {"success": True, "app": name, "method": "well_known"}
+                except Exception:
+                    pass  # Fall through to other methods
             
             if platform.system() == "Windows":
+                # Method 2: Get-StartApps search
                 try:
                     result = subprocess.run(
                         ["powershell", "-NoProfile", "-c", 
@@ -1883,13 +1892,73 @@ class JarvisAgent:
                 except Exception:
                     pass
                 
+                # Method 3: Search Start Menu .lnk shortcuts
+                try:
+                    start_dirs = [
+                        os.path.join(os.environ.get("ProgramData", "C:\\ProgramData"), "Microsoft\\Windows\\Start Menu\\Programs"),
+                        os.path.join(os.environ.get("APPDATA", ""), "Microsoft\\Windows\\Start Menu\\Programs"),
+                    ]
+                    for start_dir in start_dirs:
+                        if not os.path.exists(start_dir):
+                            continue
+                        for root, dirs, files_list in os.walk(start_dir):
+                            for f in files_list:
+                                if f.lower().endswith('.lnk') and name in f.lower():
+                                    lnk_path = os.path.join(root, f)
+                                    os.startfile(lnk_path)
+                                    return {"success": True, "app": name, "method": "start_menu_lnk"}
+                except Exception:
+                    pass
+
+                # Method 4: Shell start command
                 try:
                     subprocess.Popen(f'start "" "{app_name}"', shell=True)
-                    return {"success": True, "app": name, "method": "start"}
+                    return {"success": True, "app": name, "method": "start_cmd"}
+                except Exception:
+                    pass
+
+                # Method 5: Registry install location search
+                try:
+                    import winreg
+                    for hive, reg_path in [
+                        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+                        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    ]:
+                        try:
+                            key = winreg.OpenKey(hive, reg_path)
+                            for i in range(winreg.QueryInfoKey(key)[0]):
+                                try:
+                                    subkey_name = winreg.EnumKey(key, i)
+                                    subkey = winreg.OpenKey(key, subkey_name)
+                                    try:
+                                        display_name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                                        if name in display_name.lower():
+                                            try:
+                                                install_loc = winreg.QueryValueEx(subkey, "InstallLocation")[0]
+                                                if install_loc and os.path.isdir(install_loc):
+                                                    for item in os.listdir(install_loc):
+                                                        if item.lower().endswith('.exe') and name.split()[0] in item.lower():
+                                                            exe_path = os.path.join(install_loc, item)
+                                                            subprocess.Popen([exe_path])
+                                                            winreg.CloseKey(subkey)
+                                                            winreg.CloseKey(key)
+                                                            return {"success": True, "app": name, "method": "registry_exe"}
+                                            except (FileNotFoundError, OSError):
+                                                pass
+                                    except (FileNotFoundError, OSError):
+                                        pass
+                                    finally:
+                                        winreg.CloseKey(subkey)
+                                except (OSError,):
+                                    continue
+                            winreg.CloseKey(key)
+                        except (FileNotFoundError, OSError):
+                            continue
                 except Exception:
                     pass
             
-            return {"success": False, "error": f"Could not find or open: {app_name}"}
+            return {"success": False, "error": f"Could not find or open: {app_name}. Tried all search methods."}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -2826,10 +2895,150 @@ class JarvisAgent:
                     "has_opencv": HAS_OPENCV,
                 }
             
+            # Ghost mode / service mode
+            elif cmd == "ghost_mode":
+                return self._enable_ghost_mode(payload)
+            elif cmd == "disable_ghost_mode":
+                return self._disable_ghost_mode()
+            elif cmd == "open_file":
+                fpath = payload.get("path", "")
+                if fpath:
+                    try:
+                        if platform.system() == "Windows":
+                            os.startfile(fpath)
+                        else:
+                            subprocess.Popen(["xdg-open", fpath])
+                        return {"success": True, "path": fpath}
+                    except Exception as e:
+                        return {"success": False, "error": str(e)}
+                return {"success": False, "error": "No path provided"}
+            
             else:
                 return {"success": False, "error": f"Unknown command: {command_type}"}
         except Exception as e:
             add_log("error", f"Command handler error: {e}", details=traceback.format_exc(), category="command")
+            return {"success": False, "error": str(e)}
+    
+    # ============== GHOST MODE (Background Service) ==============
+    def _enable_ghost_mode(self, payload: Dict[str, Any] = {}) -> Dict[str, Any]:
+        """Hide agent GUI and install as Windows startup task for boot-before-login operation."""
+        try:
+            auto_start = payload.get("auto_start", True)
+            
+            if platform.system() == "Windows":
+                # 1. Install startup scheduled task (runs before login)
+                if auto_start:
+                    agent_path = os.path.abspath(__file__)
+                    python_path = sys.executable
+                    task_name = "JARVIS_Ghost_Agent"
+                    
+                    # Create XML for scheduled task that runs at boot
+                    xml_content = f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>JARVIS PC Agent - Ghost Mode</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger><Enabled>true</Enabled></BootTrigger>
+    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>"{python_path}"</Command>
+      <Arguments>"{agent_path}" --headless</Arguments>
+      <WorkingDirectory>{os.path.dirname(agent_path)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>"""
+                    
+                    xml_path = os.path.join(os.path.dirname(agent_path), "ghost_task.xml")
+                    with open(xml_path, "w", encoding="utf-16") as f:
+                        f.write(xml_content)
+                    
+                    # Delete existing task if any
+                    subprocess.run(
+                        ["schtasks", "/Delete", "/TN", task_name, "/F"],
+                        capture_output=True, timeout=10
+                    )
+                    
+                    # Create new task
+                    result = subprocess.run(
+                        ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    
+                    try:
+                        os.remove(xml_path)
+                    except:
+                        pass
+                    
+                    if result.returncode != 0:
+                        add_log("warn", f"Ghost mode task creation failed: {result.stderr}", category="system")
+                    else:
+                        add_log("info", "Ghost mode: startup task installed", category="system")
+                
+                # 2. Also add to registry Run key as backup
+                try:
+                    import winreg
+                    agent_path = os.path.abspath(__file__)
+                    python_path = sys.executable
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                         r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                         0, winreg.KEY_SET_VALUE)
+                    winreg.SetValueEx(key, "JARVIS_Ghost", 0, winreg.REG_SZ,
+                                      f'"{python_path}" "{agent_path}" --headless')
+                    winreg.CloseKey(key)
+                    add_log("info", "Ghost mode: registry startup added", category="system")
+                except Exception as reg_err:
+                    add_log("warn", f"Registry startup failed: {reg_err}", category="system")
+            
+            add_log("info", "Ghost mode enabled — agent will run as background service", category="system")
+            return {"success": True, "message": "Ghost mode enabled. Agent will auto-start on boot and run in background."}
+        except Exception as e:
+            add_log("error", f"Ghost mode failed: {e}", category="system")
+            return {"success": False, "error": str(e)}
+    
+    def _disable_ghost_mode(self) -> Dict[str, Any]:
+        """Remove ghost mode startup entries."""
+        try:
+            if platform.system() == "Windows":
+                # Remove scheduled task
+                subprocess.run(
+                    ["schtasks", "/Delete", "/TN", "JARVIS_Ghost_Agent", "/F"],
+                    capture_output=True, timeout=10
+                )
+                # Remove registry entry
+                try:
+                    import winreg
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                         r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                         0, winreg.KEY_SET_VALUE)
+                    winreg.DeleteValue(key, "JARVIS_Ghost")
+                    winreg.CloseKey(key)
+                except Exception:
+                    pass
+            
+            add_log("info", "Ghost mode disabled — startup entries removed", category="system")
+            return {"success": True, "message": "Ghost mode disabled. Agent will no longer auto-start."}
+        except Exception as e:
             return {"success": False, "error": str(e)}
     
     # ============== REGISTRATION & HEARTBEAT ==============

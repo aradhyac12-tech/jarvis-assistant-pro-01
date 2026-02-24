@@ -47,22 +47,22 @@ interface GestureCallbacks {
   onDragEnd?: () => void;
 }
 
-// Tuned thresholds
-const SCROLL_THRESHOLD = 3;
-const PINCH_THRESHOLD = 0.04;
-const SWIPE_THRESHOLD = 80;
-const GESTURE_3_THRESHOLD = 60;
-const TAP_MAX_TIME = 200;
-const TAP_MAX_MOVE = 15;
-const DOUBLE_TAP_WINDOW = 300;
+// Tuned thresholds — optimized for responsive tracking
+const SCROLL_THRESHOLD = 2;
+const PINCH_THRESHOLD = 0.03;
+const SWIPE_THRESHOLD = 70;
+const GESTURE_3_THRESHOLD = 50;
+const TAP_MAX_TIME = 220;
+const TAP_MAX_MOVE = 18;
+const DOUBLE_TAP_WINDOW = 280;
 
 // Acceleration curve (KDE Connect style)
 function accelerate(delta: number, sensitivity: number): number {
   const absDelta = Math.abs(delta);
-  // Slow movement: linear (precise). Fast movement: quadratic (large jumps)
-  const speed = absDelta < 3
-    ? absDelta * sensitivity
-    : (absDelta * sensitivity) + (absDelta * absDelta * 0.06 * sensitivity);
+  // Slow movement: linear (precise). Fast movement: cubic (aggressive jumps)
+  const speed = absDelta < 2
+    ? absDelta * sensitivity * 1.2
+    : (absDelta * sensitivity * 1.1) + (absDelta * absDelta * 0.08 * sensitivity);
   return delta >= 0 ? speed : -speed;
 }
 
@@ -159,7 +159,7 @@ export function useGestureInput(callbacks: GestureCallbacks, sensitivity = 1.0) 
       const accX = accelerate(deltaX, sensitivity);
       const accY = accelerate(deltaY, sensitivity);
 
-      if (Math.abs(accX) > 0.5 || Math.abs(accY) > 0.5) {
+      if (Math.abs(accX) > 0.3 || Math.abs(accY) > 0.3) {
         if (!pendingMoveRef.current) pendingMoveRef.current = { x: 0, y: 0 };
         pendingMoveRef.current.x += accX;
         pendingMoveRef.current.y += accY;
@@ -300,7 +300,7 @@ export function useGestureInput(callbacks: GestureCallbacks, sensitivity = 1.0) 
     const accX = accelerate(deltaX, sensitivity);
     const accY = accelerate(deltaY, sensitivity);
 
-    if (Math.abs(accX) > 0.5 || Math.abs(accY) > 0.5) {
+    if (Math.abs(accX) > 0.3 || Math.abs(accY) > 0.3) {
       if (!pendingMoveRef.current) pendingMoveRef.current = { x: 0, y: 0 };
       pendingMoveRef.current.x += accX;
       pendingMoveRef.current.y += accY;
