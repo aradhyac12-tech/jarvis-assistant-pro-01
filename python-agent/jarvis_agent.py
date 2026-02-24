@@ -367,21 +367,38 @@ def _safe_pycaw_set_session_mute(pid: int, mute: bool) -> bool:
 
 
 def _get_audio_output_devices():
-    """Enumerate all audio output devices (speakers/headphones)."""
+    """Enumerate all audio output devices with active device detection (KDE Connect style)."""
     devices = []
     try:
+        # Use AudioDevice module if available, otherwise fall back to Win32_SoundDevice
         result = subprocess.run([
             "powershell", "-NoProfile", "-NonInteractive", "-c",
             """
-            Get-CimInstance Win32_SoundDevice | ForEach-Object {
-                [PSCustomObject]@{
-                    name = $_.Name
-                    id = $_.DeviceID
-                    status = $_.Status
-                }
-            } | ConvertTo-Json -Compress
+            try {
+                # Try Get-AudioDevice (AudioDeviceCmdlets module)
+                $defaultDev = (Get-AudioDevice -Playback).Name
+                Get-AudioDevice -List | Where-Object { $_.Type -eq 'Playback' } | ForEach-Object {
+                    [PSCustomObject]@{
+                        name = $_.Name
+                        id = $_.ID
+                        status = 'OK'
+                        is_active = ($_.Name -eq $defaultDev)
+                    }
+                } | ConvertTo-Json -Compress
+            } catch {
+                # Fallback: use Win32_SoundDevice
+                $default = (Get-CimInstance -Namespace root/cimv2 -ClassName Win32_SoundDevice | Where-Object { $_.StatusInfo -eq 3 } | Select-Object -First 1).Name
+                Get-CimInstance Win32_SoundDevice | ForEach-Object {
+                    [PSCustomObject]@{
+                        name = $_.Name
+                        id = $_.DeviceID
+                        status = $_.Status
+                        is_active = ($_.Name -eq $default)
+                    }
+                } | ConvertTo-Json -Compress
+            }
             """
-        ], capture_output=True, text=True, timeout=5)
+        ], capture_output=True, text=True, timeout=8)
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout.strip())
             if isinstance(data, dict):
@@ -391,11 +408,12 @@ def _get_audio_output_devices():
                     "id": d.get("id", ""),
                     "name": d.get("name", "Unknown"),
                     "status": d.get("status", "Unknown"),
+                    "is_active": d.get("is_active", False),
                 })
     except Exception:
         pass
     if not devices:
-        devices.append({"id": "default", "name": "Default Output", "status": "OK"})
+        devices.append({"id": "default", "name": "Default Output", "status": "OK", "is_active": True})
     return devices
 
 
@@ -1316,9 +1334,26 @@ class JarvisAgent:
         return {"success": ok, "pid": pid, "muted": mute}
 
     def _set_audio_output(self, device_id: str) -> Dict[str, Any]:
+        """Switch default audio playback device using AudioDeviceCmdlets or nircmd."""
         try:
             device_id = (device_id or "").strip() or "default"
-            return {"success": True, "device_id": device_id}
+            # Try AudioDeviceCmdlets first
+            result = subprocess.run([
+                "powershell", "-NoProfile", "-NonInteractive", "-c",
+                f'Set-AudioDevice -ID "{device_id}"'
+            ], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return {"success": True, "device_id": device_id}
+            # Fallback: try by index
+            result2 = subprocess.run([
+                "powershell", "-NoProfile", "-NonInteractive", "-c",
+                f"""
+                $devices = Get-AudioDevice -List | Where-Object {{ $_.Type -eq 'Playback' }}
+                $target = $devices | Where-Object {{ $_.ID -eq '{device_id}' -or $_.Name -like '*{device_id}*' }}
+                if ($target) {{ Set-AudioDevice -ID $target.ID }}
+                """
+            ], capture_output=True, text=True, timeout=5)
+            return {"success": result2.returncode == 0, "device_id": device_id}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

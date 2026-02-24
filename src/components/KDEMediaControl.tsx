@@ -6,10 +6,10 @@ import { Slider } from "@/components/ui/slider";
 import {
   Music, SkipBack, SkipForward, Play, Pause, Repeat, Shuffle,
   Volume2, Volume1, VolumeX, RefreshCw, Speaker, Loader2,
+  Headphones, Monitor, Bluetooth, Radio, Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
-import { useToast } from "@/hooks/use-toast";
 
 interface MediaInfo {
   title?: string;
@@ -29,6 +29,13 @@ interface AudioSession {
   isMuted: boolean;
 }
 
+interface AudioOutputDevice {
+  id: string;
+  name: string;
+  status: string;
+  is_active?: boolean;
+}
+
 interface Props {
   isConnected: boolean;
   volume: number;
@@ -40,15 +47,17 @@ interface Props {
 
 export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, onVolumeCommit, onMuteToggle }: Props) {
   const { sendCommand } = useDeviceCommands();
-  const { toast } = useToast();
 
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [mediaLoading, setMediaLoading] = useState(false);
   const [sessions, setSessions] = useState<AudioSession[]>([]);
+  const [outputDevices, setOutputDevices] = useState<AudioOutputDevice[]>([]);
   const [showMixer, setShowMixer] = useState(false);
+  const [showOutputs, setShowOutputs] = useState(false);
+  const [switchingDevice, setSwitchingDevice] = useState<string | null>(null);
   const pollingRef = useRef<number | null>(null);
   const positionTimerRef = useRef<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
 
@@ -58,44 +67,101 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Fetch media info
+  // === PERSISTENT MEDIA SESSION (Android notification) ===
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+
+    // Create a silent looping audio to keep MediaSession alive
+    const audio = document.createElement("audio");
+    audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+    audio.loop = true;
+    audio.volume = 0.001; // near-silent
+    audioRef.current = audio;
+
+    return () => {
+      audio.pause();
+      audio.remove();
+      audioRef.current = null;
+    };
+  }, []);
+
+  // Update MediaSession metadata & playback state
+  const updateMediaSession = useCallback((info: MediaInfo | null, playing: boolean) => {
+    if (!('mediaSession' in navigator)) return;
+
+    // Keep silent audio playing to maintain notification
+    if (audioRef.current) {
+      if (playing) {
+        audioRef.current.play().catch(() => {});
+      } else {
+        // Don't pause - keep notification alive, just update state
+        audioRef.current.play().catch(() => {});
+      }
+    }
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: info?.title || "No media",
+      artist: info?.artist || "",
+      album: info?.album || "",
+    });
+    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+  }, []);
+
+  // Register MediaSession action handlers (these control from notification)
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+
+    const handlers: Record<string, () => void> = {
+      play: () => handleMediaControl("play_pause"),
+      pause: () => handleMediaControl("play_pause"),
+      previoustrack: () => handleMediaControl("previous"),
+      nexttrack: () => handleMediaControl("next"),
+      stop: () => handleMediaControl("stop"),
+    };
+
+    for (const [action, handler] of Object.entries(handlers)) {
+      try {
+        navigator.mediaSession.setActionHandler(action as MediaSessionAction, handler);
+      } catch {}
+    }
+
+    return () => {
+      for (const action of Object.keys(handlers)) {
+        try {
+          navigator.mediaSession.setActionHandler(action as MediaSessionAction, null);
+        } catch {}
+      }
+    };
+  }, []);
+
+  // === FETCH MEDIA INFO ===
   const fetchMediaInfo = useCallback(async () => {
     if (!isConnected) return;
     try {
-      const result = await sendCommand("get_media_info", {}, { awaitResult: true, timeoutMs: 4000 });
+      const result = await sendCommand("get_media_info", {}, { awaitResult: true, timeoutMs: 3000 });
       if (result.success && "result" in result && result.result) {
         const info = result.result as MediaInfo;
         setMediaInfo(info);
         setIsPlaying(info.playing ?? false);
-
-        // Update Media Session API for Android notification
-        if ('mediaSession' in navigator && info.title) {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: info.title || "Unknown",
-            artist: info.artist || "",
-            album: info.album || "",
-          });
-          navigator.mediaSession.playbackState = info.playing ? "playing" : "paused";
-        }
+        updateMediaSession(info, info.playing ?? false);
       }
-    } catch {
-      // Silent fail for polling
-    }
-  }, [isConnected, sendCommand]);
+    } catch {}
+  }, [isConnected, sendCommand, updateMediaSession]);
 
-  // Fetch audio sessions (mixer)
-  const fetchSessions = useCallback(async () => {
+  // === FETCH AUDIO OUTPUT DEVICES ===
+  const fetchOutputDevices = useCallback(async () => {
     if (!isConnected) return;
     try {
-      const result = await sendCommand("get_audio_devices", {}, { awaitResult: true, timeoutMs: 5000 });
+      const result = await sendCommand("get_audio_devices", {}, { awaitResult: true, timeoutMs: 4000 });
       if (result.success && "result" in result && result.result) {
-        const data = result.result as { sessions?: AudioSession[] };
-        setSessions(data.sessions || []);
+        const data = result.result as { output_devices?: AudioOutputDevice[]; sessions?: AudioSession[] };
+        if (data.output_devices) setOutputDevices(data.output_devices);
+        if (data.sessions) setSessions(data.sessions);
       }
     } catch {}
   }, [isConnected, sendCommand]);
 
-  // Auto-poll media state every 2 seconds (KDE Connect style - instant updates)
+  // Auto-poll media state every 2 seconds
   useEffect(() => {
     if (!isConnected) return;
     fetchMediaInfo();
@@ -105,7 +171,7 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     };
   }, [isConnected, fetchMediaInfo]);
 
-  // Position ticker - increment position locally every second while playing
+  // Position ticker - increment locally every second while playing
   useEffect(() => {
     if (isPlaying && mediaInfo?.duration && mediaInfo.duration > 0) {
       positionTimerRef.current = window.setInterval(() => {
@@ -121,53 +187,58 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     };
   }, [isPlaying, mediaInfo?.duration]);
 
-  // Setup Media Session API handlers for Android notification controls
+  // Fetch output devices when section opens
   useEffect(() => {
-    if (!('mediaSession' in navigator)) return;
+    if (showOutputs && isConnected) fetchOutputDevices();
+  }, [showOutputs, isConnected, fetchOutputDevices]);
 
-    // Create a silent audio element to activate MediaSession on Android
-    const audio = document.createElement("audio");
-    audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
-    audio.loop = true;
+  // === INSTANT MEDIA CONTROL (fire-and-forget) ===
+  const handleMediaControl = useCallback((action: string) => {
+    // Optimistic UI update INSTANTLY
+    if (action === "play_pause") {
+      setIsPlaying(prev => {
+        const next = !prev;
+        updateMediaSession(mediaInfo, next);
+        return next;
+      });
+    }
 
-    const playAudio = async () => {
-      try { await audio.play(); } catch {}
-    };
+    // Fire-and-forget: don't await, don't block UI
+    sendCommand("media_control", { action }).catch(() => {});
 
-    if (isPlaying) playAudio();
-    else audio.pause();
+    // Light refresh after a moment
+    setTimeout(() => fetchMediaInfo(), 400);
+  }, [sendCommand, fetchMediaInfo, mediaInfo, updateMediaSession]);
 
-    navigator.mediaSession.setActionHandler("play", () => handleMediaControl("play_pause"));
-    navigator.mediaSession.setActionHandler("pause", () => handleMediaControl("play_pause"));
-    navigator.mediaSession.setActionHandler("previoustrack", () => handleMediaControl("previous"));
-    navigator.mediaSession.setActionHandler("nexttrack", () => handleMediaControl("next"));
+  // === SWITCH AUDIO OUTPUT ===
+  const handleSwitchOutput = useCallback(async (deviceId: string) => {
+    setSwitchingDevice(deviceId);
+    try {
+      await sendCommand("set_audio_output", { device_id: deviceId }, { awaitResult: true, timeoutMs: 5000 });
+      // Refresh devices to show new active
+      setTimeout(fetchOutputDevices, 500);
+    } catch {}
+    setSwitchingDevice(null);
+  }, [sendCommand, fetchOutputDevices]);
 
-    return () => {
-      audio.pause();
-      audio.remove();
-      navigator.mediaSession.setActionHandler("play", null);
-      navigator.mediaSession.setActionHandler("pause", null);
-      navigator.mediaSession.setActionHandler("previoustrack", null);
-      navigator.mediaSession.setActionHandler("nexttrack", null);
-    };
-  }, [isPlaying]);
-
-  const handleMediaControl = useCallback(async (action: string) => {
-    if (action === "play_pause") setIsPlaying(prev => !prev);
-    await sendCommand("media_control", { action });
-    // Quick refresh after action
-    setTimeout(fetchMediaInfo, 300);
-  }, [sendCommand, fetchMediaInfo]);
-
-  const handleSessionVolume = useCallback(async (pid: number, level: number) => {
+  const handleSessionVolume = useCallback((pid: number, level: number) => {
     setSessions(prev => prev.map(s => s.pid === pid ? { ...s, volume: level } : s));
-    await sendCommand("set_session_volume", { pid, level });
+    // Fire-and-forget
+    sendCommand("set_session_volume", { pid, level }).catch(() => {});
   }, [sendCommand]);
 
-  const handleSessionMute = useCallback(async (pid: number, isMuted: boolean) => {
+  const handleSessionMute = useCallback((pid: number, isMuted: boolean) => {
     setSessions(prev => prev.map(s => s.pid === pid ? { ...s, isMuted: !isMuted } : s));
-    await sendCommand("set_session_mute", { pid, mute: !isMuted });
+    sendCommand("set_session_mute", { pid, mute: !isMuted }).catch(() => {});
   }, [sendCommand]);
+
+  const getDeviceIcon = (name: string) => {
+    const lower = name.toLowerCase();
+    if (lower.includes("bluetooth") || lower.includes("buds") || lower.includes("airpods")) return Bluetooth;
+    if (lower.includes("headphone") || lower.includes("headset") || lower.includes("earphone")) return Headphones;
+    if (lower.includes("hdmi") || lower.includes("display") || lower.includes("monitor")) return Monitor;
+    return Speaker;
+  };
 
   const progress = mediaInfo?.duration && mediaInfo.duration > 0
     ? ((mediaInfo.position || 0) / mediaInfo.duration) * 100
@@ -178,7 +249,6 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
       {/* Now Playing Card */}
       <Card className="border-border/20 bg-card/50 overflow-hidden">
         <CardContent className="p-0">
-          {/* Track info header */}
           <div className="p-4 pb-3">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -266,6 +336,73 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
         </CardContent>
       </Card>
 
+      {/* Audio Output Devices (KDE Connect style) */}
+      <Card className="border-border/20 bg-card/50">
+        <CardContent className="p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Radio className="h-4 w-4 text-primary" />
+              <span className="text-xs font-medium">Audio Output</span>
+              <Badge variant="secondary" className="text-[9px] px-1.5 py-0">{outputDevices.length}</Badge>
+            </div>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowOutputs(!showOutputs); }}>
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+
+          {showOutputs ? (
+            <div className="space-y-1.5">
+              {outputDevices.length === 0 ? (
+                <div className="text-center py-3">
+                  <Button variant="outline" size="sm" className="text-xs" onClick={fetchOutputDevices}>
+                    <RefreshCw className="h-3 w-3 mr-1.5" />Scan Devices
+                  </Button>
+                </div>
+              ) : (
+                outputDevices.map(device => {
+                  const DevIcon = getDeviceIcon(device.name);
+                  const isActive = device.is_active || false;
+                  const isSwitching = switchingDevice === device.id;
+                  return (
+                    <button
+                      key={device.id}
+                      onClick={() => !isActive && handleSwitchOutput(device.id)}
+                      disabled={isActive || isSwitching}
+                      className={cn(
+                        "w-full flex items-center gap-2.5 p-2.5 rounded-lg transition-all text-left",
+                        isActive
+                          ? "bg-primary/10 border border-primary/30"
+                          : "hover:bg-secondary/30 active:bg-secondary/50 border border-transparent"
+                      )}
+                    >
+                      <div className={cn(
+                        "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                        isActive ? "bg-primary/20" : "bg-secondary/50"
+                      )}>
+                        <DevIcon className={cn("h-4 w-4", isActive ? "text-primary" : "text-muted-foreground")} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className={cn("text-xs font-medium truncate", isActive && "text-primary")}>{device.name}</p>
+                        <p className="text-[10px] text-muted-foreground">{device.status}</p>
+                      </div>
+                      {isSwitching ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                      ) : isActive ? (
+                        <Check className="h-3.5 w-3.5 text-primary" />
+                      ) : null}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" className="w-full text-xs" onClick={() => { setShowOutputs(true); fetchOutputDevices(); }}>
+              <Radio className="h-3 w-3 mr-1.5" />Show Audio Devices
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Per-App Volume Mixer */}
       <Card className="border-border/20 bg-card/50">
         <CardContent className="p-3">
@@ -275,8 +412,8 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
               <span className="text-xs font-medium">Volume Mixer</span>
               <Badge variant="secondary" className="text-[9px] px-1.5 py-0">{sessions.length}</Badge>
             </div>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowMixer(!showMixer); if (!showMixer) fetchSessions(); }}>
-              <RefreshCw className={cn("h-3.5 w-3.5", mediaLoading && "animate-spin")} />
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowMixer(!showMixer); if (!showMixer) fetchOutputDevices(); }}>
+              <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           </div>
 
@@ -284,7 +421,7 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
             <div className="space-y-2.5">
               {sessions.length === 0 ? (
                 <div className="text-center py-3">
-                  <Button variant="outline" size="sm" className="text-xs" onClick={fetchSessions}>
+                  <Button variant="outline" size="sm" className="text-xs" onClick={fetchOutputDevices}>
                     <RefreshCw className="h-3 w-3 mr-1.5" />Load Apps
                   </Button>
                 </div>
@@ -310,7 +447,7 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
               )}
             </div>
           ) : (
-            <Button variant="outline" size="sm" className="w-full text-xs" onClick={fetchSessions}>
+            <Button variant="outline" size="sm" className="w-full text-xs" onClick={fetchOutputDevices}>
               <Speaker className="h-3 w-3 mr-1.5" />Show App Volumes
             </Button>
           )}
