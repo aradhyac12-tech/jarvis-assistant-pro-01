@@ -23,6 +23,7 @@
     "@capgo/capacitor-native-biometric": "^8.4.2",
     "@elevenlabs/react": "^0.13.0",
     "@hookform/resolvers": "^3.10.0",
+    "@posx/capacitor-notifications-listener": "^5.0.7",
     "@radix-ui/react-accordion": "^1.2.11",
     "@radix-ui/react-alert-dialog": "^1.1.14",
     "@radix-ui/react-aspect-ratio": "^1.1.7",
