@@ -2210,30 +2210,108 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    # Key name mapping: app sends these -> keyboard library expects these
+    KEY_MAP = {
+        "backspace": "backspace", "enter": "enter", "return": "enter",
+        "tab": "tab", "escape": "escape", "esc": "escape",
+        "space": "space", "delete": "delete", "del": "delete",
+        "insert": "insert", "ins": "insert",
+        "home": "home", "end": "end",
+        "pageup": "page up", "pagedown": "page down",
+        "pgup": "page up", "pgdn": "page down",
+        "up": "up", "down": "down", "left": "left", "right": "right",
+        "capslock": "caps lock", "numlock": "num lock", "scrolllock": "scroll lock",
+        "printscreen": "print screen", "prtsc": "print screen",
+        "pause": "pause",
+        "win": "left windows", "lwin": "left windows", "rwin": "right windows",
+        "ctrl": "ctrl", "lctrl": "left ctrl", "rctrl": "right ctrl",
+        "alt": "alt", "lalt": "left alt", "ralt": "right alt",
+        "shift": "shift", "lshift": "left shift", "rshift": "right shift",
+        "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
+        "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
+        "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
+        # Symbol keys
+        "grave": "`", "minus": "-", "equal": "=",
+        "bracketleft": "[", "bracketright": "]", "backslash": "\\",
+        "semicolon": ";", "quote": "'", "comma": ",", "period": ".", "slash": "/",
+    }
+
+    def _resolve_key(self, key: str) -> str:
+        """Resolve a key name from the app to the keyboard library format."""
+        k = key.strip().lower()
+        return self.KEY_MAP.get(k, k)
+
     def _key_press(self, key: str) -> Dict[str, Any]:
         try:
             if "+" in key:
-                keys = [k.strip().lower() for k in key.split("+")]
-                pyautogui.hotkey(*keys)
+                keys = [self._resolve_key(k) for k in key.split("+")]
+                if HAS_KEYBOARD:
+                    keyboard.press_and_release("+".join(keys))
+                else:
+                    pyautogui.hotkey(*keys)
             else:
-                pyautogui.press(key.lower())
+                resolved = self._resolve_key(key)
+                if HAS_KEYBOARD:
+                    keyboard.press_and_release(resolved)
+                else:
+                    pyautogui.press(resolved)
             return {"success": True}
         except Exception as e:
+            add_log("error", f"key_press failed for '{key}': {e}", category="input")
             return {"success": False, "error": str(e)}
     
     def _key_combo(self, keys: List[str]) -> Dict[str, Any]:
         try:
-            pyautogui.hotkey(*[k.lower() for k in keys])
+            resolved = [self._resolve_key(k) for k in keys]
+            if HAS_KEYBOARD:
+                keyboard.press_and_release("+".join(resolved))
+            else:
+                pyautogui.hotkey(*resolved)
             return {"success": True}
         except Exception as e:
+            add_log("error", f"key_combo failed for {keys}: {e}", category="input")
             return {"success": False, "error": str(e)}
     
     def _type_text(self, text: str) -> Dict[str, Any]:
+        """Type text using clipboard paste for reliability with all characters."""
         try:
-            pyautogui.typewrite(text, interval=0.02)
+            import pyperclip
+            # Save current clipboard
+            try:
+                old_clip = pyperclip.paste()
+            except Exception:
+                old_clip = ""
+            
+            # Copy text to clipboard and paste it
+            pyperclip.copy(text)
+            time.sleep(0.05)
+            
+            if HAS_KEYBOARD:
+                keyboard.press_and_release("ctrl+v")
+            else:
+                pyautogui.hotkey("ctrl", "v")
+            
+            time.sleep(0.1)
+            
+            # Restore old clipboard
+            try:
+                pyperclip.copy(old_clip)
+            except Exception:
+                pass
+            
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            add_log("error", f"type_text failed: {e}", category="input")
+            # Fallback: try keyboard.write for ASCII
+            try:
+                if HAS_KEYBOARD:
+                    keyboard.write(text, delay=0.02)
+                    return {"success": True}
+                else:
+                    pyautogui.typewrite(text, interval=0.02)
+                    return {"success": True}
+            except Exception as e2:
+                return {"success": False, "error": str(e2)}
     
     def _pinch_zoom(self, direction: str, steps: int = 1) -> Dict[str, Any]:
         try:
