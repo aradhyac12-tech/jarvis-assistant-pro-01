@@ -1290,6 +1290,28 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    # ============== NOTIFICATION DISPLAY (KDE Connect style) ==============
+    def _show_notification(self, title: str, message: str, app: str = "") -> Dict[str, Any]:
+        """Show a Windows toast notification — mirrors phone notifications to PC like KDE Connect."""
+        try:
+            if HAS_TOAST:
+                toaster = ToastNotifier()
+                display_title = f"📱 {app}" if app else "📱 Phone Notification"
+                toaster.show_toast(
+                    display_title,
+                    f"{title}\n{message}" if title else message,
+                    duration=5,
+                    threaded=True,
+                )
+                add_log("info", f"Toast: {display_title} - {title}", category="notification")
+                return {"success": True, "shown": True}
+            else:
+                add_log("warn", "win10toast not installed, notification not shown", category="notification")
+                return {"success": True, "shown": False, "note": "win10toast not installed"}
+        except Exception as e:
+            add_log("error", f"Toast error: {e}", category="notification")
+            return {"success": False, "error": str(e)}
+
     async def _join_zoom(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             meeting_link = str(payload.get("meeting_link") or "").strip()
@@ -2547,6 +2569,16 @@ class JarvisAgent:
                 return self._lock_screen()
             elif cmd == "smart_unlock":
                 return self._smart_unlock(payload.get("pin", ""))
+            
+            # Notifications (KDE Connect style - phone → PC toast)
+            elif cmd == "show_notification":
+                return self._show_notification(
+                    payload.get("title", ""),
+                    payload.get("message", ""),
+                    payload.get("app", ""),
+                )
+            elif cmd in ["start_notification_sync", "stop_notification_sync"]:
+                return {"success": True, "message": f"Notification sync {cmd.replace('_', ' ')}"}
             
             # Clipboard
             elif cmd == "get_clipboard":
