@@ -34,19 +34,9 @@ const LoadingFallback = forwardRef<HTMLDivElement>(function LoadingFallback(_, r
 });
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { session, isLoading, autoPair } = useDeviceSession();
-  const [autoPairing, setAutoPairing] = useState(false);
-  const attemptedRef = React.useRef(false);
+  const { session, isLoading } = useDeviceSession();
 
-  React.useEffect(() => {
-    if (!isLoading && !session && !autoPairing && !attemptedRef.current) {
-      attemptedRef.current = true;
-      setAutoPairing(true);
-      autoPair().finally(() => setAutoPairing(false));
-    }
-  }, [isLoading, session, autoPairing, autoPair]);
-
-  if (isLoading || autoPairing) {
+  if (isLoading) {
     return <LoadingFallback />;
   }
 
