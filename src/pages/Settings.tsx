@@ -5,11 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, Clock, Copy, FileUp, Smartphone, ArrowRight, ArrowLeft } from "lucide-react";
+import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, PhoneOff, Clock, Copy, FileUp, Smartphone, ArrowRight, Activity, CheckCircle, XCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+import { useCapacitorPlugins } from "@/hooks/useCapacitorPlugins";
 import { useNavigate } from "react-router-dom";
 import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
 import { BackButton } from "@/components/BackButton";
@@ -26,60 +27,55 @@ export default function Settings() {
   const { sendCommand } = useDeviceCommands();
   const navigate = useNavigate();
 
+  const {
+    isNative,
+    platform,
+    callState,
+    callDetectionActive,
+    autoPauseEnabled,
+    autoMuteEnabled,
+    setAutoPauseEnabled,
+    setAutoMuteEnabled,
+    initCallDetection,
+    stopCallDetection,
+    simulateCall,
+  } = useCapacitorPlugins();
+
   // Notification state
   const [notifEnabled, setNotifEnabled] = useState(() => localStorage.getItem("notif_enabled") === "true");
 
-  // Call detection state
-  const [autoMuteCall, setAutoMuteCall] = useState(() => localStorage.getItem("auto_mute_call") !== "false");
-  const [autoPauseCall, setAutoPauseCall] = useState(() => localStorage.getItem("auto_pause_call") !== "false");
-  const [callState, setCallState] = useState({ active: false, number: "", name: "", duration: 0 });
+  // Call duration timer
+  const [callDuration, setCallDuration] = useState(0);
 
   const isConnected = selectedDevice?.is_online || false;
 
-  // Persist settings
+  // Persist notification setting
   useEffect(() => localStorage.setItem("notif_enabled", String(notifEnabled)), [notifEnabled]);
-  useEffect(() => localStorage.setItem("auto_mute_call", String(autoMuteCall)), [autoMuteCall]);
-  useEffect(() => localStorage.setItem("auto_pause_call", String(autoPauseCall)), [autoPauseCall]);
 
   // Call duration timer
   useEffect(() => {
-    if (!callState.active) return;
+    if (!callState.isInCall) {
+      setCallDuration(0);
+      return;
+    }
     const timer = setInterval(() => {
-      setCallState(prev => ({ ...prev, duration: prev.duration + 1 }));
+      setCallDuration(prev => prev + 1);
     }, 1000);
     return () => clearInterval(timer);
-  }, [callState.active]);
+  }, [callState.isInCall]);
+
+  // Auto-start call detection on mount if native
+  useEffect(() => {
+    if (isNative && !callDetectionActive) {
+      initCallDetection();
+    }
+  }, [isNative, callDetectionActive, initCallDetection]);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
-
-  const simulateCall = useCallback(async () => {
-    setCallState({ active: true, number: "+1 (555) 123-4567", name: "Test Caller", duration: 0 });
-    if (autoMuteCall) {
-      try {
-        await sendCommand("mute_pc", {}, { awaitResult: true, timeoutMs: 5000 });
-        toast({ title: "PC Muted", description: "Call detected" });
-      } catch {}
-    }
-    if (autoPauseCall) {
-      try {
-        await sendCommand("media_control", { action: "pause" }, { awaitResult: true, timeoutMs: 5000 });
-      } catch {}
-    }
-  }, [autoMuteCall, autoPauseCall, sendCommand, toast]);
-
-  const simulateEndCall = useCallback(async () => {
-    setCallState({ active: false, number: "", name: "", duration: 0 });
-    if (autoMuteCall) {
-      try {
-        await sendCommand("unmute_pc", {}, { awaitResult: true, timeoutMs: 5000 });
-        toast({ title: "PC Unmuted", description: "Call ended" });
-      } catch {}
-    }
-  }, [autoMuteCall, sendCommand, toast]);
 
   const handleSave = () => {
     toast({ title: "Settings Saved", description: "Your preferences have been updated" });
@@ -89,6 +85,22 @@ export default function Settings() {
     unpair();
     toast({ title: "Device Unpaired", description: "You've been disconnected from your PC" });
     navigate("/pair", { replace: true });
+  };
+
+  const toggleCallDetection = async () => {
+    if (callDetectionActive) {
+      await stopCallDetection();
+      toast({ title: "Call Detection Disabled" });
+    } else {
+      const success = await initCallDetection();
+      toast({ 
+        title: success ? "Call Detection Enabled" : "Call Detection Failed",
+        description: success 
+          ? (isNative ? "Using Android TelephonyManager" : "Web fallback mode")
+          : "Could not activate phone state listener",
+        variant: success ? "default" : "destructive",
+      });
+    }
   };
 
   return (
@@ -211,47 +223,114 @@ export default function Settings() {
           </CardContent>
         </Card>
 
-        {/* Call Detection */}
+        {/* Call Detection - Real Native Integration */}
         <Card className="border-border/30 bg-card/50">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              <Phone className={cn("h-4 w-4", callState.active ? "text-primary" : "text-muted-foreground")} />
+              <Phone className={cn("h-4 w-4", callState.isInCall ? "text-primary animate-pulse" : "text-muted-foreground")} />
               Call Detection
-              {callState.active && (
-                <Badge variant="outline" className="ml-auto font-mono text-[10px] gap-1">
+              {callState.isInCall && (
+                <Badge variant="outline" className="ml-auto font-mono text-[10px] gap-1 border-primary/30 bg-primary/5">
                   <Clock className="h-3 w-3" />
-                  {formatDuration(callState.duration)}
+                  {formatDuration(callDuration)}
                 </Badge>
               )}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex gap-2">
-              <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoMuteCall ? "border-primary/30 bg-primary/5" : "border-border/50")}>
-                <span>Auto Mute PC</span>
-                <Switch checked={autoMuteCall} onCheckedChange={setAutoMuteCall} className="scale-75" />
+            {/* Detection Status */}
+            <div className="flex items-center justify-between p-2.5 rounded-lg border border-border/50 bg-secondary/20">
+              <div className="flex items-center gap-2">
+                {callDetectionActive ? (
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                ) : (
+                  <XCircle className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div>
+                  <p className="text-xs font-medium">
+                    {callDetectionActive ? "Monitoring Active" : "Detection Off"}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {isNative 
+                      ? `Android TelephonyManager${callState.phoneState ? ` • ${callState.phoneState}` : ""}` 
+                      : "Web mode • Test only"}
+                  </p>
+                </div>
               </div>
-              <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoPauseCall ? "border-primary/30 bg-primary/5" : "border-border/50")}>
+              <Switch 
+                checked={callDetectionActive} 
+                onCheckedChange={toggleCallDetection}
+              />
+            </div>
+
+            {/* Auto-actions */}
+            <div className="flex gap-2">
+              <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoMuteEnabled ? "border-primary/30 bg-primary/5" : "border-border/50")}>
+                <span>Auto Mute PC</span>
+                <Switch checked={autoMuteEnabled} onCheckedChange={setAutoMuteEnabled} className="scale-75" />
+              </div>
+              <div className={cn("flex-1 flex items-center justify-between p-2 rounded-lg border text-xs", autoPauseEnabled ? "border-primary/30 bg-primary/5" : "border-border/50")}>
                 <span>Auto Pause Media</span>
-                <Switch checked={autoPauseCall} onCheckedChange={setAutoPauseCall} className="scale-75" />
+                <Switch checked={autoPauseEnabled} onCheckedChange={setAutoPauseEnabled} className="scale-75" />
               </div>
             </div>
 
-            {callState.active ? (
-              <div className="p-3 rounded-lg bg-primary/5 border border-primary/30">
+            {/* Active call state */}
+            {callState.isInCall ? (
+              <div className="p-3 rounded-lg bg-primary/10 border border-primary/30 animate-fade-in">
                 <div className="flex items-center gap-2 mb-2">
-                  <Phone className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">{callState.name || callState.number}</span>
+                  <Phone className="h-4 w-4 text-primary animate-pulse" />
+                  <span className="text-sm font-medium">
+                    {callState.callerName || callState.callerNumber || "Active Call"}
+                  </span>
+                  <Badge variant="outline" className="text-[10px] ml-auto">
+                    {callState.phoneState || callState.callType || "ACTIVE"}
+                  </Badge>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-muted-foreground">PC muted & media paused</span>
-                  <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={simulateEndCall}>End Test</Button>
+                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    {autoMuteEnabled && <span className="text-primary">🔇 PC muted</span>}
+                    {autoPauseEnabled && <span className="text-primary">⏸ Media paused</span>}
+                  </div>
+                  {!isNative && (
+                    <Button variant="outline" size="sm" className="h-6 text-[10px] gap-1" onClick={() => simulateCall(false)}>
+                      <PhoneOff className="h-3 w-3" /> End Test
+                    </Button>
+                  )}
                 </div>
               </div>
             ) : (
-              <Button variant="outline" size="sm" className="w-full h-8 text-xs gap-1" onClick={simulateCall} disabled={!isConnected}>
-                <PhoneIncoming className="h-3 w-3" /> Test Call Detection
-              </Button>
+              <div className="space-y-2">
+                {!isNative && (
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="w-full h-8 text-xs gap-1" 
+                    onClick={() => simulateCall(true)} 
+                    disabled={!isConnected}
+                  >
+                    <PhoneIncoming className="h-3 w-3" /> Test Call Detection
+                  </Button>
+                )}
+                
+                {/* Info about how it works */}
+                <div className="p-2 rounded-lg bg-secondary/20 border border-border/30">
+                  <p className="text-[10px] text-muted-foreground leading-relaxed">
+                    {isNative ? (
+                      <>
+                        <strong>KDE Connect-style detection:</strong> Uses Android's TelephonyManager 
+                        with PhoneStateListener to detect RINGING, ON_CALL, OUTGOING, and IDLE states. 
+                        Requires READ_PHONE_STATE permission.
+                      </>
+                    ) : (
+                      <>
+                        <strong>Web mode:</strong> Use the test button above to simulate call detection. 
+                        For real call detection, build and install the APK on your Android device.
+                      </>
+                    )}
+                  </p>
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>

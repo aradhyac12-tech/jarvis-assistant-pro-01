@@ -70,8 +70,9 @@ Edit `android/app/src/main/AndroidManifest.xml` and add these permissions:
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
-<!-- Phone state for call detection -->
+<!-- Phone state for call detection (KDE Connect-style) -->
 <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+<uses-permission android:name="android.permission.READ_CALL_LOG" />
 <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
 
 <!-- Notifications -->
