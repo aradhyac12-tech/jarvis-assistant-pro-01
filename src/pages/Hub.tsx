@@ -72,6 +72,7 @@ interface AppInfo {
   name: string;
   cpu?: number;
   memory?: number;
+  memory_mb?: number;
   status?: string;
   app_id?: string;
   source?: string;
@@ -127,7 +128,9 @@ export default function Hub() {
   const [appsLoading, setAppsLoading] = useState(false);
   const [appSearch, setAppSearch] = useState("");
   const [appView, setAppView] = useState<"running" | "installed" | "services">("running");
-  const [services, setServices] = useState<Array<{ name: string; display_name: string; status: string; start_type: string; pid: number | null }>>([]);
+  const [services, setServices] = useState<Array<{ name: string; display_name: string; status: string; start_type: string; pid: number | null }>>([]); 
+  const [selectedApp, setSelectedApp] = useState<AppInfo | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
 
   const volumeCommitRef = useRef<number | null>(null);
   const brightnessCommitRef = useRef<number | null>(null);
@@ -365,8 +368,9 @@ export default function Hub() {
     if (activeTab === "apps" && isConnected) {
       fetchRunningApps();
       fetchInstalledApps();
+      fetchServices();
     }
-  }, [activeTab, isConnected, fetchRunningApps, fetchInstalledApps]);
+  }, [activeTab, isConnected, fetchRunningApps, fetchInstalledApps, fetchServices]);
 
   const handleOpenApp = useCallback(async (appName: string) => {
     try {
@@ -479,8 +483,25 @@ export default function Hub() {
   ];
 
   // Filter apps by search
-  const filteredRunning = runningApps.filter(a => a.name.toLowerCase().includes(appSearch.toLowerCase()));
+  const filteredRunning = runningApps
+    .filter(a => a.name.toLowerCase().includes(appSearch.toLowerCase()))
+    .sort((a, b) => ((b.cpu || 0) + (b.memory || 0)) - ((a.cpu || 0) + (a.memory || 0)));
   const filteredInstalled = installedApps.filter(a => a.name.toLowerCase().includes(appSearch.toLowerCase()));
+
+  // Long-press handlers for app context menu
+  const handleAppLongPressStart = useCallback((app: AppInfo) => {
+    longPressTimerRef.current = window.setTimeout(() => {
+      haptic.doubleTap();
+      setSelectedApp(app);
+    }, 500);
+  }, [haptic]);
+
+  const handleAppLongPressEnd = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
 
   if (isLoading && !selectedDevice) {
     return (
@@ -710,15 +731,12 @@ export default function Hub() {
                   />
                 </div>
 
-                {/* App View Toggle - 3 tabs */}
+                {/* App View Toggle */}
                 <div className="flex gap-1 p-0.5 bg-card/50 rounded-lg border border-border/20">
                   {(["running", "installed", "services"] as const).map((v) => (
                     <button
                       key={v}
-                      onClick={() => {
-                        setAppView(v as any);
-                        if (v === "services" && services.length === 0) fetchServices();
-                      }}
+                      onClick={() => { setAppView(v); haptic.tap(); }}
                       className={cn(
                         "flex-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all capitalize",
                         appView === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
@@ -734,123 +752,179 @@ export default function Hub() {
                     <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
                   </div>
                 ) : (
-                  <ScrollArea className="h-[50vh]">
-                    <div className="space-y-1 pr-2">
+                  <ScrollArea className="h-[55vh]">
+                    <div className="space-y-0.5 pr-2">
                       {appView === "running" ? (
                         filteredRunning.length === 0 ? (
-                          <Card className="border-border/20 bg-card/50">
-                            <CardContent className="p-4 text-center text-xs text-muted-foreground">
-                              {appSearch ? "No matching running apps" : "No running apps found"}
-                            </CardContent>
-                          </Card>
+                          <div className="p-6 text-center text-xs text-muted-foreground">
+                            {appSearch ? "No matching apps" : "No running apps found"}
+                          </div>
                         ) : (
                           filteredRunning.map((app) => (
-                            <Card key={`${app.name}-${app.pid}`} className="border-border/20 bg-card/50">
-                              <CardContent className="p-2 flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 flex-1 min-w-0">
-                                  <div className="w-7 h-7 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
-                                    <AppWindow className="w-3 h-3 text-muted-foreground" />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs font-medium truncate">{app.name}</p>
-                                    <div className="flex gap-2 text-[10px] text-muted-foreground">
-                                      {app.cpu !== undefined && <span className={cn(app.cpu > 50 && "text-destructive")}>CPU: {app.cpu}%</span>}
-                                      {app.memory !== undefined && <span className={cn(app.memory > 50 && "text-[hsl(var(--warning))]")}>RAM: {app.memory}%</span>}
-                                      <span className={cn(app.status === "running" ? "text-[hsl(var(--success))]" : "text-muted-foreground")}>{app.status}</span>
-                                    </div>
-                                  </div>
+                            <div
+                              key={`${app.name}-${app.pid}`}
+                              className={cn(
+                                "flex items-center gap-2 p-2 rounded-lg transition-colors select-none",
+                                "hover:bg-secondary/30 active:bg-secondary/50",
+                                selectedApp?.pid === app.pid && selectedApp?.name === app.name && "bg-secondary/40 ring-1 ring-primary/30"
+                              )}
+                              onTouchStart={() => handleAppLongPressStart(app)}
+                              onTouchEnd={handleAppLongPressEnd}
+                              onTouchCancel={handleAppLongPressEnd}
+                              onMouseDown={() => handleAppLongPressStart(app)}
+                              onMouseUp={handleAppLongPressEnd}
+                              onMouseLeave={handleAppLongPressEnd}
+                              onClick={() => setSelectedApp(prev => prev?.pid === app.pid && prev?.name === app.name ? null : app)}
+                            >
+                              <div className={cn(
+                                "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                                (app.cpu || 0) > 50 ? "bg-destructive/10" : (app.cpu || 0) > 20 ? "bg-yellow-500/10" : "bg-secondary/50"
+                              )}>
+                                <AppWindow className={cn("w-3.5 h-3.5",
+                                  (app.cpu || 0) > 50 ? "text-destructive" : "text-muted-foreground"
+                                )} />
+                              </div>
+                              <div className="flex-1 min-w-0 overflow-hidden">
+                                <p className="text-xs font-medium truncate max-w-[45vw]">{app.name}</p>
+                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground overflow-hidden">
+                                  {app.cpu !== undefined && (
+                                    <span className={cn("shrink-0", app.cpu > 50 && "text-destructive font-medium")}>
+                                      CPU {app.cpu}%
+                                    </span>
+                                  )}
+                                  {app.memory !== undefined && (
+                                    <span className={cn("shrink-0", app.memory > 50 && "text-yellow-400 font-medium")}>
+                                      RAM {app.memory}%{app.memory_mb ? ` (${app.memory_mb}MB)` : ""}
+                                    </span>
+                                  )}
+                                  {app.pid && <span className="shrink-0 opacity-50">PID {app.pid}</span>}
                                 </div>
-                                <div className="flex gap-0.5 shrink-0">
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleRestartApp(app.name, app.pid)}>
-                                        <RotateCcw className="w-3 h-3" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent className="text-xs">Restart</TooltipContent>
-                                  </Tooltip>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleCloseApp(app.name, app.pid)}>
-                                        <XCircle className="w-3 h-3" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent className="text-xs">Kill</TooltipContent>
-                                  </Tooltip>
-                                </div>
-                              </CardContent>
-                            </Card>
+                              </div>
+                              <Badge
+                                variant={app.status === "running" ? "default" : "secondary"}
+                                className={cn("text-[9px] px-1.5 py-0 shrink-0",
+                                  app.status === "running" && "bg-emerald-500/15 text-emerald-400 border-emerald-500/20"
+                                )}
+                              >
+                                {app.status || "active"}
+                              </Badge>
+                            </div>
                           ))
                         )
                       ) : appView === "installed" ? (
                         filteredInstalled.length === 0 ? (
-                          <Card className="border-border/20 bg-card/50">
-                            <CardContent className="p-4 text-center text-xs text-muted-foreground">
-                              {appSearch ? "No matching installed apps" : "No installed apps found"}
-                            </CardContent>
-                          </Card>
+                          <div className="p-6 text-center text-xs text-muted-foreground">
+                            {appSearch ? "No matching apps" : "No installed apps found"}
+                          </div>
                         ) : (
                           filteredInstalled.map((app) => (
-                            <Card key={app.app_id || app.name} className="border-border/20 bg-card/50">
-                              <CardContent className="p-2 flex items-center justify-between">
-                                <div className="flex items-center gap-2 flex-1 min-w-0">
-                                  <div className="w-7 h-7 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
-                                    <AppWindow className="w-3 h-3 text-muted-foreground" />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs font-medium truncate">{app.name}</p>
-                                    {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
-                                  </div>
-                                </div>
-                                <Button variant="outline" size="sm" className="h-7 text-xs shrink-0" onClick={() => handleOpenApp(app.name)}>
-                                  Open
-                                </Button>
-                              </CardContent>
-                            </Card>
+                            <div
+                              key={app.app_id || app.name}
+                              className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors"
+                            >
+                              <div className="w-8 h-8 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
+                                <AppWindow className="w-3.5 h-3.5 text-muted-foreground" />
+                              </div>
+                              <div className="flex-1 min-w-0 overflow-hidden">
+                                <p className="text-xs font-medium truncate max-w-[45vw]">{app.name}</p>
+                                {app.source && <p className="text-[10px] text-muted-foreground truncate max-w-[40vw]">{app.source}</p>}
+                              </div>
+                              <Button variant="outline" size="sm" className="h-7 text-[10px] px-2 shrink-0" onClick={() => handleOpenApp(app.name)}>
+                                Open
+                              </Button>
+                            </div>
                           ))
                         )
                       ) : (
-                        /* Services tab */
                         services.length === 0 ? (
-                          <Card className="border-border/20 bg-card/50">
-                            <CardContent className="p-4 text-center text-xs text-muted-foreground">
-                              No services detected. Click refresh.
-                            </CardContent>
-                          </Card>
+                          <div className="p-6 text-center text-xs text-muted-foreground">
+                            Loading services...
+                          </div>
                         ) : (
                           services
                             .filter(s => !appSearch || s.display_name?.toLowerCase().includes(appSearch.toLowerCase()) || s.name?.toLowerCase().includes(appSearch.toLowerCase()))
-                            .slice(0, 100)
+                            .slice(0, 150)
                             .map((svc) => (
-                              <Card key={svc.name} className="border-border/20 bg-card/50">
-                                <CardContent className="p-2 flex items-center justify-between gap-2">
-                                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                                    <div className={cn("w-7 h-7 rounded-md flex items-center justify-center shrink-0",
-                                      svc.status === "running" ? "bg-[hsl(var(--success))]/10" : "bg-secondary/50"
-                                    )}>
-                                      <Activity className={cn("w-3 h-3", svc.status === "running" ? "text-[hsl(var(--success))]" : "text-muted-foreground")} />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-xs font-medium truncate">{svc.display_name || svc.name}</p>
-                                      <div className="flex gap-2 text-[10px] text-muted-foreground">
-                                        <span className="truncate">{svc.name}</span>
-                                        <span>{svc.start_type}</span>
-                                      </div>
-                                    </div>
+                              <div
+                                key={svc.name}
+                                className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors"
+                              >
+                                <div className={cn("w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                                  svc.status === "running" ? "bg-emerald-500/10" : "bg-secondary/50"
+                                )}>
+                                  <Activity className={cn("w-3.5 h-3.5", svc.status === "running" ? "text-emerald-400" : "text-muted-foreground")} />
+                                </div>
+                                <div className="flex-1 min-w-0 overflow-hidden">
+                                  <p className="text-xs font-medium truncate max-w-[45vw]">{svc.display_name || svc.name}</p>
+                                  <div className="flex gap-2 text-[10px] text-muted-foreground">
+                                    <span className="truncate max-w-[30vw]">{svc.name}</span>
+                                    <span className="shrink-0">{svc.start_type}</span>
                                   </div>
-                                  <Badge
-                                    variant={svc.status === "running" ? "default" : "secondary"}
-                                    className={cn("text-[10px] shrink-0", svc.status === "running" && "bg-[hsl(var(--success))]/20 text-[hsl(var(--success))]")}
-                                  >
-                                    {svc.status}
-                                  </Badge>
-                                </CardContent>
-                              </Card>
+                                </div>
+                                <Badge
+                                  variant={svc.status === "running" ? "default" : "secondary"}
+                                  className={cn("text-[9px] px-1.5 py-0 shrink-0",
+                                    svc.status === "running" && "bg-emerald-500/15 text-emerald-400 border-emerald-500/20"
+                                  )}
+                                >
+                                  {svc.status}
+                                </Badge>
+                              </div>
                             ))
                         )
                       )}
                     </div>
                   </ScrollArea>
+                )}
+
+                {/* Context menu for selected app */}
+                {selectedApp && (
+                  <Card className="border-primary/20 bg-card/80 backdrop-blur-sm">
+                    <CardContent className="p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold truncate">{selectedApp.name}</p>
+                          <div className="flex gap-3 text-[10px] text-muted-foreground mt-0.5">
+                            {selectedApp.cpu !== undefined && <span>CPU: {selectedApp.cpu}%</span>}
+                            {selectedApp.memory !== undefined && <span>RAM: {selectedApp.memory}%{selectedApp.memory_mb ? ` (${selectedApp.memory_mb}MB)` : ""}</span>}
+                            {selectedApp.pid && <span>PID: {selectedApp.pid}</span>}
+                          </div>
+                        </div>
+                        <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={() => setSelectedApp(null)}>
+                          <XCircle className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-9 text-[10px] flex-col gap-0.5"
+                          onClick={() => { handleOpenApp(selectedApp.name); setSelectedApp(null); }}
+                        >
+                          <AppWindow className="w-3.5 h-3.5" />
+                          Open
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-9 text-[10px] flex-col gap-0.5"
+                          onClick={() => { handleRestartApp(selectedApp.name, selectedApp.pid); setSelectedApp(null); }}
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          Restart
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-9 text-[10px] flex-col gap-0.5 text-destructive hover:text-destructive"
+                          onClick={() => { handleCloseApp(selectedApp.name, selectedApp.pid); setSelectedApp(null); }}
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          Kill
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
                 )}
 
                 <Button variant="outline" className="w-full text-xs h-8" onClick={() => { fetchRunningApps(); fetchInstalledApps(); fetchServices(); }} disabled={appsLoading}>
