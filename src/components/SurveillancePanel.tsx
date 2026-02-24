@@ -152,9 +152,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
   }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
 
   const triggerSiren = useCallback(async () => {
-    toast({ title: "🚨 SIREN ACTIVATED", description: "Max volume + theft alert on PC" });
+    toast({ title: "🚨 SIREN ACTIVATED", description: "Max volume + real siren sound on PC" });
+    // Set volume to max first, then play the real frequency-sweep siren
     await sendCommand("set_volume", { level: 100 }, { awaitResult: true, timeoutMs: 3000 });
-    await sendCommand("play_alarm", { type: "siren" }, { awaitResult: true, timeoutMs: 5000 });
+    await sendCommand("play_alarm", { type: "siren", duration: 10 }, { awaitResult: true, timeoutMs: 15000 });
   }, [sendCommand, toast]);
 
   const startSurveillance = useCallback(async () => {

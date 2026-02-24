@@ -9,24 +9,33 @@ export function BackButton({ showHome = true }: { showHome?: boolean }) {
   // Don't show on hub (home)
   if (location.pathname === "/hub") return null;
 
+  const handleBack = () => {
+    // Check if there's history to go back to
+    if (window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate("/hub");
+    }
+  };
+
   return (
     <div className="flex items-center gap-2">
       <Button
         variant="ghost"
         size="icon"
-        onClick={() => navigate(-1)}
-        className="h-8 w-8"
+        onClick={handleBack}
+        className="h-9 w-9 min-w-[36px]"
       >
-        <ArrowLeft className="h-4 w-4" />
+        <ArrowLeft className="h-5 w-5" />
       </Button>
       {showHome && (
         <Button
           variant="ghost"
           size="icon"
           onClick={() => navigate("/hub")}
-          className="h-8 w-8"
+          className="h-9 w-9 min-w-[36px]"
         >
-          <Home className="h-4 w-4" />
+          <Home className="h-5 w-5" />
         </Button>
       )}
     </div>
