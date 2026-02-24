@@ -15,9 +15,8 @@ async function requestPermission(): Promise<boolean> {
   try {
     const { Capacitor } = await import("@capacitor/core");
     if (Capacitor.isNativePlatform()) {
-      const { LocalNotifications } = await import("@capacitor/local-notifications" as any);
-      const result = await LocalNotifications.requestPermissions();
-      return result.display === "granted";
+      // LocalNotifications not installed — skip native
+      return false;
     }
   } catch {
     // Not available, fall through to web
@@ -37,18 +36,7 @@ async function sendNotification(title: string, body: string, tag?: string) {
   try {
     const { Capacitor } = await import("@capacitor/core");
     if (Capacitor.isNativePlatform()) {
-      const { LocalNotifications } = await import("@capacitor/local-notifications" as any);
-      await LocalNotifications.schedule({
-        notifications: [{
-          title,
-          body,
-          id: Math.floor(Math.random() * 100000),
-          schedule: { at: new Date(Date.now() + 100) },
-          sound: undefined,
-          smallIcon: "ic_notification",
-          largeIcon: "ic_launcher",
-        }],
-      });
+      // LocalNotifications not installed — skip native
       return;
     }
   } catch {

@@ -460,11 +460,11 @@ def _find_wasapi_loopback_device(pa):
 
 # ============== CONFIGURATION ==============
 # CRITICAL: These MUST match the web app's Supabase project
-DEFAULT_JARVIS_URL = "https://yckqdxfzonnuhqdqnwrs.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlja3FkeGZ6b25udWhxZHFud3JzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE3NjQyMTIsImV4cCI6MjA4NzM0MDIxMn0.dME09SJ11wg8JKv41XbdiWvzovfkeJM69Q9BlDD6pro"
+DEFAULT_JARVIS_URL = "https://hzfmgmodkqrrrlieqsop.supabase.co"
+DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6Zm1nbW9ka3FycnJsaWVxc29wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE5NTAzMzcsImV4cCI6MjA4NzUyNjMzN30.hur36j_hFDjOQm9lEYd_I58I0An6fowouZijAwDueik"
 
 # Optional: where the "Open Web App" button should navigate.
-DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--f4290e42-0101-4af6-93cf-bf0d2c89db92.lovable.app")
+DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--d1b9acd5-529c-4761-84e6-7717f3667310.lovable.app")
 
 SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", DEFAULT_JARVIS_URL)
 SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
