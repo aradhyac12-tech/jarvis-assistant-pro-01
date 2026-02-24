@@ -8,30 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Shield,
-  Eye,
-  Bell,
-  Volume2,
-  Phone,
-  Camera,
-  Play,
-  Square,
-  Loader2,
-  Settings,
-  ChevronDown,
-  ChevronUp,
-  Video,
-  Mic,
-  MicOff,
-  Zap,
-  Siren,
-  AlertTriangle,
-  Gauge,
-  Stethoscope,
-  PersonStanding,
-  Download,
-  Film,
-  Trash2,
+  Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
+  Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
+  AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -52,9 +31,9 @@ interface MotionEvent {
 interface SurveillanceClip {
   id: string;
   timestamp: Date;
-  thumbnail: string; // data URL
+  thumbnail: string;
   frames: Blob[];
-  duration: number; // seconds
+  duration: number;
   trigger: "motion" | "human" | "manual";
 }
 
@@ -62,7 +41,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const { sendCommand } = useDeviceCommands();
   const { session } = useDeviceSession();
   const { toast } = useToast();
-  const { notifyMotionDetected, notifyHumanDetected } = useAppNotifications();
+  const { notifyHumanDetected } = useAppNotifications();
 
   // Persisted Settings
   const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
@@ -87,8 +66,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [streamLatency, setStreamLatency] = useState(0);
   const [sirenActive, setSirenActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
-  const [poseEnabled, setPoseEnabled] = useState(() => localStorage.getItem("surveillance_pose") === "true");
   const [humanPresent, setHumanPresent] = useState(false);
+
+  // Single notification guard per session — no spamming
+  const humanNotifiedRef = useRef(false);
 
   // Clip recording state
   const [clips, setClips] = useState<SurveillanceClip[]>(() => {
@@ -96,13 +77,16 @@ export function SurveillancePanel({ className }: { className?: string }) {
       const saved = localStorage.getItem("surveillance_clips_meta");
       if (saved) {
         const parsed = JSON.parse(saved) as Array<Omit<SurveillanceClip, "frames" | "timestamp"> & { timestamp: string }>;
-        return parsed.map(c => ({ ...c, timestamp: new Date(c.timestamp), frames: [] }));
+        // Auto-delete clips older than 15 days
+        const cutoff = Date.now() - 15 * 24 * 60 * 60 * 1000;
+        return parsed
+          .filter(c => new Date(c.timestamp).getTime() > cutoff)
+          .map(c => ({ ...c, timestamp: new Date(c.timestamp), frames: [] }));
       }
     } catch {}
     return [];
   });
   const [isRecording, setIsRecording] = useState(false);
-  const [showClips, setShowClips] = useState(false);
   const recordingFramesRef = useRef<Blob[]>([]);
   const recordingStartRef = useRef<number>(0);
   const clipThumbnailRef = useRef<string>("");
@@ -122,81 +106,75 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
   const sensitivityThreshold = { low: 30, medium: 15, high: 5 };
 
-  // Persist clips metadata (without frame blobs)
+  // Persist clips metadata (without frame blobs) + auto-delete after 15 days
   useEffect(() => {
     try {
-      const meta = clips.map(c => ({
+      const cutoff = Date.now() - 15 * 24 * 60 * 60 * 1000;
+      const validClips = clips.filter(c => c.timestamp.getTime() > cutoff);
+      const meta = validClips.map(c => ({
         id: c.id,
         timestamp: c.timestamp.toISOString(),
         thumbnail: c.thumbnail,
         duration: c.duration,
         trigger: c.trigger,
       }));
-      localStorage.setItem("surveillance_clips_meta", JSON.stringify(meta.slice(0, 20)));
+      localStorage.setItem("surveillance_clips_meta", JSON.stringify(meta.slice(0, 50)));
     } catch {}
   }, [clips]);
 
-  // Start/stop clip recording
-  const startClipRecording = useCallback((trigger: "motion" | "human" | "manual" = "manual") => {
-    if (isRecording) return;
+  // Auto-record on detection (5s clips) — always on, no toggle
+  const autoRecordTimeoutRef = useRef<number | null>(null);
+  const triggerAutoClip = useCallback((trigger: "motion" | "human") => {
+    if (isRecording || autoRecordTimeoutRef.current) return;
     setIsRecording(true);
     recordingFramesRef.current = [];
     recordingStartRef.current = Date.now();
     clipThumbnailRef.current = currentFrame || "";
-    addLog("info", "web", `Clip recording started (${trigger})`);
-  }, [isRecording, currentFrame]);
+    addLog("info", "web", `Auto-clip recording started (${trigger})`);
 
-  const stopClipRecording = useCallback(() => {
-    if (!isRecording) return;
-    setIsRecording(false);
-    const duration = Math.round((Date.now() - recordingStartRef.current) / 1000);
-    const clip: SurveillanceClip = {
-      id: crypto.randomUUID(),
-      timestamp: new Date(),
-      thumbnail: clipThumbnailRef.current,
-      frames: [...recordingFramesRef.current],
-      duration,
-      trigger: "manual",
-    };
-    setClips(prev => [clip, ...prev].slice(0, 20));
-    recordingFramesRef.current = [];
-    toast({ title: "📹 Clip Saved", description: `${duration}s clip saved (${clip.frames.length} frames)` });
-    addLog("info", "web", `Clip saved: ${duration}s, ${clip.frames.length} frames`);
-  }, [isRecording, toast]);
-
-  // Auto-record on motion/human detection (5s clips)
-  const autoRecordTimeoutRef = useRef<number | null>(null);
-  const triggerAutoClip = useCallback((trigger: "motion" | "human") => {
-    if (isRecording || autoRecordTimeoutRef.current) return;
-    startClipRecording(trigger);
     autoRecordTimeoutRef.current = window.setTimeout(() => {
-      stopClipRecording();
+      setIsRecording(false);
+      const duration = Math.round((Date.now() - recordingStartRef.current) / 1000);
+      const clip: SurveillanceClip = {
+        id: crypto.randomUUID(),
+        timestamp: new Date(),
+        thumbnail: clipThumbnailRef.current,
+        frames: [...recordingFramesRef.current],
+        duration,
+        trigger,
+      };
+      setClips(prev => [clip, ...prev].slice(0, 50));
+      recordingFramesRef.current = [];
       autoRecordTimeoutRef.current = null;
-    }, 5000);
-  }, [isRecording, startClipRecording, stopClipRecording]);
 
-  // Download clip as video (MJPEG sequence saved as zip or individual frames)
+      // Send clip thumbnail to PC agent for saving to surveillance folder
+      sendCommand("save_surveillance_clip", {
+        clip_id: clip.id,
+        timestamp: clip.timestamp.toISOString(),
+        duration: clip.duration,
+        trigger: clip.trigger,
+        image_data: clipThumbnailRef.current,
+      }, { awaitResult: false });
+
+      addLog("info", "web", `Auto-clip saved: ${duration}s (${trigger})`);
+    }, 5000);
+  }, [isRecording, currentFrame, sendCommand]);
+
+  // Download clip snapshot
   const downloadClip = useCallback((clip: SurveillanceClip) => {
     if (clip.thumbnail) {
-      // Download thumbnail as snapshot
       const link = document.createElement("a");
       link.href = clip.thumbnail;
       link.download = `surveillance_${clip.timestamp.toISOString().replace(/[:.]/g, "-")}.jpg`;
       link.click();
-      toast({ title: "Downloading snapshot" });
     }
-    // Also try to send to PC for saving
-    sendCommand("save_surveillance_clip", {
-      clip_id: clip.id,
-      timestamp: clip.timestamp.toISOString(),
-      duration: clip.duration,
-      trigger: clip.trigger,
-    }, { awaitResult: false });
-  }, [sendCommand, toast]);
+  }, []);
 
   const deleteClip = useCallback((clipId: string) => {
     setClips(prev => prev.filter(c => c.id !== clipId));
-  }, []);
+    // Tell agent to delete from PC too
+    sendCommand("delete_surveillance_clip", { clip_id: clipId }, { awaitResult: false });
+  }, [sendCommand]);
 
   // Persistence Effects
   useEffect(() => localStorage.setItem("surveillance_start", startTime), [startTime]);
@@ -209,7 +187,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_fps", String(survFps)), [survFps]);
   useEffect(() => localStorage.setItem("surveillance_quality", String(survQuality)), [survQuality]);
   useEffect(() => localStorage.setItem("surveillance_monitoring", String(monitoring)), [monitoring]);
-  useEffect(() => localStorage.setItem("surveillance_pose", String(poseEnabled)), [poseEnabled]);
 
   const cleanupWs = useCallback(() => {
     if (currentBlobUrlRef.current) {
@@ -217,7 +194,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
       currentBlobUrlRef.current = null;
     }
     if (wsRef.current) {
-      try { wsRef.current.close(); } catch { /* */ }
+      try { wsRef.current.close(); } catch {}
       wsRef.current = null;
     }
     fpsCounterRef.current = { frames: 0, lastCheck: Date.now() };
@@ -228,7 +205,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
     img.onload = () => {
       if (!canvasRef.current) canvasRef.current = document.createElement("canvas");
       const canvas = canvasRef.current;
-      // Downsample for faster processing
       const targetW = Math.min(img.width, 320);
       const targetH = Math.round((img.height / img.width) * targetW);
       canvas.width = targetW;
@@ -241,7 +217,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
       if (previousFrameRef.current && previousFrameRef.current.width === frame.width && previousFrameRef.current.height === frame.height) {
         const prev = previousFrameRef.current;
         let diffPixels = 0;
-        const step = 4; // Sample every 4th pixel for speed
+        const step = 4;
         const totalSampled = Math.floor(frame.data.length / (4 * step));
         const threshold = sensitivityThreshold[sensitivity];
         for (let i = 0; i < frame.data.length; i += 4 * step) {
@@ -268,9 +244,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   }, [sensitivity]);
 
   const triggerAlerts = useCallback(async (event: MotionEvent) => {
-    // Push notification
-    notifyMotionDetected(event.confidence);
-    
+    // No spam — only alert once per monitoring session
     if (alarmEnabled) {
       await sendCommand("play_alarm", { type: sirenEnabled ? "siren" : "beep" });
     }
@@ -281,16 +255,14 @@ export function SurveillancePanel({ className }: { className?: string }) {
         auto_call: true,
       });
     }
-  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand, notifyMotionDetected]);
+  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
 
   const toggleSiren = useCallback(async () => {
     if (sirenActive) {
-      // Stop siren
       await sendCommand("play_alarm", { type: "siren", action: "stop" });
       setSirenActive(false);
       toast({ title: "Siren Stopped" });
     } else {
-      // Start siren - set volume to max first
       setSirenActive(true);
       await sendCommand("set_volume", { level: 100 }, { awaitResult: true, timeoutMs: 3000 });
       await sendCommand("play_alarm", { type: "siren", action: "start" });
@@ -300,25 +272,14 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
   const toggleCall = useCallback(async () => {
     if (callActive) {
-      // Stop call - close audio WebSocket and mic
-      if (audioWsRef.current) {
-        try { audioWsRef.current.close(); } catch {}
-        audioWsRef.current = null;
-      }
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach(t => t.stop());
-        audioStreamRef.current = null;
-      }
-      if (audioContextRef.current) {
-        try { audioContextRef.current.close(); } catch {}
-        audioContextRef.current = null;
-      }
+      if (audioWsRef.current) { try { audioWsRef.current.close(); } catch {} audioWsRef.current = null; }
+      if (audioStreamRef.current) { audioStreamRef.current.getTracks().forEach(t => t.stop()); audioStreamRef.current = null; }
+      if (audioContextRef.current) { try { audioContextRef.current.close(); } catch {} audioContextRef.current = null; }
       setCallActive(false);
       toast({ title: "Call Ended" });
       return;
     }
 
-    // Start real bidirectional audio call via audio-relay
     if (!session?.session_token) {
       toast({ title: "Not Paired", description: "Connect to your PC first", variant: "destructive" });
       return;
@@ -329,11 +290,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
       const WS_BASE = getFunctionsWsBase();
       const wsUrl = `${WS_BASE}/functions/v1/audio-relay?sessionId=${callSessionId}&type=phone&direction=bidirectional&session_token=${session.session_token}`;
 
-      // Get microphone
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 } });
       audioStreamRef.current = stream;
 
-      // Connect WebSocket
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
 
@@ -345,7 +304,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
       audioWsRef.current = ws;
 
-      // Send mic audio as PCM
       const ac = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = ac;
       const source = ac.createMediaStreamSource(stream);
@@ -363,31 +321,24 @@ export function SurveillancePanel({ className }: { className?: string }) {
         ws.send(pcm16.buffer);
       };
 
-      // Play received audio
       ws.onmessage = async (event) => {
         if (event.data instanceof ArrayBuffer && event.data.byteLength > 0) {
           try {
             const pcm16 = new Int16Array(event.data);
             const float32 = new Float32Array(pcm16.length);
-            for (let i = 0; i < pcm16.length; i++) {
-              float32[i] = pcm16[i] / 32768;
-            }
+            for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
             const buffer = ac.createBuffer(1, float32.length, 16000);
             buffer.getChannelData(0).set(float32);
             const bufferSource = ac.createBufferSource();
             bufferSource.buffer = buffer;
             bufferSource.connect(ac.destination);
             bufferSource.start();
-          } catch { /* ignore playback errors */ }
+          } catch {}
         }
       };
 
-      ws.onclose = () => {
-        audioWsRef.current = null;
-        setCallActive(false);
-      };
+      ws.onclose = () => { audioWsRef.current = null; setCallActive(false); };
 
-      // Tell PC agent to start its side of the audio relay
       sendCommand("start_audio_relay", {
         session_id: callSessionId,
         direction: "bidirectional",
@@ -397,16 +348,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
       toast({ title: "📞 Call Started", description: "Bidirectional audio active" });
     } catch (err) {
       toast({ title: "Call Failed", description: err instanceof Error ? err.message : "Could not start call", variant: "destructive" });
-      // Cleanup on failure
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach(t => t.stop());
-        audioStreamRef.current = null;
-      }
+      if (audioStreamRef.current) { audioStreamRef.current.getTracks().forEach(t => t.stop()); audioStreamRef.current = null; }
     }
   }, [sendCommand, toast, callActive, session]);
 
   const startSurveillance = useCallback(async () => {
     setIsStarting(true);
+    humanNotifiedRef.current = false; // Reset notification guard for new session
     try {
       if (!session?.session_token) {
         toast({ title: "Not Paired", description: "Connect to your PC first", variant: "destructive" });
@@ -418,7 +366,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
       const WS_BASE = getFunctionsWsBase();
       const wsUrl = `${WS_BASE}/functions/v1/camera-relay?sessionId=${sessionId}&type=pc&fps=${survFps}&quality=${survQuality}&binary=true&session_token=${session.session_token}`;
 
-      // Connect WebSocket with retry
       let ws: WebSocket | null = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         ws = new WebSocket(wsUrl);
@@ -462,12 +409,11 @@ export function SurveillancePanel({ className }: { className?: string }) {
             currentBlobUrlRef.current = newUrl;
             setCurrentFrame(newUrl);
 
-            // Capture frames for clip recording (every 3rd frame to save memory)
-            if (recordingFramesRef.current && fpsCounterRef.current.frames % 3 === 0) {
+            // Capture frames for clip recording (every 3rd frame)
+            if (recordingFramesRef.current && fpsCounterRef.current.frames % 3 === 0 && isRecording) {
               recordingFramesRef.current.push(blob);
             }
 
-            // Latency tracking
             frameTimesRef.current.push(now);
             if (frameTimesRef.current.length > 10) frameTimesRef.current.shift();
             if (frameTimesRef.current.length >= 2) {
@@ -497,32 +443,25 @@ export function SurveillancePanel({ className }: { className?: string }) {
               detectMotion(src);
             }
           }
-        } catch { /* ignore parse errors */ }
+        } catch {}
       };
 
       ws.onclose = () => {
-        if (monitoring) {
-          addLog("warn", "web", "Surveillance WS closed unexpectedly");
-        }
+        if (monitoring) addLog("warn", "web", "Surveillance WS closed unexpectedly");
         cleanupWs();
         setMonitoring(false);
       };
 
-      // Fire-and-forget: don't block on result since agent may be slow
       sendCommand("start_camera_stream", {
         session_id: sessionId,
         camera_index: 0,
         fps: survFps,
         quality: survQuality,
       }, { awaitResult: false }).then((result) => {
-        if (!result.success) {
-          addLog("warn", "agent", `Surveillance camera command queuing issue: ${result.error}`);
-        } else {
-          addLog("info", "agent", "Surveillance camera command sent to PC");
-        }
+        if (!result.success) addLog("warn", "agent", `Surveillance camera issue: ${result.error}`);
+        else addLog("info", "agent", "Surveillance camera command sent to PC");
       });
 
-      // Start audio if enabled
       if (micEnabled) {
         sendCommand("start_audio_relay", {
           session_id: crypto.randomUUID(),
@@ -531,7 +470,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
       }
 
       setMonitoring(true);
-      toast({ title: "Surveillance Active", description: `Live camera + motion detection at ${survFps} FPS` });
+      toast({ title: "Surveillance Active", description: `Live camera + pose detection at ${survFps} FPS` });
     } catch (err) {
       toast({ title: "Surveillance error", description: err instanceof Error ? err.message : "Failed", variant: "destructive" });
     }
@@ -546,20 +485,20 @@ export function SurveillancePanel({ className }: { className?: string }) {
     setCurrentFrame(null);
     previousFrameRef.current = null;
     setLiveFps(0);
+    humanNotifiedRef.current = false;
     toast({ title: "Surveillance Stopped" });
   }, [sendCommand, toast, micEnabled, cleanupWs]);
 
-  // Auto-resume surveillance if it was left ON (localStorage persistence)
+  // Auto-resume
   const autoResumedRef = useRef(false);
   useEffect(() => {
     if (monitoring && !wsRef.current && !autoResumedRef.current && session?.session_token) {
       autoResumedRef.current = true;
-      // Re-start surveillance automatically
       startSurveillance();
     }
   }, [monitoring, session?.session_token]);
 
-  // Cleanup on unmount - DON'T reset monitoring state so it persists
+  // Cleanup on unmount
   useEffect(() => () => {
     cleanupWs();
     if (audioWsRef.current) { try { audioWsRef.current.close(); } catch {} }
@@ -580,58 +519,26 @@ export function SurveillancePanel({ className }: { className?: string }) {
           )}
         </CardTitle>
         <CardDescription>
-          Camera monitoring with motion detection • Sensitivity: {sensitivity} • {survFps} FPS
+          Camera monitoring with pose detection & auto-recording • {survFps} FPS
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Start / Stop Button */}
+        {/* Start / Stop */}
         <div className="flex gap-2">
           {!monitoring ? (
-            <Button
-              onClick={startSurveillance}
-              disabled={isStarting}
-              className="flex-1 h-12 gradient-primary"
-            >
-              {isStarting ? (
-                <Loader2 className="h-5 w-5 animate-spin mr-2" />
-              ) : (
-                <Play className="h-5 w-5 mr-2" />
-              )}
+            <Button onClick={startSurveillance} disabled={isStarting} className="flex-1 h-12 gradient-primary">
+              {isStarting ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Play className="h-5 w-5 mr-2" />}
               {isStarting ? "Connecting..." : "Start Surveillance"}
             </Button>
           ) : (
-            <Button
-              onClick={stopSurveillance}
-              variant="destructive"
-              className="flex-1 h-12"
-            >
+            <Button onClick={stopSurveillance} variant="destructive" className="flex-1 h-12">
               <Square className="h-5 w-5 mr-2" />
               Stop Surveillance
             </Button>
           )}
         </div>
 
-        {/* Clip Recording Controls */}
-        {monitoring && (
-          <div className="flex gap-2">
-            <Button
-              variant={isRecording ? "destructive" : "outline"}
-              className={cn("flex-1 h-10 text-xs gap-2", isRecording && "animate-pulse")}
-              onClick={isRecording ? stopClipRecording : () => startClipRecording("manual")}
-            >
-              {isRecording ? <Square className="h-4 w-4" /> : <Film className="h-4 w-4" />}
-              {isRecording ? `Recording (${Math.round((Date.now() - recordingStartRef.current) / 1000)}s)` : "Record Clip"}
-            </Button>
-            <Button
-              variant="outline"
-              className="h-10 text-xs gap-1 px-3"
-              onClick={() => setShowClips(!showClips)}
-            >
-              <Film className="h-4 w-4" />
-              {clips.length}
-            </Button>
-          </div>
-        )}
+        {/* Siren + Call */}
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant={sirenActive ? "default" : "destructive"}
@@ -651,25 +558,23 @@ export function SurveillancePanel({ className }: { className?: string }) {
           </Button>
         </div>
 
-        {/* Live Video Preview */}
+        {/* Live Video Preview — Pose detection always ON */}
         {currentFrame ? (
           <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50">
             <img src={currentFrame} alt="Live View" className="w-full h-full object-contain" />
-            {/* Pose Detection Skeleton Overlay */}
             <PoseDetectionOverlay
               frameUrl={currentFrame}
-              enabled={poseEnabled && monitoring}
+              enabled={monitoring}
               onHumanDetected={(lm, conf) => {
-                if (!humanPresent) {
-                  setHumanPresent(true);
+                if (!humanNotifiedRef.current) {
+                  humanNotifiedRef.current = true;
                   const confPct = Math.round(conf * 100);
+                  setHumanPresent(true);
                   addLog("warn", "web", `Human detected (${confPct}% confidence)`);
                   toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
                   notifyHumanDetected(confPct);
                   triggerAutoClip("human");
                 }
-                // Reset after 3 seconds of no detection
-                setTimeout(() => setHumanPresent(false), 3000);
               }}
             />
             <div className="absolute top-2 right-2 flex gap-1">
@@ -684,14 +589,17 @@ export function SurveillancePanel({ className }: { className?: string }) {
                   {streamLatency}ms
                 </Badge>
               )}
-              {poseEnabled && (
-                <Badge variant="secondary" className="bg-purple-500/80 text-white backdrop-blur text-[10px]">
-                  <PersonStanding className="w-3 h-3 mr-1" /> Pose
-                </Badge>
-              )}
+              <Badge variant="secondary" className="bg-purple-500/80 text-white backdrop-blur text-[10px]">
+                <PersonStanding className="w-3 h-3 mr-1" /> Pose
+              </Badge>
               {micEnabled && (
                 <Badge variant="secondary" className="bg-emerald-500/80 text-white backdrop-blur">
                   <Mic className="w-3 h-3 mr-1" /> ON
+                </Badge>
+              )}
+              {isRecording && (
+                <Badge variant="destructive" className="animate-pulse text-[10px]">
+                  ● REC
                 </Badge>
               )}
             </div>
@@ -716,13 +624,67 @@ export function SurveillancePanel({ className }: { className?: string }) {
           </div>
         )}
 
-        {/* Quick Stats */}
         {motionEvents.length > 0 && (
           <div className="text-xs text-muted-foreground flex justify-between px-1">
             <span>{motionEvents.length} motion events</span>
             <span>Last: {motionEvents[0]?.timestamp.toLocaleTimeString()}</span>
           </div>
         )}
+
+        {/* Recent Clips — always visible */}
+        <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
+          <div className="flex items-center justify-between p-3 text-sm font-medium">
+            <div className="flex items-center gap-2">
+              <Film className="h-4 w-4 text-muted-foreground" />
+              Recent Clips ({clips.length})
+            </div>
+            <span className="text-[10px] text-muted-foreground">Auto-deletes after 15 days</span>
+          </div>
+          <div className="border-t border-border/50">
+            {clips.length === 0 ? (
+              <div className="p-4 text-center text-xs text-muted-foreground">
+                No clips yet. Clips auto-record on human/motion detection and save to PC's surveillance folder.
+              </div>
+            ) : (
+              <ScrollArea className="max-h-[300px]">
+                <div className="p-2 space-y-2">
+                  {clips.map(clip => (
+                    <div key={clip.id} className="flex items-center gap-2 p-2 rounded-lg bg-secondary/20 hover:bg-secondary/30 transition-colors">
+                      <div className="w-16 h-10 rounded bg-black overflow-hidden shrink-0">
+                        {clip.thumbnail ? (
+                          <img src={clip.thumbnail} alt="Clip" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Film className="w-4 h-4 text-muted-foreground" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant={clip.trigger === "human" ? "destructive" : clip.trigger === "motion" ? "secondary" : "outline"} className="text-[9px] px-1 py-0">
+                            {clip.trigger}
+                          </Badge>
+                          <span className="text-[10px] text-muted-foreground">{clip.duration}s</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {clip.timestamp.toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => downloadClip(clip)}>
+                          <Download className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteClip(clip.id)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
+          </div>
+        </div>
 
         {/* Config Accordion */}
         <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
@@ -739,39 +701,20 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
           {showConfig && (
             <div className="p-3 space-y-4 border-t border-border/50 animate-in slide-in-from-top-2">
-              {/* FPS/Quality Settings */}
               <div className="space-y-3">
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs flex items-center gap-1">
-                      <Gauge className="h-3 w-3" /> Target FPS
-                    </Label>
+                    <Label className="text-xs flex items-center gap-1"><Gauge className="h-3 w-3" /> Target FPS</Label>
                     <span className="font-mono text-xs font-bold text-primary">{survFps}</span>
                   </div>
-                  <Slider
-                    value={[survFps]}
-                    onValueChange={([v]) => setSurvFps(v)}
-                    min={5}
-                    max={60}
-                    step={5}
-                    className="w-full"
-                  />
+                  <Slider value={[survFps]} onValueChange={([v]) => setSurvFps(v)} min={5} max={60} step={5} className="w-full" />
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs flex items-center gap-1">
-                      <Video className="h-3 w-3" /> JPEG Quality
-                    </Label>
+                    <Label className="text-xs flex items-center gap-1"><Video className="h-3 w-3" /> JPEG Quality</Label>
                     <span className="font-mono text-xs font-bold text-primary">{survQuality}%</span>
                   </div>
-                  <Slider
-                    value={[survQuality]}
-                    onValueChange={([v]) => setSurvQuality(v)}
-                    min={10}
-                    max={100}
-                    step={5}
-                    className="w-full"
-                  />
+                  <Slider value={[survQuality]} onValueChange={([v]) => setSurvQuality(v)} min={10} max={100} step={5} className="w-full" />
                 </div>
               </div>
 
@@ -788,31 +731,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <PersonStanding className="h-4 w-4 text-muted-foreground" />
-                    <Label className="text-xs">Pose Detection (Skeletal)</Label>
-                  </div>
-                  <Switch checked={poseEnabled} onCheckedChange={setPoseEnabled} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Mic className="h-4 w-4 text-muted-foreground" />
-                    <Label className="text-xs">Listen (Audio)</Label>
-                  </div>
+                  <div className="flex items-center gap-2"><Mic className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Listen (Audio)</Label></div>
                   <Switch checked={micEnabled} onCheckedChange={setMicEnabled} />
                 </div>
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Bell className="h-4 w-4 text-muted-foreground" />
-                    <Label className="text-xs">Play PC Alarm</Label>
-                  </div>
+                  <div className="flex items-center gap-2"><Bell className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Play PC Alarm</Label></div>
                   <Switch checked={alarmEnabled} onCheckedChange={setAlarmEnabled} />
                 </div>
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Phone className="h-4 w-4 text-muted-foreground" />
-                    <Label className="text-xs">Auto-Call Me</Label>
-                  </div>
+                  <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Auto-Call Me</Label></div>
                   <Switch checked={autoCall} onCheckedChange={setAutoCall} />
                 </div>
               </div>
@@ -824,13 +751,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 </div>
                 <div className="flex gap-1">
                   {(["low", "medium", "high"] as const).map((s) => (
-                    <Button
-                      key={s}
-                      variant={sensitivity === s ? "default" : "outline"}
-                      size="sm"
-                      className="flex-1 h-7 text-xs capitalize"
-                      onClick={() => setSensitivity(s)}
-                    >
+                    <Button key={s} variant={sensitivity === s ? "default" : "outline"} size="sm" className="flex-1 h-7 text-xs capitalize" onClick={() => setSensitivity(s)}>
                       {s}
                     </Button>
                   ))}
@@ -840,74 +761,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
           )}
         </div>
 
-        {/* Diagnostics */}
         <InlineDiagnostics type="pc-camera" className="mt-2" />
-
-        {/* Recent Clips */}
-        {(showClips || clips.length > 0) && (
-          <div className="rounded-lg border border-border/50 bg-secondary/10 overflow-hidden">
-            <button
-              className="w-full flex items-center justify-between p-3 text-sm font-medium hover:bg-secondary/20 transition-colors"
-              onClick={() => setShowClips(!showClips)}
-            >
-              <div className="flex items-center gap-2">
-                <Film className="h-4 w-4 text-muted-foreground" />
-                Recent Clips ({clips.length})
-              </div>
-              {showClips ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            </button>
-
-            {showClips && (
-              <div className="border-t border-border/50">
-                {clips.length === 0 ? (
-                  <div className="p-4 text-center text-xs text-muted-foreground">
-                    No clips recorded yet. Start surveillance and clips will be auto-captured on motion/human detection.
-                  </div>
-                ) : (
-                  <ScrollArea className="max-h-[300px]">
-                    <div className="p-2 space-y-2">
-                      {clips.map(clip => (
-                        <div key={clip.id} className="flex items-center gap-2 p-2 rounded-lg bg-secondary/20 hover:bg-secondary/30 transition-colors">
-                          {/* Thumbnail */}
-                          <div className="w-16 h-10 rounded bg-black overflow-hidden shrink-0">
-                            {clip.thumbnail ? (
-                              <img src={clip.thumbnail} alt="Clip" className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center">
-                                <Film className="w-4 h-4 text-muted-foreground" />
-                              </div>
-                            )}
-                          </div>
-                          {/* Info */}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <Badge variant={clip.trigger === "human" ? "destructive" : clip.trigger === "motion" ? "secondary" : "outline"} className="text-[9px] px-1 py-0">
-                                {clip.trigger}
-                              </Badge>
-                              <span className="text-[10px] text-muted-foreground">{clip.duration}s</span>
-                            </div>
-                            <p className="text-[10px] text-muted-foreground mt-0.5">
-                              {clip.timestamp.toLocaleString()}
-                            </p>
-                          </div>
-                          {/* Actions */}
-                          <div className="flex items-center gap-1 shrink-0">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => downloadClip(clip)}>
-                              <Download className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteClip(clip.id)}>
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </ScrollArea>
-                )}
-              </div>
-            )}
-          </div>
-        )}
       </CardContent>
     </Card>
   );
