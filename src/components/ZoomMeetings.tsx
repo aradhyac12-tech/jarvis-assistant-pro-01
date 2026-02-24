@@ -97,6 +97,9 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isJoining, setIsJoining] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [meetingActive, setMeetingActive] = useState(false);
+  const [liveMicMuted, setLiveMicMuted] = useState(true);
+  const [liveVideoOff, setLiveVideoOff] = useState(true);
   
   // Screenshot preview
   const [lastScreenshot, setLastScreenshot] = useState<string | null>(null);
@@ -190,18 +193,24 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         return;
       }
       
-      // Extended timeout for slow PCs - 300s total (240s Zoom load + 20s screenshot + buffer)
+      // Extended timeout but now the agent returns immediately (background join)
       const res = await sendCommand("join_zoom", { ...payload, initial_wait: 240 }, { 
         awaitResult: true, 
-        timeoutMs: 300000 
+        timeoutMs: 30000  // Short timeout since agent returns immediately now
       });
       
       if (res.success) {
         const result = res as any;
         
+        setMeetingActive(true);
+        setLiveMicMuted(muteAudio);
+        setLiveVideoOff(muteVideo);
+        
         toast({
-          title: "Joined Zoom Meeting",
-          description: `Audio: ${result.muted_audio ? "Muted" : "On"}, Video: ${result.muted_video ? "Off" : "On"}`,
+          title: "Zoom Meeting Joining",
+          description: result.background 
+            ? `Agent is handling join in background. You can use other features.`
+            : `Audio: ${result.muted_audio ? "Muted" : "On"}, Video: ${result.muted_video ? "Off" : "On"}`,
         });
         
         // Log the join (using any type since table was just created)
@@ -607,6 +616,97 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
                 >
                   <X className="h-3 w-3" />
                 </Button>
+              </div>
+            )}
+
+            {/* Live Meeting Controls */}
+            {meetingActive && (
+              <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    Meeting Active
+                  </p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-6"
+                    onClick={() => setMeetingActive(false)}
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "h-auto py-3 flex-col gap-1.5",
+                      liveMicMuted 
+                        ? "bg-destructive/10 text-destructive border-destructive/30" 
+                        : "bg-green-500/10 text-green-400 border-green-500/30"
+                    )}
+                    onClick={async () => {
+                      const res = await sendCommand("zoom_mic_toggle", {}, { awaitResult: true, timeoutMs: 5000 });
+                      if (res.success) {
+                        setLiveMicMuted(!liveMicMuted);
+                        toast({ 
+                          title: liveMicMuted ? "🎤 Mic On" : "🔇 Mic Off",
+                          description: liveMicMuted ? "Microphone unmuted" : "Microphone muted",
+                        });
+                      } else {
+                        toast({ title: "Failed", description: "Could not toggle mic", variant: "destructive" });
+                      }
+                    }}
+                  >
+                    {liveMicMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+                    <span className="text-[10px] font-medium">{liveMicMuted ? "Mic Off" : "Mic On"}</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "h-auto py-3 flex-col gap-1.5",
+                      liveVideoOff 
+                        ? "bg-destructive/10 text-destructive border-destructive/30" 
+                        : "bg-green-500/10 text-green-400 border-green-500/30"
+                    )}
+                    onClick={async () => {
+                      const res = await sendCommand("zoom_camera_toggle", {}, { awaitResult: true, timeoutMs: 5000 });
+                      if (res.success) {
+                        setLiveVideoOff(!liveVideoOff);
+                        toast({ 
+                          title: liveVideoOff ? "📷 Camera On" : "📷 Camera Off",
+                          description: liveVideoOff ? "Camera enabled" : "Camera disabled",
+                        });
+                      } else {
+                        toast({ title: "Failed", description: "Could not toggle camera", variant: "destructive" });
+                      }
+                    }}
+                  >
+                    {liveVideoOff ? <CameraOff className="h-5 w-5" /> : <Camera className="h-5 w-5" />}
+                    <span className="text-[10px] font-medium">{liveVideoOff ? "Cam Off" : "Cam On"}</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-auto py-3 flex-col gap-1.5 bg-blue-500/10 text-blue-400 border-blue-500/30"
+                    onClick={async () => {
+                      const res = await sendCommand("zoom_screenshot", {}, { awaitResult: true, timeoutMs: 10000 });
+                      if (res.success && (res as any).result?.image) {
+                        setLastScreenshot(`data:image/jpeg;base64,${(res as any).result.image}`);
+                        toast({ title: "📸 Screenshot Captured", description: "Screenshot taken from Zoom meeting" });
+                      } else if (res.success) {
+                        toast({ title: "📸 Screenshot Captured" });
+                      } else {
+                        toast({ title: "Screenshot Failed", variant: "destructive" });
+                      }
+                    }}
+                  >
+                    <Image className="h-5 w-5" />
+                    <span className="text-[10px] font-medium">Screenshot</span>
+                  </Button>
+                </div>
               </div>
             )}
           </TabsContent>

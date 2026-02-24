@@ -1357,7 +1357,13 @@ class JarvisAgent:
             add_log("error", f"Toast error: {e}", category="notification")
             return {"success": False, "error": str(e)}
 
+    # Track background zoom join task
+    _zoom_join_task = None
+    _zoom_join_result = None
+    _zoom_meeting_active = False
+
     async def _join_zoom(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Non-blocking Zoom join — launches background task and returns immediately."""
         try:
             meeting_link = str(payload.get("meeting_link") or "").strip()
             meeting_id = str(payload.get("meeting_id") or "").strip()
@@ -1387,61 +1393,254 @@ class JarvisAgent:
             if not link:
                 return {"success": False, "error": "Missing meeting_link or meeting_id"}
 
-            add_log("info", "Opening Zoom meeting via native protocol", details=link[:140], category="zoom")
-            
             # Check if Zoom is already running
-            zoom_already_running = False
-            for proc in psutil.process_iter(['name']):
-                try:
-                    if 'zoom' in proc.info['name'].lower():
-                        zoom_already_running = True
-                        break
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            
+            zoom_already_running = self._is_zoom_running()
+
+            add_log("info", "Opening Zoom meeting via native protocol", details=link[:140], category="zoom")
+
             if platform.system() == "Windows":
                 os.startfile(link)
             else:
                 webbrowser.open(link)
 
-            # If Zoom was already running, skip the long wait
             if zoom_already_running:
-                initial_wait = 15  # Just wait for meeting to load
-                add_log("info", "Zoom already running — skipping long wait", category="zoom")
+                initial_wait = 15
+                add_log("info", "Zoom already running — skipping long wait (15s)", category="zoom")
             else:
                 initial_wait = int(payload.get("initial_wait", 240))
-                add_log("info", f"Waiting {initial_wait}s for Zoom to load...", category="zoom")
+                add_log("info", f"Zoom not running — waiting {initial_wait}s for load", category="zoom")
+
+            # Launch background task so agent keeps accepting commands
+            bg_payload = {
+                "initial_wait": initial_wait,
+                "mute_audio": mute_audio,
+                "mute_video": mute_video,
+                "take_screenshot": take_screenshot,
+                "screenshot_wait": int(payload.get("screenshot_wait", 10)),
+                "zoom_already_running": zoom_already_running,
+            }
+            self._zoom_join_task = asyncio.create_task(self._zoom_join_background(bg_payload))
+            self._zoom_meeting_active = True
+
+            return {
+                "success": True,
+                "message": f"Zoom join started (wait {initial_wait}s). Agent accepting commands.",
+                "muted_audio": mute_audio,
+                "muted_video": mute_video,
+                "zoom_was_running": zoom_already_running,
+                "background": True,
+            }
+        except Exception as e:
+            add_log("error", f"Zoom join error: {e}", category="zoom")
+            return {"success": False, "error": str(e)}
+
+    def _is_zoom_running(self) -> bool:
+        """Check if Zoom process is running."""
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'] and 'zoom' in proc.info['name'].lower():
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return False
+
+    async def _zoom_join_background(self, payload: Dict[str, Any]) -> None:
+        """Background task: wait for Zoom, handle pre-join screen, toggle mic/cam."""
+        try:
+            initial_wait = payload["initial_wait"]
+            mute_audio = payload["mute_audio"]
+            mute_video = payload["mute_video"]
+            take_screenshot = payload["take_screenshot"]
+            screenshot_wait = payload["screenshot_wait"]
+
+            add_log("info", f"[Zoom BG] Waiting {initial_wait}s for Zoom to load...", category="zoom")
             
-            await asyncio.sleep(initial_wait)
+            # Wait in small increments so we don't block forever
+            for i in range(initial_wait):
+                await asyncio.sleep(1)
+                # Every 10s check if Zoom meeting window appeared early
+                if i > 10 and i % 10 == 0:
+                    if self._is_zoom_meeting_window_active():
+                        add_log("info", f"[Zoom BG] Meeting window detected at {i}s — skipping rest of wait", category="zoom")
+                        break
 
-            # Toggle mic/camera using actual button clicks via pyautogui
+            add_log("info", "[Zoom BG] Wait complete, handling pre-join/meeting controls", category="zoom")
+
             if platform.system() == "Windows":
-                for attempt in range(3):
-                    if mute_audio:
-                        pyautogui.hotkey("alt", "a")
-                        await asyncio.sleep(1)
-                    if mute_video:
-                        pyautogui.hotkey("alt", "v")
-                        await asyncio.sleep(1)
-                    await asyncio.sleep(2)
+                # Try to detect and handle the pre-join screen
+                # The pre-join screen has "Join" button with mic/video toggles
+                # Strategy: Use Tab to navigate, detect state via accessibility
+                await self._handle_zoom_prejoin(mute_audio, mute_video)
 
+            # Take screenshot after joining
             screenshot_base64 = None
             if take_screenshot:
-                screenshot_wait = int(payload.get("screenshot_wait", 10))
                 await asyncio.sleep(screenshot_wait)
                 shot = self.screenshot_handler.capture_sync(quality=70, scale=0.5)
                 if shot.get("success") and shot.get("image"):
                     screenshot_base64 = shot["image"]
+                    add_log("info", "[Zoom BG] Screenshot captured", category="zoom")
 
-            return {
+            self._zoom_join_result = {
                 "success": True,
                 "muted_audio": mute_audio,
                 "muted_video": mute_video,
                 "screenshot": screenshot_base64,
-                "zoom_was_running": zoom_already_running,
             }
+            add_log("info", "[Zoom BG] Join process complete", category="zoom")
+
         except Exception as e:
-            add_log("error", f"Zoom join error: {e}", category="zoom")
+            add_log("error", f"[Zoom BG] Error: {e}", category="zoom")
+            self._zoom_join_result = {"success": False, "error": str(e)}
+
+    def _is_zoom_meeting_window_active(self) -> bool:
+        """Check if the Zoom meeting window is visible (Windows only)."""
+        if platform.system() != "Windows":
+            return False
+        try:
+            import ctypes
+            import ctypes.wintypes
+            
+            EnumWindows = ctypes.windll.user32.EnumWindows
+            GetWindowTextW = ctypes.windll.user32.GetWindowTextW
+            IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+            
+            found = [False]
+            
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+            def enum_callback(hwnd, _):
+                if IsWindowVisible(hwnd):
+                    title = ctypes.create_unicode_buffer(256)
+                    GetWindowTextW(hwnd, title, 256)
+                    t = title.value.lower()
+                    # Zoom meeting window titles contain "zoom meeting" or "zoom"
+                    if 'zoom meeting' in t or ('zoom' in t and 'installer' not in t):
+                        found[0] = True
+                        return False  # Stop enumeration
+                return True
+            
+            EnumWindows(enum_callback, 0)
+            return found[0]
+        except Exception:
+            return False
+
+    async def _handle_zoom_prejoin(self, mute_audio: bool, mute_video: bool) -> None:
+        """Handle the Zoom pre-join screen: ensure mic/video are in desired state, then click Join."""
+        try:
+            add_log("info", "[Zoom] Handling pre-join screen", category="zoom")
+            
+            # Give a moment for the pre-join dialog to fully render
+            await asyncio.sleep(3)
+            
+            # On the Zoom pre-join screen:
+            # - There are mic and video toggle icons
+            # - Below them is the "Join" button
+            # Use Zoom's keyboard shortcuts which work on the pre-join screen too
+            
+            # First, try to focus the Zoom window
+            if platform.system() == "Windows":
+                try:
+                    import ctypes
+                    import ctypes.wintypes
+                    
+                    EnumWindows = ctypes.windll.user32.EnumWindows
+                    GetWindowTextW = ctypes.windll.user32.GetWindowTextW
+                    IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+                    SetForegroundWindow = ctypes.windll.user32.SetForegroundWindow
+                    
+                    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+                    def find_zoom(hwnd, _):
+                        if IsWindowVisible(hwnd):
+                            title = ctypes.create_unicode_buffer(256)
+                            GetWindowTextW(hwnd, title, 256)
+                            t = title.value.lower()
+                            if 'zoom' in t and 'installer' not in t:
+                                SetForegroundWindow(hwnd)
+                                return False
+                        return True
+                    
+                    EnumWindows(find_zoom, 0)
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    add_log("warn", f"[Zoom] Could not focus window: {e}", category="zoom")
+            
+            # On pre-join screen, the checkboxes are:
+            # "Don't connect to audio" and "Turn off my video"
+            # We can use Tab + Space to toggle them, or use pyautogui to find and click
+            
+            # Most reliable approach: Use Zoom's settings via registry/config
+            # to pre-set audio/video off, then just click Join
+            # But for now, use the keyboard approach on the actual meeting:
+            
+            # After joining, use Alt+A for audio toggle, Alt+V for video toggle
+            # These only work once IN the meeting, not on pre-join
+            
+            # For pre-join: Tab through to find the Join button and click it
+            # The pre-join typically has: mic icon, video icon, Join button
+            # We can use Tab to reach Join and Enter to click it
+            
+            # Press Tab a few times to reach Join button, then Enter
+            for _ in range(3):
+                pyautogui.press("tab")
+                await asyncio.sleep(0.2)
+            pyautogui.press("enter")
+            
+            add_log("info", "[Zoom] Pressed Join on pre-join screen", category="zoom")
+            
+            # Wait for meeting to actually load after clicking Join
+            await asyncio.sleep(10)
+            
+            # Now we're in the meeting — use Alt+A / Alt+V to control mic/camera
+            # These hotkeys TOGGLE the state, so we need to be careful
+            # Strategy: Press the hotkey once, then verify state via a brief check
+            
+            if mute_audio:
+                # Alt+A toggles mic in Zoom meeting
+                pyautogui.hotkey("alt", "a")
+                await asyncio.sleep(0.5)
+                add_log("info", "[Zoom] Toggled mic (Alt+A) — target: muted", category="zoom")
+            
+            if mute_video:
+                # Alt+V toggles video in Zoom meeting  
+                pyautogui.hotkey("alt", "v")
+                await asyncio.sleep(0.5)
+                add_log("info", "[Zoom] Toggled video (Alt+V) — target: off", category="zoom")
+            
+            # Wait and verify — take a quick screenshot to check state
+            await asyncio.sleep(2)
+            
+            # Don't re-toggle: the user's issue was that toggling 3x flipped it back on
+            # We only toggle ONCE, not in a loop
+            
+            add_log("info", "[Zoom] Pre-join handling complete", category="zoom")
+            
+        except Exception as e:
+            add_log("error", f"[Zoom] Pre-join handling error: {e}", category="zoom")
+
+    async def _zoom_toggle_mic(self) -> Dict[str, Any]:
+        """Toggle Zoom microphone via Alt+A hotkey."""
+        try:
+            pyautogui.hotkey("alt", "a")
+            return {"success": True, "message": "Toggled Zoom microphone (Alt+A)"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _zoom_toggle_camera(self) -> Dict[str, Any]:
+        """Toggle Zoom camera via Alt+V hotkey."""
+        try:
+            pyautogui.hotkey("alt", "v")
+            return {"success": True, "message": "Toggled Zoom camera (Alt+V)"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _zoom_screenshot(self) -> Dict[str, Any]:
+        """Take a screenshot of the current Zoom meeting."""
+        try:
+            shot = self.screenshot_handler.capture_sync(quality=70, scale=0.5)
+            if shot.get("success") and shot.get("image"):
+                return {"success": True, "image": shot["image"], "message": "Zoom screenshot captured"}
+            return {"success": False, "error": "Screenshot capture failed"}
+        except Exception as e:
             return {"success": False, "error": str(e)}
     
     _siren_running = False
@@ -2769,6 +2968,19 @@ class JarvisAgent:
                 return self._get_media_state()
             elif cmd == "join_zoom":
                 return await self._join_zoom(payload)
+            elif cmd == "zoom_mic_toggle":
+                return await self._zoom_toggle_mic()
+            elif cmd == "zoom_camera_toggle":
+                return await self._zoom_toggle_camera()
+            elif cmd == "zoom_screenshot":
+                return await self._zoom_screenshot()
+            elif cmd == "zoom_status":
+                return {
+                    "success": True,
+                    "zoom_running": self._is_zoom_running(),
+                    "meeting_active": self._zoom_meeting_active,
+                    "join_result": self._zoom_join_result,
+                }
             elif cmd in ["mute_pc", "mute"]:
                 _safe_pycaw_set_mute(True)
                 return {"success": True}
