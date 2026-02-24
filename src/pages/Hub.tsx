@@ -8,7 +8,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import {
   Bot,
-  Mic,
   Volume2,
   Volume1,
   VolumeX,
@@ -31,14 +30,6 @@ import {
   Moon,
   Wifi,
   Wrench,
-  Keyboard,
-  SkipBack,
-  SkipForward,
-  Play,
-  Pause,
-  Repeat,
-  Shuffle,
-  Clock,
   AppWindow,
   Search,
   XCircle,
@@ -59,6 +50,7 @@ import { SmartP2PManager } from "@/components/SmartP2PManager";
 import { BidirectionalFileTransfer } from "@/components/BidirectionalFileTransfer";
 import { KDERemoteInput } from "@/components/KDERemoteInput";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
+import { KDEMediaControl } from "@/components/KDEMediaControl";
 
 type Tab = "control" | "remote" | "media" | "apps" | "network" | "tools";
 
@@ -70,14 +62,8 @@ interface SystemStats {
   battery_plugged?: boolean;
 }
 
-interface MediaInfo {
-  title?: string;
-  artist?: string;
-  album?: string;
-  playing?: boolean;
-  position?: number;
-  duration?: number;
-}
+
+
 
 interface AppInfo {
   pid?: number;
@@ -130,10 +116,7 @@ export default function Hub() {
   const [isBoosting, setIsBoosting] = useState(false);
 
   // Media state
-  const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
-  const [mediaLoading, setMediaLoading] = useState(false);
 
   // Apps state
   const [runningApps, setRunningApps] = useState<AppInfo[]>([]);
@@ -329,29 +312,6 @@ export default function Hub() {
       sendCommand("remote_input_disable", { session: inputSessionId });
     };
   }, [activeTab, inputSessionId, isConnected, sendCommand]);
-
-  // Media info fetch
-  const fetchMediaInfo = useCallback(async () => {
-    setMediaLoading(true);
-    try {
-      const result = await sendCommand("get_media_info", {}, { awaitResult: true, timeoutMs: 5000 });
-      if (result.success && "result" in result && result.result) {
-        const info = result.result as MediaInfo;
-        setMediaInfo(info);
-        setIsPlaying(info.playing ?? false);
-      }
-    } catch {}
-    setMediaLoading(false);
-  }, [sendCommand]);
-
-  useEffect(() => {
-    if (selectedDevice?.is_online) fetchMediaInfo();
-  }, [selectedDevice?.is_online, fetchMediaInfo]);
-
-  const handleMediaControl = async (action: string) => {
-    if (action === "play_pause") setIsPlaying(!isPlaying);
-    sendCommand("media_control", { action }).then(() => setTimeout(fetchMediaInfo, 300));
-  };
 
   const handleMuteToggle = () => {
     const newMuted = !isMuted;
@@ -721,102 +681,14 @@ export default function Hub() {
 
             {/* Media Tab */}
             {activeTab === "media" && (
-              <div className="space-y-3">
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-4 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Music className="h-5 w-5 text-primary" />
-                        <span className="font-medium text-sm">Now Playing</span>
-                      </div>
-                      <Button variant="ghost" size="icon" onClick={fetchMediaInfo} disabled={mediaLoading} className="h-7 w-7">
-                        <RefreshCw className={cn("h-3.5 w-3.5", mediaLoading && "animate-spin")} />
-                      </Button>
-                    </div>
-
-                    <div className="p-3 rounded-lg bg-secondary/30">
-                      {mediaInfo?.title ? (
-                        <>
-                          <Badge variant={isPlaying ? "default" : "secondary"} className={cn("text-[10px] mb-1", isPlaying && "bg-emerald-500/20 text-emerald-400")}>
-                            {isPlaying ? "▶ Playing" : "⏸ Paused"}
-                          </Badge>
-                          <p className="font-medium text-sm truncate">{mediaInfo.title}</p>
-                          <p className="text-xs text-muted-foreground truncate">{mediaInfo.artist}{mediaInfo.album && ` • ${mediaInfo.album}`}</p>
-                          {mediaInfo.duration && mediaInfo.duration > 0 && (
-                            <div className="mt-2 space-y-1">
-                              <div className="w-full h-1 rounded-full bg-secondary">
-                                <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${((mediaInfo.position || 0) / mediaInfo.duration) * 100}%` }} />
-                              </div>
-                              <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
-                                <span>{formatDuration(mediaInfo.position || 0)}</span>
-                                <span>{formatDuration(mediaInfo.duration)}</span>
-                              </div>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="text-center py-2">
-                          <p className="text-sm text-muted-foreground">No media detected</p>
-                          <p className="text-xs text-muted-foreground">Play something on your PC</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Playback Controls */}
-                    <div className="flex items-center justify-center gap-2">
-                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("shuffle")} className="h-8 w-8">
-                        <Shuffle className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("previous")} className="h-9 w-9">
-                        <SkipBack className="h-5 w-5" />
-                      </Button>
-                      <Button onClick={() => handleMediaControl("play_pause")} className="h-12 w-12 rounded-full bg-primary">
-                        {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 ml-0.5" />}
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("next")} className="h-9 w-9">
-                        <SkipForward className="h-5 w-5" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => handleMediaControl("repeat")} className="h-8 w-8">
-                        <Repeat className="h-4 w-4" />
-                      </Button>
-                    </div>
-
-                    {/* Volume Control */}
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="h-7 w-7">
-                          <VolumeIcon className="h-4 w-4" />
-                        </Button>
-                        <Slider
-                          value={[isMuted ? 0 : volume]}
-                          onValueChange={(v) => { setVolume(v[0]); setIsMuted(v[0] === 0); }}
-                          onValueCommit={handleVolumeCommit}
-                          max={100}
-                          step={5}
-                          disabled={!isConnected}
-                          className="flex-1 cursor-pointer"
-                        />
-                        <Badge variant="secondary" className="text-[10px] w-10 justify-center">{isMuted ? 0 : volume}%</Badge>
-                      </div>
-                    </div>
-
-                    {/* Audio Output */}
-                    <div className="pt-2 border-t border-border/20">
-                      <p className="text-xs text-muted-foreground mb-2">Audio Output: Default Speaker</p>
-                      <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => {
-                        sendCommand("list_audio_outputs", {}, { awaitResult: true, timeoutMs: 5000 }).then(r => {
-                          if (r.success && 'result' in r) {
-                            const devices = (r.result as any)?.devices || [];
-                            toast({ title: "Audio Devices", description: devices.map((d: any) => d.name).join(", ") || "Default only" });
-                          }
-                        });
-                      }}>
-                        List Devices
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+              <KDEMediaControl
+                isConnected={isConnected}
+                volume={volume}
+                isMuted={isMuted}
+                onVolumeChange={(v) => { setVolume(v[0]); setIsMuted(v[0] === 0); }}
+                onVolumeCommit={handleVolumeCommit}
+                onMuteToggle={handleMuteToggle}
+              />
             )}
 
             {/* Apps Tab */}
