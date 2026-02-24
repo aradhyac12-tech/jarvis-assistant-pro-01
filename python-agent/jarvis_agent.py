@@ -44,7 +44,7 @@ AGENT_VERSION = "5.3.0"
 
 # Auto-updater
 try:
-    from auto_updater import AutoUpdater, get_current_version, save_current_version
+    from auto_updater import AutoUpdater, get_current_version, save_current_version, ensure_firewall_configured, is_firewall_configured, verify_update
     HAS_AUTO_UPDATER = True
 except ImportError:
     HAS_AUTO_UPDATER = False
@@ -3132,24 +3132,33 @@ class JarvisAgent:
             if cmd == "check_update":
                 if HAS_AUTO_UPDATER and self._auto_updater:
                     update = self._auto_updater.check_now()
+                    status = self._auto_updater.get_status()
                     return {
                         "success": True,
                         "current_version": AGENT_VERSION,
                         "update_available": update is not None,
                         "available_version": update["version"] if update else None,
-                        "last_check": self._auto_updater.last_check,
-                        "last_update": self._auto_updater.last_update,
+                        "last_check": status["last_check"],
+                        "last_update": status["last_update"],
+                        "last_verification": status["last_verification"],
+                        "firewall_configured": status["firewall_configured"],
+                        "auto_restart": status["auto_restart"],
                     }
                 return {"success": True, "current_version": AGENT_VERSION, "update_available": False, "auto_updater": False}
             
             elif cmd == "apply_update":
                 if HAS_AUTO_UPDATER and self._auto_updater:
-                    success = self._auto_updater.apply_now()
-                    return {"success": success, "message": "Update applied, restart agent to activate" if success else "No update available"}
+                    result = self._auto_updater.apply_now()
+                    return result
                 return {"success": False, "error": "Auto-updater not available"}
             
             elif cmd == "get_agent_version":
-                return {"success": True, "version": AGENT_VERSION, "has_auto_updater": HAS_AUTO_UPDATER}
+                fw_ok = is_firewall_configured() if HAS_AUTO_UPDATER else None
+                return {
+                    "success": True, "version": AGENT_VERSION, 
+                    "has_auto_updater": HAS_AUTO_UPDATER,
+                    "firewall_configured": fw_ok,
+                }
 
             elif cmd == "open_p2p_ports":
                 return self._open_p2p_firewall_ports()
@@ -3845,7 +3854,17 @@ class JarvisAgent:
         
         add_log("info", "Agent ready and polling for commands", category="system")
         
-        # Start auto-updater
+        # One-time firewall setup (never asks admin again after first success)
+        if HAS_AUTO_UPDATER:
+            try:
+                ensure_firewall_configured(
+                    p2p_port=LOCAL_P2P_PORT,
+                    log_fn=lambda level, msg: add_log(level, f"[Firewall] {msg}", category="p2p")
+                )
+            except Exception as e:
+                add_log("warn", f"Firewall setup check failed: {e}", category="p2p")
+        
+        # Start auto-updater with auto-restart enabled
         self._auto_updater = None
         if HAS_AUTO_UPDATER:
             try:
@@ -3854,10 +3873,10 @@ class JarvisAgent:
                     supabase_key=SUPABASE_KEY,
                     device_key=self.device_key,
                     log_fn=lambda level, msg: add_log(level, f"[AutoUpdate] {msg}", category="system"),
-                    on_update=lambda v: add_log("info", f"Agent updated to v{v}! Restart to activate.", category="system"),
+                    on_update=lambda v: add_log("info", f"Agent auto-updated to v{v}! Auto-restarting...", category="system"),
+                    auto_restart=True,
                 )
                 self._auto_updater.start()
-                # Save current version on first run
                 save_current_version(AGENT_VERSION)
             except Exception as e:
                 add_log("warn", f"Auto-updater init failed: {e}", category="system")
