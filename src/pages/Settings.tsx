@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, PhoneOff, Clock, Copy, FileUp, Smartphone, ArrowRight, Activity, CheckCircle, XCircle, Fingerprint, Lock } from "lucide-react";
+import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, PhoneOff, Clock, Copy, FileUp, Smartphone, ArrowRight, Activity, CheckCircle, XCircle, Fingerprint, Lock, Download, RefreshCw, CloudDownload, Wifi } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -17,6 +18,7 @@ import { BackButton } from "@/components/BackButton";
 import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { isAppLockEnabled, getAppLockMethod, getAppPin, setAppLockSettings } from "@/components/AppLockScreen";
+import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState("Hey Jarvis");
@@ -427,6 +429,9 @@ export default function Settings() {
             )}
           </CardContent>
         </Card>
+
+        {/* OTA Updates */}
+        <OTAUpdateCard />
 
         <Button onClick={handleSave} className="w-full h-9 text-sm">
           <Check className="h-4 w-4 mr-2" /> Save Settings
