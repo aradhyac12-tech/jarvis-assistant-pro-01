@@ -40,7 +40,7 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "5.4.0"
+AGENT_VERSION = "5.5.0"
 
 # Auto-updater
 try:
