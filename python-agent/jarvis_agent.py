@@ -2728,24 +2728,28 @@ class JarvisAgent:
         try:
             apps = []
             seen = set()
+            total_memory = psutil.virtual_memory().total
             for proc in psutil.process_iter(['name', 'pid', 'cpu_percent', 'memory_percent', 'status']):
                 try:
                     info = proc.info
                     name = info['name']
-                    if name in seen or name.lower() in ("system", "idle", "registry", "smss.exe", "csrss.exe", "wininit.exe", "services.exe", "lsass.exe", "svchost.exe"):
+                    if name in seen or name.lower() in ("system", "idle", "registry", "smss.exe", "csrss.exe", "wininit.exe", "services.exe", "lsass.exe", "svchost.exe", "conhost.exe", "dwm.exe", "fontdrvhost.exe", "winlogon.exe", "lsaiso.exe"):
                         continue
                     seen.add(name)
+                    mem_pct = round(info.get('memory_percent', 0) or 0, 1)
+                    mem_mb = round((mem_pct / 100.0) * (total_memory / (1024 * 1024)), 1)
                     apps.append({
                         "pid": info['pid'],
                         "name": name,
                         "cpu": round(info.get('cpu_percent', 0) or 0, 1),
-                        "memory": round(info.get('memory_percent', 0) or 0, 1),
+                        "memory": mem_pct,
+                        "memory_mb": mem_mb,
                         "status": info.get('status', 'unknown'),
                     })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             apps.sort(key=lambda x: x.get("memory", 0), reverse=True)
-            return {"success": True, "apps": apps[:50]}
+            return {"success": True, "apps": apps}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
