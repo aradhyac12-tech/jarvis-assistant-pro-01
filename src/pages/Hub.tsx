@@ -273,7 +273,17 @@ export default function Hub() {
     if (volumeCommitRef.current !== null) clearTimeout(volumeCommitRef.current);
     volumeCommitRef.current = window.setTimeout(async () => {
       try {
-        await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        const result = await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        // Read back actual volume from PC to sync state
+        if (result?.success) {
+          const stateResult = await sendCommand("get_volume", {}, { awaitResult: true, timeoutMs: 3000 });
+          if (stateResult?.success && "result" in stateResult && stateResult.result) {
+            const actualVol = (stateResult.result as any).volume;
+            if (typeof actualVol === "number") {
+              setVolume(actualVol);
+            }
+          }
+        }
         if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_volume: v[0] }).eq("id", selectedDevice.id);
         }
@@ -293,7 +303,16 @@ export default function Hub() {
     if (brightnessCommitRef.current !== null) clearTimeout(brightnessCommitRef.current);
     brightnessCommitRef.current = window.setTimeout(async () => {
       try {
-        await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        const result = await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        if (result?.success) {
+          const stateResult = await sendCommand("get_brightness", {}, { awaitResult: true, timeoutMs: 3000 });
+          if (stateResult?.success && "result" in stateResult && stateResult.result) {
+            const actualBright = (stateResult.result as any).brightness;
+            if (typeof actualBright === "number") {
+              setBrightness(actualBright);
+            }
+          }
+        }
         if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_brightness: v[0] }).eq("id", selectedDevice.id);
         }
@@ -417,9 +436,55 @@ export default function Hub() {
       await fetchFiles(item.path);
     } else {
       sendCommand("open_file", { path: item.path });
-      toast({ title: "Opening", description: item.name });
+      toast({ title: "Opening on PC", description: item.name });
     }
   }, [haptic, fetchFiles, sendCommand, toast]);
+
+  const handleShareFileToPhone = useCallback(async (file: { name: string; path: string; size: number }) => {
+    haptic.doubleTap();
+    toast({ title: "Downloading to phone...", description: file.name });
+    try {
+      const CHUNK_SIZE = 256 * 1024; // 256KB chunks
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
+      const chunks: string[] = [];
+      
+      for (let i = 0; i < totalChunks; i++) {
+        const result = await sendCommand("send_file_chunk", {
+          path: file.path,
+          chunk_index: i,
+          chunk_size: CHUNK_SIZE,
+        }, { awaitResult: true, timeoutMs: 30000 });
+        
+        if (result?.success && "result" in result && result.result) {
+          const data = (result.result as any).data;
+          if (data) chunks.push(data);
+        } else {
+          toast({ title: "Download failed", description: `Chunk ${i + 1} failed`, variant: "destructive" });
+          return;
+        }
+      }
+
+      // Combine chunks and create download blob
+      const binaryStr = atob(chunks.join(""));
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      const blob = new Blob([bytes]);
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      toast({ title: "Downloaded!", description: `${file.name} saved to phone` });
+    } catch (e) {
+      console.error("Share to phone error:", e);
+      toast({ title: "Download failed", variant: "destructive" });
+    }
+  }, [haptic, sendCommand, toast]);
 
   const handleFilesGoUp = useCallback(() => {
     const parent = filesPath.split(/[/\\]/).slice(0, -1).join("/") || "/";
@@ -954,8 +1019,20 @@ export default function Hub() {
                           </div>
                         ) : (
                           filteredInstalled.map((app) => (
-                            <div key={app.app_id || app.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors cursor-pointer active:bg-secondary/50"
-                              onClick={() => { handleOpenApp(app.name); haptic.tap(); }}>
+                            <div key={app.app_id || app.name}
+                              className={cn(
+                                "flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors cursor-pointer active:bg-secondary/50 select-none",
+                                selectedApp?.name === app.name && !selectedApp?.pid && "bg-secondary/40 ring-1 ring-primary/30"
+                              )}
+                              onClick={() => { handleOpenApp(app.name); haptic.tap(); }}
+                              onTouchStart={() => handleAppLongPressStart(app)}
+                              onTouchEnd={handleAppLongPressEnd}
+                              onTouchCancel={handleAppLongPressEnd}
+                              onMouseDown={() => handleAppLongPressStart(app)}
+                              onMouseUp={handleAppLongPressEnd}
+                              onMouseLeave={handleAppLongPressEnd}
+                              onContextMenu={(e) => { e.preventDefault(); haptic.doubleTap(); setSelectedApp(app); }}
+                            >
                               <div className="w-8 h-8 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
                                 <AppWindow className="w-3.5 h-3.5 text-muted-foreground" />
                               </div>
@@ -967,7 +1044,7 @@ export default function Hub() {
                                 {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
                               </div>
                               <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0 border-primary/20 text-primary/60">
-                                Tap to open
+                                Hold for options
                               </Badge>
                             </div>
                           ))
@@ -980,7 +1057,20 @@ export default function Hub() {
                             .filter(s => !appSearch || s.display_name?.toLowerCase().includes(appSearch.toLowerCase()) || s.name?.toLowerCase().includes(appSearch.toLowerCase()))
                             .slice(0, 150)
                             .map((svc) => (
-                              <div key={svc.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors">
+                              <div key={svc.name}
+                                className={cn(
+                                  "flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors select-none cursor-pointer",
+                                  selectedApp?.name === svc.name && "bg-secondary/40 ring-1 ring-primary/30"
+                                )}
+                                onTouchStart={() => handleAppLongPressStart({ name: svc.display_name || svc.name, pid: svc.pid || undefined })}
+                                onTouchEnd={handleAppLongPressEnd}
+                                onTouchCancel={handleAppLongPressEnd}
+                                onMouseDown={() => handleAppLongPressStart({ name: svc.display_name || svc.name, pid: svc.pid || undefined })}
+                                onMouseUp={handleAppLongPressEnd}
+                                onMouseLeave={handleAppLongPressEnd}
+                                onClick={() => setSelectedApp(prev => prev?.name === (svc.display_name || svc.name) ? null : { name: svc.display_name || svc.name, pid: svc.pid || undefined })}
+                                onContextMenu={(e) => { e.preventDefault(); haptic.doubleTap(); setSelectedApp({ name: svc.display_name || svc.name, pid: svc.pid || undefined }); }}
+                              >
                                 <div className={cn("w-8 h-8 rounded-md flex items-center justify-center shrink-0",
                                   svc.status === "running" ? "bg-emerald-500/10" : "bg-secondary/50"
                                 )}>
@@ -1057,14 +1147,23 @@ export default function Hub() {
                                     )}
                                   </div>
                                   {!file.is_directory && (
-                                    <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2 shrink-0" onClick={(e) => {
-                                      e.stopPropagation();
-                                      haptic.tap();
-                                      sendCommand("open_file", { path: file.path });
-                                      toast({ title: "Opening", description: file.name });
-                                    }}>
-                                      Open
-                                    </Button>
+                                    <div className="flex gap-1 shrink-0">
+                                      <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2" onClick={(e) => {
+                                        e.stopPropagation();
+                                        haptic.tap();
+                                        handleShareFileToPhone(file);
+                                      }}>
+                                        📱 Share
+                                      </Button>
+                                      <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2" onClick={(e) => {
+                                        e.stopPropagation();
+                                        haptic.tap();
+                                        sendCommand("open_file", { path: file.path });
+                                        toast({ title: "Opening on PC", description: file.name });
+                                      }}>
+                                        Open
+                                      </Button>
+                                    </div>
                                   )}
                                 </div>
                               ))

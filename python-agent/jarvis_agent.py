@@ -40,7 +40,7 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "5.4.0"
+AGENT_VERSION = "5.5.0"
 
 # Auto-updater
 try:
@@ -2728,24 +2728,28 @@ class JarvisAgent:
         try:
             apps = []
             seen = set()
+            total_memory = psutil.virtual_memory().total
             for proc in psutil.process_iter(['name', 'pid', 'cpu_percent', 'memory_percent', 'status']):
                 try:
                     info = proc.info
                     name = info['name']
-                    if name in seen or name.lower() in ("system", "idle", "registry", "smss.exe", "csrss.exe", "wininit.exe", "services.exe", "lsass.exe", "svchost.exe"):
+                    if name in seen or name.lower() in ("system", "idle", "registry", "smss.exe", "csrss.exe", "wininit.exe", "services.exe", "lsass.exe", "svchost.exe", "conhost.exe", "dwm.exe", "fontdrvhost.exe", "winlogon.exe", "lsaiso.exe"):
                         continue
                     seen.add(name)
+                    mem_pct = round(info.get('memory_percent', 0) or 0, 1)
+                    mem_mb = round((mem_pct / 100.0) * (total_memory / (1024 * 1024)), 1)
                     apps.append({
                         "pid": info['pid'],
                         "name": name,
                         "cpu": round(info.get('cpu_percent', 0) or 0, 1),
-                        "memory": round(info.get('memory_percent', 0) or 0, 1),
+                        "memory": mem_pct,
+                        "memory_mb": mem_mb,
                         "status": info.get('status', 'unknown'),
                     })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             apps.sort(key=lambda x: x.get("memory", 0), reverse=True)
-            return {"success": True, "apps": apps[:50]}
+            return {"success": True, "apps": apps}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -3811,6 +3815,28 @@ class JarvisAgent:
                     except Exception as e:
                         return {"success": False, "error": str(e)}
                 return {"success": False, "error": "No path provided"}
+            
+            elif cmd == "run_command":
+                cmd_str = payload.get("command", "")
+                if not cmd_str:
+                    return {"success": False, "error": "No command provided"}
+                try:
+                    result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True, timeout=30)
+                    return {"success": True, "stdout": result.stdout[:2000], "stderr": result.stderr[:500], "returncode": result.returncode}
+                except subprocess.TimeoutExpired:
+                    return {"success": False, "error": "Command timed out (30s)"}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+            
+            elif cmd == "open_file_manager":
+                try:
+                    if platform.system() == "Windows":
+                        os.startfile(os.path.expanduser("~"))
+                    else:
+                        subprocess.Popen(["xdg-open", os.path.expanduser("~")])
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
             
             else:
                 return {"success": False, "error": f"Unknown command: {command_type}"}
