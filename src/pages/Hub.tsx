@@ -1122,14 +1122,23 @@ export default function Hub() {
                                     )}
                                   </div>
                                   {!file.is_directory && (
-                                    <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2 shrink-0" onClick={(e) => {
-                                      e.stopPropagation();
-                                      haptic.tap();
-                                      sendCommand("open_file", { path: file.path });
-                                      toast({ title: "Opening", description: file.name });
-                                    }}>
-                                      Open
-                                    </Button>
+                                    <div className="flex gap-1 shrink-0">
+                                      <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2" onClick={(e) => {
+                                        e.stopPropagation();
+                                        haptic.tap();
+                                        handleShareFileToPhone(file);
+                                      }}>
+                                        📱 Share
+                                      </Button>
+                                      <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2" onClick={(e) => {
+                                        e.stopPropagation();
+                                        haptic.tap();
+                                        sendCommand("open_file", { path: file.path });
+                                        toast({ title: "Opening on PC", description: file.name });
+                                      }}>
+                                        Open
+                                      </Button>
+                                    </div>
                                   )}
                                 </div>
                               ))
