@@ -1019,8 +1019,20 @@ export default function Hub() {
                           </div>
                         ) : (
                           filteredInstalled.map((app) => (
-                            <div key={app.app_id || app.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors cursor-pointer active:bg-secondary/50"
-                              onClick={() => { handleOpenApp(app.name); haptic.tap(); }}>
+                            <div key={app.app_id || app.name}
+                              className={cn(
+                                "flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors cursor-pointer active:bg-secondary/50 select-none",
+                                selectedApp?.name === app.name && !selectedApp?.pid && "bg-secondary/40 ring-1 ring-primary/30"
+                              )}
+                              onClick={() => { handleOpenApp(app.name); haptic.tap(); }}
+                              onTouchStart={() => handleAppLongPressStart(app)}
+                              onTouchEnd={handleAppLongPressEnd}
+                              onTouchCancel={handleAppLongPressEnd}
+                              onMouseDown={() => handleAppLongPressStart(app)}
+                              onMouseUp={handleAppLongPressEnd}
+                              onMouseLeave={handleAppLongPressEnd}
+                              onContextMenu={(e) => { e.preventDefault(); haptic.doubleTap(); setSelectedApp(app); }}
+                            >
                               <div className="w-8 h-8 rounded-md bg-secondary/50 flex items-center justify-center shrink-0">
                                 <AppWindow className="w-3.5 h-3.5 text-muted-foreground" />
                               </div>
@@ -1032,7 +1044,7 @@ export default function Hub() {
                                 {app.source && <p className="text-[10px] text-muted-foreground truncate">{app.source}</p>}
                               </div>
                               <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0 border-primary/20 text-primary/60">
-                                Tap to open
+                                Hold for options
                               </Badge>
                             </div>
                           ))
@@ -1045,7 +1057,20 @@ export default function Hub() {
                             .filter(s => !appSearch || s.display_name?.toLowerCase().includes(appSearch.toLowerCase()) || s.name?.toLowerCase().includes(appSearch.toLowerCase()))
                             .slice(0, 150)
                             .map((svc) => (
-                              <div key={svc.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors">
+                              <div key={svc.name}
+                                className={cn(
+                                  "flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/30 transition-colors select-none cursor-pointer",
+                                  selectedApp?.name === svc.name && "bg-secondary/40 ring-1 ring-primary/30"
+                                )}
+                                onTouchStart={() => handleAppLongPressStart({ name: svc.display_name || svc.name, pid: svc.pid || undefined })}
+                                onTouchEnd={handleAppLongPressEnd}
+                                onTouchCancel={handleAppLongPressEnd}
+                                onMouseDown={() => handleAppLongPressStart({ name: svc.display_name || svc.name, pid: svc.pid || undefined })}
+                                onMouseUp={handleAppLongPressEnd}
+                                onMouseLeave={handleAppLongPressEnd}
+                                onClick={() => setSelectedApp(prev => prev?.name === (svc.display_name || svc.name) ? null : { name: svc.display_name || svc.name, pid: svc.pid || undefined })}
+                                onContextMenu={(e) => { e.preventDefault(); haptic.doubleTap(); setSelectedApp({ name: svc.display_name || svc.name, pid: svc.pid || undefined }); }}
+                              >
                                 <div className={cn("w-8 h-8 rounded-md flex items-center justify-center shrink-0",
                                   svc.status === "running" ? "bg-emerald-500/10" : "bg-secondary/50"
                                 )}>
