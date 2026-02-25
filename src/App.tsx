@@ -7,6 +7,7 @@ import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSessio
 import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { GlobalPiPProvider } from "@/contexts/GlobalPiPContext";
 import { GlobalFloatingPiP } from "@/components/GlobalFloatingPiP";
+import { GlobalClipboardSync } from "@/components/GlobalClipboardSync";
 import { LazyLoadErrorBoundary } from "@/components/LazyLoadErrorBoundary";
 import { AppLockScreen, isAppLockEnabled } from "@/components/AppLockScreen";
 import { useAppStatePersistence, getLastRoute } from "@/hooks/useAppState";
@@ -177,6 +178,7 @@ const App = () => (
               <AppLockGate>
                 <AppRoutes />
                 <GlobalFloatingPiP />
+                <GlobalClipboardSync />
               </AppLockGate>
             </BrowserRouter>
           </GlobalPiPProvider>

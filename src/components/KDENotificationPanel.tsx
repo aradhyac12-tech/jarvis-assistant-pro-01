@@ -8,7 +8,7 @@ import {
   Bell, BellOff, X, Trash2, Shield, Loader2,
   Clipboard, Send, FileUp, MessageSquare, Reply,
   Smartphone, Monitor, ArrowRight, ExternalLink,
-  ClipboardPaste, FolderOpen, Link2, Image,
+  ClipboardPaste, FolderOpen, Link2, Image, Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNotificationListener, getAppInfo } from "@/hooks/useNotificationListener";
@@ -45,6 +45,8 @@ export function KDENotificationPanel({
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [expandedNotif, setExpandedNotif] = useState<string | null>(null);
+  const [commandText, setCommandText] = useState("");
+  const [sendingCommand, setSendingCommand] = useState(false);
 
   const handleToggle = async () => {
     setToggling(true);
@@ -104,6 +106,18 @@ export function KDENotificationPanel({
     setReplyText("");
     setReplyingTo(null);
   }, [replyText, toast]);
+
+  const handleRunCommand = useCallback(async () => {
+    if (!commandText.trim() || !onSendCommand) return;
+    setSendingCommand(true);
+    try {
+      onSendCommand("run_command", { command: commandText.trim() });
+      toast({ title: "⚡ Command sent", description: commandText.trim().slice(0, 60) });
+      setCommandText("");
+    } finally {
+      setSendingCommand(false);
+    }
+  }, [commandText, onSendCommand, toast]);
 
   const handleScreenshot = useCallback(() => {
     if (onSendCommand) {
@@ -186,6 +200,27 @@ export function KDENotificationPanel({
                   <span className="text-[10px] font-medium leading-tight text-center">{qa.label}</span>
                 </Button>
               ))}
+            </div>
+            {/* Command input bar */}
+            <div className="mt-2 flex gap-1.5">
+              <div className="relative flex-1">
+                <Terminal className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={commandText}
+                  onChange={(e) => setCommandText(e.target.value)}
+                  placeholder="Run command on PC..."
+                  className="h-8 text-xs pl-8 bg-card/50 border-border/20"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleRunCommand(); }}
+                />
+              </div>
+              <Button
+                size="sm"
+                className="h-8 px-2.5"
+                onClick={handleRunCommand}
+                disabled={!commandText.trim() || sendingCommand}
+              >
+                {sendingCommand ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              </Button>
             </div>
           </div>
         )}
