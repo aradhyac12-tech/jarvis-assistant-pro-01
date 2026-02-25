@@ -436,9 +436,55 @@ export default function Hub() {
       await fetchFiles(item.path);
     } else {
       sendCommand("open_file", { path: item.path });
-      toast({ title: "Opening", description: item.name });
+      toast({ title: "Opening on PC", description: item.name });
     }
   }, [haptic, fetchFiles, sendCommand, toast]);
+
+  const handleShareFileToPhone = useCallback(async (file: { name: string; path: string; size: number }) => {
+    haptic.doubleTap();
+    toast({ title: "Downloading to phone...", description: file.name });
+    try {
+      const CHUNK_SIZE = 256 * 1024; // 256KB chunks
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
+      const chunks: string[] = [];
+      
+      for (let i = 0; i < totalChunks; i++) {
+        const result = await sendCommand("send_file_chunk", {
+          path: file.path,
+          chunk_index: i,
+          chunk_size: CHUNK_SIZE,
+        }, { awaitResult: true, timeoutMs: 30000 });
+        
+        if (result?.success && "result" in result && result.result) {
+          const data = (result.result as any).data;
+          if (data) chunks.push(data);
+        } else {
+          toast({ title: "Download failed", description: `Chunk ${i + 1} failed`, variant: "destructive" });
+          return;
+        }
+      }
+
+      // Combine chunks and create download blob
+      const binaryStr = atob(chunks.join(""));
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      const blob = new Blob([bytes]);
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      toast({ title: "Downloaded!", description: `${file.name} saved to phone` });
+    } catch (e) {
+      console.error("Share to phone error:", e);
+      toast({ title: "Download failed", variant: "destructive" });
+    }
+  }, [haptic, sendCommand, toast]);
 
   const handleFilesGoUp = useCallback(() => {
     const parent = filesPath.split(/[/\\]/).slice(0, -1).join("/") || "/";
