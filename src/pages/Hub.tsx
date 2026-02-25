@@ -273,7 +273,17 @@ export default function Hub() {
     if (volumeCommitRef.current !== null) clearTimeout(volumeCommitRef.current);
     volumeCommitRef.current = window.setTimeout(async () => {
       try {
-        await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        const result = await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        // Read back actual volume from PC to sync state
+        if (result?.success) {
+          const stateResult = await sendCommand("get_volume", {}, { awaitResult: true, timeoutMs: 3000 });
+          if (stateResult?.success && "result" in stateResult && stateResult.result) {
+            const actualVol = (stateResult.result as any).volume;
+            if (typeof actualVol === "number") {
+              setVolume(actualVol);
+            }
+          }
+        }
         if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_volume: v[0] }).eq("id", selectedDevice.id);
         }
@@ -293,7 +303,16 @@ export default function Hub() {
     if (brightnessCommitRef.current !== null) clearTimeout(brightnessCommitRef.current);
     brightnessCommitRef.current = window.setTimeout(async () => {
       try {
-        await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        const result = await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
+        if (result?.success) {
+          const stateResult = await sendCommand("get_brightness", {}, { awaitResult: true, timeoutMs: 3000 });
+          if (stateResult?.success && "result" in stateResult && stateResult.result) {
+            const actualBright = (stateResult.result as any).brightness;
+            if (typeof actualBright === "number") {
+              setBrightness(actualBright);
+            }
+          }
+        }
         if (selectedDevice?.id) {
           await supabase.from("devices").update({ current_brightness: v[0] }).eq("id", selectedDevice.id);
         }
