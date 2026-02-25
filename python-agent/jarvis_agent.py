@@ -3816,6 +3816,28 @@ class JarvisAgent:
                         return {"success": False, "error": str(e)}
                 return {"success": False, "error": "No path provided"}
             
+            elif cmd == "run_command":
+                cmd_str = payload.get("command", "")
+                if not cmd_str:
+                    return {"success": False, "error": "No command provided"}
+                try:
+                    result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True, timeout=30)
+                    return {"success": True, "stdout": result.stdout[:2000], "stderr": result.stderr[:500], "returncode": result.returncode}
+                except subprocess.TimeoutExpired:
+                    return {"success": False, "error": "Command timed out (30s)"}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+            
+            elif cmd == "open_file_manager":
+                try:
+                    if platform.system() == "Windows":
+                        os.startfile(os.path.expanduser("~"))
+                    else:
+                        subprocess.Popen(["xdg-open", os.path.expanduser("~")])
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+            
             else:
                 return {"success": False, "error": f"Unknown command: {command_type}"}
         except Exception as e:
