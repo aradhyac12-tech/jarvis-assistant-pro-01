@@ -232,14 +232,19 @@ def _safe_pycaw_get_volume():
 def _safe_pycaw_set_volume(level: int):
     """Set volume using pycaw with proper COM initialization."""
     if not HAS_PYCAW:
+        add_log("warning", "pycaw not available for set_volume", category="audio")
         return False
     try:
         endpoint = _get_volume_interface()
         if endpoint is None:
+            add_log("warning", "pycaw: no volume endpoint found", category="audio")
             return False
-        endpoint.SetMasterVolumeLevelScalar(level / 100.0, None)
+        scalar = level / 100.0
+        endpoint.SetMasterVolumeLevelScalar(scalar, None)
+        add_log("info", f"pycaw set volume to {level}% (scalar={scalar})", category="audio")
         return True
-    except Exception:
+    except Exception as e:
+        add_log("error", f"pycaw set_volume exception: {e}", category="audio")
         return False
 
 
@@ -440,16 +445,68 @@ def _powershell_get_volume():
 
 
 def _powershell_set_volume(level: int):
-    """Set volume via PowerShell as fallback."""
+    """Set volume via PowerShell as fallback - multiple methods."""
+    # Method 1: AudioDeviceCmdlets module
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-c",
              f"Set-AudioDevice -PlaybackVolume {level}"],
             capture_output=True, text=True, timeout=5
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            add_log("info", f"PowerShell AudioDeviceCmdlets set volume to {level}%", category="audio")
+            return True
     except Exception:
-        return False
+        pass
+    
+    # Method 2: Direct COM via PowerShell (no module needed)
+    try:
+        ps_script = f"""
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {{
+    int _0(); int _1(); int _2(); int _3(); int _4(); int _5(); int _6(); int _7(); int _8(); int _9(); int _10(); int _11();
+    int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);
+}}
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {{
+    int Activate(ref System.Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+}}
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {{
+    int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice);
+}}
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject {{}}
+public class Audio {{
+    public static void SetVolume(float level) {{
+        var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;
+        IMMDevice dev;
+        enumerator.GetDefaultAudioEndpoint(0, 1, out dev);
+        var iid = typeof(IAudioEndpointVolume).GUID;
+        object o;
+        dev.Activate(ref iid, 23, IntPtr.Zero, out o);
+        var vol = (IAudioEndpointVolume)o;
+        vol.SetMasterVolumeLevelScalar(level, System.Guid.Empty);
+    }}
+}}
+'@
+[Audio]::SetVolume({level / 100.0})
+"""
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-c", ps_script],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            add_log("info", f"PowerShell COM set volume to {level}%", category="audio")
+            return True
+        else:
+            add_log("warning", f"PowerShell COM set_volume failed: {result.stderr[:200]}", category="audio")
+    except Exception as e:
+        add_log("error", f"PowerShell COM set_volume exception: {e}", category="audio")
+    
+    return False
 
 
 def _find_wasapi_loopback_device(pa):
@@ -1378,37 +1435,60 @@ class JarvisAgent:
     def _set_volume(self, level: int) -> Dict[str, Any]:
         try:
             level = max(0, min(100, level))
+            add_log("info", f"set_volume called with level={level}", category="audio")
+            
             if platform.system() == "Windows":
+                # Method 1: pycaw
                 if _safe_pycaw_set_volume(level):
                     self._volume_cache = level
-                    return {"success": True, "volume": level}
-                # nircmd fallback
+                    # Update device DB
+                    self._update_device_field("current_volume", level)
+                    return {"success": True, "volume": level, "method": "pycaw"}
+                
+                # Method 2: nircmd
                 try:
-                    subprocess.run(
+                    r = subprocess.run(
                         ["nircmd", "setsysvolume", str(int(level / 100 * 65535))],
                         capture_output=True, timeout=5
                     )
-                    self._volume_cache = level
-                    return {"success": True, "volume": level, "method": "nircmd"}
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    pass
-                # PowerShell fallback
+                    if r.returncode == 0:
+                        self._volume_cache = level
+                        self._update_device_field("current_volume", level)
+                        add_log("info", f"nircmd set volume to {level}%", category="audio")
+                        return {"success": True, "volume": level, "method": "nircmd"}
+                except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    add_log("warning", f"nircmd fallback failed: {e}", category="audio")
+                
+                # Method 3: PowerShell COM (no module needed)
                 if _powershell_set_volume(level):
                     self._volume_cache = level
+                    self._update_device_field("current_volume", level)
                     return {"success": True, "volume": level, "method": "powershell"}
             
-            # Keyboard fallback
+            # Method 4: Keyboard fallback (always works)
+            add_log("info", "Using keyboard fallback for volume", category="audio")
             current = self._volume_cache
             diff = level - current
             steps = abs(diff) // 2
             key = "volumeup" if diff > 0 else "volumedown"
             for _ in range(min(steps, 50)):
                 pyautogui.press(key)
+                import time
+                time.sleep(0.05)
             self._volume_cache = level
+            self._update_device_field("current_volume", level)
             return {"success": True, "volume": level, "method": "keyboard"}
         except Exception as e:
             add_log("error", f"set_volume failed: {e}", category="audio")
             return {"success": False, "error": str(e)}
+    
+    def _update_device_field(self, field: str, value):
+        """Update a single field on the device record in Supabase."""
+        try:
+            if hasattr(self, 'device_id') and self.device_id:
+                self.supabase.table("devices").update({field: value}).eq("id", self.device_id).execute()
+        except Exception:
+            pass
     
     def _get_brightness(self) -> int:
         try:
