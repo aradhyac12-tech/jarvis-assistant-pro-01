@@ -6,7 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import {
   Music, SkipBack, SkipForward, Play, Pause, Repeat, Shuffle,
   Volume2, Volume1, VolumeX, RefreshCw, Speaker, Loader2,
-  Headphones, Monitor, Bluetooth, Radio, Check,
+  Headphones, Monitor, Bluetooth, Radio, Check, Disc3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -19,6 +19,7 @@ interface MediaInfo {
   position?: number;
   duration?: number;
   app?: string;
+  thumbnail?: string; // base64 album art
 }
 
 interface AudioSession {
@@ -53,9 +54,11 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
   const [sessions, setSessions] = useState<AudioSession[]>([]);
   const [outputDevices, setOutputDevices] = useState<AudioOutputDevice[]>([]);
   const [showMixer, setShowMixer] = useState(false);
-  const [showOutputs, setShowOutputs] = useState(true); // auto-open
+  const [showOutputs, setShowOutputs] = useState(true);
   const [switchingDevice, setSwitchingDevice] = useState<string | null>(null);
   const [mediaLoading, setMediaLoading] = useState(false);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [seekValue, setSeekValue] = useState(0);
   const pollingRef = useRef<number | null>(null);
   const positionTimerRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -84,10 +87,17 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
   const updateMediaSession = useCallback((info: MediaInfo | null, playing: boolean) => {
     if (!('mediaSession' in navigator)) return;
     if (audioRef.current) audioRef.current.play().catch(() => {});
+    
+    const artwork: MediaImage[] = [];
+    if (info?.thumbnail) {
+      artwork.push({ src: `data:image/jpeg;base64,${info.thumbnail}`, sizes: "512x512", type: "image/jpeg" });
+    }
+    
     navigator.mediaSession.metadata = new MediaMetadata({
       title: info?.title || "No media",
       artist: info?.artist || "",
       album: info?.album || "",
+      artwork,
     });
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";
   }, []);
@@ -110,19 +120,17 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     };
   }, []);
 
-  // === FAST FETCH - media + devices in parallel ===
+  // === FAST FETCH ===
   const fetchAll = useCallback(async (silent = false) => {
     if (!isConnected) return;
     const now = Date.now();
-    // Debounce: min 800ms between fetches
     if (now - lastFetchRef.current < 800) return;
     lastFetchRef.current = now;
     
     if (!silent) setMediaLoading(true);
     
-    // Fire both commands in parallel for speed
     const [mediaResult, devicesResult] = await Promise.allSettled([
-      sendCommand("get_media_info", {}, { awaitResult: true, timeoutMs: 2500 }),
+      sendCommand("get_media_info", { include_thumbnail: true }, { awaitResult: true, timeoutMs: 3000 }),
       sendCommand("get_audio_devices", {}, { awaitResult: true, timeoutMs: 3000 }),
     ]);
 
@@ -142,7 +150,6 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     if (!silent) setMediaLoading(false);
   }, [isConnected, sendCommand, updateMediaSession]);
 
-  // Auto-poll every 1.5s (fast like KDE Connect)
   useEffect(() => {
     if (!isConnected) return;
     fetchAll();
@@ -163,7 +170,6 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     return () => { if (positionTimerRef.current) clearInterval(positionTimerRef.current); };
   }, [isPlaying, mediaInfo?.duration]);
 
-  // === INSTANT MEDIA CONTROL ===
   const handleMediaControl = useCallback((action: string) => {
     if (action === "play_pause") {
       setIsPlaying(prev => {
@@ -176,7 +182,24 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     setTimeout(() => fetchAll(true), 300);
   }, [sendCommand, fetchAll, mediaInfo, updateMediaSession]);
 
-  // === SWITCH AUDIO OUTPUT ===
+  // === SEEK ===
+  const handleSeekStart = useCallback(() => {
+    setIsSeeking(true);
+    setSeekValue(mediaInfo?.position || 0);
+  }, [mediaInfo?.position]);
+
+  const handleSeekChange = useCallback((v: number[]) => {
+    setSeekValue(v[0]);
+  }, []);
+
+  const handleSeekCommit = useCallback((v: number[]) => {
+    setIsSeeking(false);
+    const pos = v[0];
+    setMediaInfo(prev => prev ? { ...prev, position: pos } : prev);
+    sendCommand("media_control", { action: "seek", position: pos }).catch(() => {});
+    setTimeout(() => fetchAll(true), 500);
+  }, [sendCommand, fetchAll]);
+
   const handleSwitchOutput = useCallback(async (deviceId: string) => {
     setSwitchingDevice(deviceId);
     try {
@@ -204,8 +227,9 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
     return Speaker;
   };
 
+  const currentPosition = isSeeking ? seekValue : (mediaInfo?.position || 0);
   const progress = mediaInfo?.duration && mediaInfo.duration > 0
-    ? ((mediaInfo.position || 0) / mediaInfo.duration) * 100 : 0;
+    ? (currentPosition / mediaInfo.duration) * 100 : 0;
 
   const activeDevice = outputDevices.find(d => d.is_active);
 
@@ -233,14 +257,28 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
             </div>
 
             {mediaInfo?.title ? (
-              <div className="space-y-1">
-                <Badge variant={isPlaying ? "default" : "secondary"} className={cn("text-[9px] px-1.5 py-0", isPlaying && "bg-emerald-500/20 text-emerald-400 border-emerald-500/30")}>
-                  {isPlaying ? "▶ Playing" : "⏸ Paused"}
-                </Badge>
-                <p className="font-semibold text-sm truncate">{mediaInfo.title}</p>
-                <p className="text-xs text-muted-foreground truncate">
-                  {mediaInfo.artist}{mediaInfo.album && ` • ${mediaInfo.album}`}
-                </p>
+              <div className="flex gap-3">
+                {/* Album Art */}
+                <div className="w-16 h-16 rounded-lg bg-secondary/50 shrink-0 overflow-hidden flex items-center justify-center">
+                  {mediaInfo.thumbnail ? (
+                    <img
+                      src={`data:image/jpeg;base64,${mediaInfo.thumbnail}`}
+                      alt="Album art"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <Disc3 className={cn("h-8 w-8 text-muted-foreground/30", isPlaying && "animate-spin")} style={{ animationDuration: "3s" }} />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 space-y-1">
+                  <Badge variant={isPlaying ? "default" : "secondary"} className={cn("text-[9px] px-1.5 py-0", isPlaying && "bg-emerald-500/20 text-emerald-400 border-emerald-500/30")}>
+                    {isPlaying ? "▶ Playing" : "⏸ Paused"}
+                  </Badge>
+                  <p className="font-semibold text-sm truncate">{mediaInfo.title}</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {mediaInfo.artist}{mediaInfo.album && ` • ${mediaInfo.album}`}
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="text-center py-4">
@@ -250,14 +288,21 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
             )}
           </div>
 
-          {/* Progress */}
+          {/* Seek Bar */}
           {mediaInfo?.duration && mediaInfo.duration > 0 && (
             <div className="px-4 pb-2 space-y-1">
-              <div className="w-full h-1 rounded-full bg-secondary/50 overflow-hidden">
-                <div className="h-full rounded-full bg-primary transition-all duration-1000 ease-linear" style={{ width: `${progress}%` }} />
-              </div>
+              <Slider
+                value={[currentPosition]}
+                onValueChange={handleSeekChange}
+                onValueCommit={handleSeekCommit}
+                onPointerDown={handleSeekStart}
+                max={mediaInfo.duration}
+                step={1}
+                className="cursor-pointer [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                disabled={!isConnected}
+              />
               <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
-                <span>{formatDuration(mediaInfo.position || 0)}</span>
+                <span>{formatDuration(currentPosition)}</span>
                 <span>{formatDuration(mediaInfo.duration)}</span>
               </div>
             </div>
@@ -313,10 +358,7 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
       {/* Audio Output Devices */}
       <Card className="border-border/20 bg-card/50">
         <CardContent className="p-3">
-          <button
-            onClick={() => setShowOutputs(!showOutputs)}
-            className="flex items-center justify-between w-full mb-2"
-          >
+          <button onClick={() => setShowOutputs(!showOutputs)} className="flex items-center justify-between w-full mb-2">
             <div className="flex items-center gap-2">
               <Radio className="h-4 w-4 text-primary" />
               <span className="text-xs font-medium">Audio Devices</span>
@@ -333,12 +375,12 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
                 outputDevices.map(device => {
                   const DevIcon = getDeviceIcon(device.name);
                   const isActive = device.is_active || false;
-                  const isSwitching = switchingDevice === device.id;
+                  const isSwitchingDev = switchingDevice === device.id;
                   return (
                     <button
                       key={device.id}
                       onClick={() => !isActive && handleSwitchOutput(device.id)}
-                      disabled={isActive || isSwitching}
+                      disabled={isActive || isSwitchingDev}
                       className={cn(
                         "w-full flex items-center gap-2.5 p-2.5 rounded-lg transition-all text-left",
                         isActive
@@ -353,7 +395,7 @@ export function KDEMediaControl({ isConnected, volume, isMuted, onVolumeChange, 
                         <p className={cn("text-xs font-medium truncate", isActive && "text-primary")}>{device.name}</p>
                         <p className="text-[10px] text-muted-foreground">{isActive ? "Active" : device.status}</p>
                       </div>
-                      {isSwitching ? (
+                      {isSwitchingDev ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                       ) : isActive ? (
                         <Check className="h-3.5 w-3.5 text-primary" />

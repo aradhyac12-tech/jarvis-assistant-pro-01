@@ -1704,8 +1704,10 @@ class JarvisAgent:
                 return {"success": False, "error": str(e)}
     
     # ============== MEDIA ==============
-    def _media_control(self, action: str) -> Dict[str, Any]:
+    def _media_control(self, action: str, position: int = None) -> Dict[str, Any]:
         try:
+            if action == "seek" and position is not None:
+                return self._media_seek(position)
             key_map = {
                 "play_pause": "playpause",
                 "play": "playpause",
@@ -1724,25 +1726,66 @@ class JarvisAgent:
             return {"success": True, "action": action}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _media_seek(self, position: int) -> Dict[str, Any]:
+        """Seek to position in current media using SMTC."""
+        try:
+            if platform.system() == "Windows":
+                result = subprocess.run([
+                    "powershell", "-NoProfile", "-c",
+                    f"""
+                    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+                    $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
+                    $async = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
+                    $session = $async.GetAwaiter().GetResult()
+                    $current = $session.GetCurrentSession()
+                    if ($current) {{
+                        $pos = [TimeSpan]::FromSeconds({position})
+                        $current.TryChangePlaybackPositionAsync($pos.Ticks).GetAwaiter().GetResult()
+                        'OK'
+                    }} else {{ 'No session' }}
+                    """
+                ], capture_output=True, text=True, timeout=5)
+                return {"success": True, "position": position}
+            return {"success": False, "error": "Seek not supported on this platform"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
-    def _get_media_state(self) -> Dict[str, Any]:
-        """Get current media info with position/duration using Windows SMTC."""
+    def _get_media_state(self, include_thumbnail: bool = False) -> Dict[str, Any]:
+        """Get current media info with position/duration and optional album art using Windows SMTC."""
         try:
             if platform.system() == "Windows":
                 try:
+                    thumb_script = ""
+                    if include_thumbnail:
+                        thumb_script = """
+                        $thumb = $info.Thumbnail
+                        $thumbB64 = ''
+                        if ($thumb) {
+                            try {
+                                $stream = $thumb.OpenReadAsync().GetAwaiter().GetResult()
+                                $reader = New-Object System.IO.BinaryReader($stream.AsStreamForRead())
+                                $bytes = $reader.ReadBytes($stream.Size)
+                                $reader.Close()
+                                $stream.Close()
+                                $thumbB64 = [Convert]::ToBase64String($bytes)
+                            } catch {}
+                        }
+                        """
                     result = subprocess.run([
                         "powershell", "-NoProfile", "-c",
-                        """
+                        f"""
                         Add-Type -AssemblyName System.Runtime.WindowsRuntime
                         $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
                         $async = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
                         $session = $async.GetAwaiter().GetResult()
                         $current = $session.GetCurrentSession()
-                        if ($current) {
+                        if ($current) {{
                             $info = $current.TryGetMediaPropertiesAsync().GetAwaiter().GetResult()
                             $playback = $current.GetPlaybackInfo()
                             $timeline = $current.GetTimelineProperties()
-                            @{
+                            {thumb_script}
+                            $obj = @{{
                                 title = $info.Title
                                 artist = $info.Artist
                                 album = $info.AlbumTitle
@@ -1750,16 +1793,31 @@ class JarvisAgent:
                                 position = [int]$timeline.Position.TotalSeconds
                                 duration = [int]$timeline.EndTime.TotalSeconds
                                 app = $current.SourceAppUserModelId
-                            } | ConvertTo-Json
-                        } else { '{}' }
+                            }}
+                            {"'$obj[\"thumbnail\"] = $thumbB64' | Invoke-Expression" if include_thumbnail else ""}
+                            $obj | ConvertTo-Json
+                        }} else {{ '{{}}' }}
                         """
-                    ], capture_output=True, text=True, timeout=5)
+                    ], capture_output=True, text=True, timeout=8)
                     if result.returncode == 0 and result.stdout.strip():
                         data = json.loads(result.stdout.strip())
                         return {"success": True, **data}
                 except Exception:
                     pass
             return {"success": True, "title": None, "artist": None, "playing": False, "position": 0, "duration": 0}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _download_from_url(self, url: str, file_name: str, save_folder: str = "") -> Dict[str, Any]:
+        """Download a file from a URL and save it locally."""
+        try:
+            save_dir = save_folder or os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
+            os.makedirs(save_dir, exist_ok=True)
+            dest = os.path.join(save_dir, file_name)
+            
+            urllib.request.urlretrieve(url, dest)
+            file_size = os.path.getsize(dest)
+            return {"success": True, "path": dest, "size": file_size}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -3650,9 +3708,11 @@ class JarvisAgent:
             
             # Media
             elif cmd == "media_control":
-                return self._media_control(payload.get("action", "play_pause"))
+                return self._media_control(payload.get("action", "play_pause"), position=payload.get("position"))
             elif cmd in ["get_media_state", "get_media_info"]:
-                return self._get_media_state()
+                return self._get_media_state(include_thumbnail=payload.get("include_thumbnail", False))
+            elif cmd == "download_from_url":
+                return self._download_from_url(payload.get("url", ""), payload.get("file_name", "file"), payload.get("save_folder", ""))
             elif cmd == "join_zoom":
                 return await self._join_zoom(payload)
             elif cmd == "zoom_mic_toggle":
