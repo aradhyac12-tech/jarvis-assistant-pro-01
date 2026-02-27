@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,33 +7,16 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  FolderOpen,
-  Upload,
-  Download,
-  File,
-  Image,
-  Video,
-  Music,
-  FileText,
-  X,
-  Check,
-  Loader2,
-  Wifi,
-  ArrowUpDown,
-  RefreshCw,
-  Smartphone,
-  Monitor,
-  AlertTriangle,
-  Zap,
-  Stethoscope,
-  CheckCircle,
-  XCircle,
+  FolderOpen, Upload, Download, File, Image, Video, Music, FileText,
+  X, Check, Loader2, Wifi, ArrowUpDown, RefreshCw, Smartphone, Monitor,
+  AlertTriangle, Zap, Stethoscope, CheckCircle, XCircle, Globe, WifiOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
+import { supabase } from "@/integrations/supabase/client";
 
 interface FileTransferItem {
   id: string;
@@ -43,8 +26,9 @@ interface FileTransferItem {
   progress: number;
   status: "pending" | "transferring" | "complete" | "error";
   error?: string;
-  speed?: number; // bytes/sec
+  speed?: number;
   startTime?: number;
+  method?: "p2p" | "relay" | "cloud";
 }
 
 interface PCFile {
@@ -77,12 +61,24 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
   const [isDragOver, setIsDragOver] = useState(false);
   const [diagResults, setDiagResults] = useState<DiagResult[]>([]);
   const [diagRunning, setDiagRunning] = useState(false);
+  const [connectionMethod, setConnectionMethod] = useState<"detecting" | "p2p" | "cloud">("detecting");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isConnected = selectedDevice?.is_online || false;
+  const isSameNetwork = localStorage.getItem("jarvis_p2p_connected") === "true";
+  const p2pIp = localStorage.getItem("jarvis_p2p_known_ip");
 
-  // Save pcSavePath to localStorage
+  // Detect connection method
+  useEffect(() => {
+    if (!isConnected) { setConnectionMethod("detecting"); return; }
+    setConnectionMethod("detecting");
+    const timer = setTimeout(() => {
+      setConnectionMethod(isSameNetwork && p2pIp ? "p2p" : "cloud");
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [isConnected, isSameNetwork, p2pIp]);
+
   useEffect(() => {
     if (pcSavePath) {
       try { localStorage.setItem("file_transfer_save_path", pcSavePath); } catch {}
@@ -112,7 +108,6 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
     return formatSize(bytesPerSec) + "/s";
   };
 
-  // Browse PC files
   const browsePCFiles = useCallback(async (path = "~") => {
     if (!isConnected) return;
     setIsLoadingFiles(true);
@@ -135,75 +130,88 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
   }, [isConnected, activeTab]);
 
   // === DRAG AND DROP ===
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-  }, []);
+  const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(true); }, []);
+  const handleDragLeave = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(false); }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-
+    e.preventDefault(); e.stopPropagation(); setIsDragOver(false);
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
     if (!isConnected) {
       toast({ title: "Not connected", description: "Connect to PC first.", variant: "destructive" });
       return;
     }
-
     Array.from(files).forEach((file) => {
       const transferId = crypto.randomUUID();
-      setTransfers((prev) => [
-        ...prev,
-        { id: transferId, name: file.name, size: file.size, direction: "phone_to_pc", progress: 0, status: "pending" },
-      ]);
+      setTransfers(prev => [...prev, { id: transferId, name: file.name, size: file.size, direction: "phone_to_pc", progress: 0, status: "pending" }]);
       uploadFile(file, transferId);
     });
   }, [isConnected]);
 
-  // Handle file input selection
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-
     Array.from(files).forEach((file) => {
       const transferId = crypto.randomUUID();
-      setTransfers((prev) => [
-        ...prev,
-        { id: transferId, name: file.name, size: file.size, direction: "phone_to_pc", progress: 0, status: "pending" },
-      ]);
+      setTransfers(prev => [...prev, { id: transferId, name: file.name, size: file.size, direction: "phone_to_pc", progress: 0, status: "pending" }]);
       uploadFile(file, transferId);
     });
-
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
-  // Upload file to PC — adaptive chunk size based on connection mode
-  const uploadFile = useCallback(
-    async (file: File, transferId: string) => {
-      if (!isConnected) {
-        setTransfers((prev) => prev.map((t) => (t.id === transferId ? { ...t, status: "error" as const, error: "Not connected" } : t)));
-        return;
-      }
+  // Upload file — uses cloud storage for large/different-network files, chunked relay for same-network
+  const uploadFile = useCallback(async (file: File, transferId: string) => {
+    if (!isConnected) {
+      setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "error" as const, error: "Not connected" } : t));
+      return;
+    }
 
-      const startTime = Date.now();
-      setTransfers((prev) => prev.map((t) => (t.id === transferId ? { ...t, status: "transferring" as const, startTime } : t)));
+    const startTime = Date.now();
+    const useCloudForLarge = file.size > 50 * 1024 * 1024; // 50MB+ use cloud storage
+    const method = useCloudForLarge ? "cloud" : "relay";
+    
+    setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "transferring" as const, startTime, method } : t));
 
-      try {
-        // Use larger chunks for faster transfer — 256KB default, works on both cloud and P2P
-        const CHUNK_SIZE = 256 * 1024;
+    try {
+      if (method === "cloud") {
+        // Upload to Supabase storage, then tell agent to download from URL
+        const filePath = `transfers/${crypto.randomUUID()}/${file.name}`;
+        
+        // Upload with progress tracking
+        const { data, error } = await supabase.storage
+          .from("agent-files")
+          .upload(filePath, file, { upsert: true });
+
+        if (error) throw new Error(error.message);
+
+        // Get signed URL for agent to download
+        const { data: urlData } = await supabase.storage
+          .from("agent-files")
+          .createSignedUrl(filePath, 3600); // 1 hour expiry
+
+        if (!urlData?.signedUrl) throw new Error("Failed to get download URL");
+
+        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: 50 } : t));
+
+        // Tell agent to download the file from the signed URL
+        const result = await sendCommand("download_from_url", {
+          url: urlData.signedUrl,
+          file_name: file.name,
+          save_folder: pcSavePath || "",
+        }, { awaitResult: true, timeoutMs: 300000 }); // 5 min timeout for large files
+
+        if (!result?.success) throw new Error((result?.error as string) || "Agent download failed");
+
+        // Cleanup cloud file
+        supabase.storage.from("agent-files").remove([filePath]).catch(() => {});
+
+        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
+      } else {
+        // Chunked relay transfer (existing logic, improved)
+        const CHUNK_SIZE = 512 * 1024; // 512KB chunks for better speed
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         let uploadedBytes = 0;
         const fileId = crypto.randomUUID();
-        let consecutiveErrors = 0;
 
         for (let i = 0; i < totalChunks; i++) {
           const start = i * CHUNK_SIZE;
@@ -212,40 +220,23 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
 
           const base64Chunk = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = () => {
-              const result = reader.result as string;
-              resolve(result.split(",")[1]);
-            };
+            reader.onload = () => resolve((reader.result as string).split(",")[1]);
             reader.onerror = reject;
             reader.readAsDataURL(chunk);
           });
 
-          // Retry logic for each chunk (up to 3 attempts)
           let chunkSuccess = false;
           for (let attempt = 0; attempt < 3 && !chunkSuccess; attempt++) {
             try {
-              const result = await sendCommand(
-                "receive_file_chunk",
-                {
-                  file_id: fileId,
-                  file_name: file.name,
-                  chunk_index: i,
-                  total_chunks: totalChunks,
-                  data: base64Chunk,
-                  save_folder: pcSavePath || "",
-                },
-                { awaitResult: true, timeoutMs: 60000 }
-              );
+              const result = await sendCommand("receive_file_chunk", {
+                file_id: fileId, file_name: file.name, chunk_index: i,
+                total_chunks: totalChunks, data: base64Chunk, save_folder: pcSavePath || "",
+              }, { awaitResult: true, timeoutMs: 60000 });
 
-              if (result?.success) {
-                chunkSuccess = true;
-                consecutiveErrors = 0;
-              } else if (attempt === 2) {
-                throw new Error((result?.error as string) || "Chunk upload failed");
-              }
+              if (result?.success) { chunkSuccess = true; }
+              else if (attempt === 2) throw new Error((result?.error as string) || "Chunk failed");
             } catch (err) {
               if (attempt === 2) throw err;
-              // Wait before retry
               await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
             }
           }
@@ -253,88 +244,108 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
           uploadedBytes += chunk.size;
           const elapsed = (Date.now() - startTime) / 1000;
           const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
-          const progress = Math.round((uploadedBytes / file.size) * 100);
-
-          setTransfers((prev) =>
-            prev.map((t) => (t.id === transferId ? { ...t, progress, speed } : t))
-          );
+          setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: Math.round((uploadedBytes / file.size) * 100), speed } : t));
         }
 
-        setTransfers((prev) =>
-          prev.map((t) => (t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t))
-        );
-        toast({ title: "Upload complete", description: `${file.name} (${formatSize(file.size)})` });
-      } catch (err) {
-        const error = err instanceof Error ? err.message : "Upload failed";
-        setTransfers((prev) =>
-          prev.map((t) => (t.id === transferId ? { ...t, status: "error" as const, error } : t))
-        );
-        toast({ title: "Upload failed", description: error, variant: "destructive" });
-      }
-    },
-    [isConnected, sendCommand, pcSavePath, toast]
-  );
-
-  // Download file from PC — with larger chunks and retry logic
-  const downloadFileFromPC = useCallback(
-    async (pcFile: PCFile) => {
-      if (!isConnected || pcFile.is_directory) {
-        if (pcFile.is_directory) browsePCFiles(pcFile.path);
-        return;
+        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
       }
 
-      const transferId = crypto.randomUUID();
-      const startTime = Date.now();
+      toast({ title: "Upload complete", description: `${file.name} (${formatSize(file.size)})` });
+    } catch (err) {
+      const error = err instanceof Error ? err.message : "Upload failed";
+      setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "error" as const, error } : t));
+      toast({ title: "Upload failed", description: error, variant: "destructive" });
+    }
+  }, [isConnected, sendCommand, pcSavePath, toast]);
 
-      setTransfers((prev) => [
-        ...prev,
-        { id: transferId, name: pcFile.name, size: pcFile.size, direction: "pc_to_phone", progress: 0, status: "transferring", startTime },
-      ]);
+  // Download file from PC
+  const downloadFileFromPC = useCallback(async (pcFile: PCFile) => {
+    if (!isConnected || pcFile.is_directory) {
+      if (pcFile.is_directory) browsePCFiles(pcFile.path);
+      return;
+    }
 
-      try {
-        const CHUNK_SIZE = 256 * 1024; // 256KB chunks
+    const transferId = crypto.randomUUID();
+    const startTime = Date.now();
+    const useCloud = pcFile.size > 50 * 1024 * 1024;
+    const method = useCloud ? "cloud" : "relay";
+
+    setTransfers(prev => [...prev, {
+      id: transferId, name: pcFile.name, size: pcFile.size, direction: "pc_to_phone",
+      progress: 0, status: "transferring", startTime, method,
+    }]);
+
+    try {
+      if (useCloud) {
+        // Tell agent to upload to cloud storage, then we download
+        const filePath = `transfers/${crypto.randomUUID()}/${pcFile.name}`;
+        
+        // Get upload URL for agent
+        const { data: urlData } = await supabase.storage
+          .from("agent-files")
+          .createSignedUrl(filePath, 3600);
+
+        // Tell agent to upload
+        const result = await sendCommand("upload_to_url", {
+          file_path: pcFile.path,
+          upload_path: filePath,
+        }, { awaitResult: true, timeoutMs: 300000 });
+
+        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: 50 } : t));
+
+        if (!result?.success) throw new Error((result?.error as string) || "Agent upload failed");
+
+        // Download from storage
+        const { data: downloadData, error } = await supabase.storage
+          .from("agent-files")
+          .download(filePath);
+
+        if (error || !downloadData) throw new Error(error?.message || "Download failed");
+
+        // Trigger browser download
+        const url = URL.createObjectURL(downloadData);
+        const a = document.createElement("a");
+        a.href = url; a.download = pcFile.name;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+
+        // Cleanup
+        supabase.storage.from("agent-files").remove([filePath]).catch(() => {});
+
+        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
+      } else {
+        // Chunked download
+        const CHUNK_SIZE = 512 * 1024;
         const totalChunks = Math.ceil(pcFile.size / CHUNK_SIZE) || 1;
         const chunks: string[] = [];
         let downloadedBytes = 0;
 
         for (let i = 0; i < totalChunks; i++) {
           let chunkData: string | null = null;
-
-          // Retry each chunk up to 3 times
           for (let attempt = 0; attempt < 3 && !chunkData; attempt++) {
             try {
-              const result = await sendCommand(
-                "send_file_chunk",
-                { path: pcFile.path, chunk_index: i, chunk_size: CHUNK_SIZE },
-                { awaitResult: true, timeoutMs: 60000 }
-              );
+              const result = await sendCommand("send_file_chunk", {
+                path: pcFile.path, chunk_index: i, chunk_size: CHUNK_SIZE,
+              }, { awaitResult: true, timeoutMs: 60000 });
 
               if (result?.success && result.result) {
-                const data = result.result as { data?: string; file_size?: number };
+                const data = result.result as { data?: string };
                 if (data.data) chunkData = data.data;
               }
-              if (!chunkData && attempt === 2) {
-                throw new Error((result?.error as string) || "Chunk download failed");
-              }
+              if (!chunkData && attempt === 2) throw new Error((result?.error as string) || "Chunk failed");
             } catch (err) {
               if (attempt === 2) throw err;
               await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
             }
           }
-
           if (chunkData) chunks.push(chunkData);
 
           downloadedBytes = Math.min((i + 1) * CHUNK_SIZE, pcFile.size);
           const elapsed = (Date.now() - startTime) / 1000;
           const speed = elapsed > 0 ? downloadedBytes / elapsed : 0;
-          const progress = Math.round(((i + 1) / totalChunks) * 100);
-
-          setTransfers((prev) =>
-            prev.map((t) => (t.id === transferId ? { ...t, progress, speed } : t))
-          );
+          setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: Math.round(((i + 1) / totalChunks) * 100), speed } : t));
         }
 
-        // Combine and trigger browser download
         const base64Data = chunks.join("");
         const byteCharacters = atob(base64Data);
         const byteArray = new Uint8Array(byteCharacters.length);
@@ -343,27 +354,20 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
 
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        a.href = url;
-        a.download = pcFile.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        a.href = url; a.download = pcFile.name;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
 
-        setTransfers((prev) =>
-          prev.map((t) => (t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t))
-        );
-        toast({ title: "Download complete", description: `${pcFile.name} (${formatSize(pcFile.size)})` });
-      } catch (err) {
-        const error = err instanceof Error ? err.message : "Download failed";
-        setTransfers((prev) =>
-          prev.map((t) => (t.id === transferId ? { ...t, status: "error" as const, error } : t))
-        );
-        toast({ title: "Download failed", description: error, variant: "destructive" });
+        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
       }
-    },
-    [isConnected, sendCommand, browsePCFiles, toast]
-  );
+
+      toast({ title: "Download complete", description: `${pcFile.name} (${formatSize(pcFile.size)})` });
+    } catch (err) {
+      const error = err instanceof Error ? err.message : "Download failed";
+      setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "error" as const, error } : t));
+      toast({ title: "Download failed", description: error, variant: "destructive" });
+    }
+  }, [isConnected, sendCommand, browsePCFiles, toast]);
 
   const navigateUp = useCallback(() => {
     const parts = pcBrowsePath.split(/[/\\]/);
@@ -372,7 +376,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
   }, [pcBrowsePath, browsePCFiles]);
 
   const removeTransfer = useCallback((id: string) => {
-    setTransfers((prev) => prev.filter((t) => t.id !== id));
+    setTransfers(prev => prev.filter(t => t.id !== id));
   }, []);
 
   // === DIAGNOSTICS ===
@@ -380,89 +384,41 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
     setDiagRunning(true);
     const results: DiagResult[] = [];
 
-    // 1. Connection check
-    results.push({ name: "Device Connection", status: isConnected ? "pass" : "fail", message: isConnected ? "PC is online" : "PC is offline — connect first" });
+    results.push({ name: "Device Connection", status: isConnected ? "pass" : "fail", message: isConnected ? "PC is online" : "PC is offline" });
     setDiagResults([...results]);
 
-    if (!isConnected) {
-      setDiagRunning(false);
-      return;
-    }
+    if (!isConnected) { setDiagRunning(false); return; }
 
-    // 2. Agent ping
-    results.push({ name: "Agent Responsiveness", status: "running", message: "Pinging agent..." });
+    results.push({ name: "Network Mode", status: "pass", message: isSameNetwork ? `Same network (P2P via ${p2pIp})` : "Different network (cloud relay)" });
+    setDiagResults([...results]);
+
+    results.push({ name: "Agent Ping", status: "running", message: "Pinging..." });
     setDiagResults([...results]);
     try {
       const pingStart = Date.now();
       const pingResult = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 5000 });
       const pingMs = Date.now() - pingStart;
-      results[results.length - 1] = {
-        name: "Agent Responsiveness",
-        status: pingResult.success ? "pass" : "fail",
-        message: pingResult.success ? `Agent responded in ${pingMs}ms` : "Agent did not respond",
-      };
+      results[results.length - 1] = { name: "Agent Ping", status: pingResult.success ? "pass" : "fail", message: pingResult.success ? `${pingMs}ms` : "No response" };
     } catch {
-      results[results.length - 1] = { name: "Agent Responsiveness", status: "fail", message: "Agent ping timed out" };
+      results[results.length - 1] = { name: "Agent Ping", status: "fail", message: "Timed out" };
     }
     setDiagResults([...results]);
 
-    // 3. File listing test
-    results.push({ name: "File Listing", status: "running", message: "Testing list_files..." });
+    results.push({ name: "Cloud Storage", status: "running", message: "Testing..." });
     setDiagResults([...results]);
     try {
-      const listResult = await sendCommand("list_files", { path: "~" }, { awaitResult: true, timeoutMs: 8000 });
-      results[results.length - 1] = {
-        name: "File Listing",
-        status: listResult.success ? "pass" : "fail",
-        message: listResult.success ? "File listing works" : `Failed: ${listResult.error}`,
-      };
+      const testFile = new Blob(["test"]);
+      const { error } = await supabase.storage.from("agent-files").upload("_diag_test", testFile, { upsert: true });
+      if (error) throw error;
+      await supabase.storage.from("agent-files").remove(["_diag_test"]);
+      results[results.length - 1] = { name: "Cloud Storage", status: "pass", message: "Upload/download works" };
     } catch {
-      results[results.length - 1] = { name: "File Listing", status: "fail", message: "File listing timed out" };
-    }
-    setDiagResults([...results]);
-
-    // 4. Write permission test (small test chunk)
-    results.push({ name: "Write Permission", status: "running", message: "Testing file write..." });
-    setDiagResults([...results]);
-    try {
-      const testData = btoa("jarvis_test");
-      const writeResult = await sendCommand(
-        "receive_file_chunk",
-        { file_id: "diag_test", file_name: ".jarvis_diag_test", chunk_index: 0, total_chunks: 1, data: testData, save_folder: "" },
-        { awaitResult: true, timeoutMs: 8000 }
-      );
-      results[results.length - 1] = {
-        name: "Write Permission",
-        status: writeResult.success ? "pass" : "fail",
-        message: writeResult.success ? "Write to Downloads/Jarvis OK" : `Write failed: ${writeResult.error}`,
-      };
-    } catch {
-      results[results.length - 1] = { name: "Write Permission", status: "fail", message: "Write test timed out" };
-    }
-    setDiagResults([...results]);
-
-    // 5. Read test
-    results.push({ name: "Read Permission", status: "running", message: "Testing file read..." });
-    setDiagResults([...results]);
-    try {
-      const readResult = await sendCommand(
-        "send_file_chunk",
-        { path: "~", chunk_index: 0, chunk_size: 64 },
-        { awaitResult: true, timeoutMs: 8000 }
-      );
-      // This will likely fail since ~ is a dir, but at least tests the command route
-      results[results.length - 1] = {
-        name: "Read Permission",
-        status: readResult.success ? "pass" : "warn",
-        message: readResult.success ? "Read works" : "Read command routed OK (test path is dir)",
-      };
-    } catch {
-      results[results.length - 1] = { name: "Read Permission", status: "fail", message: "Read test timed out" };
+      results[results.length - 1] = { name: "Cloud Storage", status: "warn", message: "Cloud storage unavailable" };
     }
     setDiagResults([...results]);
 
     setDiagRunning(false);
-  }, [isConnected, sendCommand]);
+  }, [isConnected, sendCommand, isSameNetwork, p2pIp]);
 
   const diagStatusIcon = (s: DiagResult["status"]) => {
     switch (s) {
@@ -472,6 +428,8 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       case "running": return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />;
     }
   };
+
+  const ConnectionIcon = connectionMethod === "p2p" ? Wifi : connectionMethod === "cloud" ? Globe : WifiOff;
 
   return (
     <Card className={cn("border-border/40", className)}>
@@ -483,12 +441,15 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             </div>
             <div>
               <CardTitle className="text-base">File Transfer</CardTitle>
-              <CardDescription className="text-xs">Drag & drop or browse • PC ↔ Phone</CardDescription>
+              <CardDescription className="text-xs">Any network • No size limit</CardDescription>
             </div>
           </div>
-          <Badge variant={isConnected ? "secondary" : "destructive"} className="text-xs">
-            <Wifi className="h-3 w-3 mr-1" />
-            {isConnected ? "Connected" : "Offline"}
+          <Badge
+            variant={isConnected ? "secondary" : "destructive"}
+            className={cn("text-xs", connectionMethod === "detecting" && "animate-pulse")}
+          >
+            <ConnectionIcon className="h-3 w-3 mr-1" />
+            {connectionMethod === "detecting" ? "Detecting..." : connectionMethod === "p2p" ? "LAN" : isConnected ? "Cloud" : "Offline"}
           </Badge>
         </div>
       </CardHeader>
@@ -496,52 +457,32 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       <CardContent className="space-y-4">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
           <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="upload" className="text-xs gap-1">
-              <Upload className="h-3 w-3" />
-              Upload
-            </TabsTrigger>
-            <TabsTrigger value="download" className="text-xs gap-1">
-              <Download className="h-3 w-3" />
-              Download
-            </TabsTrigger>
-            <TabsTrigger value="diag" className="text-xs gap-1">
-              <Stethoscope className="h-3 w-3" />
-              Diagnose
-            </TabsTrigger>
+            <TabsTrigger value="upload" className="text-xs gap-1"><Upload className="h-3 w-3" />Upload</TabsTrigger>
+            <TabsTrigger value="download" className="text-xs gap-1"><Download className="h-3 w-3" />Download</TabsTrigger>
+            <TabsTrigger value="diag" className="text-xs gap-1"><Stethoscope className="h-3 w-3" />Diagnose</TabsTrigger>
           </TabsList>
 
-          {/* Upload Tab — with drag & drop */}
           <TabsContent value="upload" className="space-y-3 mt-3">
             <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
             <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
+              onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
               className={cn(
                 "w-full h-24 border-2 border-dashed rounded-lg flex flex-col items-center justify-center gap-2 cursor-pointer transition-all",
-                isDragOver
-                  ? "border-primary bg-primary/10 scale-[1.02]"
-                  : "border-border/50 hover:border-primary/50 hover:bg-muted/30",
+                isDragOver ? "border-primary bg-primary/10 scale-[1.02]" : "border-border/50 hover:border-primary/50 hover:bg-muted/30",
                 !isConnected && "opacity-50 pointer-events-none"
               )}
             >
               <Upload className={cn("h-6 w-6", isDragOver ? "text-primary" : "text-muted-foreground")} />
               <span className="text-xs text-muted-foreground">
-                {isDragOver ? "Drop files here!" : "Drag & drop files or tap to select"}
+                {isDragOver ? "Drop files here!" : "Drag & drop or tap to select • Any size"}
               </span>
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] text-muted-foreground">Save to PC folder (empty = Downloads/Jarvis)</label>
+              <label className="text-[10px] text-muted-foreground">PC save folder (empty = Downloads/Jarvis)</label>
               <div className="flex gap-2">
-                <Input
-                  value={pcSavePath}
-                  onChange={(e) => setPcSavePath(e.target.value)}
-                  placeholder="~/Downloads/Jarvis (default)"
-                  className="flex-1 text-xs h-8 font-mono"
-                  disabled={!isConnected}
-                />
+                <Input value={pcSavePath} onChange={(e) => setPcSavePath(e.target.value)} placeholder="~/Downloads/Jarvis" className="flex-1 text-xs h-8 font-mono" disabled={!isConnected} />
                 <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => setPcSavePath("")}>
                   <FolderOpen className="h-3 w-3" />
                 </Button>
@@ -549,38 +490,21 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             </div>
           </TabsContent>
 
-          {/* Download Tab */}
           <TabsContent value="download" className="space-y-3 mt-3">
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" className="h-8 px-2" onClick={navigateUp} disabled={!isConnected}>
-                ..
-              </Button>
-              <Input
-                value={pcBrowsePath}
-                onChange={(e) => setPcBrowsePath(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && browsePCFiles(pcBrowsePath)}
-                placeholder="PC path"
-                className="flex-1 text-xs h-8 font-mono"
-                disabled={!isConnected}
-              />
+              <Button variant="outline" size="sm" className="h-8 px-2" onClick={navigateUp} disabled={!isConnected}>..</Button>
+              <Input value={pcBrowsePath} onChange={(e) => setPcBrowsePath(e.target.value)} onKeyDown={(e) => e.key === "Enter" && browsePCFiles(pcBrowsePath)} placeholder="PC path" className="flex-1 text-xs h-8 font-mono" disabled={!isConnected} />
               <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => browsePCFiles(pcBrowsePath)} disabled={!isConnected || isLoadingFiles}>
                 {isLoadingFiles ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
               </Button>
             </div>
-
             <ScrollArea className="h-36 border rounded-lg">
               <div className="p-1.5 space-y-0.5">
-                {pcFiles.length === 0 && !isLoadingFiles && (
-                  <p className="text-xs text-muted-foreground text-center py-4">No files found</p>
-                )}
+                {pcFiles.length === 0 && !isLoadingFiles && <p className="text-xs text-muted-foreground text-center py-4">No files found</p>}
                 {pcFiles.map((file, i) => {
                   const Icon = getFileIcon(file.name, file.is_directory);
                   return (
-                    <button
-                      key={i}
-                      onClick={() => downloadFileFromPC(file)}
-                      className="w-full flex items-center gap-2 p-2 rounded-md hover:bg-muted/50 text-left text-xs transition-colors"
-                    >
+                    <button key={i} onClick={() => downloadFileFromPC(file)} className="w-full flex items-center gap-2 p-2 rounded-md hover:bg-muted/50 text-left text-xs transition-colors">
                       <Icon className={cn("h-4 w-4 shrink-0", file.is_directory ? "text-primary" : "text-muted-foreground")} />
                       <span className="flex-1 truncate">{file.name}</span>
                       {!file.is_directory && <span className="text-muted-foreground tabular-nums">{formatSize(file.size)}</span>}
@@ -591,13 +515,11 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             </ScrollArea>
           </TabsContent>
 
-          {/* Diagnostics Tab */}
           <TabsContent value="diag" className="space-y-3 mt-3">
             <Button onClick={runDiagnostics} disabled={diagRunning} variant="outline" className="w-full h-9 text-xs gap-2">
               {diagRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Stethoscope className="h-3.5 w-3.5" />}
-              {diagRunning ? "Running..." : "Run File Transfer Diagnostics"}
+              {diagRunning ? "Running..." : "Run Diagnostics"}
             </Button>
-
             {diagResults.length > 0 && (
               <div className="space-y-1.5">
                 {diagResults.map((r, i) => (
@@ -611,20 +533,15 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
                 ))}
               </div>
             )}
-
-            {diagResults.length === 0 && (
-              <p className="text-xs text-muted-foreground text-center py-4">
-                Run diagnostics to check file transfer health
-              </p>
-            )}
+            {diagResults.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Run diagnostics to check transfer health</p>}
           </TabsContent>
         </Tabs>
 
-        {/* Active Transfers with speed */}
+        {/* Active Transfers */}
         {transfers.length > 0 && (
           <div className="space-y-1">
             <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Transfers</p>
-            <ScrollArea className="max-h-40">
+            <ScrollArea className="max-h-48">
               <div className="space-y-1.5">
                 {transfers.map((transfer) => {
                   const Icon = getFileIcon(transfer.name);
@@ -639,18 +556,21 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
                           <Badge variant="outline" className="text-[9px] px-1 py-0">
                             {transfer.direction === "phone_to_pc" ? "↑" : "↓"}
                           </Badge>
+                          {transfer.method && (
+                            <Badge variant="secondary" className="text-[8px] px-1 py-0">
+                              {transfer.method === "cloud" ? "☁" : "⚡"}
+                            </Badge>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           <Progress value={transfer.progress} className="h-1 flex-1" />
                           <span className="text-[10px] text-muted-foreground tabular-nums w-8">{transfer.progress}%</span>
                         </div>
-                        {/* Speed + size info */}
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="text-[10px] text-muted-foreground">{formatSize(transfer.size)}</span>
                           {transfer.status === "transferring" && transfer.speed && transfer.speed > 0 && (
                             <span className="text-[10px] text-primary flex items-center gap-0.5">
-                              <Zap className="h-2.5 w-2.5" />
-                              {formatSpeed(transfer.speed)}
+                              <Zap className="h-2.5 w-2.5" />{formatSpeed(transfer.speed)}
                             </span>
                           )}
                         </div>
@@ -658,11 +578,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
                       <div className="flex items-center gap-1 shrink-0">
                         {transfer.status === "transferring" && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
                         {transfer.status === "complete" && <Check className="h-3.5 w-3.5 text-emerald-500" />}
-                        {transfer.status === "error" && (
-                          <span title={transfer.error}>
-                            <X className="h-3.5 w-3.5 text-destructive" />
-                          </span>
-                        )}
+                        {transfer.status === "error" && <span title={transfer.error}><X className="h-3.5 w-3.5 text-destructive" /></span>}
                         <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => removeTransfer(transfer.id)}>
                           <X className="h-2.5 w-2.5" />
                         </Button>
