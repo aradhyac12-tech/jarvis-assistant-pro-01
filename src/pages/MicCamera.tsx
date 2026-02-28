@@ -30,6 +30,9 @@ import {
   ScreenShareOff,
   Shield,
   Headphones,
+  Rows2,
+  X,
+  Loader2,
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
@@ -161,6 +164,10 @@ export default function MicCamera() {
   const [activeTab, setActiveTab] = useState(() => loadSetting("mic_camera_tab", "audio"));
   const handleTabChange = (v: string) => { setActiveTab(v); saveSetting("mic_camera_tab", v); };
 
+  // Split view mode — video on top, controls below
+  const [splitMode, setSplitMode] = useState(() => loadSetting("mic_split_mode", false));
+  const [splitStream, setSplitStream] = useState<"camera" | "screen">(() => loadSetting("mic_split_stream", "camera"));
+
   // ========== WebSocket base ==========
   const WS_BASE = getFunctionsWsBase();
   const AUDIO_WS_URL = `${WS_BASE}/functions/v1/audio-relay`;
@@ -218,6 +225,21 @@ export default function MicCamera() {
   useEffect(() => { saveSetting("screen_quality", screenQuality); }, [screenQuality]);
   useEffect(() => { saveSetting("audio_direction", audioDirection); }, [audioDirection]);
   useEffect(() => { saveSetting("system_audio", systemAudio); }, [systemAudio]);
+  useEffect(() => { saveSetting("mic_split_mode", splitMode); }, [splitMode]);
+  useEffect(() => { saveSetting("mic_split_stream", splitStream); }, [splitStream]);
+
+  // Computed split view values
+  const splitFrame = splitStream === "camera" ? pcCamFrame : screenFrame;
+  const splitFps = splitStream === "camera" ? liveCamFps : liveScreenFps;
+  const splitLatency = splitStream === "camera" ? camLatency : screenLatency;
+
+  // Auto-switch split stream to whichever is active
+  useEffect(() => {
+    if (splitMode) {
+      if (splitStream === "camera" && !pcCamActive && screenActive) setSplitStream("screen");
+      if (splitStream === "screen" && !screenActive && pcCamActive) setSplitStream("camera");
+    }
+  }, [splitMode, pcCamActive, screenActive, splitStream]);
 
   // ==================== HELPERS ====================
   const processFrames = useCallback((
@@ -676,6 +698,10 @@ export default function MicCamera() {
             <span className="font-semibold text-sm">Mic & Camera</span>
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setSplitMode(!splitMode)}
+              className={cn("h-8 text-xs gap-1", splitMode ? "bg-primary/20 text-primary" : "")}>
+              <Rows2 className="h-3.5 w-3.5" />
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => setShowDebug(!showDebug)} className={cn("h-8 text-xs", showDebug ? "bg-primary/20" : "")}>
               Debug
             </Button>
@@ -689,7 +715,64 @@ export default function MicCamera() {
         </div>
       </header>
 
-      <ScrollArea className="h-[calc(100vh-3rem)]">
+      {/* ===== SPLIT VIEW VIDEO PANEL ===== */}
+      {splitMode && (pcCamActive || screenActive) && (
+        <div className="sticky top-12 z-40 bg-black border-b border-border/20">
+          <div className="relative h-[35vh] min-h-[180px] max-h-[280px]">
+            {splitFrame ? (
+              <img src={splitFrame} alt="Split view" className="w-full h-full object-contain bg-black" draggable={false} />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center bg-black">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              </div>
+            )}
+            {/* Stream switcher */}
+            <div className="absolute top-2 left-2 flex gap-1">
+              {pcCamActive && (
+                <Button variant={splitStream === "camera" ? "default" : "ghost"} size="sm"
+                  className="h-7 text-[10px] bg-black/60 backdrop-blur-sm border-0"
+                  onClick={() => setSplitStream("camera")}>
+                  <Webcam className="h-3 w-3 mr-1" />Cam
+                </Button>
+              )}
+              {screenActive && (
+                <Button variant={splitStream === "screen" ? "default" : "ghost"} size="sm"
+                  className="h-7 text-[10px] bg-black/60 backdrop-blur-sm border-0"
+                  onClick={() => setSplitStream("screen")}>
+                  <ScreenShare className="h-3 w-3 mr-1" />Screen
+                </Button>
+              )}
+            </div>
+            {/* Close split */}
+            <div className="absolute top-2 right-2">
+              <Button variant="ghost" size="icon" className="h-7 w-7 bg-black/60 backdrop-blur-sm text-white"
+                onClick={() => setSplitMode(false)}>
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            {/* Stats */}
+            <div className="absolute bottom-2 left-2 flex gap-1.5">
+              <Badge variant="outline" className="bg-black/50 text-white text-[10px] font-mono border-transparent">
+                {splitFps} FPS
+              </Badge>
+              {splitLatency > 0 && (
+                <Badge variant="outline" className={cn(
+                  "bg-black/50 text-[10px] font-mono border-transparent",
+                  splitLatency > 100 ? "text-destructive" : "text-primary"
+                )}>
+                  {splitLatency}ms
+                </Badge>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ScrollArea className={cn(
+        splitMode && (pcCamActive || screenActive)
+          ? "h-[calc(65vh-3rem)]"
+          : "h-[calc(100vh-3rem)]"
+      )}>
         <main className="p-3 space-y-3 pb-6">
           {showDebug && (
             <Card className="border-border/40">
@@ -909,6 +992,8 @@ export default function MicCamera() {
                     title="PC Camera" error={pcCamError}
                     streamId="pc-camera" streamType="camera"
                     wsRef={pcCamWsRef}
+                    splitMode={splitMode}
+                    onSplitToggle={() => setSplitMode(!splitMode)}
                   />
 
                   <div className="flex items-center justify-center gap-4">
@@ -948,6 +1033,8 @@ export default function MicCamera() {
                     title="Screen Mirror" error={screenError}
                     streamId="screen-mirror" streamType="screen"
                     wsRef={screenWsRef}
+                    splitMode={splitMode}
+                    onSplitToggle={() => setSplitMode(!splitMode)}
                   />
 
                   <div className="flex items-center justify-center gap-4">
