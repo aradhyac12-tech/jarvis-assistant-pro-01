@@ -72,6 +72,12 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [clipFilter, setClipFilter] = useState<"all" | "human" | "motion">("all");
   const [expandedClip, setExpandedClip] = useState<string | null>(null);
 
+  // Identity & auto-siren
+  const [identityPrompt, setIdentityPrompt] = useState(false);
+  const [detectedSnapshot, setDetectedSnapshot] = useState<string | null>(null);
+  const [ownerConfirmed, setOwnerConfirmed] = useState(false);
+  const [autoSirenOnDetect, setAutoSirenOnDetect] = useState(() => localStorage.getItem("surveillance_auto_siren") === "true");
+
   // Single notification guard per session — no spamming
   const humanNotifiedRef = useRef(false);
 
@@ -213,6 +219,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_fps", String(survFps)), [survFps]);
   useEffect(() => localStorage.setItem("surveillance_quality", String(survQuality)), [survQuality]);
   useEffect(() => localStorage.setItem("surveillance_monitoring", String(monitoring)), [monitoring]);
+  useEffect(() => localStorage.setItem("surveillance_auto_siren", String(autoSirenOnDetect)), [autoSirenOnDetect]);
 
   const cleanupWs = useCallback(() => {
     if (currentBlobUrlRef.current) {
@@ -671,9 +678,22 @@ export function SurveillancePanel({ className }: { className?: string }) {
                       const confPct = Math.round(conf * 100);
                       setHumanPresent(true);
                       addLog("warn", "web", `Human detected (${confPct}% confidence)`);
-                      toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
                       notifyHumanDetected(confPct);
                       triggerAutoClip("human");
+                      
+                      // Auto-siren on detection if enabled and not confirmed as owner
+                      if (autoSirenOnDetect && !ownerConfirmed) {
+                        setSirenActive(true);
+                        sendCommand("set_volume", { level: 100 }, { awaitResult: false });
+                        sendCommand("play_alarm", { type: "siren", action: "start" });
+                        toast({ title: "🚨 INTRUDER DETECTED!", description: `Confidence: ${confPct}% — Siren activated` });
+                      } else {
+                        toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
+                      }
+                      
+                      // Show identity prompt
+                      setDetectedSnapshot(currentFrame);
+                      setIdentityPrompt(true);
                     }
                   }}
                 />
@@ -711,6 +731,41 @@ export function SurveillancePanel({ className }: { className?: string }) {
                           <div className="absolute bottom-0 left-0 h-1 bg-destructive rounded-b" style={{ width: `${e.confidence}%` }} />
                         </div>
                       ))}
+                    </div>
+                  </div>
+                )}
+                {/* Identity Prompt Overlay */}
+                {identityPrompt && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-in fade-in">
+                    <div className="bg-card rounded-xl p-4 border border-border/50 shadow-xl max-w-[280px] text-center space-y-3">
+                      <p className="text-sm font-semibold">👤 Person Detected!</p>
+                      <p className="text-xs text-muted-foreground">Is this you or an intruder?</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button variant="outline" size="sm" className="h-10 text-xs"
+                          onClick={() => {
+                            setIdentityPrompt(false);
+                            setOwnerConfirmed(true);
+                            if (sirenActive) {
+                              sendCommand("play_alarm", { type: "siren", action: "stop" });
+                              setSirenActive(false);
+                            }
+                            toast({ title: "✅ Identified as owner" });
+                          }}>
+                          👤 It's Me
+                        </Button>
+                        <Button variant="destructive" size="sm" className="h-10 text-xs"
+                          onClick={() => {
+                            setIdentityPrompt(false);
+                            if (!sirenActive) {
+                              setSirenActive(true);
+                              sendCommand("set_volume", { level: 100 }, { awaitResult: false });
+                              sendCommand("play_alarm", { type: "siren", action: "start" });
+                            }
+                            toast({ title: "🚨 INTRUDER! Siren activated" });
+                          }}>
+                          🚨 Intruder!
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -782,6 +837,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><Bell className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Play PC Alarm</Label></div>
                       <Switch checked={alarmEnabled} onCheckedChange={setAlarmEnabled} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Siren className="h-4 w-4 text-destructive" /><Label className="text-xs">Auto-Siren on Human</Label></div>
+                      <Switch checked={autoSirenOnDetect} onCheckedChange={setAutoSirenOnDetect} />
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Auto-Call Me</Label></div>

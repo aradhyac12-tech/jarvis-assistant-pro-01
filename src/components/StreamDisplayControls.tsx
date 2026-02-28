@@ -4,14 +4,11 @@ import { Badge } from "@/components/ui/badge";
 import {
   Maximize2,
   Minimize2,
-  PictureInPicture2,
-  X,
+  Rows2,
   Loader2,
-  ZoomIn,
   ZoomOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useGlobalPiP } from "@/contexts/GlobalPiPContext";
 
 interface StreamDisplayControlsProps {
   frame: string | null;
@@ -22,10 +19,12 @@ interface StreamDisplayControlsProps {
   error?: string | null;
   streamId?: string;
   streamType?: "camera" | "screen" | "phone";
-  /** Pass the WebSocket ref so PiP can take ownership for cross-page persistence */
   wsRef?: React.MutableRefObject<WebSocket | null>;
   onClose?: () => void;
   className?: string;
+  /** When true, video is shown in the split panel instead */
+  splitMode?: boolean;
+  onSplitToggle?: () => void;
 }
 
 export function StreamDisplayControls({
@@ -35,13 +34,10 @@ export function StreamDisplayControls({
   latency = 0,
   title,
   error,
-  streamId,
-  streamType = "camera",
-  wsRef,
-  onClose,
   className,
+  splitMode = false,
+  onSplitToggle,
 }: StreamDisplayControlsProps) {
-  const pip = useGlobalPiP();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -49,47 +45,6 @@ export function StreamDisplayControls({
   const lastTouchDistRef = useRef<number | null>(null);
   const panStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const imgContainerRef = useRef<HTMLDivElement>(null);
-
-  const effectiveStreamId = streamId || `stream-${title.replace(/\s/g, "-")}`;
-
-  // Register/update stream in GlobalPiP context
-  useEffect(() => {
-    if (isActive) {
-      pip.registerStream({
-        id: effectiveStreamId,
-        title,
-        frame,
-        fps,
-        latency,
-        isActive: true,
-        type: streamType,
-      });
-    } else {
-      pip.setStreamActive(effectiveStreamId, false);
-    }
-  }, [isActive, effectiveStreamId, title, streamType]);
-
-  // Update frame in GlobalPiP (only if context doesn't own the WS — otherwise it updates itself)
-  useEffect(() => {
-    if (isActive && frame && !pip.hasWebSocketOwnership(effectiveStreamId)) {
-      pip.updateStreamFrame(effectiveStreamId, frame, fps, latency);
-    }
-  }, [frame, fps, latency, isActive, effectiveStreamId]);
-
-  // On unmount: if PiP is floating, transfer WS ownership to context
-  useEffect(() => {
-    return () => {
-      const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
-      if (isPinned && wsRef?.current && wsRef.current.readyState === WebSocket.OPEN) {
-        // Transfer WS to context — it will keep receiving frames
-        pip.takeWebSocketOwnership(effectiveStreamId, wsRef.current);
-        // Null out the ref so the source component doesn't close it
-        wsRef.current = null;
-      } else if (!isPinned) {
-        pip.unregisterStream(effectiveStreamId);
-      }
-    };
-  }, [effectiveStreamId]);
 
   // Exit fullscreen when stream stops
   useEffect(() => {
@@ -118,7 +73,6 @@ export function StreamDisplayControls({
   useEffect(() => {
     if (isFullscreen) {
       document.body.style.overflow = "hidden";
-      // Try to lock orientation on mobile
       try { (screen.orientation as any)?.lock?.("landscape"); } catch { }
     } else {
       document.body.style.overflow = "";
@@ -133,25 +87,6 @@ export function StreamDisplayControls({
     setPanOffset({ x: 0, y: 0 });
   }, []);
 
-  const toggleFloating = useCallback(() => {
-    const isPinned = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
-    if (isPinned) {
-      pip.setFloating(false);
-      pip.pinStream(null);
-      pip.releaseWebSocketOwnership(effectiveStreamId);
-    } else {
-      if (isFullscreen) {
-        setIsFullscreen(false);
-      }
-      // Transfer WS ownership to context for cross-page persistence
-      if (wsRef?.current && wsRef.current.readyState === WebSocket.OPEN) {
-        pip.takeWebSocketOwnership(effectiveStreamId, wsRef.current);
-        wsRef.current = null;
-      }
-      pip.pinStream(effectiveStreamId);
-    }
-  }, [isFullscreen, effectiveStreamId, pip, wsRef]);
-
   // Pinch zoom for fullscreen
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (!isFullscreen) return;
@@ -163,10 +98,8 @@ export function StreamDisplayControls({
     } else if (e.touches.length === 1 && zoomLevel > 1) {
       setIsPanning(true);
       panStartRef.current = {
-        x: e.touches[0].clientX,
-        y: e.touches[0].clientY,
-        offsetX: panOffset.x,
-        offsetY: panOffset.y,
+        x: e.touches[0].clientX, y: e.touches[0].clientY,
+        offsetX: panOffset.x, offsetY: panOffset.y,
       };
     }
   }, [isFullscreen, zoomLevel, panOffset]);
@@ -184,10 +117,7 @@ export function StreamDisplayControls({
     } else if (e.touches.length === 1 && isPanning && zoomLevel > 1) {
       const dx = e.touches[0].clientX - panStartRef.current.x;
       const dy = e.touches[0].clientY - panStartRef.current.y;
-      setPanOffset({
-        x: panStartRef.current.offsetX + dx,
-        y: panStartRef.current.offsetY + dy,
-      });
+      setPanOffset({ x: panStartRef.current.offsetX + dx, y: panStartRef.current.offsetY + dy });
     }
   }, [isFullscreen, isPanning, zoomLevel]);
 
@@ -196,8 +126,27 @@ export function StreamDisplayControls({
     setIsPanning(false);
   }, []);
 
-  const isPipActive = pip.pinnedStreamId === effectiveStreamId && pip.isFloating;
+  // ===== SPLIT MODE: compact indicator =====
+  if (splitMode && isActive) {
+    return (
+      <div className={cn("relative rounded-xl border-2 border-dashed border-primary/30 bg-primary/5 p-4", className)}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-primary/60 text-sm">
+            <Rows2 className="h-5 w-5" />
+            Viewing in split panel
+          </div>
+          <div className="flex items-center gap-2">
+            {fps > 0 && <Badge variant="outline" className="text-[10px] font-mono">{fps} FPS</Badge>}
+            {onSplitToggle && (
+              <Button variant="ghost" size="sm" onClick={onSplitToggle} className="h-7 text-xs">Exit Split</Button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
+  // ===== Render helpers =====
   const renderStreamContent = (isFullscreenMode = false) => {
     if (!isActive) {
       return (
@@ -206,7 +155,6 @@ export function StreamDisplayControls({
         </div>
       );
     }
-
     if (error) {
       return (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-destructive bg-destructive/10">
@@ -215,7 +163,6 @@ export function StreamDisplayControls({
         </div>
       );
     }
-
     if (!frame) {
       return (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-secondary/30">
@@ -224,20 +171,13 @@ export function StreamDisplayControls({
         </div>
       );
     }
-
     return (
-      <div
-        ref={imgContainerRef}
-        className="w-full h-full overflow-hidden"
+      <div ref={imgContainerRef} className="w-full h-full overflow-hidden"
         onTouchStart={isFullscreenMode ? handleTouchStart : undefined}
         onTouchMove={isFullscreenMode ? handleTouchMove : undefined}
         onTouchEnd={isFullscreenMode ? handleTouchEnd : undefined}
       >
-        <img
-          src={frame}
-          alt={title}
-          className="w-full h-full object-contain"
-          draggable={false}
+        <img src={frame} alt={title} className="w-full h-full object-contain" draggable={false}
           style={isFullscreenMode ? {
             transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px)`,
             transformOrigin: "center center",
@@ -254,35 +194,20 @@ export function StreamDisplayControls({
       isFullscreenMode ? "opacity-100" : "opacity-0 group-hover:opacity-100 transition-opacity"
     )}>
       {isFullscreenMode && zoomLevel > 1 && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
-          onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }}
-          title="Reset zoom"
-        >
+        <Button variant="ghost" size="icon" className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+          onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }} title="Reset zoom">
           <ZoomOut className="h-5 w-5" />
         </Button>
       )}
-      <Button
-        variant="ghost"
-        size="icon"
-        className={cn(
-          "h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white",
-          isPipActive && "bg-primary/50"
-        )}
-        onClick={toggleFloating}
-        title={isPipActive ? "Exit floating" : "Float across pages"}
-      >
-        <PictureInPicture2 className="h-5 w-5" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
-        onClick={toggleFullscreen}
-        title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-      >
+      {onSplitToggle && !isFullscreenMode && (
+        <Button variant="ghost" size="icon"
+          className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+          onClick={onSplitToggle} title="Toggle split view">
+          <Rows2 className="h-5 w-5" />
+        </Button>
+      )}
+      <Button variant="ghost" size="icon" className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
+        onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}>
         {isFullscreen ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
       </Button>
     </div>
@@ -292,28 +217,19 @@ export function StreamDisplayControls({
     if (!isActive || !frame) return null;
     return (
       <div className="absolute bottom-2 left-2 flex gap-1.5 z-10">
-        <Badge
-          variant="outline"
-          className="bg-black/50 backdrop-blur-sm border-transparent text-white font-mono text-[10px] px-1.5 py-0"
-        >
+        <Badge variant="outline" className="bg-black/50 backdrop-blur-sm border-transparent text-white font-mono text-[10px] px-1.5 py-0">
           {fps} FPS
         </Badge>
         {latency > 0 && (
-          <Badge
-            variant="outline"
-            className={cn(
-              "bg-black/50 backdrop-blur-sm border-transparent font-mono text-[10px] px-1.5 py-0",
-              latency > 100 ? "text-destructive" : latency > 50 ? "text-warning" : "text-primary"
-            )}
-          >
+          <Badge variant="outline" className={cn(
+            "bg-black/50 backdrop-blur-sm border-transparent font-mono text-[10px] px-1.5 py-0",
+            latency > 100 ? "text-destructive" : latency > 50 ? "text-warning" : "text-primary"
+          )}>
             {latency}ms
           </Badge>
         )}
         {zoomLevel > 1 && isFullscreen && (
-          <Badge
-            variant="outline"
-            className="bg-black/50 backdrop-blur-sm border-transparent text-white font-mono text-[10px] px-1.5 py-0"
-          >
+          <Badge variant="outline" className="bg-black/50 backdrop-blur-sm border-transparent text-white font-mono text-[10px] px-1.5 py-0">
             {zoomLevel.toFixed(1)}x
           </Badge>
         )}
@@ -321,38 +237,16 @@ export function StreamDisplayControls({
     );
   };
 
-  // If this stream is pinned to global PiP, show placeholder in-page
-  if (isPipActive && !isFullscreen) {
-    return (
-      <div
-        className={cn(
-          "relative aspect-video rounded-xl border-2 border-dashed border-primary/30 overflow-hidden bg-primary/5",
-          className
-        )}
-      >
-        <div className="absolute inset-0 flex items-center justify-center text-primary/60 text-sm">
-          <PictureInPicture2 className="h-5 w-5 mr-2" />
-          Floating on all pages
-        </div>
-      </div>
-    );
-  }
-
-  // CSS-only fullscreen (no Fullscreen API — avoids mobile refresh issues)
+  // ===== FULLSCREEN MODE =====
   if (isFullscreen) {
     return (
       <>
-        {/* Placeholder in flow */}
         <div className={cn("relative aspect-video rounded-xl overflow-hidden bg-black/90", className)}>
           <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">
             <Maximize2 className="h-5 w-5 mr-2" /> Fullscreen Active
           </div>
         </div>
-        {/* CSS fullscreen overlay — no DOM manipulation, no Fullscreen API, no refresh */}
-        <div
-          className="fixed inset-0 z-[99999] bg-black"
-          style={{ touchAction: "none" }}
-        >
+        <div className="fixed inset-0 z-[99999] bg-black" style={{ touchAction: "none" }}>
           <div className="relative w-full h-full group">
             {renderStreamContent(true)}
             <div className="absolute top-4 right-4 flex gap-2 z-20">
@@ -377,14 +271,9 @@ export function StreamDisplayControls({
     );
   }
 
-  // Normal mode
+  // ===== NORMAL MODE =====
   return (
-    <div
-      className={cn(
-        "group relative aspect-video rounded-xl overflow-hidden bg-black/90",
-        className
-      )}
-    >
+    <div className={cn("group relative aspect-video rounded-xl overflow-hidden bg-black/90", className)}>
       {renderStreamContent()}
       {isActive && renderControls()}
       {renderStats()}
