@@ -12,6 +12,7 @@ import {
   Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
   Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
   AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2, X, Image as ImageIcon,
+  ScanFace, Crosshair, RotateCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -68,7 +69,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenActive, setSirenActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
   const [humanPresent, setHumanPresent] = useState(false);
-  const [survTab, setSurvTab] = useState<"live" | "clips">("live");
+  const [survTab, setSurvTab] = useState<"live" | "clips" | "train">("live");
   const [clipFilter, setClipFilter] = useState<"all" | "human" | "motion">("all");
   const [expandedClip, setExpandedClip] = useState<string | null>(null);
 
@@ -77,6 +78,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [detectedSnapshot, setDetectedSnapshot] = useState<string | null>(null);
   const [ownerConfirmed, setOwnerConfirmed] = useState(false);
   const [autoSirenOnDetect, setAutoSirenOnDetect] = useState(() => localStorage.getItem("surveillance_auto_siren") === "true");
+
+  // Training state
+  const [trainingMode, setTrainingMode] = useState<"face" | "posture" | "both">("both");
+  const [trainingActive, setTrainingActive] = useState(false);
+  const [trainingPreview, setTrainingPreview] = useState<string | null>(null);
+  const [trainingFrameCount, setTrainingFrameCount] = useState(0);
+  const [trainingStatus, setTrainingStatus] = useState<Record<string, number>>({});
 
   // Single notification guard per session — no spamming
   const humanNotifiedRef = useRef(false);
@@ -647,19 +655,22 @@ export function SurveillancePanel({ className }: { className?: string }) {
         </div>
 
         {/* Subtabs: Live / Clips */}
-        <Tabs value={survTab} onValueChange={(v) => setSurvTab(v as "live" | "clips")}>
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="live" className="gap-1">
+        <Tabs value={survTab} onValueChange={(v) => setSurvTab(v as "live" | "clips" | "train")}>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="live" className="gap-1 text-xs">
               <Eye className="h-3.5 w-3.5" /> Live
               {monitoring && <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />}
             </TabsTrigger>
-            <TabsTrigger value="clips" className="gap-1">
+            <TabsTrigger value="clips" className="gap-1 text-xs">
               <Film className="h-3.5 w-3.5" /> Clips
               {clips.length > 0 && (
                 <Badge variant="secondary" className="ml-1 text-[10px] h-4 min-w-[16px] p-0 flex items-center justify-center">
                   {clips.length}
                 </Badge>
               )}
+            </TabsTrigger>
+            <TabsTrigger value="train" className="gap-1 text-xs">
+              <ScanFace className="h-3.5 w-3.5" /> Train
             </TabsTrigger>
           </TabsList>
 
@@ -1020,6 +1031,196 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 </ScrollArea>
               );
             })()}
+          </TabsContent>
+
+          {/* ===== TRAINING TAB ===== */}
+          <TabsContent value="train" className="mt-3 space-y-4">
+            <div className="text-center space-y-2">
+              <ScanFace className="h-10 w-10 text-primary mx-auto" />
+              <p className="text-sm font-semibold">Face & Posture Training</p>
+              <p className="text-xs text-muted-foreground">
+                Train the system to recognize you vs intruders using your PC camera
+              </p>
+            </div>
+
+            {/* Training Mode */}
+            <div className="space-y-2">
+              <Label className="text-xs">Training Mode</Label>
+              <div className="flex gap-1">
+                {(["face", "posture", "both"] as const).map((m) => (
+                  <Button
+                    key={m}
+                    variant={trainingMode === m ? "default" : "outline"}
+                    size="sm"
+                    className="flex-1 h-8 text-xs capitalize"
+                    onClick={() => setTrainingMode(m)}
+                  >
+                    {m === "face" && <ScanFace className="h-3 w-3 mr-1" />}
+                    {m === "posture" && <PersonStanding className="h-3 w-3 mr-1" />}
+                    {m === "both" && <Crosshair className="h-3 w-3 mr-1" />}
+                    {m}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {/* Preview */}
+            {trainingPreview && (
+              <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-border/50">
+                <img src={`data:image/jpeg;base64,${trainingPreview}`} alt="Training frame" className="w-full h-full object-contain" />
+                <Badge className="absolute top-2 right-2 bg-primary/80 text-[10px]">
+                  Frame #{trainingFrameCount}
+                </Badge>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                variant="outline"
+                className="h-12 text-sm gap-2"
+                disabled={trainingActive}
+                onClick={async () => {
+                  const result = await sendCommand("capture_training_frame", {
+                    label: "owner",
+                    mode: trainingMode,
+                  }, { awaitResult: true, timeoutMs: 10000 });
+                  if (result.success && "result" in result && result.result) {
+                    const r = result.result as any;
+                    if (r.image) {
+                      setTrainingPreview(r.image);
+                      setTrainingFrameCount(prev => prev + 1);
+                      toast({ title: "📸 Frame captured", description: `${r.mode} frame saved` });
+                    }
+                  } else {
+                    toast({ title: "Capture failed", variant: "destructive" });
+                  }
+                }}
+              >
+                <Camera className="h-4 w-4" />
+                Single Shot
+              </Button>
+              <Button
+                variant={trainingActive ? "destructive" : "default"}
+                className="h-12 text-sm gap-2"
+                onClick={async () => {
+                  if (trainingActive) {
+                    setTrainingActive(false);
+                    return;
+                  }
+                  setTrainingActive(true);
+                  setTrainingFrameCount(0);
+                  const result = await sendCommand("start_face_training", {
+                    label: "owner",
+                    mode: trainingMode,
+                    num_frames: 20,
+                    interval_ms: 500,
+                  }, { awaitResult: true, timeoutMs: 5000 });
+                  if (result.success) {
+                    toast({ title: "🎯 Training started", description: "Capturing 20 frames over 10s — look around naturally" });
+                    // Poll for frames
+                    let count = 0;
+                    const poll = setInterval(async () => {
+                      count++;
+                      setTrainingFrameCount(count);
+                      if (count >= 20) {
+                        clearInterval(poll);
+                        setTrainingActive(false);
+                        toast({ title: "✅ Training complete", description: "20 frames captured" });
+                        // Refresh status
+                        const status = await sendCommand("get_training_status", {}, { awaitResult: true, timeoutMs: 5000 });
+                        if (status.success && "result" in status) {
+                          const s = status.result as any;
+                          setTrainingStatus(s.labels || {});
+                        }
+                      }
+                    }, 500);
+                  } else {
+                    setTrainingActive(false);
+                    toast({ title: "Training failed", variant: "destructive" });
+                  }
+                }}
+              >
+                {trainingActive ? (
+                  <><Square className="h-4 w-4" /> Stop</>
+                ) : (
+                  <><Play className="h-4 w-4" /> Auto Train (20 frames)</>
+                )}
+              </Button>
+            </div>
+
+            {trainingActive && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>Capturing...</span>
+                  <span>{trainingFrameCount}/20</span>
+                </div>
+                <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all duration-300"
+                    style={{ width: `${(trainingFrameCount / 20) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Training Data Status */}
+            <div className="rounded-lg border border-border/50 bg-secondary/10 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium">Training Data</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[10px]"
+                  onClick={async () => {
+                    const status = await sendCommand("get_training_status", {}, { awaitResult: true, timeoutMs: 5000 });
+                    if (status.success && "result" in status) {
+                      const s = status.result as any;
+                      setTrainingStatus(s.labels || {});
+                    }
+                  }}
+                >
+                  <RotateCw className="h-3 w-3 mr-1" /> Refresh
+                </Button>
+              </div>
+              {Object.keys(trainingStatus).length > 0 ? (
+                <div className="space-y-1">
+                  {Object.entries(trainingStatus).map(([label, count]) => (
+                    <div key={label} className="flex items-center justify-between text-xs">
+                      <span className="capitalize">{label}</span>
+                      <Badge variant="secondary" className="text-[10px]">{count} frames</Badge>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[10px] text-muted-foreground">No training data yet. Capture some frames above.</p>
+              )}
+              {Object.keys(trainingStatus).length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-destructive w-full"
+                  onClick={async () => {
+                    await sendCommand("clear_training_data", {}, { awaitResult: false });
+                    setTrainingStatus({});
+                    setTrainingPreview(null);
+                    setTrainingFrameCount(0);
+                    toast({ title: "Training data cleared" });
+                  }}
+                >
+                  <Trash2 className="h-3 w-3 mr-1" /> Clear All Training Data
+                </Button>
+              )}
+            </div>
+
+            <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+              <p className="text-[10px] text-muted-foreground leading-relaxed">
+                <strong>How it works:</strong> Face training captures your face from multiple angles.
+                Posture training captures your standing/sitting posture which is unique to each person.
+                Combined mode uses both for maximum accuracy. Look around naturally during auto-training
+                to capture different angles.
+              </p>
+            </div>
           </TabsContent>
         </Tabs>
       </CardContent>

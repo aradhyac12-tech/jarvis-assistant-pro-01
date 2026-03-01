@@ -21,8 +21,11 @@ import { isAppLockEnabled, getAppLockMethod, getAppPin, setAppLockSettings } fro
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 
 export default function Settings() {
-  const [wakeWord, setWakeWord] = useState("Hey Jarvis");
-  const [notifications, setNotifications] = useState(true);
+  const [wakeWord, setWakeWord] = useState(() => localStorage.getItem("settings_wake_word") || "Hey Jarvis");
+  const [notifications, setNotifications] = useState(() => localStorage.getItem("settings_notifications") !== "false");
+
+  useEffect(() => localStorage.setItem("settings_wake_word", wakeWord), [wakeWord]);
+  useEffect(() => localStorage.setItem("settings_notifications", String(notifications)), [notifications]);
   
   // App Lock state
   const [appLockEnabled, setAppLockEnabled] = useState(isAppLockEnabled);
