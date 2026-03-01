@@ -40,7 +40,9 @@ export default function Webcam() {
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<string>("");
   const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
-  const [mirrored, setMirrored] = useState(false);
+  const [mirrored, setMirrored] = useState(() => loadSetting("webcam_mirrored", false));
+
+  useEffect(() => saveSetting("webcam_mirrored", mirrored), [mirrored]);
   
   // Quality settings
   const [fps, setFps] = useState(() => loadSetting("webcam_fps", 30));

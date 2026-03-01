@@ -40,14 +40,305 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "5.5.0"
+AGENT_VERSION = "5.6.0"
 
-# Auto-updater
-try:
-    from auto_updater import AutoUpdater, get_current_version, save_current_version, ensure_firewall_configured, is_firewall_configured, verify_update
-    HAS_AUTO_UPDATER = True
-except ImportError:
-    HAS_AUTO_UPDATER = False
+# ============== INLINE AUTO-UPDATER ==============
+import hashlib
+import shutil
+
+AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+VERSION_FILE = os.path.join(AGENT_DIR, ".update_version")
+FIREWALL_DONE_FILE = os.path.join(AGENT_DIR, ".firewall_configured")
+UPDATE_CHECK_INTERVAL = 300
+BACKUP_DIR = os.path.join(AGENT_DIR, ".backups")
+
+UPDATABLE_FILES = [
+    "jarvis_agent.py", "jarvis_gui.py", "jarvis_service_installer.py", "requirements.txt",
+    "skills/__init__.py", "skills/base.py", "skills/registry.py",
+    "skills/app_launcher_skill.py", "skills/automation_skill.py",
+    "skills/brightness_volume_skill.py", "skills/calendar_skill.py",
+    "skills/file_search_skill.py", "skills/memory_skill.py",
+    "skills/spotify_skill.py", "skills/system_control_skill.py", "skills/web_fetch_skill.py",
+]
+
+TRAINING_DATA_DIR = os.path.join(AGENT_DIR, "training_data")
+
+
+def ensure_firewall_configured(p2p_port: int = 9876, log_fn=None):
+    if os.path.exists(FIREWALL_DONE_FILE):
+        return True
+    if platform.system() != "Windows":
+        _mark_firewall_done("non-windows")
+        return True
+    log_fn = log_fn or (lambda *a: None)
+    log_fn("info", "First-run: configuring firewall rules (one-time only)...")
+    success_count = 0
+    for port in [p2p_port, p2p_port + 1]:
+        rule_name = f"JARVIS_P2P_{port}"
+        try:
+            check = subprocess.run(
+                ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if check.returncode == 0 and rule_name in check.stdout:
+                success_count += 1
+                continue
+            result = subprocess.run([
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={rule_name}", "dir=in", "action=allow",
+                "protocol=TCP", f"localport={port}", "profile=private,domain,public",
+            ], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                success_count += 1
+            else:
+                ps_cmd = (
+                    f"Start-Process netsh -ArgumentList "
+                    f"'advfirewall firewall add rule name={rule_name} dir=in action=allow protocol=TCP localport={port} profile=private,domain,public' "
+                    f"-Verb RunAs -Wait -WindowStyle Hidden"
+                )
+                elev = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True, text=True, timeout=30
+                )
+                if elev.returncode == 0:
+                    success_count += 1
+        except Exception:
+            pass
+    if success_count >= 1:
+        _mark_firewall_done("success" if success_count >= 2 else "partial")
+        return True
+    return False
+
+
+def _mark_firewall_done(status: str):
+    try:
+        with open(FIREWALL_DONE_FILE, "w") as f:
+            json.dump({"status": status, "configured_at": datetime.now().isoformat()}, f)
+    except Exception:
+        pass
+
+
+def is_firewall_configured() -> bool:
+    return os.path.exists(FIREWALL_DONE_FILE)
+
+
+def get_current_version() -> str:
+    if os.path.exists(VERSION_FILE):
+        try:
+            with open(VERSION_FILE, "r") as f:
+                return json.load(f).get("version", "0.0.0")
+        except Exception:
+            pass
+    return AGENT_VERSION
+
+
+def save_current_version(version: str):
+    try:
+        with open(VERSION_FILE, "w") as f:
+            json.dump({"version": version, "updated_at": datetime.now().isoformat()}, f)
+    except Exception:
+        pass
+
+
+def _version_gt(a: str, b: str) -> bool:
+    try:
+        ap = [int(x) for x in a.split(".")]
+        bp = [int(x) for x in b.split(".")]
+        while len(ap) < 3: ap.append(0)
+        while len(bp) < 3: bp.append(0)
+        return tuple(ap) > tuple(bp)
+    except (ValueError, AttributeError):
+        return a != b
+
+
+def _check_for_update(supabase_url: str, supabase_key: str, device_key: str):
+    url = f"{supabase_url}/functions/v1/agent-update?device_key={device_key}"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("apikey", supabase_key)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            if not data.get("version"):
+                return None
+            if _version_gt(data["version"], get_current_version()):
+                return data
+            return None
+    except Exception as e:
+        print(f"[Updater] Check failed: {e}")
+        return None
+
+
+def _download_update_file(supabase_url, supabase_key, device_key, version, file_path):
+    url = f"{supabase_url}/functions/v1/agent-update"
+    body = json.dumps({"device_key": device_key, "version": version, "file_path": file_path}).encode()
+    req = urllib.request.Request(url, data=body, method="PATCH")
+    req.add_header("apikey", supabase_key)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+            content_b64 = data.get("content")
+            if content_b64:
+                return base64.b64decode(content_b64)
+    except Exception as e:
+        print(f"[Updater] Download failed for {file_path}: {e}")
+    return None
+
+
+def _apply_update(supabase_url, supabase_key, device_key, update_info, log_fn=None, auto_restart=True):
+    version = update_info["version"]
+    manifest = update_info.get("file_manifest", [])
+    if not manifest:
+        return {"success": False, "reason": "empty_manifest"}
+    log_fn = log_fn or (lambda *a: None)
+    log_fn("info", f"Applying update v{version} ({len(manifest)} files)...")
+    backup_dir = os.path.join(BACKUP_DIR, f"v{get_current_version()}_{int(time.time())}")
+    os.makedirs(backup_dir, exist_ok=True)
+    downloaded = {}
+    for entry in manifest:
+        fp = entry["path"]
+        log_fn("info", f"Downloading: {fp}")
+        content = _download_update_file(supabase_url, supabase_key, device_key, version, fp)
+        if content is None:
+            log_fn("error", f"Failed to download {fp}, aborting update")
+            return {"success": False, "reason": f"download_failed:{fp}"}
+        downloaded[fp] = content
+    # Backup
+    for fp in downloaded:
+        full = os.path.join(AGENT_DIR, fp)
+        if os.path.exists(full):
+            bp = os.path.join(backup_dir, fp)
+            os.makedirs(os.path.dirname(bp), exist_ok=True)
+            try: shutil.copy2(full, bp)
+            except Exception: pass
+    # Apply
+    applied = 0
+    for fp, content in downloaded.items():
+        full = os.path.join(AGENT_DIR, fp)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        try:
+            with open(full, "wb") as f: f.write(content)
+            applied += 1
+        except Exception as e:
+            log_fn("error", f"Failed to write {fp}: {e}")
+    save_current_version(version)
+    # Verify
+    verified = True
+    for entry in manifest:
+        full = os.path.join(AGENT_DIR, entry["path"])
+        if not os.path.exists(full):
+            verified = False
+            break
+        if entry.get("hash"):
+            with open(full, "rb") as f:
+                actual = hashlib.sha256(f.read()).hexdigest()[:16]
+            if actual != entry["hash"]:
+                verified = False
+                break
+    log_fn("info", f"Update v{version}: {applied}/{len(manifest)} files applied. Verified: {verified}")
+    result = {"success": True, "version": version, "files_applied": applied, "verified": verified}
+    if auto_restart and verified:
+        log_fn("info", "Auto-restarting in 3 seconds...")
+        threading.Timer(3.0, _restart_agent, args=[log_fn]).start()
+    return result
+
+
+def _restart_agent(log_fn=None):
+    log_fn = log_fn or (lambda *a: None)
+    log_fn("info", "Restarting agent...")
+    try:
+        python_exe = sys.executable
+        script = os.path.join(AGENT_DIR, "jarvis_agent.py")
+        args = sys.argv[1:] if len(sys.argv) > 1 else []
+        if platform.system() == "Windows":
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            DETACHED_PROCESS = 0x00000008
+            subprocess.Popen(
+                [python_exe, script] + args,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                close_fds=True, cwd=AGENT_DIR,
+            )
+            time.sleep(2)
+            os._exit(0)
+        else:
+            os.execv(python_exe, [python_exe, script] + args)
+    except Exception as e:
+        log_fn("error", f"Auto-restart failed: {e}. Restart manually.")
+
+
+class InlineAutoUpdater:
+    """Background auto-updater thread (inline, no separate file needed)."""
+    def __init__(self, supabase_url, supabase_key, device_key, log_fn=None, on_update=None, auto_restart=True):
+        self.supabase_url = supabase_url
+        self.supabase_key = supabase_key
+        self.device_key = device_key
+        self.log_fn = log_fn or (lambda *a: None)
+        self.on_update = on_update
+        self.auto_restart = auto_restart
+        self.running = False
+        self._thread = None
+        self.last_check = None
+        self.last_update = None
+        self.last_verification = None
+        self.available_version = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self.running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="auto-updater")
+        self._thread.start()
+        self.log_fn("info", "Auto-updater started (checking every 5 min, auto-restart enabled)")
+
+    def stop(self):
+        self.running = False
+
+    def check_now(self):
+        return _check_for_update(self.supabase_url, self.supabase_key, self.device_key)
+
+    def apply_now(self):
+        update = self.check_now()
+        if update:
+            result = _apply_update(self.supabase_url, self.supabase_key, self.device_key, update, self.log_fn, self.auto_restart)
+            self.last_verification = result.get("verified")
+            return result
+        return {"success": False, "reason": "no_update_available"}
+
+    def get_status(self):
+        return {
+            "running": self.running, "last_check": self.last_check,
+            "last_update": self.last_update, "last_verification": self.last_verification,
+            "available_version": self.available_version, "current_version": get_current_version(),
+            "firewall_configured": is_firewall_configured(), "auto_restart": self.auto_restart,
+        }
+
+    def _loop(self):
+        time.sleep(30)
+        while self.running:
+            try:
+                self.last_check = datetime.now().isoformat()
+                update = _check_for_update(self.supabase_url, self.supabase_key, self.device_key)
+                if update:
+                    self.available_version = update["version"]
+                    self.log_fn("info", f"New update available: v{update['version']}")
+                    result = _apply_update(
+                        self.supabase_url, self.supabase_key, self.device_key,
+                        update, self.log_fn, self.auto_restart
+                    )
+                    if result.get("success"):
+                        self.last_update = datetime.now().isoformat()
+                        self.last_verification = result.get("verified")
+                        if self.on_update:
+                            self.on_update(update["version"])
+            except Exception as e:
+                self.log_fn("warn", f"Auto-updater error: {e}")
+            for _ in range(UPDATE_CHECK_INTERVAL):
+                if not self.running: break
+                time.sleep(1)
+
+# Legacy compat - always available now
+HAS_AUTO_UPDATER = True
 
 # Skill registry
 try:
@@ -3594,7 +3885,7 @@ class JarvisAgent:
 
             # ============== AUTO-UPDATE COMMANDS ==============
             if cmd == "check_update":
-                if HAS_AUTO_UPDATER and self._auto_updater:
+                if self._auto_updater:
                     update = self._auto_updater.check_now()
                     status = self._auto_updater.get_status()
                     return {
@@ -3608,21 +3899,29 @@ class JarvisAgent:
                         "firewall_configured": status["firewall_configured"],
                         "auto_restart": status["auto_restart"],
                     }
-                return {"success": True, "current_version": AGENT_VERSION, "update_available": False, "auto_updater": False}
+                return {"success": True, "current_version": AGENT_VERSION, "update_available": False}
             
             elif cmd == "apply_update":
-                if HAS_AUTO_UPDATER and self._auto_updater:
-                    result = self._auto_updater.apply_now()
-                    return result
-                return {"success": False, "error": "Auto-updater not available"}
+                if self._auto_updater:
+                    return self._auto_updater.apply_now()
+                return {"success": False, "error": "Auto-updater not initialized"}
             
             elif cmd == "get_agent_version":
-                fw_ok = is_firewall_configured() if HAS_AUTO_UPDATER else None
                 return {
-                    "success": True, "version": AGENT_VERSION, 
-                    "has_auto_updater": HAS_AUTO_UPDATER,
-                    "firewall_configured": fw_ok,
+                    "success": True, "version": AGENT_VERSION,
+                    "has_auto_updater": True,
+                    "firewall_configured": is_firewall_configured(),
                 }
+            
+            # ============== FACE/POSTURE TRAINING ==============
+            elif cmd == "start_face_training":
+                return self._start_face_training(payload)
+            elif cmd == "capture_training_frame":
+                return self._capture_training_frame(payload)
+            elif cmd == "get_training_status":
+                return self._get_training_status()
+            elif cmd == "clear_training_data":
+                return self._clear_training_data()
 
             elif cmd == "open_p2p_ports":
                 return self._open_p2p_firewall_ports()
@@ -4184,6 +4483,118 @@ class JarvisAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    # ============== FACE/POSTURE TRAINING ==============
+    def _start_face_training(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Start a training session: capture face/posture frames from PC camera."""
+        mode = payload.get("mode", "face")  # face, posture, both
+        num_frames = int(payload.get("num_frames", 20))
+        interval_ms = int(payload.get("interval_ms", 500))
+        label = payload.get("label", "owner")
+        
+        if not HAS_OPENCV:
+            return {"success": False, "error": "OpenCV not available on PC"}
+        
+        os.makedirs(TRAINING_DATA_DIR, exist_ok=True)
+        session_dir = os.path.join(TRAINING_DATA_DIR, f"{label}_{mode}_{int(time.time())}")
+        os.makedirs(session_dir, exist_ok=True)
+        
+        def _capture_loop():
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                add_log("error", "Training: cannot open camera", category="training")
+                return
+            captured = 0
+            try:
+                for i in range(num_frames):
+                    ret, frame = cap.read()
+                    if not ret:
+                        continue
+                    fname = os.path.join(session_dir, f"{mode}_{i:03d}.jpg")
+                    cv2.imwrite(fname, frame)
+                    captured += 1
+                    time.sleep(interval_ms / 1000.0)
+            finally:
+                cap.release()
+            
+            # Generate metadata
+            meta = {
+                "label": label, "mode": mode, "frames": captured,
+                "timestamp": datetime.now().isoformat(),
+                "session_dir": session_dir,
+            }
+            with open(os.path.join(session_dir, "meta.json"), "w") as f:
+                json.dump(meta, f)
+            add_log("info", f"Training: captured {captured} {mode} frames for '{label}'", category="training")
+        
+        t = threading.Thread(target=_capture_loop, daemon=True)
+        t.start()
+        
+        return {
+            "success": True,
+            "message": f"Training started: capturing {num_frames} {mode} frames",
+            "session_dir": session_dir,
+            "estimated_seconds": round(num_frames * interval_ms / 1000),
+        }
+    
+    def _capture_training_frame(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Capture a single training frame and return it as base64."""
+        if not HAS_OPENCV:
+            return {"success": False, "error": "OpenCV not available"}
+        label = payload.get("label", "owner")
+        mode = payload.get("mode", "face")
+        
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            return {"success": False, "error": "Cannot open camera"}
+        try:
+            ret, frame = cap.read()
+            if not ret:
+                return {"success": False, "error": "Cannot read frame"}
+            
+            # Save to training dir
+            os.makedirs(TRAINING_DATA_DIR, exist_ok=True)
+            label_dir = os.path.join(TRAINING_DATA_DIR, label)
+            os.makedirs(label_dir, exist_ok=True)
+            fname = f"{mode}_{int(time.time())}.jpg"
+            fpath = os.path.join(label_dir, fname)
+            cv2.imwrite(fpath, frame)
+            
+            # Return thumbnail
+            _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+            b64 = base64.b64encode(buf.tobytes()).decode()
+            
+            return {
+                "success": True,
+                "image": b64,
+                "saved_to": fpath,
+                "label": label,
+                "mode": mode,
+            }
+        finally:
+            cap.release()
+    
+    def _get_training_status(self) -> Dict[str, Any]:
+        """Get training data summary."""
+        if not os.path.exists(TRAINING_DATA_DIR):
+            return {"success": True, "labels": {}, "total_frames": 0}
+        
+        labels = {}
+        total = 0
+        for item in os.listdir(TRAINING_DATA_DIR):
+            item_path = os.path.join(TRAINING_DATA_DIR, item)
+            if os.path.isdir(item_path):
+                count = len([f for f in os.listdir(item_path) if f.endswith('.jpg')])
+                labels[item] = count
+                total += count
+        
+        return {"success": True, "labels": labels, "total_frames": total}
+    
+    def _clear_training_data(self) -> Dict[str, Any]:
+        """Clear all training data."""
+        if os.path.exists(TRAINING_DATA_DIR):
+            shutil.rmtree(TRAINING_DATA_DIR, ignore_errors=True)
+        return {"success": True, "message": "Training data cleared"}
+
     # ============== REGISTRATION & HEARTBEAT ==============
     def register_device(self) -> bool:
         try:
@@ -4352,22 +4763,21 @@ class JarvisAgent:
             except Exception as e:
                 add_log("warn", f"Firewall setup check failed: {e}", category="p2p")
         
-        # Start auto-updater with auto-restart enabled
+        # Start inline auto-updater with auto-restart
         self._auto_updater = None
-        if HAS_AUTO_UPDATER:
-            try:
-                self._auto_updater = AutoUpdater(
-                    supabase_url=SUPABASE_URL,
-                    supabase_key=SUPABASE_KEY,
-                    device_key=self.device_key,
-                    log_fn=lambda level, msg: add_log(level, f"[AutoUpdate] {msg}", category="system"),
-                    on_update=lambda v: add_log("info", f"Agent auto-updated to v{v}! Auto-restarting...", category="system"),
-                    auto_restart=True,
-                )
-                self._auto_updater.start()
-                save_current_version(AGENT_VERSION)
-            except Exception as e:
-                add_log("warn", f"Auto-updater init failed: {e}", category="system")
+        try:
+            self._auto_updater = InlineAutoUpdater(
+                supabase_url=SUPABASE_URL,
+                supabase_key=SUPABASE_KEY,
+                device_key=self.device_key,
+                log_fn=lambda level, msg: add_log(level, f"[AutoUpdate] {msg}", category="system"),
+                on_update=lambda v: add_log("info", f"Agent auto-updated to v{v}! Auto-restarting...", category="system"),
+                auto_restart=True,
+            )
+            self._auto_updater.start()
+            save_current_version(AGENT_VERSION)
+        except Exception as e:
+            add_log("warn", f"Auto-updater init failed: {e}", category="system")
         
         last_heartbeat = 0
         

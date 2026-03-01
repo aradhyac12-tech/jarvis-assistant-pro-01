@@ -91,8 +91,11 @@ export default function VoiceAI() {
   });
 
   const [showSettings, setShowSettings] = useState(false);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
+  const [voiceEnabled, setVoiceEnabled] = useState(() => localStorage.getItem("voice_tts_enabled") !== "false");
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(() => localStorage.getItem("voice_wakeword_enabled") !== "false");
+
+  useEffect(() => localStorage.setItem("voice_tts_enabled", String(voiceEnabled)), [voiceEnabled]);
+  useEffect(() => localStorage.setItem("voice_wakeword_enabled", String(wakeWordEnabled)), [wakeWordEnabled]);
 
   useEffect(() => {
     if (isSpeaking) setVoiceMode("speaking");
