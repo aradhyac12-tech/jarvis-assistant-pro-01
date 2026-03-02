@@ -35,6 +35,15 @@ pyttsx3>=2.90              # Text-to-speech (offline)
 pystray>=0.19.5          # System tray icon
 win10toast-click>=0.1.2  # Windows 10/11 notifications
 
+# Face Recognition (ML)
+mediapipe>=0.10.0        # Face mesh + pose detection
+numpy>=1.24.0            # Numerical operations for embeddings
+scipy>=1.10.0            # Distance calculations for face matching
+
+# Bluetooth (BLE fallback transport)
+bleak>=0.21.0            # BLE client (scanning/connecting)
+bless>=0.2.5             # BLE GATT server (PC acts as peripheral)
+
 # Optional: For music features
 # youtube-search-python>=1.6.6
 
