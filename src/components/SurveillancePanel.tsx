@@ -79,6 +79,18 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [ownerConfirmed, setOwnerConfirmed] = useState(false);
   const [autoSirenOnDetect, setAutoSirenOnDetect] = useState(() => localStorage.getItem("surveillance_auto_siren") === "true");
 
+  // ML Recognition state
+  const [recognitionEnabled, setRecognitionEnabled] = useState(() => localStorage.getItem("surveillance_ml_recognition") === "true");
+  const [lastRecognitionResult, setLastRecognitionResult] = useState<{
+    recognized: boolean;
+    label: string | null;
+    confidence: number;
+    face_detected: boolean;
+  } | null>(null);
+  const [modelBuilt, setModelBuilt] = useState(false);
+  const [buildingModel, setBuildingModel] = useState(false);
+  const recognitionCooldownRef = useRef(false);
+
   // Training state
   const [trainingMode, setTrainingMode] = useState<"face" | "posture" | "both">("both");
   const [trainingActive, setTrainingActive] = useState(false);
@@ -228,6 +240,19 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_quality", String(survQuality)), [survQuality]);
   useEffect(() => localStorage.setItem("surveillance_monitoring", String(monitoring)), [monitoring]);
   useEffect(() => localStorage.setItem("surveillance_auto_siren", String(autoSirenOnDetect)), [autoSirenOnDetect]);
+  useEffect(() => localStorage.setItem("surveillance_ml_recognition", String(recognitionEnabled)), [recognitionEnabled]);
+
+  // Check if model exists on mount
+  useEffect(() => {
+    if (recognitionEnabled) {
+      sendCommand("get_recognition_status", {}, { awaitResult: true, timeoutMs: 5000 }).then((res) => {
+        if (res.success && "result" in res) {
+          const s = res.result as any;
+          setModelBuilt((s.total_embeddings || 0) > 0);
+        }
+      });
+    }
+  }, [recognitionEnabled]);
 
   const cleanupWs = useCallback(() => {
     if (currentBlobUrlRef.current) {
@@ -683,14 +708,41 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 <PoseDetectionOverlay
                   frameUrl={currentFrame}
                   enabled={monitoring}
-                  onHumanDetected={(lm, conf) => {
+                  onHumanDetected={async (lm, conf) => {
                     if (!humanNotifiedRef.current) {
                       humanNotifiedRef.current = true;
                       const confPct = Math.round(conf * 100);
                       setHumanPresent(true);
-                      addLog("warn", "web", `Human detected (${confPct}% confidence)`);
-                      notifyHumanDetected(confPct);
                       triggerAutoClip("human");
+
+                      // ML Recognition — ask PC agent to identify the person
+                      if (recognitionEnabled && modelBuilt && !recognitionCooldownRef.current) {
+                        recognitionCooldownRef.current = true;
+                        setTimeout(() => { recognitionCooldownRef.current = false; }, 10000);
+                        
+                        const recResult = await sendCommand("recognize_face", { camera_index: 0 }, { awaitResult: true, timeoutMs: 8000 });
+                        if (recResult.success && "result" in recResult) {
+                          const r = recResult.result as any;
+                          setLastRecognitionResult({
+                            recognized: r.recognized || false,
+                            label: r.label || null,
+                            confidence: r.confidence || 0,
+                            face_detected: r.face_detected || false,
+                          });
+                          
+                          if (r.recognized && r.label === "owner") {
+                            // Owner identified by ML — skip siren
+                            setOwnerConfirmed(true);
+                            toast({ title: "✅ Owner Recognized", description: `ML confidence: ${r.confidence}%` });
+                            addLog("info", "web", `ML recognized owner (confidence: ${r.confidence}%)`);
+                            return; // Don't trigger siren
+                          } else {
+                            addLog("warn", "web", `ML: Unknown person (distance: ${r.distance})`);
+                          }
+                        }
+                      }
+
+                      notifyHumanDetected(confPct);
                       
                       // Auto-siren on detection if enabled and not confirmed as owner
                       if (autoSirenOnDetect && !ownerConfirmed) {
@@ -723,6 +775,17 @@ export function SurveillancePanel({ className }: { className?: string }) {
                   <Badge variant="secondary" className="bg-primary/60 text-primary-foreground backdrop-blur text-[10px]">
                     <PersonStanding className="w-3 h-3 mr-1" /> Pose
                   </Badge>
+                  {recognitionEnabled && modelBuilt && (
+                    <Badge variant="secondary" className={cn(
+                      "backdrop-blur text-[10px]",
+                      lastRecognitionResult?.recognized ? "bg-green-600/80 text-white" : "bg-orange-600/80 text-white"
+                    )}>
+                      <ScanFace className="w-3 h-3 mr-1" />
+                      {lastRecognitionResult?.recognized
+                        ? `${lastRecognitionResult.label} ${lastRecognitionResult.confidence}%`
+                        : "ML Active"}
+                    </Badge>
+                  )}
                   {micEnabled && (
                     <Badge variant="secondary" className="bg-primary/60 text-primary-foreground backdrop-blur">
                       <Mic className="w-3 h-3 mr-1" /> ON
@@ -856,6 +919,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Auto-Call Me</Label></div>
                       <Switch checked={autoCall} onCheckedChange={setAutoCall} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><ScanFace className="h-4 w-4 text-primary" /><Label className="text-xs">ML Face Recognition</Label></div>
+                      <Switch checked={recognitionEnabled} onCheckedChange={setRecognitionEnabled} />
                     </div>
                   </div>
 
@@ -1196,20 +1263,49 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 <p className="text-[10px] text-muted-foreground">No training data yet. Capture some frames above.</p>
               )}
               {Object.keys(trainingStatus).length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs text-destructive w-full"
-                  onClick={async () => {
-                    await sendCommand("clear_training_data", {}, { awaitResult: false });
-                    setTrainingStatus({});
-                    setTrainingPreview(null);
-                    setTrainingFrameCount(0);
-                    toast({ title: "Training data cleared" });
-                  }}
-                >
-                  <Trash2 className="h-3 w-3 mr-1" /> Clear All Training Data
-                </Button>
+                <div className="space-y-2">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    className="h-9 text-xs w-full gap-2"
+                    disabled={buildingModel}
+                    onClick={async () => {
+                      setBuildingModel(true);
+                      const result = await sendCommand("build_face_model", { label: "owner" }, { awaitResult: true, timeoutMs: 30000 });
+                      setBuildingModel(false);
+                      if (result.success && "result" in result) {
+                        const r = result.result as any;
+                        if (r.success) {
+                          setModelBuilt(true);
+                          toast({ title: "✅ Face model built!", description: `${r.embeddings_count} embeddings from ${r.processed} frames` });
+                        } else {
+                          toast({ title: "Build failed", description: r.error, variant: "destructive" });
+                        }
+                      }
+                    }}
+                  >
+                    {buildingModel ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                    {buildingModel ? "Building ML Model..." : "🧠 Build Recognition Model"}
+                  </Button>
+                  {modelBuilt && (
+                    <p className="text-[10px] text-center text-green-500">✓ Model active — ML recognition ready</p>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-destructive w-full"
+                    onClick={async () => {
+                      await sendCommand("clear_training_data", {}, { awaitResult: false });
+                      setTrainingStatus({});
+                      setTrainingPreview(null);
+                      setTrainingFrameCount(0);
+                      setModelBuilt(false);
+                      toast({ title: "Training data cleared" });
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" /> Clear All Training Data
+                  </Button>
+                </div>
               )}
             </div>
 

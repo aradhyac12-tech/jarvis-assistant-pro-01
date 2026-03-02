@@ -40,11 +40,12 @@ import traceback
 import calendar as cal_module
 
 # ============== VERSION ==============
-AGENT_VERSION = "5.6.0"
+AGENT_VERSION = "5.7.0"
 
 # ============== INLINE AUTO-UPDATER ==============
 import hashlib
 import shutil
+import numpy as np_safe  # alias to avoid conflicts
 
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_FILE = os.path.join(AGENT_DIR, ".update_version")
@@ -62,6 +63,7 @@ UPDATABLE_FILES = [
 ]
 
 TRAINING_DATA_DIR = os.path.join(AGENT_DIR, "training_data")
+FACE_EMBEDDINGS_FILE = os.path.join(AGENT_DIR, "training_data", "face_embeddings.json")
 
 
 def ensure_firewall_configured(p2p_port: int = 9876, log_fn=None):
@@ -340,6 +342,469 @@ class InlineAutoUpdater:
 # Legacy compat - always available now
 HAS_AUTO_UPDATER = True
 
+
+# ============== FACE RECOGNIZER (MediaPipe) ==============
+class FaceRecognizer:
+    """ML-based face recognition using MediaPipe FaceMesh.
+    
+    Extracts normalized face landmark coordinates as embeddings,
+    then compares against stored owner embeddings using cosine similarity.
+    """
+    
+    RECOGNITION_THRESHOLD = 0.15  # cosine distance — lower = more similar
+    MIN_TRAINING_FRAMES = 5
+    
+    def __init__(self, training_dir: str = TRAINING_DATA_DIR):
+        self.training_dir = training_dir
+        self._embeddings: Dict[str, List[List[float]]] = {}  # label -> list of embeddings
+        self._face_mesh = None
+        self._pose = None
+        self._initialized = False
+        self._lock = threading.Lock()
+    
+    def _ensure_init(self):
+        if self._initialized:
+            return True
+        if not HAS_MEDIAPIPE or not HAS_NUMPY:
+            return False
+        try:
+            self._face_mesh = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=True,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+            )
+            self._pose = mp.solutions.pose.Pose(
+                static_image_mode=True,
+                model_complexity=1,
+                min_detection_confidence=0.5,
+            )
+            self._initialized = True
+            self._load_embeddings()
+            return True
+        except Exception as e:
+            add_log("error", f"FaceRecognizer init failed: {e}", category="recognition")
+            return False
+    
+    def _extract_face_embedding(self, frame) -> Optional[List[float]]:
+        """Extract 468-landmark face mesh embedding from a BGR frame."""
+        if not self._face_mesh:
+            return None
+        try:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self._face_mesh.process(rgb)
+            if not results.multi_face_landmarks:
+                return None
+            landmarks = results.multi_face_landmarks[0]
+            # Flatten to [x0,y0,z0, x1,y1,z1, ...]
+            embedding = []
+            for lm in landmarks.landmark:
+                embedding.extend([lm.x, lm.y, lm.z])
+            return embedding
+        except Exception:
+            return None
+    
+    def _extract_pose_embedding(self, frame) -> Optional[List[float]]:
+        """Extract 33-landmark pose embedding from a BGR frame."""
+        if not self._pose:
+            return None
+        try:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self._pose.process(rgb)
+            if not results.pose_landmarks:
+                return None
+            embedding = []
+            for lm in results.pose_landmarks.landmark:
+                embedding.extend([lm.x, lm.y, lm.z, lm.visibility])
+            return embedding
+        except Exception:
+            return None
+    
+    def _extract_combined_embedding(self, frame) -> Optional[List[float]]:
+        """Combined face + pose embedding for maximum accuracy."""
+        face = self._extract_face_embedding(frame)
+        pose = self._extract_pose_embedding(frame)
+        if face and pose:
+            return face + pose
+        return face or pose
+    
+    def _cosine_distance(self, a: List[float], b: List[float]) -> float:
+        """Calculate cosine distance between two embeddings."""
+        if HAS_SCIPY:
+            try:
+                return cosine_distance(a, b)
+            except Exception:
+                pass
+        # Fallback numpy implementation
+        a_arr = np.array(a, dtype=np.float64)
+        b_arr = np.array(b, dtype=np.float64)
+        dot = np.dot(a_arr, b_arr)
+        norm_a = np.linalg.norm(a_arr)
+        norm_b = np.linalg.norm(b_arr)
+        if norm_a == 0 or norm_b == 0:
+            return 1.0
+        return 1.0 - (dot / (norm_a * norm_b))
+    
+    def train_from_images(self, label: str = "owner") -> Dict[str, Any]:
+        """Process all training images and generate embeddings."""
+        if not self._ensure_init():
+            return {"success": False, "error": "MediaPipe not available"}
+        
+        with self._lock:
+            embeddings = []
+            processed = 0
+            errors = 0
+            
+            # Scan training data directories
+            for item in os.listdir(self.training_dir) if os.path.exists(self.training_dir) else []:
+                item_path = os.path.join(self.training_dir, item)
+                if not os.path.isdir(item_path):
+                    continue
+                # Match label (owner, owner_face_*, etc.)
+                if not item.startswith(label):
+                    continue
+                
+                for img_file in sorted(os.listdir(item_path)):
+                    if not img_file.endswith(('.jpg', '.jpeg', '.png')):
+                        continue
+                    img_path = os.path.join(item_path, img_file)
+                    try:
+                        frame = cv2.imread(img_path)
+                        if frame is None:
+                            continue
+                        emb = self._extract_combined_embedding(frame)
+                        if emb:
+                            embeddings.append(emb)
+                            processed += 1
+                        else:
+                            errors += 1
+                    except Exception:
+                        errors += 1
+            
+            if len(embeddings) < self.MIN_TRAINING_FRAMES:
+                return {
+                    "success": False,
+                    "error": f"Not enough face data. Got {len(embeddings)}, need {self.MIN_TRAINING_FRAMES}",
+                    "processed": processed,
+                }
+            
+            self._embeddings[label] = embeddings
+            self._save_embeddings()
+            
+            add_log("info", f"Face recognition trained: {processed} embeddings for '{label}'", category="recognition")
+            return {
+                "success": True,
+                "label": label,
+                "embeddings_count": len(embeddings),
+                "processed": processed,
+                "errors": errors,
+            }
+    
+    def recognize(self, frame) -> Dict[str, Any]:
+        """Recognize a face in a BGR frame against stored embeddings.
+        
+        Returns:
+            {
+                "recognized": bool,
+                "label": str or None,     # "owner" if matched
+                "confidence": float,       # 0-100, higher = more confident match
+                "distance": float,         # raw cosine distance
+                "face_detected": bool,
+            }
+        """
+        if not self._ensure_init():
+            return {"recognized": False, "face_detected": False, "error": "ML not available"}
+        
+        if not self._embeddings:
+            return {"recognized": False, "face_detected": False, "error": "No training data"}
+        
+        with self._lock:
+            current_emb = self._extract_combined_embedding(frame)
+            if not current_emb:
+                return {"recognized": False, "face_detected": False}
+            
+            best_label = None
+            best_distance = float("inf")
+            
+            for label, stored_embeddings in self._embeddings.items():
+                # Compare against all stored embeddings, take the minimum distance
+                distances = []
+                for stored in stored_embeddings:
+                    # Handle mismatched embedding sizes (face-only vs combined)
+                    min_len = min(len(current_emb), len(stored))
+                    if min_len < 100:
+                        continue
+                    d = self._cosine_distance(current_emb[:min_len], stored[:min_len])
+                    distances.append(d)
+                
+                if distances:
+                    # Use median of top-5 closest matches for robustness
+                    distances.sort()
+                    avg_distance = np.mean(distances[:min(5, len(distances))])
+                    if avg_distance < best_distance:
+                        best_distance = avg_distance
+                        best_label = label
+            
+            recognized = best_distance < self.RECOGNITION_THRESHOLD
+            confidence = max(0, min(100, int((1.0 - best_distance / self.RECOGNITION_THRESHOLD) * 100))) if recognized else 0
+            
+            return {
+                "recognized": recognized,
+                "label": best_label if recognized else None,
+                "confidence": confidence,
+                "distance": round(best_distance, 4),
+                "face_detected": True,
+            }
+    
+    def _save_embeddings(self):
+        """Save embeddings to disk for persistence."""
+        try:
+            os.makedirs(os.path.dirname(FACE_EMBEDDINGS_FILE), exist_ok=True)
+            data = {}
+            for label, embs in self._embeddings.items():
+                data[label] = [list(e) for e in embs]
+            with open(FACE_EMBEDDINGS_FILE, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            add_log("warn", f"Failed to save embeddings: {e}", category="recognition")
+    
+    def _load_embeddings(self):
+        """Load embeddings from disk."""
+        if not os.path.exists(FACE_EMBEDDINGS_FILE):
+            return
+        try:
+            with open(FACE_EMBEDDINGS_FILE, "r") as f:
+                data = json.load(f)
+            self._embeddings = {label: [list(e) for e in embs] for label, embs in data.items()}
+            total = sum(len(e) for e in self._embeddings.values())
+            add_log("info", f"Loaded {total} face embeddings for {len(self._embeddings)} labels", category="recognition")
+        except Exception as e:
+            add_log("warn", f"Failed to load embeddings: {e}", category="recognition")
+    
+    def get_status(self) -> Dict[str, Any]:
+        self._ensure_init()
+        return {
+            "initialized": self._initialized,
+            "has_mediapipe": HAS_MEDIAPIPE,
+            "has_numpy": HAS_NUMPY,
+            "labels": {label: len(embs) for label, embs in self._embeddings.items()},
+            "total_embeddings": sum(len(e) for e in self._embeddings.values()),
+            "threshold": self.RECOGNITION_THRESHOLD,
+        }
+
+
+# Global face recognizer singleton
+_face_recognizer: Optional[FaceRecognizer] = None
+
+def get_face_recognizer() -> FaceRecognizer:
+    global _face_recognizer
+    if _face_recognizer is None:
+        _face_recognizer = FaceRecognizer()
+    return _face_recognizer
+
+
+# ============== BLE GATT SERVER (Bluetooth Fallback) ==============
+BLE_SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef0"
+BLE_CMD_WRITE_UUID = "12345678-1234-5678-1234-56789abcdef1"   # Phone writes commands here
+BLE_CMD_NOTIFY_UUID = "12345678-1234-5678-1234-56789abcdef2"  # PC sends responses here
+BLE_CLIP_WRITE_UUID = "12345678-1234-5678-1234-56789abcdef3"  # Clipboard write from phone
+BLE_CLIP_READ_UUID = "12345678-1234-5678-1234-56789abcdef4"   # Clipboard read (PC -> phone)
+BLE_MTU = 512  # BLE MTU size
+
+
+class BluetoothServer:
+    """BLE GATT server for fallback when WiFi is unavailable.
+    
+    Exposes characteristics for:
+    - Command send/receive (JSON)
+    - Clipboard sync
+    """
+    
+    def __init__(self, command_handler=None):
+        self.command_handler = command_handler
+        self.running = False
+        self._server = None
+        self._thread = None
+        self._response_queue: deque = deque(maxlen=10)
+        self._loop = None
+    
+    def start(self):
+        if not HAS_BLESS:
+            add_log("warn", "bless not installed — BLE server disabled", category="bluetooth")
+            return
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True, name="ble-server")
+        self._thread.start()
+    
+    def stop(self):
+        self.running = False
+        if self._server and self._loop:
+            try:
+                asyncio.run_coroutine_threadsafe(self._server.stop(), self._loop)
+            except Exception:
+                pass
+    
+    def _run(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._serve())
+        except Exception as e:
+            add_log("error", f"BLE server error: {e}", category="bluetooth")
+        finally:
+            self._loop.close()
+    
+    async def _serve(self):
+        self.running = True
+        try:
+            server = BlessServer(name="JARVIS-PC")
+            self._server = server
+            
+            server.read_request_func = self._on_read
+            server.write_request_func = self._on_write
+            
+            await server.add_new_service(BLE_SERVICE_UUID)
+            
+            # Command write characteristic (phone -> PC)
+            await server.add_new_characteristic(
+                BLE_SERVICE_UUID, BLE_CMD_WRITE_UUID,
+                GATTCharacteristicProperties.write,
+                None,
+                GATTAttributePermissions.writeable,
+            )
+            
+            # Command notify characteristic (PC -> phone)
+            await server.add_new_characteristic(
+                BLE_SERVICE_UUID, BLE_CMD_NOTIFY_UUID,
+                GATTCharacteristicProperties.read | GATTCharacteristicProperties.notify,
+                None,
+                GATTAttributePermissions.readable,
+            )
+            
+            # Clipboard write (phone -> PC)
+            await server.add_new_characteristic(
+                BLE_SERVICE_UUID, BLE_CLIP_WRITE_UUID,
+                GATTCharacteristicProperties.write,
+                None,
+                GATTAttributePermissions.writeable,
+            )
+            
+            # Clipboard read (PC -> phone)
+            await server.add_new_characteristic(
+                BLE_SERVICE_UUID, BLE_CLIP_READ_UUID,
+                GATTCharacteristicProperties.read | GATTCharacteristicProperties.notify,
+                None,
+                GATTAttributePermissions.readable,
+            )
+            
+            await server.start()
+            add_log("info", "BLE GATT server started (JARVIS-PC)", category="bluetooth")
+            
+            while self.running:
+                await asyncio.sleep(1)
+            
+            await server.stop()
+            add_log("info", "BLE GATT server stopped", category="bluetooth")
+            
+        except Exception as e:
+            add_log("error", f"BLE server failed: {e}", category="bluetooth")
+            self.running = False
+    
+    def _on_read(self, characteristic, **kwargs):
+        uuid = str(characteristic.uuid).lower()
+        if BLE_CMD_NOTIFY_UUID.lower() in uuid:
+            # Return latest response
+            if self._response_queue:
+                resp = self._response_queue.popleft()
+                return json.dumps(resp).encode("utf-8")[:BLE_MTU]
+            return b'{"type":"empty"}'
+        elif BLE_CLIP_READ_UUID.lower() in uuid:
+            # Return current PC clipboard
+            try:
+                import pyperclip
+                text = pyperclip.paste() or ""
+                return text.encode("utf-8")[:BLE_MTU]
+            except Exception:
+                return b""
+        return b""
+    
+    def _on_write(self, characteristic, value, **kwargs):
+        uuid = str(characteristic.uuid).lower()
+        if BLE_CMD_WRITE_UUID.lower() in uuid:
+            # Process command
+            try:
+                data = json.loads(value.decode("utf-8"))
+                cmd_type = data.get("commandType", data.get("type", ""))
+                payload = data.get("payload", {})
+                request_id = data.get("requestId", "")
+                
+                if self.command_handler:
+                    # Run command in thread to avoid blocking BLE
+                    def _handle():
+                        try:
+                            loop = asyncio.new_event_loop()
+                            if asyncio.iscoroutinefunction(self.command_handler):
+                                result = loop.run_until_complete(self.command_handler(cmd_type, payload))
+                            else:
+                                result = self.command_handler(cmd_type, payload)
+                            loop.close()
+                            self._response_queue.append({
+                                "type": "command_result",
+                                "requestId": request_id,
+                                "commandType": cmd_type,
+                                "result": result,
+                            })
+                            # Notify via characteristic update
+                            if self._server:
+                                try:
+                                    resp_bytes = json.dumps(self._response_queue[-1]).encode("utf-8")[:BLE_MTU]
+                                    self._server.get_characteristic(BLE_CMD_NOTIFY_UUID)
+                                    self._server.update_value(BLE_SERVICE_UUID, BLE_CMD_NOTIFY_UUID)
+                                except Exception:
+                                    pass
+                        except Exception as e:
+                            self._response_queue.append({
+                                "type": "command_error",
+                                "requestId": request_id,
+                                "error": str(e),
+                            })
+                    
+                    threading.Thread(target=_handle, daemon=True).start()
+            except Exception as e:
+                add_log("error", f"BLE command parse error: {e}", category="bluetooth")
+        
+        elif BLE_CLIP_WRITE_UUID.lower() in uuid:
+            # Set PC clipboard from phone
+            try:
+                import pyperclip
+                text = value.decode("utf-8")
+                pyperclip.copy(text)
+                add_log("info", f"BLE clipboard set: {text[:30]}...", category="bluetooth")
+            except Exception as e:
+                add_log("error", f"BLE clipboard write error: {e}", category="bluetooth")
+
+
+# Global BLE server singleton
+_ble_server: Optional[BluetoothServer] = None
+
+def start_ble_server(command_handler=None) -> Optional[BluetoothServer]:
+    global _ble_server
+    if not HAS_BLESS:
+        return None
+    if _ble_server and _ble_server.running:
+        return _ble_server
+    _ble_server = BluetoothServer(command_handler=command_handler)
+    _ble_server.start()
+    return _ble_server
+
+def stop_ble_server():
+    global _ble_server
+    if _ble_server:
+        _ble_server.stop()
+        _ble_server = None
+
+
 # Skill registry
 try:
     from skills import get_skill_registry
@@ -400,6 +865,33 @@ try:
     HAS_OPENCV = True
 except ImportError:
     HAS_OPENCV = False
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
+# MediaPipe for face recognition
+try:
+    import mediapipe as mp
+    HAS_MEDIAPIPE = True
+except ImportError:
+    HAS_MEDIAPIPE = False
+
+# Scipy for distance calculations
+try:
+    from scipy.spatial.distance import cosine as cosine_distance
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
+# BLE server (bless)
+try:
+    from bless import BlessServer, BlessGATTCharacteristic, GATTCharacteristicProperties, GATTAttributePermissions
+    HAS_BLESS = True
+except ImportError:
+    HAS_BLESS = False
 
 try:
     import websockets
@@ -3913,7 +4405,7 @@ class JarvisAgent:
                     "firewall_configured": is_firewall_configured(),
                 }
             
-            # ============== FACE/POSTURE TRAINING ==============
+            # ============== FACE/POSTURE TRAINING & RECOGNITION ==============
             elif cmd == "start_face_training":
                 return self._start_face_training(payload)
             elif cmd == "capture_training_frame":
@@ -3922,6 +4414,14 @@ class JarvisAgent:
                 return self._get_training_status()
             elif cmd == "clear_training_data":
                 return self._clear_training_data()
+            elif cmd == "build_face_model":
+                return self._build_face_model(payload)
+            elif cmd == "recognize_face":
+                return self._recognize_face_from_camera(payload)
+            elif cmd == "get_recognition_status":
+                return get_face_recognizer().get_status()
+            elif cmd == "recognize_frame":
+                return self._recognize_from_base64(payload)
 
             elif cmd == "open_p2p_ports":
                 return self._open_p2p_firewall_ports()
@@ -4590,10 +5090,65 @@ class JarvisAgent:
         return {"success": True, "labels": labels, "total_frames": total}
     
     def _clear_training_data(self) -> Dict[str, Any]:
-        """Clear all training data."""
+        """Clear all training data and embeddings."""
         if os.path.exists(TRAINING_DATA_DIR):
             shutil.rmtree(TRAINING_DATA_DIR, ignore_errors=True)
-        return {"success": True, "message": "Training data cleared"}
+        # Reset recognizer
+        global _face_recognizer
+        _face_recognizer = None
+        return {"success": True, "message": "Training data and embeddings cleared"}
+    
+    def _build_face_model(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Process training images and build face recognition embeddings."""
+        label = payload.get("label", "owner")
+        recognizer = get_face_recognizer()
+        result = recognizer.train_from_images(label)
+        return result
+    
+    def _recognize_face_from_camera(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Capture a frame from camera and run face recognition."""
+        if not HAS_OPENCV:
+            return {"success": False, "error": "OpenCV not available"}
+        camera_index = int(payload.get("camera_index", 0))
+        cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened():
+            return {"success": False, "error": "Cannot open camera"}
+        try:
+            ret, frame = cap.read()
+            if not ret:
+                return {"success": False, "error": "Cannot capture frame"}
+            recognizer = get_face_recognizer()
+            result = recognizer.recognize(frame)
+            # Also return a small thumbnail
+            _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            result["image"] = base64.b64encode(buf.tobytes()).decode()
+            result["success"] = True
+            return result
+        finally:
+            cap.release()
+    
+    def _recognize_from_base64(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Recognize face from a base64-encoded image (sent from phone during surveillance)."""
+        image_data = payload.get("image_data", "")
+        if not image_data:
+            return {"success": False, "error": "No image data"}
+        if not HAS_OPENCV or not HAS_NUMPY:
+            return {"success": False, "error": "OpenCV/NumPy not available"}
+        try:
+            # Strip data URL prefix
+            if "," in image_data:
+                image_data = image_data.split(",", 1)[1]
+            img_bytes = base64.b64decode(image_data)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return {"success": False, "error": "Cannot decode image"}
+            recognizer = get_face_recognizer()
+            result = recognizer.recognize(frame)
+            result["success"] = True
+            return result
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     # ============== REGISTRATION & HEARTBEAT ==============
     def register_device(self) -> bool:
@@ -4779,6 +5334,22 @@ class JarvisAgent:
         except Exception as e:
             add_log("warn", f"Auto-updater init failed: {e}", category="system")
         
+        # Start BLE server as fallback transport
+        try:
+            ble = start_ble_server(command_handler=self._handle_command)
+            if ble:
+                add_log("info", "BLE fallback transport started", category="bluetooth")
+        except Exception as e:
+            add_log("warn", f"BLE server init failed (optional): {e}", category="bluetooth")
+        
+        # Pre-load face recognizer if training data exists
+        try:
+            if os.path.exists(FACE_EMBEDDINGS_FILE):
+                recognizer = get_face_recognizer()
+                add_log("info", f"Face recognizer loaded: {recognizer.get_status()}", category="recognition")
+        except Exception as e:
+            add_log("warn", f"Face recognizer pre-load failed: {e}", category="recognition")
+        
         last_heartbeat = 0
         
         while self.running:
@@ -4814,6 +5385,7 @@ class JarvisAgent:
         self._stop_screen_stream()
         self._stop_audio_relay()
         stop_local_p2p_server()
+        stop_ble_server()
         
         try:
             self.supabase.table("devices").update({"is_online": False}).eq("id", self.device_id).execute()
