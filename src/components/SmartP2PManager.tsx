@@ -43,6 +43,7 @@ const MODE_INFO: Record<ConnectionMode, { label: string; color: string; icon: Re
   local_p2p: { label: "Local P2P", color: "text-emerald-500", icon: Zap, desc: "Ultra-fast same-network" },
   p2p: { label: "WebRTC P2P", color: "text-primary", icon: Signal, desc: "Peer-to-peer direct" },
   websocket: { label: "WebSocket", color: "text-blue-500", icon: ArrowRightLeft, desc: "Cloud-assisted" },
+  bluetooth: { label: "Bluetooth", color: "text-indigo-500", icon: Signal, desc: "BLE offline fallback" },
   fallback: { label: "Cloud Relay", color: "text-amber-500", icon: Globe, desc: "Edge function relay" },
   disconnected: { label: "Disconnected", color: "text-destructive", icon: WifiOff, desc: "Not connected" },
 };

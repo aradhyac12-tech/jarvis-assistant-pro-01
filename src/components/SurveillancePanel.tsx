@@ -12,7 +12,7 @@ import {
   Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
   Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
   AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2, X, Image as ImageIcon,
-  ScanFace, Crosshair, RotateCw,
+  ScanFace, Crosshair, RotateCw, Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -90,6 +90,23 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [modelBuilt, setModelBuilt] = useState(false);
   const [buildingModel, setBuildingModel] = useState(false);
   const recognitionCooldownRef = useRef(false);
+
+  // Live recognition test
+  const [liveTestRunning, setLiveTestRunning] = useState(false);
+  const [liveTestResult, setLiveTestResult] = useState<{
+    recognized: boolean;
+    label: string | null;
+    confidence: number;
+    face_detected: boolean;
+    snapshot?: string;
+  } | null>(null);
+
+  // Continuous background recognition (30s interval during surveillance)
+  const [continuousRecognition, setContinuousRecognition] = useState(() => 
+    localStorage.getItem("surveillance_continuous_recognition") === "true"
+  );
+  const continuousRecRef = useRef<number | null>(null);
+  const continuousRecEnabledRef = useRef(continuousRecognition);
 
   // Training state
   const [trainingMode, setTrainingMode] = useState<"face" | "posture" | "both">("both");
@@ -241,6 +258,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_monitoring", String(monitoring)), [monitoring]);
   useEffect(() => localStorage.setItem("surveillance_auto_siren", String(autoSirenOnDetect)), [autoSirenOnDetect]);
   useEffect(() => localStorage.setItem("surveillance_ml_recognition", String(recognitionEnabled)), [recognitionEnabled]);
+  useEffect(() => localStorage.setItem("surveillance_continuous_recognition", String(continuousRecognition)), [continuousRecognition]);
+  useEffect(() => { continuousRecEnabledRef.current = continuousRecognition; }, [continuousRecognition]);
 
   // Check if model exists on mount
   useEffect(() => {
@@ -619,6 +638,49 @@ export function SurveillancePanel({ className }: { className?: string }) {
     }
   }, [monitoring, session?.session_token]);
 
+  // Continuous background face recognition every 30s during surveillance
+  useEffect(() => {
+    if (monitoring && continuousRecognition && recognitionEnabled && modelBuilt) {
+      continuousRecRef.current = window.setInterval(async () => {
+        if (!continuousRecEnabledRef.current) return;
+        try {
+          const recResult = await sendCommand("recognize_face", { camera_index: 0 }, { awaitResult: true, timeoutMs: 10000 });
+          if (recResult.success && "result" in recResult) {
+            const r = recResult.result as any;
+            setLastRecognitionResult({
+              recognized: r.recognized || false,
+              label: r.label || null,
+              confidence: r.confidence || 0,
+              face_detected: r.face_detected || false,
+            });
+            // Auto-dismiss siren if owner recognized
+            if (r.recognized && r.label === "owner" && sirenActive) {
+              setSirenActive(false);
+              await sendCommand("play_alarm", { type: "siren", action: "stop" });
+              setOwnerConfirmed(true);
+              toast({ title: "✅ Owner recognized — siren auto-dismissed", description: `ML confidence: ${r.confidence}%` });
+              addLog("info", "web", `Background ML recognized owner (${r.confidence}%) — siren stopped`);
+            }
+          }
+        } catch {
+          // Silently fail — retry on next interval
+        }
+      }, 30000);
+
+      return () => {
+        if (continuousRecRef.current) {
+          clearInterval(continuousRecRef.current);
+          continuousRecRef.current = null;
+        }
+      };
+    } else {
+      if (continuousRecRef.current) {
+        clearInterval(continuousRecRef.current);
+        continuousRecRef.current = null;
+      }
+    }
+  }, [monitoring, continuousRecognition, recognitionEnabled, modelBuilt, sirenActive, sendCommand, toast]);
+
   // Cleanup on unmount
   useEffect(() => () => {
     cleanupWs();
@@ -923,6 +985,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><ScanFace className="h-4 w-4 text-primary" /><Label className="text-xs">ML Face Recognition</Label></div>
                       <Switch checked={recognitionEnabled} onCheckedChange={setRecognitionEnabled} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Eye className="h-4 w-4 text-primary" /><Label className="text-xs">Continuous Recognition (30s)</Label></div>
+                      <Switch checked={continuousRecognition} onCheckedChange={setContinuousRecognition} />
                     </div>
                   </div>
 
@@ -1288,7 +1354,84 @@ export function SurveillancePanel({ className }: { className?: string }) {
                     {buildingModel ? "Building ML Model..." : "🧠 Build Recognition Model"}
                   </Button>
                   {modelBuilt && (
-                    <p className="text-[10px] text-center text-green-500">✓ Model active — ML recognition ready</p>
+                    <div className="space-y-2">
+                      <p className="text-[10px] text-center text-green-500">✓ Model active — ML recognition ready</p>
+                      
+                      {/* Live Recognition Test Button */}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-9 text-xs w-full gap-2 border-primary/50"
+                        disabled={liveTestRunning}
+                        onClick={async () => {
+                          setLiveTestRunning(true);
+                          setLiveTestResult(null);
+                          try {
+                            const result = await sendCommand("recognize_face", { camera_index: 0, include_snapshot: true }, { awaitResult: true, timeoutMs: 12000 });
+                            if (result.success && "result" in result) {
+                              const r = result.result as any;
+                              setLiveTestResult({
+                                recognized: r.recognized || false,
+                                label: r.label || null,
+                                confidence: r.confidence || 0,
+                                face_detected: r.face_detected || false,
+                                snapshot: r.snapshot || null,
+                              });
+                            } else {
+                              toast({ title: "Recognition failed", description: "Could not capture frame", variant: "destructive" });
+                            }
+                          } catch (err) {
+                            toast({ title: "Recognition error", description: err instanceof Error ? err.message : "Failed", variant: "destructive" });
+                          }
+                          setLiveTestRunning(false);
+                        }}
+                      >
+                        {liveTestRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                        {liveTestRunning ? "Recognizing..." : "🔍 Live Recognition Test"}
+                      </Button>
+
+                      {/* Live Test Result */}
+                      {liveTestResult && (
+                        <div className={cn(
+                          "rounded-lg border p-3 space-y-2",
+                          liveTestResult.recognized 
+                            ? "border-green-500/50 bg-green-500/5" 
+                            : "border-destructive/50 bg-destructive/5"
+                        )}>
+                          {liveTestResult.snapshot && (
+                            <div className="aspect-video rounded overflow-hidden bg-black">
+                              <img 
+                                src={`data:image/jpeg;base64,${liveTestResult.snapshot}`} 
+                                alt="Recognition snapshot" 
+                                className="w-full h-full object-contain" 
+                              />
+                            </div>
+                          )}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <ScanFace className={cn("h-5 w-5", liveTestResult.recognized ? "text-green-500" : "text-destructive")} />
+                              <div>
+                                <p className="text-sm font-semibold">
+                                  {liveTestResult.recognized 
+                                    ? `✅ ${liveTestResult.label || "Known"} recognized` 
+                                    : liveTestResult.face_detected 
+                                      ? "⚠️ Unknown person" 
+                                      : "❌ No face detected"}
+                                </p>
+                                {liveTestResult.face_detected && (
+                                  <p className="text-[10px] text-muted-foreground">
+                                    Confidence: {liveTestResult.confidence}%
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            <Badge variant={liveTestResult.recognized ? "default" : "destructive"} className="text-xs">
+                              {liveTestResult.confidence}%
+                            </Badge>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
                   <Button
                     variant="ghost"
@@ -1300,6 +1443,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
                       setTrainingPreview(null);
                       setTrainingFrameCount(0);
                       setModelBuilt(false);
+                      setLiveTestResult(null);
                       toast({ title: "Training data cleared" });
                     }}
                   >
@@ -1314,7 +1458,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 <strong>How it works:</strong> Face training captures your face from multiple angles.
                 Posture training captures your standing/sitting posture which is unique to each person.
                 Combined mode uses both for maximum accuracy. Look around naturally during auto-training
-                to capture different angles.
+                to capture different angles. Enable <strong>Continuous Recognition</strong> in settings to 
+                auto-check identity every 30s and auto-dismiss sirens when you're recognized.
               </p>
             </div>
           </TabsContent>

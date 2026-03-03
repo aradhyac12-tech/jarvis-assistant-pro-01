@@ -6,8 +6,9 @@ import { useNetworkMonitor, NetworkInfo } from "@/hooks/useNetworkMonitor";
 import { useLocalP2P } from "@/hooks/useLocalP2P";
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
+import { useBluetooth } from "@/hooks/useBluetooth";
 
-export type ConnectionMode = "local_p2p" | "p2p" | "websocket" | "fallback" | "disconnected";
+export type ConnectionMode = "local_p2p" | "p2p" | "websocket" | "bluetooth" | "fallback" | "disconnected";
 
 /**
  * P2P/WebSocket hybrid command system with continuous network monitoring.
@@ -25,6 +26,7 @@ export function useP2PCommand() {
   const { fireCommand: fallbackCommand } = useFastCommand();
   const networkMonitor = useNetworkMonitor(5000); // Check every 5 seconds (reduced from 2s)
   const localP2P = useLocalP2P(); // Local P2P WebSocket server
+  const bluetooth = useBluetooth(); // BLE fallback transport
   const haptics = useHapticFeedback();
   const { notifyP2PUpgrade } = useAppNotifications();
   
@@ -32,6 +34,7 @@ export function useP2PCommand() {
   const [latency, setLatency] = useState(0);
   const [autoP2P, setAutoP2P] = useState(true); // Auto-switch toggle
   const [autoLocalP2P, setAutoLocalP2P] = useState(true); // Try local P2P first
+  const [autoBluetooth, setAutoBluetooth] = useState(true); // BLE fallback when offline
   
   // Legacy placeholder: WebRTC upgrade previously used a direct WebSocket signaling channel.
   // We keep the ref to avoid touching unrelated parts of the hook too much.
@@ -306,23 +309,36 @@ export function useP2PCommand() {
   
   useEffect(() => {
     if (localP2P.isReady && connectionMode !== "local_p2p") {
-      // Connected! Switch immediately.
       if (stableModeTimerRef.current) { clearTimeout(stableModeTimerRef.current); stableModeTimerRef.current = null; }
       setConnectionMode("local_p2p");
       setLatency(localP2P.state.latency);
       notifyP2PUpgrade("Local P2P");
     } else if (!localP2P.isReady && connectionMode === "local_p2p") {
-      // Disconnected — wait 5s before switching to fallback to avoid flapping
       if (!stableModeTimerRef.current) {
         stableModeTimerRef.current = window.setTimeout(() => {
           if (!localP2P.isReady) {
-            setConnectionMode("fallback");
+            // Try BLE before falling back to cloud
+            if (bluetooth.isReady) {
+              setConnectionMode("bluetooth");
+            } else {
+              setConnectionMode("fallback");
+            }
           }
           stableModeTimerRef.current = null;
         }, 5000);
       }
     }
-  }, [localP2P.isReady, localP2P.state.latency, connectionMode, notifyP2PUpgrade]);
+  }, [localP2P.isReady, localP2P.state.latency, connectionMode, notifyP2PUpgrade, bluetooth.isReady]);
+
+  // Monitor BLE state — auto-switch when BLE connects/disconnects
+  useEffect(() => {
+    if (bluetooth.isReady && connectionMode === "disconnected") {
+      setConnectionMode("bluetooth");
+      setLatency(bluetooth.state.latency);
+    } else if (!bluetooth.isReady && connectionMode === "bluetooth") {
+      setConnectionMode("fallback");
+    }
+  }, [bluetooth.isReady, bluetooth.state.latency, connectionMode]);
 
   // Connect on mount and start monitoring
   // Only re-run when session/device changes, not on every callback recreation
@@ -418,10 +434,17 @@ export function useP2PCommand() {
       return;
     }
 
-    // Priority 4: Supabase edge function fallback (~50-100ms)
+    // Priority 4: Bluetooth BLE (~50-200ms, offline capable)
+    if (bluetooth.isReady) {
+      if (bluetooth.sendCommand(commandType, payload)) {
+        return;
+      }
+    }
+
+    // Priority 5: Supabase edge function fallback (~50-100ms)
     console.debug("[P2P] Using fallback for command:", commandType);
     fallbackCommand(commandType, payload);
-  }, [fallbackCommand, localP2P]);
+  }, [fallbackCommand, localP2P, bluetooth]);
 
   // ============ ULTRA-SMOOTH RAF-BASED INPUT BATCHING ============
   // Uses requestAnimationFrame for 60fps mouse updates (KDE Connect style)
@@ -603,10 +626,12 @@ export function useP2PCommand() {
     isConnected: connectionMode !== "disconnected",
     autoP2P,
     autoLocalP2P,
+    autoBluetooth,
     toggleAutoP2P,
     toggleAutoLocalP2P,
     forceP2PUpgrade,
     forceLocalP2P,
+    bluetooth,
     networkState: networkMonitor.networkState,
     localP2PState: localP2P.state,
     haptics,
