@@ -1,14 +1,16 @@
 import { useCallback, useRef, useState, useEffect } from "react";
 
-// JARVIS-PC BLE GATT service/characteristic UUIDs (must match Python agent)
+// JARVIS-PC BLE GATT service/characteristic UUIDs (must match Python agent exactly)
 const JARVIS_SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef0";
-const COMMAND_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef1";
-const CLIPBOARD_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef2";
-const RESPONSE_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef3";
+const COMMAND_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef1";    // Phone writes commands
+const RESPONSE_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef2";   // PC notifies responses
+const CLIPBOARD_WRITE_UUID = "12345678-1234-5678-1234-56789abcdef3"; // Phone writes clipboard
+const CLIPBOARD_READ_UUID = "12345678-1234-5678-1234-56789abcdef4";  // PC notifies clipboard
 
 export interface BluetoothState {
   isAvailable: boolean;
   isConnected: boolean;
+  isScanning: boolean;
   deviceName: string | null;
   lastError: string | null;
   latency: number;
@@ -24,12 +26,16 @@ type PendingBleRequest = {
  * Web Bluetooth BLE client that auto-discovers JARVIS-PC when WiFi is unavailable.
  * Routes commands and clipboard sync through BLE GATT characteristics.
  * 
+ * Auto-requests Bluetooth permission via Web Bluetooth API (no system settings needed).
+ * For Capacitor APK, uses android.permission.BLUETOOTH_CONNECT + NEARBY_DEVICES.
+ * 
  * Bandwidth limit: ~20KB/s — streaming features disabled in BLE mode.
  */
 export function useBluetooth() {
   const [state, setState] = useState<BluetoothState>({
     isAvailable: typeof navigator !== "undefined" && !!navigator.bluetooth,
     isConnected: false,
+    isScanning: false,
     deviceName: null,
     lastError: null,
     latency: 0,
@@ -38,7 +44,8 @@ export function useBluetooth() {
   const deviceRef = useRef<BluetoothDevice | null>(null);
   const serverRef = useRef<BluetoothRemoteGATTServer | null>(null);
   const commandCharRef = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
-  const clipboardCharRef = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
+  const clipboardWriteCharRef = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
+  const clipboardReadCharRef = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
   const responseCharRef = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
   const pendingRef = useRef<Map<string, PendingBleRequest>>(new Map());
   const reconnectTimerRef = useRef<number | null>(null);
@@ -46,7 +53,39 @@ export function useBluetooth() {
 
   const isBluetoothSupported = typeof navigator !== "undefined" && !!navigator.bluetooth;
 
-  // Encode string to BLE-safe chunks (max 512 bytes per write)
+  // Request Capacitor BLE permissions (Android 12+ needs BLUETOOTH_CONNECT + NEARBY_DEVICES)
+  const requestCapacitorPermissions = useCallback(async (): Promise<boolean> => {
+    try {
+      // Check if running in Capacitor
+      const isCapacitor = typeof (window as any).Capacitor !== "undefined";
+      if (!isCapacitor) return true; // Web — permissions handled by requestDevice()
+
+      // Try Capacitor permissions API
+      const { Permissions } = await import("@capacitor/core").then(m => (m as any));
+      if (!Permissions) return true;
+
+      // Android 12+ requires BLUETOOTH_CONNECT and BLUETOOTH_SCAN
+      const permissionsToRequest = [
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.ACCESS_FINE_LOCATION",
+      ];
+
+      for (const perm of permissionsToRequest) {
+        try {
+          await (Permissions as any).request({ name: perm });
+        } catch {
+          // Some permissions may not exist on older Android
+        }
+      }
+      return true;
+    } catch {
+      // Not in Capacitor or permissions API not available
+      return true;
+    }
+  }, []);
+
+  // Encode string to BLE-safe chunks (max 500 bytes per write)
   const encodeChunked = useCallback((data: string): ArrayBuffer[] => {
     const encoded = new TextEncoder().encode(data);
     const CHUNK_SIZE = 500;
@@ -86,7 +125,7 @@ export function useBluetooth() {
     }
   }, []);
 
-  // Handle clipboard notifications
+  // Handle clipboard notifications from CLIPBOARD_READ characteristic
   const handleClipboardNotification = useCallback((event: Event) => {
     const characteristic = event.target as BluetoothRemoteGATTCharacteristic;
     if (!characteristic.value) return;
@@ -102,7 +141,8 @@ export function useBluetooth() {
   const handleDisconnect = useCallback(() => {
     console.log("[BLE] Device disconnected");
     commandCharRef.current = null;
-    clipboardCharRef.current = null;
+    clipboardWriteCharRef.current = null;
+    clipboardReadCharRef.current = null;
     responseCharRef.current = null;
     serverRef.current = null;
     setState(prev => ({ ...prev, isConnected: false }));
@@ -130,18 +170,11 @@ export function useBluetooth() {
 
     const service = await server.getPrimaryService(JARVIS_SERVICE_UUID);
 
+    // Command write characteristic (phone -> PC)
     const commandChar = await service.getCharacteristic(COMMAND_CHAR_UUID);
     commandCharRef.current = commandChar;
 
-    try {
-      const clipboardChar = await service.getCharacteristic(CLIPBOARD_CHAR_UUID);
-      clipboardCharRef.current = clipboardChar;
-      await clipboardChar.startNotifications();
-      clipboardChar.addEventListener("characteristicvaluechanged", handleClipboardNotification);
-    } catch {
-      console.log("[BLE] Clipboard characteristic not available");
-    }
-
+    // Response notify characteristic (PC -> phone)
     try {
       const responseChar = await service.getCharacteristic(RESPONSE_CHAR_UUID);
       responseCharRef.current = responseChar;
@@ -151,9 +184,28 @@ export function useBluetooth() {
       console.log("[BLE] Response characteristic not available");
     }
 
+    // Clipboard write characteristic (phone -> PC)
+    try {
+      const clipWriteChar = await service.getCharacteristic(CLIPBOARD_WRITE_UUID);
+      clipboardWriteCharRef.current = clipWriteChar;
+    } catch {
+      console.log("[BLE] Clipboard write characteristic not available");
+    }
+
+    // Clipboard read/notify characteristic (PC -> phone)
+    try {
+      const clipReadChar = await service.getCharacteristic(CLIPBOARD_READ_UUID);
+      clipboardReadCharRef.current = clipReadChar;
+      await clipReadChar.startNotifications();
+      clipReadChar.addEventListener("characteristicvaluechanged", handleClipboardNotification);
+    } catch {
+      console.log("[BLE] Clipboard read characteristic not available");
+    }
+
     setState(prev => ({
       ...prev,
       isConnected: true,
+      isScanning: false,
       deviceName: deviceRef.current?.name || "JARVIS-PC",
       lastError: null,
     }));
@@ -169,7 +221,12 @@ export function useBluetooth() {
     }
 
     try {
+      // Request Capacitor permissions first (Android BT + Nearby Devices)
+      await requestCapacitorPermissions();
+
+      setState(prev => ({ ...prev, isScanning: true, lastError: null }));
       console.log("[BLE] Requesting JARVIS-PC device...");
+
       const device = await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: "JARVIS" }],
         optionalServices: [JARVIS_SERVICE_UUID],
@@ -186,10 +243,10 @@ export function useBluetooth() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Connection failed";
       console.error("[BLE] Connection error:", msg);
-      setState(prev => ({ ...prev, lastError: msg, isConnected: false }));
+      setState(prev => ({ ...prev, lastError: msg, isConnected: false, isScanning: false }));
       return false;
     }
-  }, [isBluetoothSupported, handleDisconnect, setupCharacteristics]);
+  }, [isBluetoothSupported, handleDisconnect, setupCharacteristics, requestCapacitorPermissions]);
 
   // Disconnect
   const disconnect = useCallback(() => {
@@ -202,7 +259,8 @@ export function useBluetooth() {
     }
     deviceRef.current = null;
     commandCharRef.current = null;
-    clipboardCharRef.current = null;
+    clipboardWriteCharRef.current = null;
+    clipboardReadCharRef.current = null;
     responseCharRef.current = null;
     serverRef.current = null;
     setState(prev => ({ ...prev, isConnected: false, deviceName: null }));
@@ -214,7 +272,6 @@ export function useBluetooth() {
     try {
       const data = JSON.stringify({ type: "command", commandType, payload });
       const chunks = encodeChunked(data);
-      // Write sequentially (BLE requires one write at a time)
       let chain = Promise.resolve();
       for (const chunk of chunks) {
         chain = chain.then(() => commandCharRef.current?.writeValueWithoutResponse(chunk) || Promise.resolve());
@@ -252,13 +309,13 @@ export function useBluetooth() {
     return promise;
   }, [encodeChunked]);
 
-  // Send clipboard text
+  // Send clipboard text via dedicated clipboard write characteristic
   const sendClipboard = useCallback(async (text: string): Promise<boolean> => {
-    if (!clipboardCharRef.current) return false;
+    if (!clipboardWriteCharRef.current) return false;
     try {
       const chunks = encodeChunked(text);
       for (const chunk of chunks) {
-        await clipboardCharRef.current.writeValueWithResponse(chunk);
+        await clipboardWriteCharRef.current.writeValueWithResponse(chunk);
       }
       return true;
     } catch {

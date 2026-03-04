@@ -18,12 +18,18 @@ import {
   Signal,
   ArrowRightLeft,
   Link2,
+  Bluetooth,
+  BluetoothOff,
+  BluetoothConnected,
+  BluetoothSearching,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ConnectionMode } from "@/hooks/useP2PCommand";
 import { NetworkState } from "@/hooks/useNetworkMonitor";
 import { LocalP2PState } from "@/hooks/useLocalP2P";
 import { P2PDiagnosticsPanel } from "@/components/network/P2PDiagnosticsPanel";
+import { useSharedBluetooth } from "@/contexts/BluetoothContext";
+import { BluetoothState } from "@/hooks/useBluetooth";
 
 interface SmartP2PManagerProps {
   connectionMode: ConnectionMode;
@@ -43,10 +49,107 @@ const MODE_INFO: Record<ConnectionMode, { label: string; color: string; icon: Re
   local_p2p: { label: "Local P2P", color: "text-emerald-500", icon: Zap, desc: "Ultra-fast same-network" },
   p2p: { label: "WebRTC P2P", color: "text-primary", icon: Signal, desc: "Peer-to-peer direct" },
   websocket: { label: "WebSocket", color: "text-blue-500", icon: ArrowRightLeft, desc: "Cloud-assisted" },
-  bluetooth: { label: "Bluetooth", color: "text-indigo-500", icon: Signal, desc: "BLE offline fallback" },
+  bluetooth: { label: "Bluetooth", color: "text-indigo-500", icon: Bluetooth, desc: "BLE offline fallback" },
   fallback: { label: "Cloud Relay", color: "text-amber-500", icon: Globe, desc: "Edge function relay" },
   disconnected: { label: "Disconnected", color: "text-destructive", icon: WifiOff, desc: "Not connected" },
 };
+
+function BleStatusPanel() {
+  const bluetooth = useSharedBluetooth();
+  const { state } = bluetooth;
+  const [connecting, setConnecting] = useState(false);
+
+  const handleConnect = useCallback(async () => {
+    setConnecting(true);
+    try {
+      await bluetooth.connect();
+    } finally {
+      setConnecting(false);
+    }
+  }, [bluetooth]);
+
+  const handleDisconnect = useCallback(() => {
+    bluetooth.disconnect();
+  }, [bluetooth]);
+
+  const getBleIcon = () => {
+    if (state.isScanning || connecting) return BluetoothSearching;
+    if (state.isConnected) return BluetoothConnected;
+    if (!state.isAvailable) return BluetoothOff;
+    return Bluetooth;
+  };
+
+  const BleIcon = getBleIcon();
+
+  return (
+    <div className="space-y-2">
+      <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+        <Bluetooth className="w-3 h-3" /> Bluetooth (BLE) Fallback
+      </Label>
+      <div className={cn(
+        "flex items-center gap-3 p-3 rounded-lg",
+        state.isConnected ? "bg-indigo-500/10 border border-indigo-500/20" : "bg-muted/50"
+      )}>
+        <div className={cn(
+          "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+          state.isConnected ? "bg-indigo-500/20" : "bg-muted"
+        )}>
+          <BleIcon className={cn(
+            "h-4 w-4",
+            state.isConnected ? "text-indigo-500" : "text-muted-foreground",
+            (state.isScanning || connecting) && "animate-pulse"
+          )} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium">
+            {state.isConnected
+              ? state.deviceName || "JARVIS-PC"
+              : state.isScanning || connecting
+                ? "Scanning..."
+                : "Not connected"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {state.isConnected
+              ? `BLE active • ${state.latency}ms`
+              : !state.isAvailable
+                ? "Bluetooth not supported on this browser"
+                : "Tap to scan for JARVIS-PC nearby"}
+          </p>
+          {state.lastError && !state.isConnected && (
+            <p className="text-[10px] text-destructive mt-0.5 truncate">
+              {state.lastError}
+            </p>
+          )}
+        </div>
+        {state.isConnected ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleDisconnect}
+            className="shrink-0 h-8 px-3 text-xs border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10"
+          >
+            Disconnect
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleConnect}
+            disabled={connecting || state.isScanning || !state.isAvailable}
+            className="shrink-0 h-8 px-3 text-xs"
+          >
+            {connecting || state.isScanning ? (
+              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+            ) : (
+              <Bluetooth className="h-3 w-3 mr-1" />
+            )}
+            Scan
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function SmartP2PManager({
   connectionMode,
@@ -96,7 +199,6 @@ export function SmartP2PManager({
     const ip = manualIp.trim();
     if (!ip) return;
     
-    // Validate IP format
     const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
     if (!ipRegex.test(ip)) return;
     
@@ -104,10 +206,8 @@ export function SmartP2PManager({
     setPingResult(null);
     localStorage.setItem("jarvis_manual_pc_ip", ip);
     
-    // Force local P2P with this IP
     onForceLocalP2P();
     
-    // Wait and then ping to verify
     setTimeout(() => {
       setIpConnecting(false);
       if (localP2PState.isConnected) {
@@ -141,7 +241,8 @@ export function SmartP2PManager({
             <span className={cn(
               "w-1.5 h-1.5 rounded-full",
               connectionMode === "disconnected" ? "bg-destructive" : 
-              connectionMode === "local_p2p" ? "bg-emerald-500 animate-pulse" : "bg-primary"
+              connectionMode === "local_p2p" ? "bg-emerald-500 animate-pulse" :
+              connectionMode === "bluetooth" ? "bg-indigo-500 animate-pulse" : "bg-primary"
             )} />
             {modeInfo.label}
           </Badge>
@@ -149,7 +250,10 @@ export function SmartP2PManager({
       </CardHeader>
 
       <CardContent className="space-y-4 overflow-x-hidden">
-        {/* Manual PC IP Entry - KDE Connect style */}
+        {/* BLE Connection Panel */}
+        <BleStatusPanel />
+
+        {/* Manual PC IP Entry */}
         <div className="space-y-2">
           <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
             <Link2 className="w-3 h-3" /> Direct PC IP Connection
@@ -300,7 +404,7 @@ export function SmartP2PManager({
 
         {/* Connection Hierarchy */}
         <div className="text-xs text-muted-foreground pt-2 border-t border-border/50">
-          <p className="font-medium mb-1.5">Priority: Local → WebRTC → WS → Cloud</p>
+          <p className="font-medium mb-1.5">Priority: Local → WebRTC → WS → BLE → Cloud</p>
         </div>
       </CardContent>
     </Card>
