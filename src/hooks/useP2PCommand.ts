@@ -6,7 +6,7 @@ import { useNetworkMonitor, NetworkInfo } from "@/hooks/useNetworkMonitor";
 import { useLocalP2P } from "@/hooks/useLocalP2P";
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
-import { useBluetooth } from "@/hooks/useBluetooth";
+import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 export type ConnectionMode = "local_p2p" | "p2p" | "websocket" | "bluetooth" | "fallback" | "disconnected";
 
@@ -26,7 +26,7 @@ export function useP2PCommand() {
   const { fireCommand: fallbackCommand } = useFastCommand();
   const networkMonitor = useNetworkMonitor(5000); // Check every 5 seconds (reduced from 2s)
   const localP2P = useLocalP2P(); // Local P2P WebSocket server
-  const bluetooth = useBluetooth(); // BLE fallback transport
+  const bluetooth = useSharedBluetooth(); // BLE fallback transport
   const haptics = useHapticFeedback();
   const { notifyP2PUpgrade } = useAppNotifications();
   

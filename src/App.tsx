@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { GlobalPiPProvider } from "@/contexts/GlobalPiPContext";
+import { BluetoothProvider } from "@/contexts/BluetoothContext";
 import { GlobalFloatingPiP } from "@/components/GlobalFloatingPiP";
 import { GlobalClipboardSync } from "@/components/GlobalClipboardSync";
 import { PersistentNotification } from "@/components/PersistentNotification";
@@ -172,6 +173,7 @@ const App = () => (
     <TooltipProvider>
       <DeviceSessionProvider>
         <DeviceProvider>
+          <BluetoothProvider>
           <GlobalPiPProvider>
             <Toaster />
             <Sonner />
@@ -184,6 +186,7 @@ const App = () => (
               </AppLockGate>
             </BrowserRouter>
           </GlobalPiPProvider>
+          </BluetoothProvider>
         </DeviceProvider>
       </DeviceSessionProvider>
     </TooltipProvider>
