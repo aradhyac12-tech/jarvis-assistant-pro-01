@@ -120,6 +120,15 @@ After `npx cap add android`, edit `android/app/src/main/AndroidManifest.xml`.
 <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+<!-- ═══════════ BLUETOOTH (BLE) ═══════════ -->
+<!-- Used for: offline BLE fallback transport to PC agent -->
+<uses-permission android:name="android.permission.BLUETOOTH" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
 <!-- ═══════════ BIOMETRIC ═══════════ -->
 <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 <uses-permission android:name="android.permission.USE_FINGERPRINT" />
