@@ -55,11 +55,7 @@ BACKUP_DIR = os.path.join(AGENT_DIR, ".backups")
 
 UPDATABLE_FILES = [
     "jarvis_agent.py", "jarvis_gui.py", "jarvis_service_installer.py", "requirements.txt",
-    "skills/__init__.py", "skills/base.py", "skills/registry.py",
-    "skills/app_launcher_skill.py", "skills/automation_skill.py",
-    "skills/brightness_volume_skill.py", "skills/calendar_skill.py",
-    "skills/file_search_skill.py", "skills/memory_skill.py",
-    "skills/spotify_skill.py", "skills/system_control_skill.py", "skills/web_fetch_skill.py",
+    "skills.py",
 ]
 
 TRAINING_DATA_DIR = os.path.join(AGENT_DIR, "training_data")

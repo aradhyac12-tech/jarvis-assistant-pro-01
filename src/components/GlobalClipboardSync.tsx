@@ -72,7 +72,7 @@ export function GlobalClipboardSync() {
     });
 
     return () => {
-      bluetooth.onClipboardChange(() => {}); // unregister
+      bluetooth.onClipboardChange(null as any); // unregister
     };
   }, [isBleConnected, bluetooth]);
 

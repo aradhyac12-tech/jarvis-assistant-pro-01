@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, forwardRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,13 +22,13 @@ interface KDENotificationPanelProps {
   isConnected?: boolean;
 }
 
-export function KDENotificationPanel({
+export const KDENotificationPanel = forwardRef<HTMLDivElement, KDENotificationPanelProps>(function KDENotificationPanel({
   className,
   onSendClipboard,
   onOpenFileTransfer,
   onSendCommand,
   isConnected = false,
-}: KDENotificationPanelProps) {
+}, ref) {
   const {
     notifications,
     isListening,
@@ -140,7 +140,7 @@ export function KDENotificationPanel({
   ];
 
   return (
-    <Card className={cn("border-border/50 overflow-hidden", className)}>
+    <Card ref={ref} className={cn("border-border/50 overflow-hidden", className)}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 pt-4 pb-2">
         <div className="flex items-center gap-2">
@@ -374,4 +374,4 @@ export function KDENotificationPanel({
       </CardContent>
     </Card>
   );
-}
+});
