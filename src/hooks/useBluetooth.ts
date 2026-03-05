@@ -328,6 +328,44 @@ export function useBluetooth() {
     clipboardCallbackRef.current = callback;
   }, []);
 
+  // Reconnect to a previously paired device without user gesture
+  // Uses getDevices() API (Chrome 85+) to find already-authorized devices
+  const reconnectExisting = useCallback(async (): Promise<boolean> => {
+    if (!isBluetoothSupported) return false;
+    // Already connected
+    if (deviceRef.current?.gatt?.connected) return true;
+
+    try {
+      // If we have a cached device ref from a previous session, try reconnecting
+      if (deviceRef.current?.gatt) {
+        console.log("[BLE] Reconnecting to cached device...");
+        setState(prev => ({ ...prev, isScanning: true, lastError: null }));
+        const server = await deviceRef.current.gatt.connect();
+        await setupCharacteristics(server);
+        return true;
+      }
+
+      // Try getDevices() to find previously authorized devices (no picker needed)
+      if (typeof (navigator.bluetooth as any).getDevices === "function") {
+        const devices: BluetoothDevice[] = await (navigator.bluetooth as any).getDevices();
+        const jarvis = devices.find(d => d.name?.startsWith("JARVIS"));
+        if (jarvis?.gatt) {
+          console.log("[BLE] Found previously paired device:", jarvis.name);
+          deviceRef.current = jarvis;
+          jarvis.addEventListener("gattserverdisconnected", handleDisconnect);
+          setState(prev => ({ ...prev, isScanning: true, lastError: null }));
+          const server = await jarvis.gatt.connect();
+          await setupCharacteristics(server);
+          return true;
+        }
+      }
+    } catch (err) {
+      console.log("[BLE] Auto-reconnect failed:", err);
+      setState(prev => ({ ...prev, isScanning: false }));
+    }
+    return false;
+  }, [isBluetoothSupported, handleDisconnect, setupCharacteristics]);
+
   // Ping for latency measurement
   const sendPing = useCallback(() => {
     if (!commandCharRef.current) return;
@@ -348,6 +386,7 @@ export function useBluetooth() {
     state,
     connect,
     disconnect,
+    reconnectExisting,
     sendCommand,
     invokeCommand,
     sendClipboard,
