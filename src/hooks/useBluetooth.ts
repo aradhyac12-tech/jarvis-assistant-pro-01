@@ -131,7 +131,7 @@ export function useBluetooth() {
     if (!characteristic.value) return;
     try {
       const text = new TextDecoder().decode(characteristic.value);
-      if (clipboardCallbackRef.current) {
+      if (text && clipboardCallbackRef.current) {
         clipboardCallbackRef.current(text);
       }
     } catch {}
