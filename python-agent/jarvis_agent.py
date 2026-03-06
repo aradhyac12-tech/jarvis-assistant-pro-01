@@ -606,6 +606,78 @@ BLE_CMD_NOTIFY_UUID = "12345678-1234-5678-1234-56789abcdef2"  # PC sends respons
 BLE_CLIP_WRITE_UUID = "12345678-1234-5678-1234-56789abcdef3"  # Clipboard write from phone
 BLE_CLIP_READ_UUID = "12345678-1234-5678-1234-56789abcdef4"   # Clipboard read (PC -> phone)
 BLE_MTU = 512  # BLE MTU size
+BLE_CHUNK_SIZE = 500  # Max bytes per chunk (header + payload)
+BLE_HEADER_OVERHEAD = 10  # "[99/99]" max chars
+
+
+def ble_encode_chunked(data: bytes) -> list:
+    """Encode data into framed BLE chunks with [index/total] headers."""
+    payload_max = BLE_CHUNK_SIZE - BLE_HEADER_OVERHEAD
+    total_chunks = max(1, -(-len(data) // payload_max))  # ceil division
+    chunks = []
+    for i in range(total_chunks):
+        start = i * payload_max
+        payload = data[start:start + payload_max]
+        header = f"[{i}/{total_chunks}]".encode("utf-8")
+        chunks.append(header + payload)
+    return chunks
+
+
+def ble_parse_chunk_header(raw: bytes):
+    """Parse [index/total] header from raw bytes. Returns (index, total, payload) or None."""
+    if len(raw) < 4 or raw[0:1] != b'[':
+        return None
+    bracket_end = raw.find(b']', 1, BLE_HEADER_OVERHEAD + 2)
+    if bracket_end < 0:
+        return None
+    header_str = raw[1:bracket_end].decode("utf-8", errors="ignore")
+    parts = header_str.split("/")
+    if len(parts) != 2:
+        return None
+    try:
+        index = int(parts[0])
+        total = int(parts[1])
+    except ValueError:
+        return None
+    if total < 1:
+        return None
+    return index, total, raw[bracket_end + 1:]
+
+
+class BleReassembler:
+    """Accumulates chunked BLE writes and returns complete messages."""
+    def __init__(self, timeout_sec=10.0):
+        self.chunks = {}
+        self.total = 0
+        self.timeout_sec = timeout_sec
+        self.last_receive = 0.0
+    
+    def feed(self, raw: bytes) -> bytes | None:
+        """Feed a raw BLE write. Returns assembled bytes when complete, or None."""
+        parsed = ble_parse_chunk_header(raw)
+        if parsed is None:
+            # No framing header — treat as single complete message (backward compat)
+            return raw
+        
+        index, total, payload = parsed
+        now = time.time()
+        
+        # Reset if new message or stale
+        if total != self.total or (now - self.last_receive) > self.timeout_sec:
+            self.chunks.clear()
+            self.total = total
+        
+        self.last_receive = now
+        self.chunks[index] = payload
+        
+        if len(self.chunks) == total:
+            # Reassemble in order
+            assembled = b"".join(self.chunks.get(i, b"") for i in range(total))
+            self.chunks.clear()
+            self.total = 0
+            return assembled
+        
+        return None  # Waiting for more chunks
 
 
 class BluetoothServer:
@@ -621,8 +693,10 @@ class BluetoothServer:
         self.running = False
         self._server = None
         self._thread = None
-        self._response_queue: deque = deque(maxlen=10)
+        self._response_queue: deque = deque(maxlen=32)
         self._loop = None
+        self._cmd_reassembler = BleReassembler()
+        self._clip_reassembler = BleReassembler()
     
     def start(self):
         if not HAS_BLESS:
@@ -710,33 +784,58 @@ class BluetoothServer:
     def _on_read(self, characteristic, **kwargs):
         uuid = str(characteristic.uuid).lower()
         if BLE_CMD_NOTIFY_UUID.lower() in uuid:
-            # Return latest response
+            # Return latest response (chunked if needed)
             if self._response_queue:
                 resp = self._response_queue.popleft()
-                return json.dumps(resp).encode("utf-8")[:BLE_MTU]
+                resp_bytes = json.dumps(resp).encode("utf-8")
+                # Return first chunk; phone will re-read for more if needed
+                chunks = ble_encode_chunked(resp_bytes)
+                return chunks[0] if chunks else b'{"type":"empty"}'
             return b'{"type":"empty"}'
         elif BLE_CLIP_READ_UUID.lower() in uuid:
-            # Return current PC clipboard
             try:
                 import pyperclip
                 text = pyperclip.paste() or ""
-                return text.encode("utf-8")[:BLE_MTU]
+                data = text.encode("utf-8")
+                chunks = ble_encode_chunked(data)
+                return chunks[0] if chunks else b""
             except Exception:
                 return b""
         return b""
     
+    def _send_chunked_notification(self, service_uuid, char_uuid, data: bytes):
+        """Send chunked data via BLE notifications."""
+        if not self._server:
+            return
+        chunks = ble_encode_chunked(data)
+        for chunk in chunks:
+            try:
+                self._server.get_characteristic(char_uuid)
+                self._server.update_value(service_uuid, char_uuid)
+            except Exception:
+                pass
+    
     def _on_write(self, characteristic, value, **kwargs):
         uuid = str(characteristic.uuid).lower()
         if BLE_CMD_WRITE_UUID.lower() in uuid:
-            # Process command
+            # Accumulate chunked command writes
+            assembled = self._cmd_reassembler.feed(bytes(value))
+            if assembled is None:
+                return  # Waiting for more chunks
+            
             try:
-                data = json.loads(value.decode("utf-8"))
+                data = json.loads(assembled.decode("utf-8"))
                 cmd_type = data.get("commandType", data.get("type", ""))
                 payload = data.get("payload", {})
                 request_id = data.get("requestId", "")
                 
+                if cmd_type == "ping":
+                    # Fast-path ping response
+                    pong = json.dumps({"type": "pong", "t": data.get("t", 0)}).encode("utf-8")
+                    self._send_chunked_notification(BLE_SERVICE_UUID, BLE_CMD_NOTIFY_UUID, pong)
+                    return
+                
                 if self.command_handler:
-                    # Run command in thread to avoid blocking BLE
                     def _handle():
                         try:
                             loop = asyncio.new_event_loop()
@@ -745,36 +844,40 @@ class BluetoothServer:
                             else:
                                 result = self.command_handler(cmd_type, payload)
                             loop.close()
-                            self._response_queue.append({
+                            resp = {
                                 "type": "command_result",
                                 "requestId": request_id,
                                 "commandType": cmd_type,
                                 "result": result,
-                            })
-                            # Notify via characteristic update
-                            if self._server:
-                                try:
-                                    resp_bytes = json.dumps(self._response_queue[-1]).encode("utf-8")[:BLE_MTU]
-                                    self._server.get_characteristic(BLE_CMD_NOTIFY_UUID)
-                                    self._server.update_value(BLE_SERVICE_UUID, BLE_CMD_NOTIFY_UUID)
-                                except Exception:
-                                    pass
+                            }
+                            self._response_queue.append(resp)
+                            resp_bytes = json.dumps(resp).encode("utf-8")
+                            self._send_chunked_notification(BLE_SERVICE_UUID, BLE_CMD_NOTIFY_UUID, resp_bytes)
                         except Exception as e:
-                            self._response_queue.append({
+                            err_resp = {
                                 "type": "command_error",
                                 "requestId": request_id,
                                 "error": str(e),
-                            })
+                            }
+                            self._response_queue.append(err_resp)
+                            self._send_chunked_notification(
+                                BLE_SERVICE_UUID, BLE_CMD_NOTIFY_UUID,
+                                json.dumps(err_resp).encode("utf-8")
+                            )
                     
                     threading.Thread(target=_handle, daemon=True).start()
             except Exception as e:
                 add_log("error", f"BLE command parse error: {e}", category="bluetooth")
         
         elif BLE_CLIP_WRITE_UUID.lower() in uuid:
-            # Set PC clipboard from phone
+            # Accumulate chunked clipboard writes
+            assembled = self._clip_reassembler.feed(bytes(value))
+            if assembled is None:
+                return  # Waiting for more chunks
+            
             try:
                 import pyperclip
-                text = value.decode("utf-8")
+                text = assembled.decode("utf-8")
                 pyperclip.copy(text)
                 add_log("info", f"BLE clipboard set: {text[:30]}...", category="bluetooth")
             except Exception as e:
