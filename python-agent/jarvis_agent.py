@@ -693,8 +693,10 @@ class BluetoothServer:
         self.running = False
         self._server = None
         self._thread = None
-        self._response_queue: deque = deque(maxlen=10)
+        self._response_queue: deque = deque(maxlen=32)
         self._loop = None
+        self._cmd_reassembler = BleReassembler()
+        self._clip_reassembler = BleReassembler()
     
     def start(self):
         if not HAS_BLESS:
