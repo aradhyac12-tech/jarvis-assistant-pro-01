@@ -85,25 +85,129 @@ export function useBluetooth() {
     }
   }, []);
 
-  // Encode string to BLE-safe chunks (max 500 bytes per write)
+  // ---- Chunked BLE framing protocol ----
+  // Each chunk: "[index/total]<payload_bytes>"
+  // Header is ASCII, payload is raw UTF-8 fragment.
+  // Max chunk = 500 bytes total (header + payload).
+  const CHUNK_SIZE = 500;
+  const HEADER_OVERHEAD = 10; // e.g. "[99/99]" max 10 chars
+
+  // Encode string into framed BLE chunks
   const encodeChunked = useCallback((data: string): ArrayBuffer[] => {
     const encoded = new TextEncoder().encode(data);
-    const CHUNK_SIZE = 500;
+    const payloadMax = CHUNK_SIZE - HEADER_OVERHEAD;
+    const totalChunks = Math.max(1, Math.ceil(encoded.length / payloadMax));
     const chunks: ArrayBuffer[] = [];
-    for (let i = 0; i < encoded.length; i += CHUNK_SIZE) {
-      const slice = encoded.slice(i, i + CHUNK_SIZE);
-      chunks.push(slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength));
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * payloadMax;
+      const slice = encoded.slice(start, start + payloadMax);
+      const header = new TextEncoder().encode(`[${i}/${totalChunks}]`);
+      const combined = new Uint8Array(header.length + slice.length);
+      combined.set(header, 0);
+      combined.set(slice, header.length);
+      chunks.push(combined.buffer.slice(combined.byteOffset, combined.byteOffset + combined.byteLength));
     }
     return chunks;
   }, []);
 
-  // Handle response notifications from RESPONSE characteristic
+  // Reassembly accumulator for incoming chunked notifications
+  const reassemblyRef = useRef<{ chunks: Map<number, Uint8Array>; total: number; timer: number | null }>({
+    chunks: new Map(),
+    total: 0,
+    timer: null,
+  });
+  const clipReassemblyRef = useRef<{ chunks: Map<number, Uint8Array>; total: number; timer: number | null }>({
+    chunks: new Map(),
+    total: 0,
+    timer: null,
+  });
+
+  // Parse "[index/total]" header from raw bytes, return { index, total, payload }
+  const parseChunkHeader = useCallback((raw: Uint8Array): { index: number; total: number; payload: Uint8Array } | null => {
+    // Find closing bracket
+    const maxScan = Math.min(raw.length, HEADER_OVERHEAD + 2);
+    let bracketEnd = -1;
+    for (let i = 0; i < maxScan; i++) {
+      if (raw[i] === 0x5D) { // ']'
+        bracketEnd = i;
+        break;
+      }
+    }
+    if (bracketEnd < 3 || raw[0] !== 0x5B) return null; // must start with '['
+
+    const headerStr = new TextDecoder().decode(raw.slice(1, bracketEnd)); // "index/total"
+    const parts = headerStr.split("/");
+    if (parts.length !== 2) return null;
+    const index = parseInt(parts[0], 10);
+    const total = parseInt(parts[1], 10);
+    if (isNaN(index) || isNaN(total) || total < 1) return null;
+
+    return { index, total, payload: raw.slice(bracketEnd + 1) };
+  }, []);
+
+  // Accumulate chunks; returns full message string when complete, or null
+  const accumulateChunk = useCallback((
+    accRef: React.MutableRefObject<{ chunks: Map<number, Uint8Array>; total: number; timer: number | null }>,
+    raw: Uint8Array
+  ): string | null => {
+    const parsed = parseChunkHeader(raw);
+
+    // If no framing header, treat as single complete message (backward compat)
+    if (!parsed) {
+      return new TextDecoder().decode(raw);
+    }
+
+    const { index, total, payload } = parsed;
+
+    // New message started (different total or reset)
+    if (total !== accRef.current.total) {
+      accRef.current.chunks.clear();
+      accRef.current.total = total;
+      if (accRef.current.timer) { clearTimeout(accRef.current.timer); accRef.current.timer = null; }
+    }
+
+    accRef.current.chunks.set(index, payload);
+
+    // Reset stale accumulator after 10s
+    if (accRef.current.timer) clearTimeout(accRef.current.timer);
+    accRef.current.timer = window.setTimeout(() => {
+      accRef.current.chunks.clear();
+      accRef.current.total = 0;
+      accRef.current.timer = null;
+    }, 10000);
+
+    // Check if all chunks received
+    if (accRef.current.chunks.size === total) {
+      // Reassemble in order
+      let totalLen = 0;
+      for (let i = 0; i < total; i++) totalLen += (accRef.current.chunks.get(i)?.length || 0);
+      const assembled = new Uint8Array(totalLen);
+      let offset = 0;
+      for (let i = 0; i < total; i++) {
+        const chunk = accRef.current.chunks.get(i);
+        if (chunk) { assembled.set(chunk, offset); offset += chunk.length; }
+      }
+      // Clear
+      accRef.current.chunks.clear();
+      accRef.current.total = 0;
+      if (accRef.current.timer) { clearTimeout(accRef.current.timer); accRef.current.timer = null; }
+      return new TextDecoder().decode(assembled);
+    }
+
+    return null; // Waiting for more chunks
+  }, [parseChunkHeader]);
+
+  // Handle response notifications from RESPONSE characteristic (with reassembly)
   const handleResponseNotification = useCallback((event: Event) => {
     const characteristic = event.target as BluetoothRemoteGATTCharacteristic;
     if (!characteristic.value) return;
+
+    const raw = new Uint8Array(characteristic.value.buffer, characteristic.value.byteOffset, characteristic.value.byteLength);
+    const text = accumulateChunk(reassemblyRef, raw);
+    if (!text) return; // Waiting for more chunks
+
     try {
-      const decoder = new TextDecoder();
-      const text = decoder.decode(characteristic.value);
       const data = JSON.parse(text);
 
       if (data.requestId && pendingRef.current.has(data.requestId)) {
@@ -123,19 +227,21 @@ export function useBluetooth() {
     } catch {
       // Non-JSON response, ignore
     }
-  }, []);
+  }, [accumulateChunk]);
 
-  // Handle clipboard notifications from CLIPBOARD_READ characteristic
+  // Handle clipboard notifications from CLIPBOARD_READ characteristic (with reassembly)
   const handleClipboardNotification = useCallback((event: Event) => {
     const characteristic = event.target as BluetoothRemoteGATTCharacteristic;
     if (!characteristic.value) return;
-    try {
-      const text = new TextDecoder().decode(characteristic.value);
-      if (text && clipboardCallbackRef.current) {
-        clipboardCallbackRef.current(text);
-      }
-    } catch {}
-  }, []);
+
+    const raw = new Uint8Array(characteristic.value.buffer, characteristic.value.byteOffset, characteristic.value.byteLength);
+    const text = accumulateChunk(clipReassemblyRef, raw);
+    if (!text) return; // Waiting for more chunks
+
+    if (text.trim() && clipboardCallbackRef.current) {
+      clipboardCallbackRef.current(text);
+    }
+  }, [accumulateChunk]);
 
   // Handle device disconnect
   const handleDisconnect = useCallback(() => {
