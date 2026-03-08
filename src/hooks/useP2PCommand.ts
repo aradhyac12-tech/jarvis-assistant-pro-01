@@ -332,7 +332,7 @@ export function useP2PCommand() {
 
   // Monitor BLE state — auto-switch when BLE connects/disconnects
   useEffect(() => {
-    if (bluetooth.isReady && connectionMode === "disconnected") {
+    if (bluetooth.isReady && (connectionMode === "disconnected" || connectionMode === "fallback")) {
       setConnectionMode("bluetooth");
       setLatency(bluetooth.state.latency);
     } else if (!bluetooth.isReady && connectionMode === "bluetooth") {
@@ -340,12 +340,49 @@ export function useP2PCommand() {
     }
   }, [bluetooth.isReady, bluetooth.state.latency, connectionMode]);
 
-  // Auto-connect BLE when WiFi drops — trigger when local P2P fails and we're on fallback
+  // Auto-connect BLE when WiFi drops — watches multiple signals:
+  // 1. Phone goes offline (navigator.onLine = false)
+  // 2. PC reports internet_online: false in system_info
+  // 3. Local P2P drops and cloud is unreachable
   const bleAutoConnectAttemptedRef = useRef(false);
-  
+  const bleRetryTimerRef = useRef<number | null>(null);
+
+  // Detect phone offline → trigger BLE
   useEffect(() => {
-    // Only auto-connect if: autoBluetooth enabled, not already on BLE/local_p2p,
-    // local P2P is down, BLE is supported but not connected, and we haven't tried yet
+    if (!autoBluetooth || !bluetooth.isSupported) return;
+
+    const handleOffline = async () => {
+      console.log("[BLE-Fallback] Phone went offline, attempting BLE...");
+      if (bluetooth.isReady) {
+        setConnectionMode("bluetooth");
+        return;
+      }
+      const connected = await bluetooth.reconnectExisting();
+      if (connected) {
+        console.log("[BLE-Fallback] ✅ BLE connected after phone went offline");
+      }
+    };
+
+    window.addEventListener("offline", handleOffline);
+    return () => window.removeEventListener("offline", handleOffline);
+  }, [autoBluetooth, bluetooth]);
+
+  // Detect PC internet_online: false → trigger BLE
+  useEffect(() => {
+    if (!autoBluetooth || !bluetooth.isSupported || bluetooth.isReady) return;
+    const sysInfo = selectedDevice?.system_info as any;
+    if (sysInfo?.internet_online === false && !bluetooth.isReady) {
+      console.log("[BLE-Fallback] PC internet offline detected, attempting BLE...");
+      bluetooth.reconnectExisting().then(connected => {
+        if (connected) {
+          console.log("[BLE-Fallback] ✅ BLE connected after PC internet dropped");
+        }
+      });
+    }
+  }, [selectedDevice?.system_info, autoBluetooth, bluetooth]);
+  
+  // General BLE fallback with retry — when on fallback/disconnected, periodically try BLE
+  useEffect(() => {
     if (
       !autoBluetooth ||
       connectionMode === "local_p2p" ||
@@ -353,25 +390,45 @@ export function useP2PCommand() {
       connectionMode === "p2p" ||
       localP2P.isReady ||
       bluetooth.isReady ||
-      !bluetooth.isSupported ||
-      bleAutoConnectAttemptedRef.current
-    ) return;
+      !bluetooth.isSupported
+    ) {
+      // Clear retry timer when no longer needed
+      if (bleRetryTimerRef.current) {
+        clearInterval(bleRetryTimerRef.current);
+        bleRetryTimerRef.current = null;
+      }
+      bleAutoConnectAttemptedRef.current = false;
+      return;
+    }
 
-    // We're on fallback and local P2P is down — try BLE auto-reconnect
-    const timer = window.setTimeout(async () => {
+    // First attempt after 3s
+    const initialTimer = window.setTimeout(async () => {
       if (localP2P.isReady || bluetooth.isReady) return;
       
-      console.log("[P2P] WiFi/P2P unavailable, attempting BLE auto-reconnect...");
+      console.log("[BLE-Fallback] Attempting BLE auto-reconnect...");
       bleAutoConnectAttemptedRef.current = true;
       const connected = await bluetooth.reconnectExisting();
       if (connected) {
-        console.log("[P2P] ✅ BLE auto-connected as WiFi fallback!");
+        console.log("[BLE-Fallback] ✅ BLE auto-connected!");
       } else {
-        console.log("[P2P] No previously paired BLE device found. User must manually pair first.");
+        console.log("[BLE-Fallback] No previously paired BLE device. Will retry every 15s.");
       }
-    }, 3000); // Wait 3s after falling back before trying BLE
+    }, 3000);
 
-    return () => clearTimeout(timer);
+    // Retry every 15s if still not connected
+    bleRetryTimerRef.current = window.setInterval(async () => {
+      if (localP2P.isReady || bluetooth.isReady) return;
+      console.log("[BLE-Fallback] Retrying BLE reconnect...");
+      await bluetooth.reconnectExisting();
+    }, 15000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      if (bleRetryTimerRef.current) {
+        clearInterval(bleRetryTimerRef.current);
+        bleRetryTimerRef.current = null;
+      }
+    };
   }, [connectionMode, autoBluetooth, localP2P.isReady, bluetooth.isReady, bluetooth.isSupported, bluetooth]);
 
   // Reset BLE auto-connect flag when local P2P reconnects
