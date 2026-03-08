@@ -1621,6 +1621,12 @@ class LocalP2PServer:
         elif ws_path.startswith("/audio"):
             await self._handle_audio_client(websocket, client_ip, ws_path)
             return
+        elif ws_path.startswith("/file-upload"):
+            await self._handle_file_upload_binary(websocket, client_ip, ws_path)
+            return
+        elif ws_path.startswith("/file-download"):
+            await self._handle_file_download_binary(websocket, client_ip, ws_path)
+            return
 
         # Default: command P2P client
         add_log("info", f"Local P2P client connected: {client_ip}", category="p2p")
