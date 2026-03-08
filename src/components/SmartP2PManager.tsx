@@ -42,6 +42,7 @@ interface SmartP2PManagerProps {
   onToggleAutoLocalP2P: () => void;
   onForceUpgrade: () => void;
   onForceLocalP2P: () => void;
+  pcSystemInfo?: Record<string, any> | null;
   className?: string;
 }
 
