@@ -1633,45 +1633,66 @@ class JarvisGUI:
 
 
 # ============== BOOTSTRAP ==============
-_MISSING_DEPS = []
+_CRITICAL_MISSING_DEPS = []
+_OPTIONAL_MISSING_DEPS = []
 
 def _check_dependencies() -> None:
-    """Check ALL required dependencies and report which are missing."""
-    global _MISSING_DEPS
-    required = {
+    """Validate dependencies without hard-crashing on optional modules."""
+    global _CRITICAL_MISSING_DEPS, _OPTIONAL_MISSING_DEPS
+
+    critical_required = {
         "supabase": "supabase",
-        "pyautogui": "pyautogui",
-        "PIL": "pillow",
         "psutil": "psutil",
     }
-    for mod, pkg in required.items():
+    optional_required = {
+        "pyautogui": "pyautogui",
+        "PIL": "pillow",
+    }
+
+    for mod, pkg in critical_required.items():
         try:
             __import__(mod)
-        except ImportError:
-            _MISSING_DEPS.append(pkg)
-    
-    if _MISSING_DEPS:
-        msg = f"❌ Missing required packages: {', '.join(_MISSING_DEPS)}\n   Run: pip install -r requirements.txt"
+        except Exception:
+            _CRITICAL_MISSING_DEPS.append(pkg)
+
+    for mod, pkg in optional_required.items():
+        try:
+            __import__(mod)
+        except Exception:
+            _OPTIONAL_MISSING_DEPS.append(pkg)
+
+    if _OPTIONAL_MISSING_DEPS:
+        print(
+            "⚠ Optional packages missing (agent will still run with reduced features): "
+            + ", ".join(_OPTIONAL_MISSING_DEPS)
+        )
+
+    if _CRITICAL_MISSING_DEPS:
+        msg = (
+            f"❌ Missing required packages: {', '.join(_CRITICAL_MISSING_DEPS)}\n"
+            f"   Run: pip install {' '.join(_CRITICAL_MISSING_DEPS)}"
+        )
         print(msg)
-        # Show GUI error dialog if possible
         try:
             import tkinter as _tk
             from tkinter import messagebox as _mb
             _root = _tk.Tk()
             _root.withdraw()
-            _mb.showerror("JARVIS - Missing Dependencies", 
-                         f"The following packages are not installed:\n\n"
-                         f"{chr(10).join('  • ' + d for d in _MISSING_DEPS)}\n\n"
-                         f"Run this command to fix:\n"
-                         f"pip install {' '.join(_MISSING_DEPS)}")
+            _mb.showerror(
+                "JARVIS - Missing Dependencies",
+                "The agent cannot start because required packages are missing:\n\n"
+                + "\n".join(f"  • {d}" for d in _CRITICAL_MISSING_DEPS)
+                + "\n\nRun this command:\n"
+                + f"pip install {' '.join(_CRITICAL_MISSING_DEPS)}",
+            )
             _root.destroy()
         except Exception:
             pass
-        sys.exit(1)
+        raise RuntimeError(msg)
 
 _check_dependencies()
 
-# Third-party imports — now guaranteed to exist by _check_dependencies()
+# Third-party imports — critical deps are validated by _check_dependencies()
 from supabase import create_client, Client
 try:
     import pyautogui
@@ -1679,7 +1700,13 @@ except Exception as _e:
     print(f"Warning: pyautogui import issue: {_e}")
     pyautogui = None
 
-from PIL import Image
+try:
+    from PIL import Image
+    HAS_PIL = True
+except Exception as _e:
+    print(f"Warning: pillow import issue: {_e}")
+    Image = None
+    HAS_PIL = False
 
 import psutil
 
