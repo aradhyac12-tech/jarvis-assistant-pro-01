@@ -239,6 +239,7 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
 
   const latest = history[history.length - 1];
   const hasTemps = history.some(s => s.cpuTemp !== null || s.gpuTemp !== null);
+  const hasGpuInfo = history.some(s => s.gpuUtil !== null || s.gpuTemp !== null);
 
   if (!isConnected) return null;
 
@@ -301,49 +302,92 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
           ))}
         </div>
 
-        {/* Temperature */}
-        {hasTemps && (
-          <div className="grid grid-cols-2 gap-1.5">
-            <div className="rounded-lg border border-border/20 bg-secondary/5 p-1.5 space-y-0.5">
+        {/* Temperature — always show */}
+        <div className="grid grid-cols-2 gap-1.5">
+          {/* CPU Temp */}
+          <div className="rounded-lg border border-border/20 bg-secondary/5 p-1.5 space-y-0.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
+                <Thermometer className="h-2.5 w-2.5" /> CPU Temp
+              </span>
+              <span className={cn("font-mono text-[10px] font-bold", getTempColor(latest?.cpuTemp ?? null, CPU_THROTTLE_TEMP))}>
+                {latest?.cpuTemp !== null && latest?.cpuTemp !== undefined ? `${Math.round(latest.cpuTemp)}°C` : "--"}
+              </span>
+            </div>
+            {hasTemps && <MiniChart data={history} dataKey="cpuTemp" color="hsl(0, 75%, 55%)" domainMax={110} />}
+            {latest?.cpuTemp !== null && latest?.cpuTemp !== undefined && latest.cpuTemp >= CPU_THROTTLE_TEMP - 10 && (
+              <div className="flex items-center gap-0.5">
+                <div className="h-1 flex-1 rounded-full overflow-hidden bg-muted">
+                  <div className={cn("h-full rounded-full transition-all", latest.cpuTemp >= CPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500")}
+                    style={{ width: `${Math.min(100, (latest.cpuTemp / 110) * 100)}%` }} />
+                </div>
+                <span className="text-[8px] text-muted-foreground">{CPU_THROTTLE_TEMP}°</span>
+              </div>
+            )}
+            {!hasTemps && (
+              <p className="text-[8px] text-muted-foreground/60">Waiting for data…</p>
+            )}
+          </div>
+
+          {/* GPU Temp */}
+          <div className="rounded-lg border border-border/20 bg-secondary/5 p-1.5 space-y-0.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
+                <Thermometer className="h-2.5 w-2.5" /> GPU Temp
+              </span>
+              <span className={cn("font-mono text-[10px] font-bold", getTempColor(latest?.gpuTemp ?? null, GPU_THROTTLE_TEMP))}>
+                {latest?.gpuTemp !== null && latest?.gpuTemp !== undefined ? `${Math.round(latest.gpuTemp)}°C` : "--"}
+              </span>
+            </div>
+            {latest?.gpuName && (
+              <p className="text-[8px] text-muted-foreground truncate" title={latest.gpuName}>{latest.gpuName}</p>
+            )}
+            {hasTemps && <MiniChart data={history} dataKey="gpuTemp" color="hsl(280, 70%, 55%)" domainMax={110} />}
+            {latest?.gpuTemp !== null && latest?.gpuTemp !== undefined && latest.gpuTemp >= GPU_THROTTLE_TEMP - 10 && (
+              <div className="flex items-center gap-0.5">
+                <div className="h-1 flex-1 rounded-full overflow-hidden bg-muted">
+                  <div className={cn("h-full rounded-full transition-all", latest.gpuTemp >= GPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500")}
+                    style={{ width: `${Math.min(100, (latest.gpuTemp / 110) * 100)}%` }} />
+                </div>
+                <span className="text-[8px] text-muted-foreground">{GPU_THROTTLE_TEMP}°</span>
+              </div>
+            )}
+            {!hasTemps && !latest?.gpuName && (
+              <p className="text-[8px] text-muted-foreground/60">Waiting for data…</p>
+            )}
+          </div>
+        </div>
+
+        {/* GPU Utilization & VRAM (when available from nvidia-smi) */}
+        {hasGpuInfo && (
+          <div className="rounded-lg border border-border/20 bg-secondary/5 p-1.5 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
+                <Cpu className="h-2.5 w-2.5" /> GPU Usage
+              </span>
+              <span className="font-mono text-[10px] font-bold text-foreground">
+                {latest?.gpuUtil !== null && latest?.gpuUtil !== undefined ? `${Math.round(latest.gpuUtil)}%` : "--"}
+              </span>
+            </div>
+            {latest?.gpuUtil !== null && (
+              <div className="h-1.5 rounded-full overflow-hidden bg-muted">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    (latest?.gpuUtil ?? 0) > 90 ? "bg-destructive" : (latest?.gpuUtil ?? 0) > 70 ? "bg-amber-500" : "bg-primary"
+                  )}
+                  style={{ width: `${Math.min(100, latest?.gpuUtil ?? 0)}%` }}
+                />
+              </div>
+            )}
+            {latest?.gpuMemUsed !== null && latest?.gpuMemTotal !== null && latest?.gpuMemUsed !== undefined && latest?.gpuMemTotal !== undefined && (
               <div className="flex items-center justify-between">
-                <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
-                  <Thermometer className="h-2.5 w-2.5" /> CPU
-                </span>
-                <span className={cn("font-mono text-[10px] font-bold", getTempColor(latest?.cpuTemp ?? null, CPU_THROTTLE_TEMP))}>
-                  {latest?.cpuTemp !== null && latest?.cpuTemp !== undefined ? `${Math.round(latest.cpuTemp)}°C` : "--"}
+                <span className="text-[8px] text-muted-foreground">VRAM</span>
+                <span className="text-[8px] font-mono text-muted-foreground">
+                  {Math.round(latest.gpuMemUsed)} / {Math.round(latest.gpuMemTotal)} MB
                 </span>
               </div>
-              <MiniChart data={history} dataKey="cpuTemp" color="hsl(0, 75%, 55%)" domainMax={110} />
-              {latest?.cpuTemp !== null && latest?.cpuTemp !== undefined && latest.cpuTemp >= CPU_THROTTLE_TEMP - 10 && (
-                <div className="flex items-center gap-0.5">
-                  <div className="h-1 flex-1 rounded-full overflow-hidden bg-muted">
-                    <div className={cn("h-full rounded-full transition-all", latest.cpuTemp >= CPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500")}
-                      style={{ width: `${Math.min(100, (latest.cpuTemp / 110) * 100)}%` }} />
-                  </div>
-                  <span className="text-[8px] text-muted-foreground">{CPU_THROTTLE_TEMP}°</span>
-                </div>
-              )}
-            </div>
-            <div className="rounded-lg border border-border/20 bg-secondary/5 p-1.5 space-y-0.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
-                  <Thermometer className="h-2.5 w-2.5" /> GPU
-                </span>
-                <span className={cn("font-mono text-[10px] font-bold", getTempColor(latest?.gpuTemp ?? null, GPU_THROTTLE_TEMP))}>
-                  {latest?.gpuTemp !== null && latest?.gpuTemp !== undefined ? `${Math.round(latest.gpuTemp)}°C` : "--"}
-                </span>
-              </div>
-              <MiniChart data={history} dataKey="gpuTemp" color="hsl(280, 70%, 55%)" domainMax={110} />
-              {latest?.gpuTemp !== null && latest?.gpuTemp !== undefined && latest.gpuTemp >= GPU_THROTTLE_TEMP - 10 && (
-                <div className="flex items-center gap-0.5">
-                  <div className="h-1 flex-1 rounded-full overflow-hidden bg-muted">
-                    <div className={cn("h-full rounded-full transition-all", latest.gpuTemp >= GPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500")}
-                      style={{ width: `${Math.min(100, (latest.gpuTemp / 110) * 100)}%` }} />
-                  </div>
-                  <span className="text-[8px] text-muted-foreground">{GPU_THROTTLE_TEMP}°</span>
-                </div>
-              )}
-            </div>
+            )}
           </div>
         )}
 
