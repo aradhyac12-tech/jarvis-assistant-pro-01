@@ -1,9 +1,12 @@
 import { useState, useCallback, useRef, useEffect, memo } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { Keyboard, Send, ArrowUp, Command, Option, CornerDownLeft, Zap, MessageSquare } from "lucide-react";
+import {
+  Send, ArrowUp, Command, Option, CornerDownLeft,
+  Zap, MessageSquare, Delete, ArrowLeft, ArrowRight,
+  ArrowUpIcon, ArrowDown, Home, MoveHorizontal,
+} from "lucide-react";
 
 interface MobileKeyboardProps {
   onKeyPress: (key: string) => void;
@@ -13,9 +16,10 @@ interface MobileKeyboardProps {
 }
 
 /**
- * KDE Connect-style keyboard with two modes:
- * 1. Direct mode: Each keystroke is sent immediately to PC (like KDE Connect)
- * 2. Compose mode: Type a message and send it all at once
+ * High-performance KDE Connect-style keyboard:
+ * - Direct mode: hidden textarea captures native keyboard, batches chars at 80ms
+ * - Compose mode: type full message and send at once
+ * - Quick-action grid for shortcuts, arrows, modifiers
  */
 export const MobileKeyboard = memo(function MobileKeyboard({
   onKeyPress,
@@ -28,90 +32,87 @@ export const MobileKeyboard = memo(function MobileKeyboard({
   );
   const [composeText, setComposeText] = useState("");
   const [modifiers, setModifiers] = useState({ ctrl: false, shift: false, alt: false, win: false });
-  const directInputRef = useRef<HTMLInputElement>(null);
+  const [keyCount, setKeyCount] = useState(0);
+
+  // Direct mode refs
+  const directRef = useRef<HTMLTextAreaElement>(null);
   const composeRef = useRef<HTMLTextAreaElement>(null);
-  const lastValueRef = useRef("");
+  const batchRef = useRef("");
+  const batchTimer = useRef<number | null>(null);
+  const BATCH_MS = 80; // batch chars for 80ms then flush
 
   useEffect(() => {
     localStorage.setItem("keyboard_mode", mode);
   }, [mode]);
 
-  // Focus input on mount
+  // Auto-focus on mode switch
   useEffect(() => {
-    const timer = setTimeout(() => {
-      if (mode === "direct") directInputRef.current?.focus();
+    const t = setTimeout(() => {
+      if (mode === "direct") directRef.current?.focus();
       else composeRef.current?.focus();
-    }, 100);
-    return () => clearTimeout(timer);
+    }, 80);
+    return () => clearTimeout(t);
   }, [mode]);
 
-  // Direct mode: send each new character immediately as typed
-  const handleDirectInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = e.target.value;
-    const oldValue = lastValueRef.current;
-
-    if (newValue.length > oldValue.length) {
-      // Characters added — send each new character
-      const added = newValue.slice(oldValue.length);
-      for (const char of added) {
-        if (onTypeText) {
-          onTypeText(char);
-        }
-      }
-    } else if (newValue.length < oldValue.length) {
-      // Characters removed — send backspace for each deleted char
-      const deleted = oldValue.length - newValue.length;
-      for (let i = 0; i < deleted; i++) {
-        onKeyPress("backspace");
-      }
+  // ── Direct Mode: batch characters and flush ──
+  const flushBatch = useCallback(() => {
+    if (batchRef.current && onTypeText) {
+      onTypeText(batchRef.current);
+      setKeyCount(c => c + batchRef.current.length);
     }
+    batchRef.current = "";
+    batchTimer.current = null;
+  }, [onTypeText]);
 
-    lastValueRef.current = newValue;
-    // Keep input cleared to avoid accumulation — slight delay to allow native keyboard to work
-    setTimeout(() => {
-      if (directInputRef.current) {
-        directInputRef.current.value = "";
-        lastValueRef.current = "";
-      }
-    }, 50);
-  }, [onKeyPress, onTypeText]);
+  const queueChar = useCallback((char: string) => {
+    batchRef.current += char;
+    if (batchTimer.current !== null) return;
+    batchTimer.current = window.setTimeout(flushBatch, BATCH_MS);
+  }, [flushBatch]);
 
-  const handleDirectKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
+  const handleDirectInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+    const ta = e.currentTarget;
+    const val = ta.value;
+    if (val.length > 0) {
+      // Queue all new chars
+      queueChar(val);
+      // Clear immediately — no delay
+      ta.value = "";
+    }
+  }, [queueChar]);
+
+  const handleDirectKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const key = e.key;
+    // Handle special keys directly (not through input event)
+    if (key === "Backspace") {
       e.preventDefault();
-      sendKeyWithModifiers("enter");
-    } else if (e.key === "Backspace") {
-      // Don't double-send — handled by input change
-    } else if (e.key === "Tab") {
+      sendKey("backspace");
+    } else if (key === "Enter") {
       e.preventDefault();
-      sendKeyWithModifiers("tab");
-    } else if (e.key === "Escape") {
+      sendKey("enter");
+    } else if (key === "Tab") {
       e.preventDefault();
-      sendKeyWithModifiers("escape");
+      sendKey("tab");
+    } else if (key === "Escape") {
+      e.preventDefault();
+      sendKey("escape");
+    } else if (key === "ArrowLeft") {
+      e.preventDefault();
+      sendKey("left");
+    } else if (key === "ArrowRight") {
+      e.preventDefault();
+      sendKey("right");
+    } else if (key === "ArrowUp") {
+      e.preventDefault();
+      sendKey("up");
+    } else if (key === "ArrowDown") {
+      e.preventDefault();
+      sendKey("down");
     }
   }, []);
 
-  // Compose mode handlers
-  const handleSendCompose = useCallback(() => {
-    if (composeText.trim() && onTypeText) {
-      onTypeText(composeText);
-      setComposeText("");
-    }
-  }, [composeText, onTypeText]);
-
-  const handleComposeKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Ctrl+Enter or just Enter (without Shift) sends the message
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSendCompose();
-    }
-  }, [handleSendCompose]);
-
-  const toggleModifier = useCallback((mod: keyof typeof modifiers) => {
-    setModifiers(prev => ({ ...prev, [mod]: !prev[mod] }));
-  }, []);
-
-  const sendKeyWithModifiers = useCallback((key: string) => {
+  // Unified key sender with modifier support
+  const sendKey = useCallback((key: string) => {
     const mods: string[] = [];
     if (modifiers.ctrl) mods.push("ctrl");
     if (modifiers.shift) mods.push("shift");
@@ -124,20 +125,52 @@ export const MobileKeyboard = memo(function MobileKeyboard({
     } else {
       onKeyPress(key);
     }
+    setKeyCount(c => c + 1);
   }, [modifiers, onKeyPress]);
 
-  const quickActions = [
-    { label: "Ctrl+C", key: "ctrl+c" },
-    { label: "Ctrl+V", key: "ctrl+v" },
-    { label: "Ctrl+Z", key: "ctrl+z" },
-    { label: "Tab", key: "tab" },
-    { label: "Esc", key: "escape" },
-    { label: "⌫", key: "backspace" },
-    { label: "←", key: "left" },
-    { label: "→", key: "right" },
-    { label: "↑", key: "up" },
-    { label: "↓", key: "down" },
-  ];
+  // ── Compose Mode ──
+  const handleSendCompose = useCallback(() => {
+    if (composeText.trim() && onTypeText) {
+      onTypeText(composeText);
+      setComposeText("");
+    }
+  }, [composeText, onTypeText]);
+
+  const handleComposeKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSendCompose();
+    }
+  }, [handleSendCompose]);
+
+  const toggleMod = useCallback((mod: keyof typeof modifiers) => {
+    setModifiers(prev => ({ ...prev, [mod]: !prev[mod] }));
+  }, []);
+
+  // Refocus direct input when tapping quick actions
+  const refocusDirect = useCallback(() => {
+    if (mode === "direct") {
+      setTimeout(() => directRef.current?.focus(), 10);
+    }
+  }, [mode]);
+
+  const quickSend = useCallback((key: string) => {
+    sendKey(key);
+    refocusDirect();
+  }, [sendKey, refocusDirect]);
+
+  // Cleanup batch timer
+  useEffect(() => {
+    return () => {
+      if (batchTimer.current) {
+        clearTimeout(batchTimer.current);
+        // Flush remaining on unmount
+        if (batchRef.current && onTypeText) {
+          onTypeText(batchRef.current);
+        }
+      }
+    };
+  }, [onTypeText]);
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -146,16 +179,16 @@ export const MobileKeyboard = memo(function MobileKeyboard({
         <Button
           variant={mode === "direct" ? "default" : "ghost"}
           size="sm"
-          className="flex-1 h-8 text-xs gap-1.5"
+          className="flex-1 h-9 text-xs gap-1.5"
           onClick={() => setMode("direct")}
         >
           <Zap className="h-3.5 w-3.5" />
-          Direct Input
+          Direct
         </Button>
         <Button
           variant={mode === "compose" ? "default" : "ghost"}
           size="sm"
-          className="flex-1 h-8 text-xs gap-1.5"
+          className="flex-1 h-9 text-xs gap-1.5"
           onClick={() => setMode("compose")}
         >
           <MessageSquare className="h-3.5 w-3.5" />
@@ -163,38 +196,41 @@ export const MobileKeyboard = memo(function MobileKeyboard({
         </Button>
       </div>
 
-      {/* Direct Mode — each keystroke sent immediately */}
+      {/* Direct Mode */}
       {mode === "direct" && (
         <div className="space-y-2">
           <div className="relative">
-            <Zap className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-primary" />
-            <Input
-              ref={directInputRef}
-              type="text"
-              placeholder="Type — each key goes to PC instantly..."
-              onChange={handleDirectInput}
+            <Zap className="absolute left-3 top-3 h-4 w-4 text-primary z-10" />
+            <textarea
+              ref={directRef}
+              className="w-full h-14 pl-10 pr-16 py-3 text-base bg-card/50 border border-primary/30 rounded-md focus:border-primary focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground outline-none resize-none"
+              placeholder="Tap here, then type…"
+              onInput={handleDirectInput}
               onKeyDown={handleDirectKeyDown}
-              className="pl-10 h-12 text-base bg-card/50 border-primary/30 focus:border-primary"
               disabled={disabled}
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="off"
-              spellCheck="false"
+              spellCheck={false}
+              enterKeyHint="send"
             />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground font-mono tabular-nums">
+              {keyCount} keys
+            </span>
           </div>
           <p className="text-[10px] text-muted-foreground text-center">
-            Each character is sent to your PC as you type — like KDE Connect
+            Characters are batched &amp; sent instantly — zero input lag
           </p>
         </div>
       )}
 
-      {/* Compose Mode — type message, then send */}
+      {/* Compose Mode */}
       {mode === "compose" && (
         <div className="space-y-2">
           <div className="relative">
             <Textarea
               ref={composeRef}
-              placeholder="Compose a message and send it all at once..."
+              placeholder="Type your message, then send…"
               value={composeText}
               onChange={(e) => setComposeText(e.target.value)}
               onKeyDown={handleComposeKeyDown}
@@ -203,7 +239,7 @@ export const MobileKeyboard = memo(function MobileKeyboard({
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="off"
-              spellCheck="false"
+              spellCheck={false}
             />
             <Button
               size="icon"
@@ -237,7 +273,7 @@ export const MobileKeyboard = memo(function MobileKeyboard({
               "flex-1 h-9 text-xs font-medium transition-all",
               modifiers[mod.key] && "bg-primary/20 border-primary/50 text-primary"
             )}
-            onClick={() => toggleModifier(mod.key)}
+            onClick={() => { toggleMod(mod.key); refocusDirect(); }}
             disabled={disabled}
           >
             {mod.icon}{mod.label}
@@ -245,32 +281,54 @@ export const MobileKeyboard = memo(function MobileKeyboard({
         ))}
       </div>
 
-      {/* Quick actions */}
+      {/* Quick actions — 2 rows */}
       <div className="grid grid-cols-5 gap-1.5">
-        {quickActions.map((action) => (
+        {[
+          { label: "Ctrl+C", key: "ctrl+c" },
+          { label: "Ctrl+V", key: "ctrl+v" },
+          { label: "Ctrl+Z", key: "ctrl+z" },
+          { label: "Ctrl+A", key: "ctrl+a" },
+          { label: "Ctrl+S", key: "ctrl+s" },
+          { label: "Tab", key: "tab" },
+          { label: "Esc", key: "escape" },
+          { label: "Del", key: "delete" },
+          { label: "Home", key: "home" },
+          { label: "End", key: "end" },
+        ].map((a) => (
           <Button
-            key={action.key}
+            key={a.key}
             variant="secondary"
             size="sm"
-            className="h-9 text-xs font-medium"
-            onClick={() => sendKeyWithModifiers(action.key)}
+            className="h-9 text-[10px] font-medium"
+            onClick={() => quickSend(a.key)}
             disabled={disabled}
           >
-            {action.label}
+            {a.label}
           </Button>
         ))}
       </div>
 
-      {/* Enter key */}
-      <Button
-        variant="default"
-        className="w-full h-10"
-        onClick={() => sendKeyWithModifiers("enter")}
-        disabled={disabled}
-      >
-        <CornerDownLeft className="h-4 w-4 mr-2" />
-        Enter
-      </Button>
+      {/* Arrow keys + Backspace + Enter row */}
+      <div className="grid grid-cols-6 gap-1.5">
+        <Button variant="secondary" size="sm" className="h-10" onClick={() => quickSend("backspace")} disabled={disabled}>
+          <Delete className="h-4 w-4" />
+        </Button>
+        <Button variant="secondary" size="sm" className="h-10" onClick={() => quickSend("left")} disabled={disabled}>
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <Button variant="secondary" size="sm" className="h-10" onClick={() => quickSend("down")} disabled={disabled}>
+          <ArrowDown className="h-4 w-4" />
+        </Button>
+        <Button variant="secondary" size="sm" className="h-10" onClick={() => quickSend("up")} disabled={disabled}>
+          <ArrowUpIcon className="h-4 w-4" />
+        </Button>
+        <Button variant="secondary" size="sm" className="h-10" onClick={() => quickSend("right")} disabled={disabled}>
+          <ArrowRight className="h-4 w-4" />
+        </Button>
+        <Button variant="default" size="sm" className="h-10" onClick={() => quickSend("enter")} disabled={disabled}>
+          <CornerDownLeft className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 });
