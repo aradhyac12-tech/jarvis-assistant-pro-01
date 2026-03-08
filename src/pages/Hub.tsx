@@ -72,6 +72,7 @@ import { RemoteTerminal } from "@/components/RemoteTerminal";
 import { MultiDeviceDashboard } from "@/components/MultiDeviceDashboard";
 import { SystemResourceMonitor } from "@/components/SystemResourceMonitor";
 import { FanSpeedControl } from "@/components/FanSpeedControl";
+import { StartupManager } from "@/components/StartupManager";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -773,6 +774,9 @@ export default function Hub() {
 
                 {/* Fan Speed Control */}
                 <FanSpeedControl />
+
+                {/* Startup Manager */}
+                <StartupManager />
 
                 {/* Quick Links — above sliders */}
                 <div className="grid grid-cols-2 gap-2">
