@@ -5210,24 +5210,47 @@ class JarvisAgent:
         return result
     
     def _recognize_face_from_camera(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Capture a frame from camera and run face recognition."""
+        """Capture multiple frames from camera for better accuracy and run face recognition."""
         if not HAS_OPENCV:
             return {"success": False, "error": "OpenCV not available"}
         camera_index = int(payload.get("camera_index", 0))
+        num_captures = int(payload.get("num_captures", 3))  # Multiple frames for accuracy
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             return {"success": False, "error": "Cannot open camera"}
         try:
-            ret, frame = cap.read()
-            if not ret:
-                return {"success": False, "error": "Cannot capture frame"}
             recognizer = get_face_recognizer()
-            result = recognizer.recognize(frame)
-            # Also return a small thumbnail
-            _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            result["image"] = base64.b64encode(buf.tobytes()).decode()
-            result["success"] = True
-            return result
+            best_result = None
+            best_confidence = -1
+            best_frame = None
+            
+            for i in range(num_captures):
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                result = recognizer.recognize(frame)
+                conf = result.get("confidence", 0)
+                if result.get("face_detected", False) and conf > best_confidence:
+                    best_confidence = conf
+                    best_result = result
+                    best_frame = frame
+                if i < num_captures - 1:
+                    time.sleep(0.15)  # Small delay between captures
+            
+            if best_result is None:
+                # Fall back to single frame
+                ret, frame = cap.read()
+                if not ret:
+                    return {"success": False, "error": "Cannot capture frame"}
+                best_result = recognizer.recognize(frame)
+                best_frame = frame
+            
+            # Return a small thumbnail
+            _, buf = cv2.imencode('.jpg', best_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            best_result["image"] = base64.b64encode(buf.tobytes()).decode()
+            best_result["success"] = True
+            best_result["captures_used"] = num_captures
+            return best_result
         finally:
             cap.release()
     
