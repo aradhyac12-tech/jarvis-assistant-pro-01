@@ -978,6 +978,9 @@ class JarvisGUI:
         self.root.minsize(480, 680)
         self.root.geometry("500x780+100+60")
         self.root.resizable(True, True)
+        
+        # Prevent closing — minimize to tray instead
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close_attempt)
 
         # ── dark titlebar on Win 11 ──
         if platform.system() == "Windows":
