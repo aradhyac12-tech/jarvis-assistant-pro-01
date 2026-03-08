@@ -366,6 +366,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
       if (audioContextRef.current) { try { audioContextRef.current.close(); } catch {} audioContextRef.current = null; }
       setCallActive(false);
       toast({ title: "Call Ended" });
+
+      // Log call end in surveillance history
+      saveEvent({
+        event_type: "call_ended",
+        confidence: 100,
+        metadata: { ended_by: "user" },
+      });
       return;
     }
 
@@ -490,11 +497,18 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
       setCallActive(true);
       toast({ title: "📞 Call Started", description: "Bidirectional audio active" });
+
+      // Log call start in surveillance history
+      saveEvent({
+        event_type: "call_started",
+        confidence: 100,
+        metadata: { session_id: callSessionId, direction: "bidirectional" },
+      });
     } catch (err) {
       toast({ title: "Call Failed", description: err instanceof Error ? err.message : "Could not start call", variant: "destructive" });
       if (audioStreamRef.current) { audioStreamRef.current.getTracks().forEach(t => t.stop()); audioStreamRef.current = null; }
     }
-  }, [sendCommand, toast, callActive, session]);
+  }, [sendCommand, toast, callActive, session, saveEvent]);
 
   const startSurveillance = useCallback(async () => {
     setIsStarting(true);
@@ -1425,6 +1439,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
                         "rounded-lg border p-3 space-y-2 transition-colors",
                         ev.event_type === "intruder" ? "border-destructive/50 bg-destructive/5" :
                         ev.event_type === "owner_recognized" ? "border-primary/50 bg-primary/5" :
+                        (ev.event_type === "call_started" || ev.event_type === "call_ended") ? "border-green-500/30 bg-green-500/5" :
                         "border-border/50 bg-secondary/10"
                       )}
                     >
@@ -1434,11 +1449,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
                           {ev.event_type === "owner_recognized" && <ShieldCheck className="h-4 w-4 text-primary" />}
                           {ev.event_type === "human" && <PersonStanding className="h-4 w-4 text-amber-500" />}
                           {ev.event_type === "motion" && <Zap className="h-4 w-4 text-muted-foreground" />}
+                          {ev.event_type === "call_started" && <Phone className="h-4 w-4 text-green-500" />}
+                          {ev.event_type === "call_ended" && <Phone className="h-4 w-4 text-muted-foreground" />}
                           <div>
                             <p className="text-sm font-medium capitalize">
                               {ev.event_type === "owner_recognized" ? "Owner Verified ✅" :
                                ev.event_type === "intruder" ? "🚨 Intruder!" :
                                ev.event_type === "human" ? "Person Detected" :
+                               ev.event_type === "call_started" ? "📞 Call Started" :
+                               ev.event_type === "call_ended" ? "📞 Call Ended" :
                                "Motion Detected"}
                             </p>
                             <p className="text-[10px] text-muted-foreground flex items-center gap-1">
