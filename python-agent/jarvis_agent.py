@@ -3176,8 +3176,18 @@ class JarvisAgent:
         
         self.screenshot_handler = ThreadedScreenshot()
         
-        # Supabase client
-        self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        # Supabase client — retry until connected
+        self.supabase = None
+        for _attempt in range(5):
+            try:
+                self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+                break
+            except Exception as e:
+                add_log("warn", f"Supabase init attempt {_attempt+1}/5 failed: {e}", category="system")
+                time.sleep(3)
+        if self.supabase is None:
+            add_log("error", "Supabase init failed after 5 attempts, using last-resort init", category="system")
+            self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)  # let it throw if truly broken
     
     def _get_session_token(self) -> Optional[str]:
         try:
