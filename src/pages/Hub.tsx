@@ -664,32 +664,53 @@ export default function Hub() {
       <div className="min-h-screen bg-black text-foreground">
         {/* Header */}
         <header className="sticky top-0 z-50 border-b border-border/10 bg-black/90 backdrop-blur-xl safe-area-top">
-          <div className="flex items-center justify-between h-12 px-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
-                <Bot className="w-4 h-4 text-primary-foreground" />
+          <div className="flex items-center justify-between h-11 px-3">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-md bg-primary flex items-center justify-center">
+                <Bot className="w-3.5 h-3.5 text-primary-foreground" />
               </div>
               <span className="font-semibold text-sm tracking-tight">JARVIS</span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              {/* Compact system stats */}
               {systemStats && (
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
-                  <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />{systemStats.cpu_percent}%</span>
-                  <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" />{systemStats.memory_percent}%</span>
-                  {systemStats.battery_percent !== undefined && (
-                    <span className="flex items-center gap-1"><Battery className="w-3 h-3" />{systemStats.battery_percent}%</span>
+                <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground font-mono">
+                  <span className="flex items-center gap-0.5"><Cpu className="w-2.5 h-2.5" />{systemStats.cpu_percent}%</span>
+                  <span className="flex items-center gap-0.5"><HardDrive className="w-2.5 h-2.5" />{systemStats.memory_percent}%</span>
+                </div>
+              )}
+
+              {/* Compact transport indicator */}
+              {selectedDevice && (
+                <div className={cn(
+                  "flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium",
+                  isConnected
+                    ? connectionMode === "local_p2p" ? "text-emerald-400"
+                      : connectionMode === "fallback" ? "text-amber-400"
+                      : "text-primary"
+                    : "text-muted-foreground"
+                )}>
+                  {bluetooth.isReady ? <Bluetooth className="w-2.5 h-2.5 text-blue-400" /> : null}
+                  {isConnected ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
+                  {p2pLatency > 0 && (
+                    <span className={cn(
+                      "tabular-nums",
+                      p2pLatency < 50 ? "text-emerald-400" : p2pLatency < 150 ? "text-amber-400" : "text-destructive"
+                    )}>
+                      {p2pLatency}ms
+                    </span>
                   )}
                 </div>
               )}
 
-              <div className={cn("flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-medium", status.color)}>
+              <div className={cn("flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium", status.color)}>
                 <span className={cn("w-1.5 h-1.5 rounded-full", status.dot)} />
                 {status.text}
               </div>
 
-              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-7 w-7">
-                <RefreshCw className={cn("w-3.5 h-3.5", isLoading && "animate-spin")} />
+              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-6 w-6">
+                <RefreshCw className={cn("w-3 h-3", isLoading && "animate-spin")} />
               </Button>
             </div>
           </div>
