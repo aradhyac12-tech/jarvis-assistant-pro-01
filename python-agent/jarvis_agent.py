@@ -696,10 +696,13 @@ class BluetoothServer:
         self.running = False
         self._server = None
         self._thread = None
+        self._clipboard_thread = None
         self._response_queue: deque = deque(maxlen=32)
         self._loop = None
         self._cmd_reassembler = BleReassembler()
         self._clip_reassembler = BleReassembler()
+        self._last_clipboard_hash = ""
+        self._clipboard_push_interval = 1.5  # seconds between clipboard checks
     
     def start(self):
         if not HAS_BLESS:
@@ -717,6 +720,7 @@ class BluetoothServer:
                 asyncio.run_coroutine_threadsafe(self._server.stop(), self._loop)
             except Exception:
                 pass
+        # Clipboard thread will exit on self.running = False
     
     def _run(self):
         self._loop = asyncio.new_event_loop()
@@ -774,6 +778,13 @@ class BluetoothServer:
             await server.start()
             add_log("info", "BLE GATT server started (JARVIS-PC)", category="bluetooth")
             
+            # Start clipboard push monitor thread
+            self._clipboard_thread = threading.Thread(
+                target=self._clipboard_push_loop, daemon=True, name="ble-clipboard-push"
+            )
+            self._clipboard_thread.start()
+            add_log("info", "BLE clipboard push monitor started (1.5s interval)", category="bluetooth")
+            
             while self.running:
                 await asyncio.sleep(1)
             
@@ -783,6 +794,60 @@ class BluetoothServer:
         except Exception as e:
             add_log("error", f"BLE server failed: {e}", category="bluetooth")
             self.running = False
+    
+    def _clipboard_push_loop(self):
+        """Background thread: monitors PC clipboard and pushes changes via BLE notifications."""
+        import hashlib as _hl
+        try:
+            import pyperclip
+        except ImportError:
+            add_log("warn", "pyperclip not installed — BLE clipboard push disabled", category="bluetooth")
+            return
+        
+        # Initialize with current clipboard content
+        try:
+            current = pyperclip.paste() or ""
+            self._last_clipboard_hash = _hl.md5(current.encode("utf-8", errors="replace")).hexdigest()
+        except Exception:
+            self._last_clipboard_hash = ""
+        
+        consecutive_errors = 0
+        
+        while self.running:
+            try:
+                time.sleep(self._clipboard_push_interval)
+                if not self.running or not self._server:
+                    break
+                
+                text = pyperclip.paste() or ""
+                if not text.strip():
+                    consecutive_errors = 0
+                    continue
+                
+                text_hash = _hl.md5(text.encode("utf-8", errors="replace")).hexdigest()
+                
+                if text_hash != self._last_clipboard_hash:
+                    self._last_clipboard_hash = text_hash
+                    
+                    # Truncate to 4KB for BLE bandwidth safety
+                    push_text = text[:4096]
+                    data = push_text.encode("utf-8")
+                    
+                    self._send_chunked_notification(BLE_SERVICE_UUID, BLE_CLIP_READ_UUID, data)
+                    add_log("info", f"BLE clipboard pushed: {push_text[:40]}{'...' if len(push_text) > 40 else ''}", category="bluetooth")
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors = 0
+                    
+            except Exception as e:
+                consecutive_errors += 1
+                if consecutive_errors <= 3:
+                    add_log("warn", f"BLE clipboard push error: {e}", category="bluetooth")
+                if consecutive_errors > 10:
+                    # Too many errors, slow down
+                    time.sleep(5)
+        
+        add_log("info", "BLE clipboard push monitor stopped", category="bluetooth")
     
     def _on_read(self, characteristic, **kwargs):
         uuid = str(characteristic.uuid).lower()
@@ -881,8 +946,11 @@ class BluetoothServer:
             
             try:
                 import pyperclip
+                import hashlib as _hl
                 text = assembled.decode("utf-8")
                 pyperclip.copy(text)
+                # Update hash so push loop doesn't echo it back
+                self._last_clipboard_hash = _hl.md5(text.encode("utf-8", errors="replace")).hexdigest()
                 add_log("info", f"BLE clipboard set: {text[:30]}...", category="bluetooth")
             except Exception as e:
                 add_log("error", f"BLE clipboard write error: {e}", category="bluetooth")
