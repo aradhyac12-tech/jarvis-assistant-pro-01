@@ -2162,8 +2162,9 @@ LOCAL_P2P_PORT = 9876
 PAIRING_CODE_LIFETIME_MINUTES = 30
 
 # PyAutoGUI settings
-pyautogui.PAUSE = 0.01
-pyautogui.FAILSAFE = False
+if pyautogui:
+    pyautogui.PAUSE = 0.01
+    pyautogui.FAILSAFE = False
 
 # ============== CIRCULAR BUFFER LOGS ==============
 MAX_LOGS = 100
