@@ -79,7 +79,7 @@ import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
-type Tab = "control" | "remote" | "media" | "apps" | "more";
+type Tab = "control" | "remote" | "media" | "apps" | "system" | "more";
 
 interface SystemStats {
   cpu_percent?: number;
@@ -640,6 +640,7 @@ export default function Hub() {
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
     { id: "apps" as Tab, label: "Apps", icon: AppWindow },
+    { id: "system" as Tab, label: "System", icon: Activity },
     { id: "more" as Tab, label: "More", icon: Settings },
   ];
 
@@ -749,8 +750,8 @@ export default function Hub() {
               </Button>
             </div>
 
-            {/* Tab Navigation — 5 columns */}
-            <div className="grid grid-cols-5 gap-0.5 p-0.5 bg-card/30 rounded-xl w-full border border-border/10">
+            {/* Tab Navigation — 6 columns */}
+            <div className="grid grid-cols-6 gap-0.5 p-0.5 bg-card/30 rounded-xl w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
@@ -771,21 +772,6 @@ export default function Hub() {
             {/* Control Tab */}
             {activeTab === "control" && (
               <div className="grid gap-3">
-                {/* System Resource Monitor */}
-                <SystemResourceMonitor />
-
-                {/* Fan Speed Control */}
-                <FanSpeedControl />
-
-                {/* Startup Manager */}
-                <StartupManager />
-
-                {/* Battery Monitor */}
-                <BatteryMonitor />
-
-                {/* Disk Usage Breakdown */}
-                <DiskUsageBreakdown />
-
                 {/* Quick Links — above sliders */}
                 <div className="grid grid-cols-2 gap-2">
                   {quickLinks.map((link) => (
@@ -1266,6 +1252,17 @@ export default function Hub() {
                   <RefreshCw className={cn("w-3 h-3 mr-1", (appsLoading || filesLoading) && "animate-spin")} />
                   Refresh
                 </Button>
+              </div>
+            )}
+
+            {/* System Tab */}
+            {activeTab === "system" && (
+              <div className="grid gap-3">
+                <SystemResourceMonitor />
+                <FanSpeedControl />
+                <StartupManager />
+                <BatteryMonitor />
+                <DiskUsageBreakdown />
               </div>
             )}
 
