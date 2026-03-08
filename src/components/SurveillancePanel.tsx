@@ -1330,6 +1330,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
                                     📍 {autoPresence.homeLat?.toFixed(5)}, {autoPresence.homeLng?.toFixed(5)}
                                   </p>
 
+                                  {/* Geofence Map */}
+                                  <GeofenceMap
+                                    homeLat={autoPresence.homeLat}
+                                    homeLng={autoPresence.homeLng}
+                                    homeRadius={autoPresence.homeRadius}
+                                    currentDistance={autoPresence.currentDistance}
+                                    isInside={autoPresence.presenceStatus === "home" || (autoPresence.currentDistance !== null && autoPresence.currentDistance <= autoPresence.homeRadius)}
+                                  />
+
                                   {/* Radius Slider */}
                                   <div className="space-y-1">
                                     <div className="flex items-center justify-between">
