@@ -744,8 +744,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
         </div>
 
         {/* Subtabs: Live / Clips */}
-        <Tabs value={survTab} onValueChange={(v) => setSurvTab(v as "live" | "clips" | "train")}>
-          <TabsList className="grid w-full grid-cols-3">
+        <Tabs value={survTab} onValueChange={(v) => setSurvTab(v as "live" | "clips" | "train" | "history")}>
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="live" className="gap-1 text-xs">
               <Eye className="h-3.5 w-3.5" /> Live
               {monitoring && <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />}
@@ -755,6 +755,14 @@ export function SurveillancePanel({ className }: { className?: string }) {
               {clips.length > 0 && (
                 <Badge variant="secondary" className="ml-1 text-[10px] h-4 min-w-[16px] p-0 flex items-center justify-center">
                   {clips.length}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="history" className="gap-1 text-xs">
+              <History className="h-3.5 w-3.5" /> Events
+              {dbEvents.length > 0 && (
+                <Badge variant="secondary" className="ml-1 text-[10px] h-4 min-w-[16px] p-0 flex items-center justify-center">
+                  {dbEvents.length}
                 </Badge>
               )}
             </TabsTrigger>
