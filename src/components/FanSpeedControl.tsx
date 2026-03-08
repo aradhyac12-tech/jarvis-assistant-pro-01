@@ -257,15 +257,29 @@ export function FanSpeedControl({ className }: { className?: string }) {
                       style={{ width: `${Math.min(100, fan.percent)}%` }}
                     />
                   </div>
-                  <span className="text-[8px] text-muted-foreground">{Math.round(fan.percent)}%</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[8px] text-muted-foreground">{Math.round(fan.percent)}%</span>
+                    {(fan as any).estimated && (
+                      <span className="text-[7px] text-amber-500">est.</span>
+                    )}
+                    {(fan as any).temp_c && (
+                      <span className="text-[8px] text-muted-foreground">{(fan as any).temp_c}°C</span>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="text-center py-2">
-              <p className="text-[10px] text-muted-foreground">No fan data yet</p>
+            <div className="rounded-lg border border-border/20 bg-secondary/5 p-3 text-center space-y-1.5">
+              <Fan className="h-5 w-5 mx-auto text-muted-foreground/50" />
+              <p className="text-[10px] text-muted-foreground">
+                {fanNote || "Fan sensors not detected on this system"}
+              </p>
+              <p className="text-[8px] text-muted-foreground/70">
+                Fan profiles can still be applied — the PC will use them when supported hardware is available
+              </p>
               <Button variant="ghost" size="sm" className="h-6 text-[10px] mt-1" onClick={fetchFans}>
-                <RefreshCw className="h-3 w-3 mr-1" /> Fetch
+                <RefreshCw className="h-3 w-3 mr-1" /> Retry
               </Button>
             </div>
           )}

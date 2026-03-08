@@ -3874,6 +3874,7 @@ class JarvisAgent:
     def _get_fan_speeds(self) -> Dict[str, Any]:
         try:
             fans_data = []
+            # Method 1: psutil (Linux/macOS)
             try:
                 fans = psutil.sensors_fans()
                 if fans:
@@ -3886,7 +3887,64 @@ class JarvisAgent:
                             })
             except (AttributeError, Exception):
                 pass
-            return {"success": True, "fans": fans_data}
+
+            # Method 2: WMI fallback for Windows
+            if not fans_data and platform.system() == "Windows":
+                try:
+                    import subprocess
+                    # Try Win32_Fan WMI class
+                    wmi_cmd = 'powershell -Command "Get-CimInstance -Namespace root/cimv2 -ClassName Win32_Fan 2>$null | Select-Object Name,DesiredSpeed,ActiveCooling | ConvertTo-Json"'
+                    result = subprocess.run(wmi_cmd, capture_output=True, text=True, timeout=5, shell=True)
+                    if result.stdout.strip() and result.stdout.strip() != "":
+                        import json as _json
+                        fan_info = _json.loads(result.stdout)
+                        if isinstance(fan_info, dict):
+                            fan_info = [fan_info]
+                        for f in fan_info:
+                            if f:
+                                fans_data.append({
+                                    "name": f.get("Name", "System Fan"),
+                                    "rpm": f.get("DesiredSpeed", 0) or 0,
+                                    "percent": 50 if f.get("ActiveCooling") else 0,
+                                    "active": bool(f.get("ActiveCooling")),
+                                })
+                except Exception:
+                    pass
+
+                # Method 3: Try thermal zone temperatures as proxy info
+                if not fans_data:
+                    try:
+                        wmi_cmd2 = 'powershell -Command "Get-CimInstance MSAcpi_ThermalZoneTemperature -Namespace root/wmi 2>$null | Select-Object InstanceName,CurrentTemperature | ConvertTo-Json"'
+                        result2 = subprocess.run(wmi_cmd2, capture_output=True, text=True, timeout=5, shell=True)
+                        if result2.stdout.strip() and result2.stdout.strip() != "":
+                            import json as _json2
+                            thermal_info = _json2.loads(result2.stdout)
+                            if isinstance(thermal_info, dict):
+                                thermal_info = [thermal_info]
+                            # Estimate fan speed from thermal data
+                            for t in thermal_info:
+                                if t and t.get("CurrentTemperature"):
+                                    temp_c = (t["CurrentTemperature"] / 10) - 273.15
+                                    estimated_pct = max(0, min(100, int((temp_c - 30) * 1.5)))
+                                    estimated_rpm = int(estimated_pct * 40)  # rough estimate
+                                    fans_data.append({
+                                        "name": (t.get("InstanceName", "Thermal Zone") or "Thermal Zone").split("\\")[-1][:20],
+                                        "rpm": estimated_rpm,
+                                        "percent": estimated_pct,
+                                        "estimated": True,
+                                        "temp_c": round(temp_c, 1),
+                                    })
+                    except Exception:
+                        pass
+
+            # If still no data, report system info
+            is_windows = platform.system() == "Windows"
+            return {
+                "success": True,
+                "fans": fans_data,
+                "note": "Fan sensors not available via standard APIs" if not fans_data and is_windows else None,
+                "platform": platform.system(),
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
     
