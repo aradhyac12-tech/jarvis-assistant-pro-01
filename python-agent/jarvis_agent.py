@@ -3838,6 +3838,9 @@ class JarvisAgent:
             
             # Temperatures
             cpu_temp, gpu_temp = None, None
+            gpu_name, gpu_util, gpu_mem_used, gpu_mem_total = None, None, None, None
+
+            # Method 1: psutil (Linux/macOS)
             try:
                 temps = psutil.sensors_temperatures()
                 if temps:
@@ -3850,6 +3853,69 @@ class JarvisAgent:
                                 gpu_temp = t
             except Exception:
                 pass
+
+            # Method 2: Windows — nvidia-smi for GPU
+            if gpu_temp is None and platform.system() == "Windows":
+                try:
+                    r = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=temperature.gpu,name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode == 0 and r.stdout.strip():
+                        parts = [p.strip() for p in r.stdout.strip().split('\n')[0].split(',')]
+                        if len(parts) >= 1 and parts[0].isdigit():
+                            gpu_temp = float(parts[0])
+                        if len(parts) >= 2:
+                            gpu_name = parts[1]
+                        if len(parts) >= 3:
+                            try: gpu_util = float(parts[2])
+                            except: pass
+                        if len(parts) >= 4:
+                            try: gpu_mem_used = float(parts[3])
+                            except: pass
+                        if len(parts) >= 5:
+                            try: gpu_mem_total = float(parts[4])
+                            except: pass
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+            # Method 3: Windows WMI — CPU temp via thermal zones
+            if cpu_temp is None and platform.system() == "Windows":
+                try:
+                    r = subprocess.run(
+                        ["powershell", "-Command", "(Get-CimInstance MSAcpi_ThermalZoneTemperature -Namespace root/wmi 2>$null | Select-Object -First 1).CurrentTemperature"],
+                        capture_output=True, text=True, timeout=6
+                    )
+                    out = (r.stdout or "").strip()
+                    if r.returncode == 0 and out:
+                        raw = float(out)
+                        cpu_temp = round((raw / 10.0) - 273.15, 1)
+                        if cpu_temp < 0 or cpu_temp > 150:
+                            cpu_temp = None
+                except Exception:
+                    pass
+
+            # Method 4: Windows WMI — GPU temp if nvidia-smi not available
+            if gpu_temp is None and platform.system() == "Windows":
+                try:
+                    r = subprocess.run(
+                        ["powershell", "-Command",
+                         "Get-CimInstance -Namespace root/cimv2 -ClassName Win32_VideoController 2>$null | "
+                         "Select-Object -First 1 -Property Name,CurrentTemperature | ConvertTo-Json"],
+                        capture_output=True, text=True, timeout=6
+                    )
+                    if r.returncode == 0 and r.stdout.strip():
+                        import json as _jtemp
+                        vdata = _jtemp.loads(r.stdout)
+                        if isinstance(vdata, list):
+                            vdata = vdata[0] if vdata else {}
+                        ct = vdata.get("CurrentTemperature")
+                        if ct and isinstance(ct, (int, float)) and 10 < ct < 150:
+                            gpu_temp = float(ct)
+                        if not gpu_name:
+                            gpu_name = vdata.get("Name")
+                except Exception:
+                    pass
             
             # Top processes
             top_processes = []
@@ -3885,6 +3951,10 @@ class JarvisAgent:
                 "net_bytes_recv_sec": net_down,
                 "cpu_temp": cpu_temp,
                 "gpu_temp": gpu_temp,
+                "gpu_name": gpu_name,
+                "gpu_util": gpu_util,
+                "gpu_mem_used_mb": gpu_mem_used,
+                "gpu_mem_total_mb": gpu_mem_total,
                 "top_processes": top_processes,
             }
         except Exception as e:
