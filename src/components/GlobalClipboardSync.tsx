@@ -44,6 +44,7 @@ export function GlobalClipboardSync() {
 
     prevTransportRef.current = current;
   }, [isWifiConnected, isBleConnected]);
+  const lastReceivedRef = useRef("");
   const pollRef = useRef<number | null>(null);
   const busyRef = useRef(false);
 
