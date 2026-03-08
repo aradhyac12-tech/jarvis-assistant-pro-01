@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Maximize2,
   Minimize2,
+  Camera,
+  Monitor,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useGlobalPiP } from "@/contexts/GlobalPiPContext";
