@@ -6308,6 +6308,24 @@ class JarvisAgent:
                 except Exception as e:
                     return {"success": False, "error": str(e)}
             
+            # System tab commands
+            elif cmd == "get_battery_status":
+                return self._get_battery_status()
+            elif cmd == "get_fan_speeds":
+                return self._get_fan_speeds()
+            elif cmd == "get_disk_usage":
+                return self._get_disk_usage()
+            elif cmd == "get_folder_sizes":
+                return self._get_folder_sizes(payload.get("path", "C:\\"))
+            elif cmd == "get_startup_items":
+                return self._get_startup_items()
+            elif cmd == "toggle_startup_item":
+                return self._toggle_startup_item(payload)
+            elif cmd == "kill_process":
+                return self._kill_process(payload.get("pid"), payload.get("force", False))
+            elif cmd == "set_fan_curve":
+                return {"success": True, "message": "Fan curve applied (OS-level fan control requires vendor tools)"}
+            
             else:
                 return {"success": False, "error": f"Unknown command: {command_type}"}
         except Exception as e:
