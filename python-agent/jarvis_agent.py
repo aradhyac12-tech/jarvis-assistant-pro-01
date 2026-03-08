@@ -45,7 +45,10 @@ AGENT_VERSION = "5.7.0"
 # ============== INLINE AUTO-UPDATER ==============
 import hashlib
 import shutil
-import numpy as np_safe  # alias to avoid conflicts
+try:
+    import numpy as np_safe  # alias to avoid conflicts
+except ImportError:
+    np_safe = None
 
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_FILE = os.path.join(AGENT_DIR, ".update_version")
@@ -1597,8 +1600,11 @@ class JarvisGUI:
     def _quit(self):
         if self.agent:
             self.agent.running = False
-        self.root.destroy()
-        sys.exit(0)
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)  # Hard exit to kill all daemon threads cleanly
 
     def run(self):
         self.root.mainloop()
@@ -6325,12 +6331,12 @@ class JarvisAgent:
         # Wait for P2P server to be ready
         time.sleep(1)
         
-        if not self.register_device():
-            add_log("error", "Initial registration failed. Retrying...", category="system")
-            time.sleep(5)
-            if not self.register_device():
-                add_log("error", "Registration failed after retry.", category="system")
-                return
+        # Retry registration indefinitely with exponential backoff — NEVER exit
+        reg_backoff = 5
+        while not self.register_device():
+            add_log("warn", f"Registration failed. Retrying in {reg_backoff}s...", category="system")
+            time.sleep(reg_backoff)
+            reg_backoff = min(reg_backoff * 2, 120)  # max 2 min backoff
         
         add_log("info", "Agent ready and polling for commands", category="system")
         
@@ -6503,27 +6509,74 @@ def main():
             agent_thread.start()
 
             gui = JarvisGUI(agent=agent)
+            
+            # Start watchdog to auto-restart agent thread if it dies
+            watchdog = threading.Thread(target=_agent_watchdog, args=(agent_thread, agent, gui), daemon=True)
+            watchdog.start()
+            
             gui.run()
         except Exception as e:
             add_log("error", f"GUI failed: {e}, falling back to headless", category="system")
             _run_agent_loop(agent)
     else:
-        # Headless mode
-        _run_agent_loop(agent)
+        # Headless mode — start watchdog in background
+        agent_thread = threading.Thread(target=_run_agent_loop, args=(agent,), daemon=True)
+        agent_thread.start()
+        
+        watchdog = threading.Thread(target=_agent_watchdog, args=(agent_thread, agent), daemon=True)
+        watchdog.start()
+        
+        # Keep main thread alive
+        try:
+            while True:
+                time.sleep(60)
+        except KeyboardInterrupt:
+            add_log("info", "Agent stopped by user", category="system")
 
 
 def _run_agent_loop(agent):
-    """Auto-restart agent loop with exception recovery."""
+    """Auto-restart agent loop with exception recovery — NEVER exits."""
+    restart_count = 0
     while True:
         try:
             agent.run()
-            break
+            # run() returned normally (should not happen) — restart
+            restart_count += 1
+            backoff = min(10 * restart_count, 120)
+            add_log("warn", f"Agent loop ended unexpectedly. Restarting in {backoff}s (attempt #{restart_count})...", category="system")
+            time.sleep(backoff)
+            agent = JarvisAgent()
         except KeyboardInterrupt:
+            add_log("info", "Agent stopped by user (Ctrl+C)", category="system")
             break
         except Exception as e:
-            add_log("error", f"Fatal error, restarting in 10s: {e}", details=traceback.format_exc(), category="system")
-            time.sleep(10)
-            agent = JarvisAgent()
+            restart_count += 1
+            backoff = min(10 * restart_count, 120)
+            add_log("error", f"Fatal error (attempt #{restart_count}), restarting in {backoff}s: {e}", details=traceback.format_exc(), category="system")
+            time.sleep(backoff)
+            try:
+                agent = JarvisAgent()
+            except Exception as reinit_err:
+                add_log("error", f"Re-init failed: {reinit_err}. Retrying in 30s...", category="system")
+                time.sleep(30)
+
+
+# ============== WATCHDOG ==============
+def _agent_watchdog(agent_thread, agent_ref, gui_ref=None):
+    """Monitor agent thread and restart if it dies — prevents silent death."""
+    while True:
+        time.sleep(15)
+        if not agent_thread.is_alive():
+            add_log("warn", "Watchdog: Agent thread died! Restarting...", category="system")
+            new_agent = JarvisAgent()
+            if gui_ref:
+                try:
+                    gui_ref.agent = new_agent
+                except Exception:
+                    pass
+            agent_thread = threading.Thread(target=_run_agent_loop, args=(new_agent,), daemon=True)
+            agent_thread.start()
+            add_log("info", "Watchdog: Agent thread restarted successfully", category="system")
 
 
 if __name__ == "__main__":
