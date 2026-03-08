@@ -2867,8 +2867,8 @@ class LocalP2PServer:
             speed_mbps = (received_bytes * 8 / 1_000_000) / elapsed if elapsed > 0 else 0
             
             add_log("info", f"File received via P2P binary: {file_name} ({received_bytes} bytes, {speed_mbps:.1f} Mbps) -> {file_path}", category="file")
-            notification_manager.notify("File Received", f"{file_name} ({received_bytes // (1024*1024)}MB) at {speed_mbps:.1f} Mbps")
-            
+            if 'notification_manager' in globals() and notification_manager:
+                notification_manager.notify("File Received", f"{file_name} ({received_bytes // (1024*1024)}MB) at {speed_mbps:.1f} Mbps")
             await websocket.send(json.dumps({
                 "complete": True,
                 "path": file_path,
@@ -3191,7 +3191,13 @@ class LocalP2PServer:
                                     )
                                     result = future.result(timeout=30)
                                 else:
-                                    result = asyncio.run(p2p_server.command_handler(command_type, payload))
+                                    temp_loop = asyncio.new_event_loop()
+                                    try:
+                                        result = temp_loop.run_until_complete(
+                                            p2p_server.command_handler(command_type, payload)
+                                        )
+                                    finally:
+                                        temp_loop.close()
                             else:
                                 result = p2p_server.command_handler(command_type, payload)
 
@@ -4198,7 +4204,7 @@ class JarvisAgent:
             recognized_label = payload.get("recognized_label")
             recognition_confidence = int(payload.get("recognition_confidence", 0))
             metadata = payload.get("metadata", {})
-            
+
             # Upload screenshot if image data provided
             screenshot_url = None
             image_data = payload.get("image_data", "")
@@ -4217,8 +4223,8 @@ class JarvisAgent:
                     )
                     screenshot_url = signed.get("signedURL") if isinstance(signed, dict) else None
                 except Exception as e:
-                    _log("warn", f"Screenshot upload failed: {e}")
-            
+                    add_log("warn", f"Screenshot upload failed: {e}", category="surveillance")
+
             # Insert event
             user_id = getattr(self, "current_user_id", "") or ""
             if self.device_id and user_id:
@@ -4233,13 +4239,14 @@ class JarvisAgent:
                     "screenshot_url": screenshot_url,
                     "metadata": metadata,
                 }).execute()
-                _log("info", f"Surveillance event saved to cloud: {event_type} (confidence: {confidence}%)")
+                add_log("info", f"Surveillance event saved to cloud: {event_type} (confidence: {confidence}%)", category="surveillance")
                 return {"success": True, "event_type": event_type}
             return {"success": False, "error": "No device/user ID"}
         except Exception as e:
-            _log("error", f"Failed to save surveillance event: {e}")
+            add_log("error", f"Failed to save surveillance event: {e}", category="surveillance")
             return {"success": False, "error": str(e)}
 
+    def _save_surveillance_clip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Save a surveillance clip snapshot to the surveillance folder."""
         try:
             surv_dir = self._get_surveillance_dir()
@@ -4247,11 +4254,11 @@ class JarvisAgent:
             timestamp = payload.get("timestamp", datetime.now().isoformat())
             trigger = payload.get("trigger", "unknown")
             image_data = payload.get("image_data", "")
-            
+
             # Save image data (base64 data URL or raw base64)
             filename = f"clip_{trigger}_{timestamp.replace(':', '-').replace('.', '-')}_{clip_id[:8]}.jpg"
             filepath = os.path.join(surv_dir, filename)
-            
+
             if image_data:
                 # Strip data URL prefix if present
                 if "," in image_data:
@@ -4259,9 +4266,9 @@ class JarvisAgent:
                 img_bytes = base64.b64decode(image_data)
                 with open(filepath, "wb") as f:
                     f.write(img_bytes)
-                _log("info", f"Surveillance clip saved: {filename}")
+                add_log("info", f"Surveillance clip saved: {filename}", category="surveillance")
                 return {"success": True, "path": filepath, "filename": filename}
-            
+
             return {"success": False, "error": "No image data provided"}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -6340,6 +6347,8 @@ class JarvisAgent:
     
     def _clear_training_data(self) -> Dict[str, Any]:
         """Clear all training data and embeddings."""
+        import shutil
+
         if os.path.exists(TRAINING_DATA_DIR):
             shutil.rmtree(TRAINING_DATA_DIR, ignore_errors=True)
         # Reset recognizer
