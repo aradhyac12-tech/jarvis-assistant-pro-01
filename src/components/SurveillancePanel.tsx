@@ -1473,7 +1473,6 @@ export function SurveillancePanel({ className }: { className?: string }) {
                           >
                             {(ev.event_type === "call_started" || ev.event_type === "call_ended") ? "call" : `${ev.confidence}%`}
                           </Badge>
-                          </Badge>
                           <Button
                             variant="ghost"
                             size="icon"
