@@ -779,6 +779,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
                       setHumanPresent(true);
                       triggerAutoClip("human");
 
+                      // Capture screenshot blob for DB storage
+                      let screenshotBlob: Blob | null = null;
+                      if (currentFrame && currentFrame.startsWith("blob:")) {
+                        try {
+                          const resp = await fetch(currentFrame);
+                          screenshotBlob = await resp.blob();
+                        } catch {}
+                      }
+
                       // ML Recognition — ask PC agent to identify the person
                       if (recognitionEnabled && modelBuilt && !recognitionCooldownRef.current) {
                         recognitionCooldownRef.current = true;
@@ -795,15 +804,41 @@ export function SurveillancePanel({ className }: { className?: string }) {
                           });
                           
                           if (r.recognized && r.label === "owner") {
-                            // Owner identified by ML — skip siren
                             setOwnerConfirmed(true);
                             toast({ title: "✅ Owner Recognized", description: `ML confidence: ${r.confidence}%` });
                             addLog("info", "web", `ML recognized owner (confidence: ${r.confidence}%)`);
+                            // Save owner-recognized event
+                            saveEvent({
+                              event_type: "owner_recognized",
+                              confidence: confPct,
+                              recognized: true,
+                              recognized_label: "owner",
+                              recognition_confidence: r.confidence,
+                              screenshot_blob: screenshotBlob,
+                              metadata: { face_detected: true, distance: r.distance },
+                            });
                             return; // Don't trigger siren
                           } else {
                             addLog("warn", "web", `ML: Unknown person (distance: ${r.distance})`);
+                            // Save intruder event
+                            saveEvent({
+                              event_type: "intruder",
+                              confidence: confPct,
+                              recognized: false,
+                              recognized_label: null,
+                              recognition_confidence: r.confidence || 0,
+                              screenshot_blob: screenshotBlob,
+                              metadata: { face_detected: r.face_detected, distance: r.distance },
+                            });
                           }
                         }
+                      } else {
+                        // No ML — save as human detection
+                        saveEvent({
+                          event_type: "human",
+                          confidence: confPct,
+                          screenshot_blob: screenshotBlob,
+                        });
                       }
 
                       notifyHumanDetected(confPct);
