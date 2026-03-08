@@ -245,18 +245,82 @@ export default function MicCamera() {
   useEffect(() => { saveSetting("mic_split_mode", splitMode); }, [splitMode]);
   useEffect(() => { saveSetting("mic_split_stream", splitStream); }, [splitStream]);
 
-  // Computed split view values
-  const splitFrame = splitStream === "camera" ? pcCamFrame : screenFrame;
-  const splitFps = splitStream === "camera" ? liveCamFps : liveScreenFps;
-  const splitLatency = splitStream === "camera" ? camLatency : screenLatency;
+  const splitModeRef = useRef(splitMode);
 
-  // Auto-switch split stream to whichever is active
+  useEffect(() => {
+    splitModeRef.current = splitMode;
+  }, [splitMode]);
+
+  useEffect(() => {
+    registerStream({
+      id: PIP_CAMERA_STREAM_ID,
+      title: "PC Camera",
+      frame: null,
+      fps: 0,
+      latency: 0,
+      isActive: false,
+      type: "camera",
+    });
+    registerStream({
+      id: PIP_SCREEN_STREAM_ID,
+      title: "Screen Mirror",
+      frame: null,
+      fps: 0,
+      latency: 0,
+      isActive: false,
+      type: "screen",
+    });
+  }, [registerStream]);
+
+  useEffect(() => {
+    setGlobalStreamActive(PIP_CAMERA_STREAM_ID, pcCamActive);
+  }, [pcCamActive, setGlobalStreamActive]);
+
+  useEffect(() => {
+    setGlobalStreamActive(PIP_SCREEN_STREAM_ID, screenActive);
+  }, [screenActive, setGlobalStreamActive]);
+
+  useEffect(() => {
+    if (pcCamFrame) {
+      updateGlobalFrame(PIP_CAMERA_STREAM_ID, pcCamFrame, liveCamFps, camLatency);
+    }
+  }, [pcCamFrame, liveCamFps, camLatency, updateGlobalFrame]);
+
+  useEffect(() => {
+    if (screenFrame) {
+      updateGlobalFrame(PIP_SCREEN_STREAM_ID, screenFrame, liveScreenFps, screenLatency);
+    }
+  }, [screenFrame, liveScreenFps, screenLatency, updateGlobalFrame]);
+
+  // Auto-switch PiP stream to whichever is active
   useEffect(() => {
     if (splitMode) {
       if (splitStream === "camera" && !pcCamActive && screenActive) setSplitStream("screen");
       if (splitStream === "screen" && !screenActive && pcCamActive) setSplitStream("camera");
     }
   }, [splitMode, pcCamActive, screenActive, splitStream]);
+
+  // Keep PiP visible and pinned to selected active stream
+  useEffect(() => {
+    if (!splitMode) {
+      setFloating(false);
+      pinStream(null);
+      return;
+    }
+
+    const targetStreamId = splitStream === "camera"
+      ? (pcCamActive ? PIP_CAMERA_STREAM_ID : screenActive ? PIP_SCREEN_STREAM_ID : null)
+      : (screenActive ? PIP_SCREEN_STREAM_ID : pcCamActive ? PIP_CAMERA_STREAM_ID : null);
+
+    if (!targetStreamId) {
+      setFloating(false);
+      pinStream(null);
+      return;
+    }
+
+    pinStream(targetStreamId);
+    setFloating(true);
+  }, [splitMode, splitStream, pcCamActive, screenActive, pinStream, setFloating]);
 
   // ==================== HELPERS ====================
   const processFrames = useCallback((
