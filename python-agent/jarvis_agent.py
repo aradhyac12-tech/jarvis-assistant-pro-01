@@ -3109,16 +3109,17 @@ class JarvisAgent:
             # Upload screenshot if image data provided
             screenshot_url = None
             image_data = payload.get("image_data", "")
-            if image_data and self._device_id:
+            if image_data and self.device_id:
                 if "," in image_data:
                     image_data = image_data.split(",", 1)[1]
                 img_bytes = base64.b64decode(image_data)
-                filename = f"{self._user_id}/{self._device_id}/{int(time.time())}.jpg"
+                user_id = getattr(self, "current_user_id", "") or ""
+                filename = f"{user_id}/{self.device_id}/{int(time.time())}.jpg"
                 try:
-                    resp = self._sb.storage.from_("surveillance-screenshots").upload(
+                    self.supabase.storage.from_("surveillance-screenshots").upload(
                         filename, img_bytes, {"content-type": "image/jpeg"}
                     )
-                    signed = self._sb.storage.from_("surveillance-screenshots").create_signed_url(
+                    signed = self.supabase.storage.from_("surveillance-screenshots").create_signed_url(
                         filename, 60 * 60 * 24 * 15
                     )
                     screenshot_url = signed.get("signedURL") if isinstance(signed, dict) else None
@@ -3126,10 +3127,11 @@ class JarvisAgent:
                     _log("warn", f"Screenshot upload failed: {e}")
             
             # Insert event
-            if self._device_id and self._user_id:
-                self._sb.table("surveillance_events").insert({
-                    "device_id": self._device_id,
-                    "user_id": self._user_id,
+            user_id = getattr(self, "current_user_id", "") or ""
+            if self.device_id and user_id:
+                self.supabase.table("surveillance_events").insert({
+                    "device_id": self.device_id,
+                    "user_id": user_id,
                     "event_type": event_type,
                     "confidence": confidence,
                     "recognized": recognized,
