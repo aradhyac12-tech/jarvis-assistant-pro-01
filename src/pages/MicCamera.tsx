@@ -501,12 +501,17 @@ export default function MicCamera() {
 
   const startAudioRelay = useCallback(async () => {
     try {
+      if (!session?.session_token) {
+        toast({ title: "Not Connected", description: "Pair a device first to use audio relay", variant: "destructive" });
+        return;
+      }
+
       const sessionId = crypto.randomUUID();
       addLog("info", "web", `Starting audio relay (${audioDirection})`);
 
       // Connect phone WS first
       const ws = new WebSocket(
-        `${AUDIO_WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}&session_token=${session?.session_token || ''}`
+        `${AUDIO_WS_URL}?sessionId=${sessionId}&type=phone&direction=${audioDirection}&session_token=${session.session_token}`
       );
       audioWsRef.current = ws;
       ws.binaryType = "arraybuffer";
