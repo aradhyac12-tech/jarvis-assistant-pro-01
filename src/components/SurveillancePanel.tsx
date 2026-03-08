@@ -59,6 +59,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenEnabled, setSirenEnabled] = useState(() => localStorage.getItem("surveillance_siren") === "true");
   const [autoCall, setAutoCall] = useState(() => localStorage.getItem("surveillance_autocall") === "true");
   const [micEnabled, setMicEnabled] = useState(() => localStorage.getItem("surveillance_mic") === "true");
+  const [autoAudioCapture, setAutoAudioCapture] = useState(() => localStorage.getItem("surveillance_auto_audio") === "true");
   const [survFps, setSurvFps] = useState(() => parseInt(localStorage.getItem("surveillance_fps") || "30"));
   const [survQuality, setSurvQuality] = useState(() => parseInt(localStorage.getItem("surveillance_quality") || "65"));
 
