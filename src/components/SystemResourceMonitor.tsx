@@ -159,6 +159,10 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
             netDown: 0,
             cpuTemp: null,
             gpuTemp: null,
+            gpuName: null,
+            gpuUtil: null,
+            gpuMemUsed: null,
+            gpuMemTotal: null,
             ts: Date.now(),
           };
           setHistory(prev => [...prev, snapshot].slice(-MAX_HISTORY));
@@ -176,6 +180,10 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
           netDown: 0,
           cpuTemp: null,
           gpuTemp: null,
+          gpuName: null,
+          gpuUtil: null,
+          gpuMemUsed: null,
+          gpuMemTotal: null,
           ts: Date.now(),
         };
         setHistory(prev => [...prev, snapshot].slice(-MAX_HISTORY));
