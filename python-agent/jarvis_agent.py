@@ -804,7 +804,7 @@ class BluetoothServer:
         return b""
     
     def _send_chunked_notification(self, service_uuid, char_uuid, data: bytes):
-        """Send chunked data via BLE notifications."""
+        """Send chunked data via BLE notifications with error handling."""
         if not self._server:
             return
         chunks = ble_encode_chunked(data)
@@ -812,7 +812,8 @@ class BluetoothServer:
             try:
                 self._server.get_characteristic(char_uuid)
                 self._server.update_value(service_uuid, char_uuid)
-            except Exception:
+            except Exception as e:
+                # Silently catch characteristic update errors (client disconnected mid-stream)
                 pass
     
     def _on_write(self, characteristic, value, **kwargs):
@@ -2578,7 +2579,9 @@ class JarvisAgent:
         except Exception:
             # Fallback to PowerShell
             try:
-                process = subprocess.Popen(["powershell", "-c", "Set-Clipboard", "-Value", text],
+                # Convert newlines for powershell properly
+                ps_text = text.replace('\n', '`n').replace('"', '`"')
+                process = subprocess.Popen(["powershell", "-c", f"Set-Clipboard -Value \"{ps_text}\""],
                                            stdin=subprocess.PIPE, capture_output=True, timeout=3)
                 process.communicate(timeout=3)
                 return {"success": True}
