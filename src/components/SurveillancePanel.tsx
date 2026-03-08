@@ -715,6 +715,11 @@ export function SurveillancePanel({ className }: { className?: string }) {
         <CardTitle className="text-lg flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
           Surveillance Guard
+          {autoPresence.enabled && (
+            <Badge variant={autoPresence.presenceStatus === "home" ? "default" : autoPresence.presenceStatus === "away" ? "destructive" : "secondary"} className="text-[10px] gap-1">
+              {autoPresence.presenceStatus === "home" ? "🏠 Home" : autoPresence.presenceStatus === "away" ? "🔒 Away" : "⏳ Auto"}
+            </Badge>
+          )}
           {monitoring && (
             <Badge variant="destructive" className="ml-auto gap-1 animate-pulse">
               <Eye className="h-3 w-3" /> LIVE
