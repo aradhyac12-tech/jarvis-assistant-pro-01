@@ -148,6 +148,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
+  // Surveillance auto-audio capture refs
+  const survAudioWsRef = useRef<WebSocket | null>(null);
+  const survAudioContextRef = useRef<AudioContext | null>(null);
+  const survAudioActiveRef = useRef(false);
+  const survAudioStopTimerRef = useRef<number | null>(null);
+  const survAudioSessionIdRef = useRef<string | null>(null);
+
   // Refs for streaming
   const wsRef = useRef<WebSocket | null>(null);
   const currentBlobUrlRef = useRef<string | null>(null);
@@ -264,6 +271,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_auto_siren", String(autoSirenOnDetect)), [autoSirenOnDetect]);
   useEffect(() => localStorage.setItem("surveillance_ml_recognition", String(recognitionEnabled)), [recognitionEnabled]);
   useEffect(() => localStorage.setItem("surveillance_continuous_recognition", String(continuousRecognition)), [continuousRecognition]);
+  useEffect(() => localStorage.setItem("surveillance_auto_audio", String(autoAudioCapture)), [autoAudioCapture]);
   useEffect(() => { continuousRecEnabledRef.current = continuousRecognition; }, [continuousRecognition]);
 
   // Check if model exists on mount
