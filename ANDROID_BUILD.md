@@ -370,7 +370,24 @@ The Diagnose tab includes a **P2P Binary Transfer** speed test that sends 4MB an
 
 ## KDE Connect-Style Notifications
 
-The app provides a full KDE Connect-style notification system that mirrors phone notifications to the PC and provides quick actions — accessible from a dedicated Notifications page, not embedded in the Hub.
+The app provides a full KDE Connect-style notification system that mirrors phone notifications to the PC and provides quick actions.
+
+### Dedicated Notifications Page
+
+Notifications are accessed via a **dedicated `/notifications` route** with its own sidebar entry (Bell icon), rather than being embedded in the Hub dashboard. This was done to:
+
+- Give the notification panel full-page real estate (`min-h-[60vh]`)
+- Separate notification management from the Hub's device overview
+- Match the KDE Connect pattern of notifications as a first-class feature
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Route | `src/App.tsx` → `/notifications` | Lazy-loaded page route |
+| Page | `src/pages/Notifications.tsx` | Layout wrapper with header + panel |
+| Panel | `src/components/KDENotificationPanel.tsx` | Full notification UI with quick actions |
+| Sidebar | `src/components/layout/AppSidebar.tsx` | Bell icon nav item |
+
+The page uses `useDeviceContext` for connection state and `useDeviceCommands` to send quick-action commands (clipboard sync, file transfer, run command, screenshot) to the paired PC.
 
 ### How it works:
 
@@ -378,9 +395,13 @@ The app provides a full KDE Connect-style notification system that mirrors phone
 2. **Notification mirroring** — Phone notifications are forwarded to the PC agent, which displays them as Windows toast notifications
 3. **Quick actions from notification panel**:
    - 📋 **Send Clipboard** — Instantly push phone clipboard to PC
+   - 📋 **Get Clipboard** — Pull PC clipboard to phone
    - 📁 **Send Files** — Open file transfer
-   - 💬 **Reply** — Reply to messages directly from the panel
-   - 🔗 **Open on PC** — Open notification URLs on the PC browser
+   - 🔗 **Share URL** — Open clipboard URL on PC browser
+   - 📸 **Screenshot** — Take a screenshot on PC
+   - 📂 **Browse Files** — Open file manager on PC
+   - ⚡ **Run Command** — Execute arbitrary commands on PC via terminal bar
+   - 💬 **Reply** — Reply to messaging app notifications inline
 4. **Persistent notification** — Always-on Android notification with "Send Clipboard" and "Send Files" action buttons (like KDE Connect)
 5. **App grouping** — Notifications are grouped by source app with icons and color coding
 6. **Dismissal sync** — Dismiss a notification on phone → dismisses on PC too
