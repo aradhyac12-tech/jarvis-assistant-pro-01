@@ -171,8 +171,8 @@ export default function Hub() {
   const [filesPath, setFilesPath] = useState(() => loadState("hub_files_path", "~"));
   const [filesLoading, setFilesLoading] = useState(false);
 
-  const volumeCommitRef = useRef<number | null>(null);
-  const brightnessCommitRef = useRef<number | null>(null);
+  const volumeCommitRef = useRef<number | null>(null); // kept for potential future use
+  const brightnessCommitRef = useRef<number | null>(null); // kept for potential future use
 
   const isConnected = selectedDevice?.is_online || false;
 
@@ -288,28 +288,17 @@ export default function Hub() {
   }, []);
 
   const handleVolumeCommit = useCallback(async (v: number[]) => {
-    if (volumeCommitRef.current !== null) clearTimeout(volumeCommitRef.current);
-    volumeCommitRef.current = window.setTimeout(async () => {
-      try {
-        const result = await sendCommand("set_volume", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
-        // Read back actual volume from PC to sync state
-        if (result?.success) {
-          const stateResult = await sendCommand("get_volume", {}, { awaitResult: true, timeoutMs: 3000 });
-          if (stateResult?.success && "result" in stateResult && stateResult.result) {
-            const actualVol = (stateResult.result as any).volume;
-            if (typeof actualVol === "number") {
-              setVolume(actualVol);
-            }
-          }
-        }
-        if (selectedDevice?.id) {
-          await supabase.from("devices").update({ current_volume: v[0] }).eq("id", selectedDevice.id);
-        }
-      } catch (e) {
-        console.error("Volume update failed:", e);
+    const level = v[0];
+    console.log("[Hub] Volume commit:", level);
+    try {
+      // Fire-and-forget for instant feel, then sync
+      sendCommand("set_volume", { level });
+      if (selectedDevice?.id) {
+        supabase.from("devices").update({ current_volume: level }).eq("id", selectedDevice.id);
       }
-      volumeCommitRef.current = null;
-    }, 150);
+    } catch (e) {
+      console.error("Volume update failed:", e);
+    }
   }, [sendCommand, selectedDevice?.id]);
 
   const handleBrightnessSlider = useCallback((v: number[]) => {
@@ -317,27 +306,16 @@ export default function Hub() {
   }, []);
 
   const handleBrightnessCommit = useCallback(async (v: number[]) => {
-    if (brightnessCommitRef.current !== null) clearTimeout(brightnessCommitRef.current);
-    brightnessCommitRef.current = window.setTimeout(async () => {
-      try {
-        const result = await sendCommand("set_brightness", { level: v[0] }, { awaitResult: true, timeoutMs: 5000 });
-        if (result?.success) {
-          const stateResult = await sendCommand("get_brightness", {}, { awaitResult: true, timeoutMs: 3000 });
-          if (stateResult?.success && "result" in stateResult && stateResult.result) {
-            const actualBright = (stateResult.result as any).brightness;
-            if (typeof actualBright === "number") {
-              setBrightness(actualBright);
-            }
-          }
-        }
-        if (selectedDevice?.id) {
-          await supabase.from("devices").update({ current_brightness: v[0] }).eq("id", selectedDevice.id);
-        }
-      } catch (e) {
-        console.error("Brightness update failed:", e);
+    const level = v[0];
+    console.log("[Hub] Brightness commit:", level);
+    try {
+      sendCommand("set_brightness", { level });
+      if (selectedDevice?.id) {
+        supabase.from("devices").update({ current_brightness: level }).eq("id", selectedDevice.id);
       }
-      brightnessCommitRef.current = null;
-    }, 150);
+    } catch (e) {
+      console.error("Brightness update failed:", e);
+    }
   }, [sendCommand, selectedDevice?.id]);
 
   const handleLock = useCallback(async () => {
