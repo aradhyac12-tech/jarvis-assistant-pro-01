@@ -2,11 +2,16 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Cpu, HardDrive, Wifi, Activity, RefreshCw, Loader2, MemoryStick, Thermometer, AlertTriangle } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Cpu, HardDrive, Wifi, Activity, RefreshCw, Loader2, MemoryStick,
+  Thermometer, AlertTriangle, XCircle, ChevronDown, ChevronUp, Skull,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
+import { useToast } from "@/hooks/use-toast";
 import { AreaChart, Area, ResponsiveContainer, YAxis } from "recharts";
 
 interface StatsSnapshot {
@@ -18,6 +23,14 @@ interface StatsSnapshot {
   cpuTemp: number | null;
   gpuTemp: number | null;
   ts: number;
+}
+
+interface ProcessInfo {
+  pid: number;
+  name: string;
+  cpu: number;
+  memory: number;
+  memory_mb?: number;
 }
 
 const MAX_HISTORY = 30;
@@ -66,6 +79,7 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
   const { sendCommand } = useDeviceCommands();
   const { selectedDevice } = useDeviceContext();
   const { notify } = useAppNotifications();
+  const { toast } = useToast();
   const isConnected = selectedDevice?.is_online || false;
 
   const [history, setHistory] = useState<StatsSnapshot[]>([]);
@@ -74,6 +88,12 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
   const [throttleAlert, setThrottleAlert] = useState<string | null>(null);
   const intervalRef = useRef<number | null>(null);
   const lastAlertRef = useRef<number>(0);
+
+  // Process killer state
+  const [showProcesses, setShowProcesses] = useState(false);
+  const [processes, setProcesses] = useState<ProcessInfo[]>([]);
+  const [processesLoading, setProcessesLoading] = useState(false);
+  const [killingPid, setKillingPid] = useState<number | null>(null);
 
   const fetchStats = useCallback(async () => {
     if (!isConnected) return;
@@ -97,7 +117,12 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
         };
         setHistory(prev => [...prev, snapshot].slice(-MAX_HISTORY));
 
-        // Throttle alerts (max once per 60s)
+        // Update top processes if available
+        if (r.top_processes && Array.isArray(r.top_processes)) {
+          setProcesses(r.top_processes.slice(0, 20));
+        }
+
+        // Throttle alerts
         const now = Date.now();
         if (now - lastAlertRef.current > 60000) {
           if (cpuTemp !== null && cpuTemp >= CPU_THROTTLE_TEMP) {
@@ -116,6 +141,41 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
     } catch {}
     setLoading(false);
   }, [isConnected, sendCommand, notify]);
+
+  const fetchProcesses = useCallback(async () => {
+    if (!isConnected) return;
+    setProcessesLoading(true);
+    try {
+      const result = await sendCommand("get_running_apps", {}, { awaitResult: true, timeoutMs: 8000 });
+      if (result.success && "result" in result) {
+        const r = result.result as any;
+        const apps = r.apps || r.processes || [];
+        setProcesses(
+          apps
+            .filter((a: any) => a.cpu > 0 || a.memory > 0 || (a.memory_mb && a.memory_mb > 10))
+            .sort((a: any, b: any) => (b.cpu || 0) - (a.cpu || 0))
+            .slice(0, 25)
+        );
+      }
+    } catch {}
+    setProcessesLoading(false);
+  }, [isConnected, sendCommand]);
+
+  const killProcess = useCallback(async (pid: number, name: string) => {
+    setKillingPid(pid);
+    try {
+      const result = await sendCommand("kill_process", { pid, force: true }, { awaitResult: true, timeoutMs: 8000 });
+      if (result.success) {
+        toast({ title: `Killed: ${name}`, description: `PID ${pid} terminated` });
+        setProcesses(prev => prev.filter(p => p.pid !== pid));
+      } else {
+        toast({ title: "Kill failed", description: String(result.error), variant: "destructive" });
+      }
+    } catch (err) {
+      toast({ title: "Kill failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
+    }
+    setKillingPid(null);
+  }, [sendCommand, toast]);
 
   useEffect(() => {
     if (!polling || !isConnected) {
@@ -194,7 +254,6 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
         {/* Temperature */}
         {hasTemps && (
           <div className="grid grid-cols-2 gap-1.5">
-            {/* CPU Temp */}
             <div className="rounded-lg border border-border/20 bg-secondary/5 p-1.5 space-y-0.5">
               <div className="flex items-center justify-between">
                 <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
@@ -207,23 +266,14 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
               <MiniChart data={history} dataKey="cpuTemp" color="hsl(0, 75%, 55%)" domainMax={110} />
               {latest?.cpuTemp !== null && latest?.cpuTemp !== undefined && latest.cpuTemp >= CPU_THROTTLE_TEMP - 10 && (
                 <div className="flex items-center gap-0.5">
-                  <div className={cn(
-                    "h-1 flex-1 rounded-full overflow-hidden bg-muted",
-                  )}>
-                    <div
-                      className={cn(
-                        "h-full rounded-full transition-all",
-                        latest.cpuTemp >= CPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500"
-                      )}
-                      style={{ width: `${Math.min(100, (latest.cpuTemp / 110) * 100)}%` }}
-                    />
+                  <div className="h-1 flex-1 rounded-full overflow-hidden bg-muted">
+                    <div className={cn("h-full rounded-full transition-all", latest.cpuTemp >= CPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500")}
+                      style={{ width: `${Math.min(100, (latest.cpuTemp / 110) * 100)}%` }} />
                   </div>
                   <span className="text-[8px] text-muted-foreground">{CPU_THROTTLE_TEMP}°</span>
                 </div>
               )}
             </div>
-
-            {/* GPU Temp */}
             <div className="rounded-lg border border-border/20 bg-secondary/5 p-1.5 space-y-0.5">
               <div className="flex items-center justify-between">
                 <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
@@ -237,13 +287,8 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
               {latest?.gpuTemp !== null && latest?.gpuTemp !== undefined && latest.gpuTemp >= GPU_THROTTLE_TEMP - 10 && (
                 <div className="flex items-center gap-0.5">
                   <div className="h-1 flex-1 rounded-full overflow-hidden bg-muted">
-                    <div
-                      className={cn(
-                        "h-full rounded-full transition-all",
-                        latest.gpuTemp >= GPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500"
-                      )}
-                      style={{ width: `${Math.min(100, (latest.gpuTemp / 110) * 100)}%` }}
-                    />
+                    <div className={cn("h-full rounded-full transition-all", latest.gpuTemp >= GPU_THROTTLE_TEMP ? "bg-destructive animate-pulse" : "bg-amber-500")}
+                      style={{ width: `${Math.min(100, (latest.gpuTemp / 110) * 100)}%` }} />
                   </div>
                   <span className="text-[8px] text-muted-foreground">{GPU_THROTTLE_TEMP}°</span>
                 </div>
@@ -267,6 +312,105 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
             <MiniChart data={history} dataKey="netUp" color="hsl(var(--primary))" />
             <MiniChart data={history} dataKey="netDown" color="hsl(150, 60%, 50%)" />
           </div>
+        </div>
+
+        {/* Process Killer */}
+        <div className="rounded-lg border border-border/20 bg-secondary/5 overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between p-2 text-[10px] font-medium hover:bg-secondary/10 transition-colors"
+            onClick={() => {
+              const next = !showProcesses;
+              setShowProcesses(next);
+              if (next && processes.length === 0) fetchProcesses();
+            }}
+          >
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <Skull className="h-3 w-3" /> Top Processes
+              {processes.length > 0 && (
+                <Badge variant="secondary" className="text-[8px] h-3.5 px-1">{processes.length}</Badge>
+              )}
+            </span>
+            {showProcesses ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </button>
+
+          {showProcesses && (
+            <div className="border-t border-border/20">
+              <div className="flex items-center justify-between px-2 py-1 border-b border-border/10">
+                <span className="text-[8px] text-muted-foreground font-medium">NAME</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-[8px] text-muted-foreground font-medium w-10 text-right">CPU</span>
+                  <span className="text-[8px] text-muted-foreground font-medium w-12 text-right">MEM</span>
+                  <span className="w-6" />
+                </div>
+              </div>
+
+              {processesLoading ? (
+                <div className="flex justify-center py-3">
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : processes.length === 0 ? (
+                <div className="text-center py-3">
+                  <p className="text-[10px] text-muted-foreground">No process data</p>
+                  <Button variant="ghost" size="sm" className="h-6 text-[10px] mt-1" onClick={fetchProcesses}>
+                    <RefreshCw className="h-3 w-3 mr-1" /> Fetch
+                  </Button>
+                </div>
+              ) : (
+                <ScrollArea className="max-h-44">
+                  <div className="divide-y divide-border/10">
+                    {processes.map(proc => (
+                      <div
+                        key={proc.pid}
+                        className={cn(
+                          "flex items-center justify-between px-2 py-1.5 hover:bg-destructive/5 transition-colors group",
+                          proc.cpu > 50 && "bg-destructive/5"
+                        )}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-medium truncate">{proc.name}</p>
+                          <p className="text-[8px] text-muted-foreground">PID {proc.pid}</p>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className={cn(
+                            "text-[10px] font-mono w-10 text-right",
+                            proc.cpu > 50 ? "text-destructive font-bold" : proc.cpu > 20 ? "text-amber-500" : "text-muted-foreground"
+                          )}>
+                            {proc.cpu.toFixed(1)}%
+                          </span>
+                          <span className="text-[10px] font-mono text-muted-foreground w-12 text-right">
+                            {proc.memory_mb ? `${proc.memory_mb.toFixed(0)}M` : `${proc.memory.toFixed(1)}%`}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              killProcess(proc.pid, proc.name);
+                            }}
+                            disabled={killingPid === proc.pid}
+                            title={`Kill ${proc.name}`}
+                          >
+                            {killingPid === proc.pid ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <XCircle className="h-3 w-3 text-destructive" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+
+              <div className="flex justify-end px-2 py-1 border-t border-border/10">
+                <Button variant="ghost" size="sm" className="h-5 text-[9px] gap-1" onClick={fetchProcesses} disabled={processesLoading}>
+                  <RefreshCw className="h-2.5 w-2.5" /> Refresh
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
