@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Check, ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity, Settings as SettingsIcon } from "lucide-react";
+import { Check, ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -23,38 +23,56 @@ import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 
 type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "device" | "calls" | "system";
 
-/** Minimal settings row item */
-function SettingsRow({ icon: Icon, label, subtitle, onClick, iconBg, trailing }: {
+/* ── iOS-style row inside a grouped card ── */
+function SettingsRow({ icon: Icon, label, subtitle, onClick, iconBg, trailing, isLast }: {
   icon: React.ElementType;
   label: string;
   subtitle?: string;
   onClick: () => void;
   iconBg: string;
   trailing?: React.ReactNode;
+  isLast?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-3 w-full px-4 py-3.5 rounded-2xl bg-card/40 border border-border/5 backdrop-blur-sm hover:bg-card/60 active:scale-[0.99] transition-all duration-150"
+      className="flex items-center gap-3 w-full px-4 py-3 hover:bg-muted/40 active:bg-muted/60 transition-colors duration-100"
     >
-      <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center shrink-0", iconBg)}>
-        <Icon className="h-4.5 w-4.5 text-white" />
+      <div className={cn("w-8 h-8 rounded-[8px] flex items-center justify-center shrink-0 shadow-sm", iconBg)}>
+        <Icon className="h-[18px] w-[18px] text-white" />
       </div>
-      <div className="flex-1 text-left min-w-0">
-        <p className="text-sm font-medium text-foreground">{label}</p>
-        {subtitle && <p className="text-[11px] text-muted-foreground truncate">{subtitle}</p>}
+      <div className={cn(
+        "flex-1 flex items-center justify-between min-w-0 py-0.5",
+        !isLast && "border-b border-border/10"
+      )}>
+        <div className="text-left min-w-0 flex-1">
+          <p className="text-[14px] font-normal text-foreground leading-tight">{label}</p>
+          {subtitle && <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate">{subtitle}</p>}
+        </div>
+        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+          {trailing}
+          <ChevronRight className="h-4 w-4 text-muted-foreground/30" />
+        </div>
       </div>
-      {trailing || <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0" />}
     </button>
   );
 }
 
-/** Section label */
-function SectionLabel({ children }: { children: string }) {
+/* ── Section header ── */
+function SectionHeader({ children }: { children: string }) {
   return (
-    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/50 px-1 pt-2 pb-0.5">
+    <p className="text-[12px] font-medium uppercase tracking-wide text-muted-foreground/60 px-5 pb-1.5 pt-1">
       {children}
     </p>
+  );
+}
+
+/* ── Grouped card container ── */
+function GroupCard({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl bg-card/60 border border-border/8 overflow-hidden backdrop-blur-sm">
+      {children}
+    </div>
   );
 }
 
@@ -129,21 +147,30 @@ export default function Settings() {
     }
   };
 
-  // If a sub-pane is active, show it with a back button
+  /* ── Sub-pane view ── */
   if (activePane) {
+    const titles: Record<string, string> = {
+      theme: "Appearance",
+      voice: "Voice",
+      notifications: "Notifications",
+      security: "Security",
+      device: "Device",
+      calls: "Call Detection",
+      system: "System & Diagnostics",
+    };
+
     return (
       <div className="min-h-screen bg-background">
         <div className="max-w-lg mx-auto px-4 py-6 space-y-4 animate-fade-in">
-          <div className="flex items-center gap-3 pb-1">
+          {/* Sub-pane header */}
+          <div className="flex items-center gap-3">
             <button
               onClick={() => setActivePane(null)}
-              className="w-8 h-8 rounded-xl bg-card/60 border border-border/10 flex items-center justify-center hover:bg-card/80 transition-colors"
+              className="w-8 h-8 rounded-full bg-muted/60 flex items-center justify-center hover:bg-muted transition-colors"
             >
-              <ChevronRight className="h-4 w-4 text-muted-foreground rotate-180" />
+              <ChevronRight className="h-4 w-4 text-foreground rotate-180" />
             </button>
-            <h1 className="text-lg font-semibold tracking-tight capitalize">
-              {activePane === "theme" ? "Appearance" : activePane === "calls" ? "Call Detection" : activePane}
-            </h1>
+            <h1 className="text-lg font-semibold">{titles[activePane]}</h1>
           </div>
 
           {activePane === "theme" && <ThemeSettingsCard />}
@@ -212,106 +239,114 @@ export default function Settings() {
     );
   }
 
-  // Main settings menu
+  /* ── Main menu ── */
   return (
     <div className="min-h-screen bg-background">
-      <div className="max-w-lg mx-auto px-4 py-6 space-y-2 animate-fade-in">
+      <div className="max-w-lg mx-auto px-4 py-6 space-y-5 animate-fade-in">
         {/* Header */}
-        <div className="flex items-center gap-3 pb-3">
-          <BackButton />
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">Settings</h1>
-            <p className="text-[11px] text-muted-foreground">Configure Jarvis</p>
-          </div>
+        <div className="flex items-center gap-3">
+          <BackButton showHome={false} />
+          <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         </div>
 
-        {/* Appearance */}
-        <SectionLabel>Appearance</SectionLabel>
-        <SettingsRow
-          icon={Palette}
-          label="Theme & Colors"
-          subtitle="Dark mode, presets, custom colors"
-          onClick={() => setActivePane("theme")}
-          iconBg="bg-gradient-to-br from-[hsl(var(--primary))] to-[hsl(var(--accent))]"
-        />
-
-        {/* General */}
-        <SectionLabel>General</SectionLabel>
+        {/* ── Appearance ── */}
         <div className="space-y-1.5">
-          <SettingsRow
-            icon={Mic}
-            label="Voice"
-            subtitle={`Wake word: "${wakeWord}"`}
-            onClick={() => setActivePane("voice")}
-            iconBg="bg-[hsl(262,83%,58%)]"
-          />
-          <SettingsRow
-            icon={Bell}
-            label="Notifications"
-            subtitle={notifEnabled ? "Sync active" : "Off"}
-            onClick={() => setActivePane("notifications")}
-            iconBg="bg-[hsl(25,95%,53%)]"
-          />
+          <SectionHeader>Appearance</SectionHeader>
+          <GroupCard>
+            <SettingsRow
+              icon={Palette}
+              label="Theme & Colors"
+              subtitle="Dark mode, accents, presets"
+              onClick={() => setActivePane("theme")}
+              iconBg="bg-gradient-to-br from-violet-500 to-pink-500"
+              isLast
+            />
+          </GroupCard>
         </div>
 
-        {/* Privacy */}
-        <SectionLabel>Privacy & Security</SectionLabel>
-        <SettingsRow
-          icon={Shield}
-          label="App Lock"
-          subtitle={appLockEnabled ? `${lockMethod} lock enabled` : "Disabled"}
-          onClick={() => setActivePane("security")}
-          iconBg="bg-[hsl(142,71%,45%)]"
-        />
-
-        {/* Device */}
-        <SectionLabel>Device & Connection</SectionLabel>
+        {/* ── General ── */}
         <div className="space-y-1.5">
-          <SettingsRow
-            icon={Monitor}
-            label={selectedDevice?.name || session?.device_name || "My PC"}
-            subtitle={isConnected ? "Connected" : "Offline"}
-            onClick={() => setActivePane("device")}
-            iconBg="bg-[hsl(var(--primary))]"
-            trailing={
-              <div className={cn(
-                "w-2.5 h-2.5 rounded-full shrink-0",
-                isConnected
-                  ? "bg-[hsl(var(--success))] shadow-[0_0_8px_hsl(var(--success)/0.5)]"
-                  : "bg-muted-foreground/40"
-              )} />
-            }
-          />
-          <SettingsRow
-            icon={Phone}
-            label="Call Detection"
-            subtitle={callDetectionActive ? "Monitoring active" : "Off"}
-            onClick={() => setActivePane("calls")}
-            iconBg="bg-[hsl(186,94%,42%)]"
-          />
+          <SectionHeader>General</SectionHeader>
+          <GroupCard>
+            <SettingsRow
+              icon={Mic}
+              label="Voice"
+              subtitle={`Wake word: "${wakeWord}"`}
+              onClick={() => setActivePane("voice")}
+              iconBg="bg-violet-500"
+            />
+            <SettingsRow
+              icon={Bell}
+              label="Notifications"
+              subtitle={notifEnabled ? "Sync active" : "Off"}
+              onClick={() => setActivePane("notifications")}
+              iconBg="bg-red-500"
+              isLast
+            />
+          </GroupCard>
         </div>
 
-        {/* System */}
-        <SectionLabel>Advanced</SectionLabel>
-        <SettingsRow
-          icon={Activity}
-          label="System & Diagnostics"
-          subtitle="Streaming, boost, updates"
-          onClick={() => setActivePane("system")}
-          iconBg="bg-muted-foreground/60"
-        />
-
-        {/* Save */}
-        <div className="pt-4">
-          <Button
-            onClick={() => toast({ title: "Settings Saved", description: "Preferences updated" })}
-            className="w-full h-11 text-sm font-medium rounded-2xl shadow-lg shadow-primary/10"
-          >
-            <Check className="h-4 w-4 mr-2" /> Save Settings
-          </Button>
+        {/* ── Privacy ── */}
+        <div className="space-y-1.5">
+          <SectionHeader>Privacy & Security</SectionHeader>
+          <GroupCard>
+            <SettingsRow
+              icon={Shield}
+              label="App Lock"
+              subtitle={appLockEnabled ? `${lockMethod} lock` : "Off"}
+              onClick={() => setActivePane("security")}
+              iconBg="bg-emerald-500"
+              isLast
+            />
+          </GroupCard>
         </div>
 
-        <div className="h-6" />
+        {/* ── Devices ── */}
+        <div className="space-y-1.5">
+          <SectionHeader>Devices</SectionHeader>
+          <GroupCard>
+            <SettingsRow
+              icon={Monitor}
+              label={selectedDevice?.name || session?.device_name || "My PC"}
+              subtitle={isConnected ? "Connected" : "Offline"}
+              onClick={() => setActivePane("device")}
+              iconBg="bg-blue-500"
+              trailing={
+                <div className={cn(
+                  "w-2 h-2 rounded-full",
+                  isConnected
+                    ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]"
+                    : "bg-muted-foreground/30"
+                )} />
+              }
+            />
+            <SettingsRow
+              icon={Phone}
+              label="Call Detection"
+              subtitle={callDetectionActive ? "Active" : "Off"}
+              onClick={() => setActivePane("calls")}
+              iconBg="bg-cyan-500"
+              isLast
+            />
+          </GroupCard>
+        </div>
+
+        {/* ── Advanced ── */}
+        <div className="space-y-1.5">
+          <SectionHeader>Advanced</SectionHeader>
+          <GroupCard>
+            <SettingsRow
+              icon={Activity}
+              label="System & Diagnostics"
+              subtitle="Streaming, boost, updates"
+              onClick={() => setActivePane("system")}
+              iconBg="bg-gray-500"
+              isLast
+            />
+          </GroupCard>
+        </div>
+
+        <div className="h-8" />
       </div>
     </div>
   );
