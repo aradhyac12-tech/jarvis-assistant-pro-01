@@ -47,25 +47,13 @@ export function GlobalClipboardSync() {
   const lastReceivedRef = useRef("");
   const pollRef = useRef<number | null>(null);
   const busyRef = useRef(false);
-  const noChangeCountRef = useRef(0);
-  const currentIntervalRef = useRef(1000);
 
-  const FAST_INTERVAL = 1000;
-  const SLOW_INTERVAL = 5000;
-  const SLOWDOWN_THRESHOLD = 30; // polls with no change before slowing
+  const POLL_INTERVAL = 5000; // Fixed 5s poll interval
 
   // Push clipboard text to PC via best available transport
   const pushToPc = useCallback(async (text: string) => {
     if (!text.trim() || text === lastSentRef.current) return;
     lastSentRef.current = text;
-    // Reset backoff inline — user copied something
-    noChangeCountRef.current = 0;
-    if (currentIntervalRef.current !== FAST_INTERVAL && checkRef.current) {
-      currentIntervalRef.current = FAST_INTERVAL;
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = window.setInterval(checkRef.current, FAST_INTERVAL);
-      console.log("[Clipboard] ⚡ Resumed fast polling (user copy)");
-    }
     try {
       if (!isWifiConnected && isBleConnected) {
         await bluetooth.sendClipboard(text);
@@ -111,9 +99,7 @@ export function GlobalClipboardSync() {
     };
   }, [isBleConnected, bluetooth]);
 
-  // PC → Phone: poll with exponential backoff over WiFi
-  const checkRef = useRef<(() => Promise<void>) | null>(null);
-
+  // PC → Phone: fixed 5s poll over WiFi
   useEffect(() => {
     if (!isWifiConnected) {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -129,35 +115,15 @@ export function GlobalClipboardSync() {
           const data = result.result as { changed?: boolean; content?: string };
           if (data.changed && data.content && data.content !== lastSentRef.current && data.content !== lastReceivedRef.current) {
             lastReceivedRef.current = data.content;
-            // Clipboard changed — reset to fast polling
-            noChangeCountRef.current = 0;
-            if (currentIntervalRef.current !== FAST_INTERVAL) {
-              currentIntervalRef.current = FAST_INTERVAL;
-              if (pollRef.current) clearInterval(pollRef.current);
-              pollRef.current = window.setInterval(check, FAST_INTERVAL);
-              console.log("[Clipboard] ⚡ Resumed fast polling (change detected)");
-            }
             try { await navigator.clipboard.writeText(data.content); } catch { /* silent */ }
-          } else {
-            // No change — increment counter, maybe slow down
-            noChangeCountRef.current++;
-            if (noChangeCountRef.current >= SLOWDOWN_THRESHOLD && currentIntervalRef.current === FAST_INTERVAL) {
-              currentIntervalRef.current = SLOW_INTERVAL;
-              if (pollRef.current) clearInterval(pollRef.current);
-              pollRef.current = window.setInterval(check, SLOW_INTERVAL);
-              console.log("[Clipboard] 🐢 Slowed polling to 5s (no changes for 30s)");
-            }
           }
         }
       } catch { /* silent */ }
       busyRef.current = false;
     };
 
-    checkRef.current = check;
-    currentIntervalRef.current = FAST_INTERVAL;
-    noChangeCountRef.current = 0;
     check();
-    pollRef.current = window.setInterval(check, FAST_INTERVAL);
+    pollRef.current = window.setInterval(check, POLL_INTERVAL);
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [isWifiConnected, sendCommand]);
 

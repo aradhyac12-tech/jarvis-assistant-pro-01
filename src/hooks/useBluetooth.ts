@@ -481,9 +481,44 @@ export function useBluetooth() {
     commandCharRef.current.writeValueWithoutResponse(buf).catch(() => {});
   }, []);
 
+  // ─── Auto-poll: try reconnecting every 5s when disconnected ───
+  const autoConnectRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    // Clear any existing timer
+    if (autoConnectRef.current) {
+      clearInterval(autoConnectRef.current);
+      autoConnectRef.current = null;
+    }
+
+    // Only auto-poll when disconnected and BLE is supported
+    if (state.isConnected || !isBluetoothSupported) return;
+
+    const tryReconnect = async () => {
+      // Skip if currently scanning or already connected
+      if (state.isScanning || deviceRef.current?.gatt?.connected) return;
+      console.log("[BLE] Auto-poll: attempting reconnect...");
+      await reconnectExisting();
+    };
+
+    // Start polling every 5 seconds
+    autoConnectRef.current = window.setInterval(tryReconnect, 5000);
+
+    return () => {
+      if (autoConnectRef.current) {
+        clearInterval(autoConnectRef.current);
+        autoConnectRef.current = null;
+      }
+    };
+  }, [state.isConnected, state.isScanning, isBluetoothSupported, reconnectExisting]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (autoConnectRef.current) {
+        clearInterval(autoConnectRef.current);
+        autoConnectRef.current = null;
+      }
       disconnect();
     };
   }, [disconnect]);
