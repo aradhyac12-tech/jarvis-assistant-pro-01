@@ -173,8 +173,37 @@ export default function Hub() {
 
   const volumeCommitRef = useRef<number | null>(null); // kept for potential future use
   const brightnessCommitRef = useRef<number | null>(null); // kept for potential future use
+  const volumeSyncLockUntilRef = useRef(0);
+  const brightnessSyncLockUntilRef = useRef(0);
+  const volumeDebounceRef = useRef<number | null>(null);
+  const brightnessDebounceRef = useRef<number | null>(null);
 
   const isConnected = selectedDevice?.is_online || false;
+
+  const pushVolumeToPc = useCallback(async (level: number, awaitResult: boolean) => {
+    if (!isConnected) return { success: false, error: "Device offline" } as const;
+    return await sendCommand(
+      "set_volume",
+      { level },
+      awaitResult ? { awaitResult: true, timeoutMs: 7000, pollIntervalMs: 500 } : undefined
+    );
+  }, [isConnected, sendCommand]);
+
+  const pushBrightnessToPc = useCallback(async (level: number, awaitResult: boolean) => {
+    if (!isConnected) return { success: false, error: "Device offline" } as const;
+    return await sendCommand(
+      "set_brightness",
+      { level },
+      awaitResult ? { awaitResult: true, timeoutMs: 7000, pollIntervalMs: 500 } : undefined
+    );
+  }, [isConnected, sendCommand]);
+
+  useEffect(() => {
+    return () => {
+      if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+      if (brightnessDebounceRef.current) clearTimeout(brightnessDebounceRef.current);
+    };
+  }, []);
 
   // Force dark mode
   useEffect(() => {

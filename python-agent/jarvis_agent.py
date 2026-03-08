@@ -3654,17 +3654,64 @@ class JarvisAgent:
                 levels = sbc.get_brightness()
                 if levels:
                     self._brightness_cache = levels[0] if isinstance(levels, list) else levels
-        except:
+                    return int(self._brightness_cache)
+
+            # Windows fallback: WMI
+            if platform.system() == "Windows":
+                try:
+                    r = subprocess.run(
+                        ["powershell", "-Command", "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness"],
+                        capture_output=True,
+                        text=True,
+                        timeout=8,
+                    )
+                    out = (r.stdout or "").strip()
+                    if r.returncode == 0 and out:
+                        self._brightness_cache = max(0, min(100, int(float(out))))
+                except Exception:
+                    pass
+        except Exception:
             pass
-        return self._brightness_cache
-    
+        return int(self._brightness_cache)
+
     def _set_brightness(self, level: int) -> Dict[str, Any]:
         try:
-            level = max(0, min(100, level))
+            level = max(0, min(100, int(level)))
+            add_log("info", f"set_brightness called with level={level}", category="display")
+
+            # Method 1: screen_brightness_control
             if HAS_BRIGHTNESS:
-                sbc.set_brightness(level)
-                self._brightness_cache = level
-            return {"success": True, "brightness": level}
+                try:
+                    sbc.set_brightness(level)
+                    self._brightness_cache = level
+                    self._update_device_field("current_brightness", level)
+                    return {"success": True, "brightness": level, "method": "sbc"}
+                except Exception as e:
+                    add_log("warning", f"sbc set_brightness failed: {e}", category="display")
+
+            # Method 2: Windows WMI fallback
+            if platform.system() == "Windows":
+                try:
+                    cmd = f"(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{level})"
+                    r = subprocess.run(
+                        ["powershell", "-Command", cmd],
+                        capture_output=True,
+                        text=True,
+                        timeout=8,
+                    )
+                    if r.returncode == 0:
+                        self._brightness_cache = level
+                        self._update_device_field("current_brightness", level)
+                        return {"success": True, "brightness": level, "method": "wmi"}
+                    add_log("warning", f"WMI set_brightness failed: {r.stderr[:200]}", category="display")
+                except Exception as e:
+                    add_log("warning", f"WMI set_brightness exception: {e}", category="display")
+
+            return {
+                "success": False,
+                "error": "Brightness control not supported on this display/driver",
+                "brightness": self._brightness_cache,
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
     
