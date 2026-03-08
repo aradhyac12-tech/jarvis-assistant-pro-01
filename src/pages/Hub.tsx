@@ -171,8 +171,8 @@ export default function Hub() {
   const [filesPath, setFilesPath] = useState(() => loadState("hub_files_path", "~"));
   const [filesLoading, setFilesLoading] = useState(false);
 
-  const volumeCommitRef = useRef<number | null>(null);
-  const brightnessCommitRef = useRef<number | null>(null);
+  const volumeCommitRef = useRef<number | null>(null); // kept for potential future use
+  const brightnessCommitRef = useRef<number | null>(null); // kept for potential future use
 
   const isConnected = selectedDevice?.is_online || false;
 
