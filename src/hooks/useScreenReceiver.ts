@@ -101,11 +101,8 @@ export function useScreenReceiver() {
       
       addLog("info", "web", `Screen connecting via ${useP2P ? "P2P" : "cloud relay"}...`);
 
-      const ws = new WebSocket(
-        useP2P
-          ? p2pStreaming.getScreenUrl(sessionId, { fps, quality, scale, monitorIndex })
-          : p2pStreaming.getScreenUrl(sessionId, { fps, quality, scale, monitorIndex })
-      );
+      const wsUrl = p2pStreaming.getScreenUrl(sessionId, { fps, quality, scale, monitorIndex });
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
 

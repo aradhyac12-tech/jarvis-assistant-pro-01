@@ -97,17 +97,11 @@ export function useCameraReceiver() {
 
       // Use P2P streaming if available for direct connection
       const useP2P = p2pStreaming.isP2P && !testPattern;
-      const wsUrl = useP2P
-        ? p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex })
-        : p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex });
+      const wsUrl = p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex });
 
       addLog("info", "web", `Camera connecting via ${useP2P ? "P2P" : "cloud relay"}...`);
 
-      const ws = new WebSocket(
-        useP2P
-          ? p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex })
-          : p2pStreaming.getCameraUrl(sessionId, { fps, quality, cameraIndex })
-      );
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
 
