@@ -12,7 +12,7 @@ import {
   Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
   Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
   AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2, X, Image as ImageIcon,
-  ScanFace, Crosshair, RotateCw, Search, History, Clock, ShieldCheck, ShieldAlert,
+  ScanFace, Crosshair, RotateCw, Search, History, Clock, ShieldCheck, ShieldAlert, MapPin, Navigation, Radio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -1069,15 +1069,120 @@ export function SurveillancePanel({ className }: { className?: string }) {
                         <Switch checked={autoPresence.enabled} onCheckedChange={autoPresence.setEnabled} />
                       </div>
                       <p className="text-[10px] text-muted-foreground leading-relaxed">
-                        Auto-enables surveillance when you leave (phone disconnects) and disables it when you return.
+                        Auto-enables surveillance when you leave and disables it when you return.
                       </p>
                       {autoPresence.enabled && (
                         <>
+                          {/* Status Badge */}
                           <div className="flex items-center gap-2">
                             <Badge variant={autoPresence.presenceStatus === "home" ? "default" : autoPresence.presenceStatus === "away" ? "destructive" : "secondary"} className="text-[10px]">
                               {autoPresence.presenceStatus === "home" ? "🏠 Home" : autoPresence.presenceStatus === "away" ? "🔒 Away" : "⏳ Detecting..."}
                             </Badge>
+                            {autoPresence.currentDistance !== null && (autoPresence.presenceMode === "geofence" || autoPresence.presenceMode === "both") && (
+                              <Badge variant="outline" className="text-[10px] gap-1">
+                                <Navigation className="h-2.5 w-2.5" />
+                                {autoPresence.currentDistance >= 1000
+                                  ? `${(autoPresence.currentDistance / 1000).toFixed(1)}km`
+                                  : `${autoPresence.currentDistance}m`}
+                              </Badge>
+                            )}
                           </div>
+
+                          {/* Detection Mode */}
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px]">Detection Method</Label>
+                            <div className="flex gap-1">
+                              {([
+                                { mode: "device" as const, label: "Device", icon: Radio },
+                                { mode: "geofence" as const, label: "Geofence", icon: MapPin },
+                                { mode: "both" as const, label: "Both", icon: ShieldCheck },
+                              ]).map(({ mode, label, icon: Icon }) => (
+                                <Button
+                                  key={mode}
+                                  variant={autoPresence.presenceMode === mode ? "default" : "outline"}
+                                  size="sm"
+                                  className="flex-1 h-7 text-[10px] gap-1"
+                                  onClick={() => autoPresence.setPresenceMode(mode)}
+                                >
+                                  <Icon className="h-3 w-3" />
+                                  {label}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Geofence Config */}
+                          {(autoPresence.presenceMode === "geofence" || autoPresence.presenceMode === "both") && (
+                            <div className="rounded-md border border-border/30 bg-secondary/10 p-2.5 space-y-2.5">
+                              <div className="flex items-center gap-1.5 text-[10px] font-medium">
+                                <MapPin className="h-3 w-3 text-primary" />
+                                Geofence Settings
+                              </div>
+
+                              {/* Set Home Location */}
+                              <Button
+                                variant={autoPresence.homeConfigured ? "outline" : "default"}
+                                size="sm"
+                                className="w-full h-7 text-[10px] gap-1"
+                                onClick={autoPresence.setCurrentAsHome}
+                                disabled={autoPresence.settingHome || autoPresence.geoPermission === "denied"}
+                              >
+                                {autoPresence.settingHome ? (
+                                  <><Loader2 className="h-3 w-3 animate-spin" /> Getting location...</>
+                                ) : autoPresence.homeConfigured ? (
+                                  <><MapPin className="h-3 w-3" /> Update Home Location</>
+                                ) : (
+                                  <><Crosshair className="h-3 w-3" /> Set Current Location as Home</>
+                                )}
+                              </Button>
+
+                              {autoPresence.geoPermission === "denied" && (
+                                <p className="text-[10px] text-destructive">Location permission denied. Enable it in browser settings.</p>
+                              )}
+
+                              {autoPresence.homeConfigured && (
+                                <>
+                                  <p className="text-[9px] text-muted-foreground font-mono">
+                                    📍 {autoPresence.homeLat?.toFixed(5)}, {autoPresence.homeLng?.toFixed(5)}
+                                  </p>
+
+                                  {/* Radius Slider */}
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <Label className="text-[10px]">Radius</Label>
+                                      <span className="font-mono text-[10px] text-primary">{autoPresence.homeRadius}m</span>
+                                    </div>
+                                    <Slider
+                                      value={[autoPresence.homeRadius]}
+                                      onValueChange={([v]) => autoPresence.setHomeRadius(v)}
+                                      min={50}
+                                      max={2000}
+                                      step={50}
+                                      className="w-full"
+                                    />
+                                  </div>
+
+                                  {/* Geo Poll Interval */}
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <Label className="text-[10px]">Check Interval</Label>
+                                      <span className="font-mono text-[10px] text-primary">{autoPresence.geoPollInterval / 1000}s</span>
+                                    </div>
+                                    <Slider
+                                      value={[autoPresence.geoPollInterval / 1000]}
+                                      onValueChange={([v]) => autoPresence.setGeoPollInterval(v * 1000)}
+                                      min={10}
+                                      max={120}
+                                      step={5}
+                                      className="w-full"
+                                    />
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Grace Period */}
                           <div className="space-y-1">
                             <div className="flex items-center justify-between">
                               <Label className="text-[10px]">Grace Period</Label>
