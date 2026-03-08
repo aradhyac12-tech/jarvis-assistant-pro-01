@@ -857,6 +857,8 @@ export default function Hub() {
               ))}
             </div>
 
+            {/* Swipeable tab content */}
+            <div onTouchStart={handleSwipeStart} onTouchEnd={handleSwipeEnd} className="animate-fade-in">
             {/* Control Tab */}
             {activeTab === "control" && (
               <div className="grid gap-3">
