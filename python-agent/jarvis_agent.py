@@ -1595,6 +1595,25 @@ class JarvisGUI:
         idx = modes.index(self._ghost_mode)
         self._set_ghost_mode(modes[(idx + 1) % 3])
 
+    def _on_close_attempt(self):
+        """X button pressed — minimize to tray/ghost instead of closing."""
+        from tkinter import messagebox
+        result = messagebox.askyesnocancel(
+            "JARVIS",
+            "Do you want to:\n\n"
+            "• Yes — Minimize to background (keeps running)\n"
+            "• No — Quit completely\n"
+            "• Cancel — Stay open",
+            icon="question"
+        )
+        if result is True:
+            # Minimize to ghost mode
+            self._set_ghost_mode("ghost")
+        elif result is False:
+            # Actually quit
+            self._quit()
+        # Cancel — do nothing
+
     def _restart(self):
         if self.agent:
             self.agent.running = False
@@ -1607,7 +1626,7 @@ class JarvisGUI:
             self.root.destroy()
         except Exception:
             pass
-        os._exit(0)  # Hard exit to kill all daemon threads cleanly
+        os._exit(0)
 
     def run(self):
         self.root.mainloop()
