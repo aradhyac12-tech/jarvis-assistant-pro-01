@@ -197,7 +197,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
               // Flush remaining buffer
               if (bufferSize > 0) {
                 const merged = mergeBuffers(buffer, bufferSize);
-                ws.send(merged);
+                ws.send(merged.buffer as ArrayBuffer);
                 sentBytes += bufferSize;
                 updateProgress(sentBytes, file.size, startTime, transferId);
               }
@@ -210,7 +210,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             // Send when we have >= 2MB
             if (bufferSize >= P2P_CHUNK_SIZE) {
               const merged = mergeBuffers(buffer, bufferSize);
-              ws.send(merged);
+              ws.send(merged.buffer as ArrayBuffer);
               sentBytes += bufferSize;
               updateProgress(sentBytes, file.size, startTime, transferId);
               buffer.length = 0;
@@ -520,8 +520,11 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       try {
         const testSize = 4 * 1024 * 1024; // 4MB test
         const testData = new Uint8Array(testSize);
-        crypto.getRandomValues(testData);
-        const testFile = new File([testData], "_speed_test.bin");
+        for (let i = 0; i < testSize; i += 65536) {
+          const chunk = Math.min(65536, testSize - i);
+          crypto.getRandomValues(testData.subarray(i, i + chunk));
+        }
+        const testFile = new Blob([testData]);
         const start = Date.now();
 
         await new Promise<void>((resolve, reject) => {
