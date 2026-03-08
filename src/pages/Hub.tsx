@@ -74,6 +74,7 @@ import { SystemResourceMonitor } from "@/components/SystemResourceMonitor";
 import { FanSpeedControl } from "@/components/FanSpeedControl";
 import { StartupManager } from "@/components/StartupManager";
 import { BatteryMonitor } from "@/components/BatteryMonitor";
+import { DiskUsageBreakdown } from "@/components/DiskUsageBreakdown";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -781,6 +782,9 @@ export default function Hub() {
 
                 {/* Battery Monitor */}
                 <BatteryMonitor />
+
+                {/* Disk Usage Breakdown */}
+                <DiskUsageBreakdown />
 
                 {/* Quick Links — above sliders */}
                 <div className="grid grid-cols-2 gap-2">
