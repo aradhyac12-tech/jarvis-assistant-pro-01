@@ -780,6 +780,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const stopSurveillance = useCallback(() => {
     sendCommand("stop_camera_stream", {});
     if (micEnabled) sendCommand("stop_audio_relay", {});
+    stopSurvAudioCapture(); // Stop motion-triggered audio
+    if (survAudioStopTimerRef.current) { clearTimeout(survAudioStopTimerRef.current); survAudioStopTimerRef.current = null; }
     cleanupWs();
     setMonitoring(false);
     setCurrentFrame(null);
@@ -787,7 +789,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
     setLiveFps(0);
     humanNotifiedRef.current = false;
     toast({ title: "Surveillance Stopped" });
-  }, [sendCommand, toast, micEnabled, cleanupWs]);
+  }, [sendCommand, toast, micEnabled, cleanupWs, stopSurvAudioCapture]);
 
   // Auto-presence: wire up callbacks to auto-start/stop surveillance
   useEffect(() => {
@@ -1193,6 +1195,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><Mic className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Listen (Audio)</Label></div>
                       <Switch checked={micEnabled} onCheckedChange={setMicEnabled} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Volume2 className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Auto Audio on Motion</Label></div>
+                      <Switch checked={autoAudioCapture} onCheckedChange={setAutoAudioCapture} />
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><Bell className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Play PC Alarm</Label></div>
