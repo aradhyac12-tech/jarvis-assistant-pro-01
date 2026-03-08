@@ -47,6 +47,7 @@ import { useAudioDevices } from "@/hooks/useAudioDevices";
 import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
+import { useP2PStreaming } from "@/hooks/useP2PStreaming";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
@@ -159,6 +160,7 @@ export default function MicCamera() {
     inputDevices, outputDevices, selectedInput, selectedOutput,
     setSelectedInput, setSelectedOutput, refreshDevices, loading: devicesLoading,
   } = useAudioDevices();
+  const p2pStreaming = useP2PStreaming();
 
   // ========== Tab persistence ==========
   const [activeTab, setActiveTab] = useState(() => loadSetting("mic_camera_tab", "audio"));
@@ -292,14 +294,15 @@ export default function MicCamera() {
     }
   }, []);
 
-  const waitForWsOpen = useCallback((ws: WebSocket, timeoutMs = 10000) => {
+  const waitForWsOpen = useCallback((ws: WebSocket, timeoutMs?: number) => {
+    const timeout = timeoutMs ?? (p2pStreaming.isP2P ? 4000 : 10000);
     return new Promise<void>((resolve, reject) => {
       if (ws.readyState === WebSocket.OPEN) return resolve();
-      const t = window.setTimeout(() => { ws.close(); reject(new Error("WS timeout")); }, timeoutMs);
+      const t = window.setTimeout(() => { ws.close(); reject(new Error("WS timeout")); }, timeout);
       ws.addEventListener("open", () => { clearTimeout(t); resolve(); }, { once: true });
       ws.addEventListener("error", () => { clearTimeout(t); reject(new Error("WS error")); }, { once: true });
     });
-  }, []);
+  }, [p2pStreaming.isP2P]);
 
   // ==================== PC CAMERA ====================
   const fetchPcCameras = useCallback(async () => {
@@ -317,12 +320,16 @@ export default function MicCamera() {
   const camStartLockRef = useRef(false);
   const screenStartLockRef = useRef(false);
 
+  const [camStarting, setCamStarting] = useState(false);
+  const [screenStarting, setScreenStarting] = useState(false);
+
   const startPcCamera = useCallback(async () => {
     if (camStartLockRef.current) {
       toast({ title: "Please wait...", description: "Camera is still starting" });
       return;
     }
     camStartLockRef.current = true;
+    setCamStarting(true);
     try {
       setPcCamError(null);
       
@@ -331,20 +338,23 @@ export default function MicCamera() {
         pcCamWsRef.current.close();
         pcCamWsRef.current = null;
         sendCommand("stop_camera_stream", {});
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 300));
       }
 
       const sessionId = crypto.randomUUID();
       pcCamSessionRef.current = sessionId;
 
-      const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${camFps}&quality=${camQuality}&binary=true&session_token=${session?.session_token || ''}`
-      );
+      const useP2P = p2pStreaming.isP2P;
+      const wsUrl = p2pStreaming.getCameraUrl(sessionId, { fps: camFps, quality: camQuality, cameraIndex: selectedPcCam });
+
+      addLog("info", "web", `Camera connecting via ${useP2P ? "P2P" : "cloud relay"}...`);
+
+      const ws = new WebSocket(wsUrl);
       pcCamWsRef.current = ws;
       ws.binaryType = "arraybuffer";
 
       ws.onmessage = (event) => processFrames(event, setPcCamFrame, camBlobUrl, camFpsCounter, camFrameTimes, setLiveCamFps, setCamLatency);
-      ws.onopen = () => { setPcCamActive(true); setPcCamError(null); addLog("info", "web", "Camera WS connected"); };
+      ws.onopen = () => { setPcCamActive(true); setPcCamError(null); addLog("info", "web", `Camera WS connected ${useP2P ? "(P2P)" : "(relay)"}`); };
       ws.onerror = () => addLog("error", "web", "Camera WS error");
       ws.onclose = () => {
         setPcCamActive(false);
@@ -354,19 +364,22 @@ export default function MicCamera() {
 
       await waitForWsOpen(ws);
 
-      sendCommand("start_camera_stream", {
-        session_id: sessionId, camera_index: selectedPcCam, fps: camFps, quality: camQuality,
-      }, { awaitResult: false });
+      // P2P: agent streams directly, no separate command needed
+      if (!useP2P) {
+        sendCommand("start_camera_stream", {
+          session_id: sessionId, camera_index: selectedPcCam, fps: camFps, quality: camQuality,
+        }, { awaitResult: false });
+      }
 
-      toast({ title: "PC Camera Starting" });
+      toast({ title: `Camera Started ${useP2P ? "(P2P)" : ""}` });
     } catch (err) {
       setPcCamError(err instanceof Error ? err.message : String(err));
       toast({ title: "Camera Error", variant: "destructive" });
     } finally {
-      // Release lock after delay to prevent rapid re-clicks
-      setTimeout(() => { camStartLockRef.current = false; }, 2000);
+      setCamStarting(false);
+      setTimeout(() => { camStartLockRef.current = false; }, 500);
     }
-  }, [sendCommand, selectedPcCam, camFps, camQuality, CAMERA_WS_URL, session, toast, waitForWsOpen, processFrames]);
+  }, [sendCommand, selectedPcCam, camFps, camQuality, p2pStreaming, session, toast, waitForWsOpen, processFrames]);
 
   const stopPcCamera = useCallback(async () => {
     sendCommand("stop_camera_stream", {});
@@ -389,6 +402,7 @@ export default function MicCamera() {
       return;
     }
     screenStartLockRef.current = true;
+    setScreenStarting(true);
     try {
       setScreenError(null);
       
@@ -397,20 +411,23 @@ export default function MicCamera() {
         screenWsRef.current.close();
         screenWsRef.current = null;
         sendCommand("stop_screen_stream", {});
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 300));
       }
 
       const sessionId = crypto.randomUUID();
       screenSessionRef.current = sessionId;
 
-      const ws = new WebSocket(
-        `${CAMERA_WS_URL}?sessionId=${sessionId}&type=pc&fps=${screenFps}&quality=${screenQuality}&binary=true&session_token=${session?.session_token || ''}`
-      );
+      const useP2P = p2pStreaming.isP2P;
+      const wsUrl = p2pStreaming.getScreenUrl(sessionId, { fps: screenFps, quality: screenQuality, scale: 0.5 });
+
+      addLog("info", "web", `Screen connecting via ${useP2P ? "P2P" : "cloud relay"}...`);
+
+      const ws = new WebSocket(wsUrl);
       screenWsRef.current = ws;
       ws.binaryType = "arraybuffer";
 
       ws.onmessage = (event) => processFrames(event, setScreenFrame, screenBlobUrl, screenFpsCounter, screenFrameTimes, setLiveScreenFps, setScreenLatency);
-      ws.onopen = () => { setScreenActive(true); setScreenError(null); addLog("info", "web", "Screen WS connected"); };
+      ws.onopen = () => { setScreenActive(true); setScreenError(null); addLog("info", "web", `Screen WS connected ${useP2P ? "(P2P)" : "(relay)"}`); };
       ws.onerror = () => addLog("error", "web", "Screen WS error");
       ws.onclose = () => {
         setScreenActive(false);
@@ -420,18 +437,22 @@ export default function MicCamera() {
 
       await waitForWsOpen(ws);
 
-      sendCommand("start_screen_stream", {
-        session_id: sessionId, fps: screenFps, quality: screenQuality, scale: 0.5,
-      }, { awaitResult: false });
+      // P2P: agent streams directly, no separate command needed
+      if (!useP2P) {
+        sendCommand("start_screen_stream", {
+          session_id: sessionId, fps: screenFps, quality: screenQuality, scale: 0.5,
+        }, { awaitResult: false });
+      }
 
-      toast({ title: "Screen Mirror Starting" });
+      toast({ title: `Screen Mirror Started ${useP2P ? "(P2P)" : ""}` });
     } catch (err) {
       setScreenError(err instanceof Error ? err.message : String(err));
       toast({ title: "Screen Error", variant: "destructive" });
     } finally {
-      setTimeout(() => { screenStartLockRef.current = false; }, 2000);
+      setScreenStarting(false);
+      setTimeout(() => { screenStartLockRef.current = false; }, 500);
     }
-  }, [sendCommand, screenFps, screenQuality, CAMERA_WS_URL, session, toast, waitForWsOpen, processFrames]);
+  }, [sendCommand, screenFps, screenQuality, p2pStreaming, session, toast, waitForWsOpen, processFrames]);
 
   const stopScreen = useCallback(async () => {
     screenWsRef.current?.close();
