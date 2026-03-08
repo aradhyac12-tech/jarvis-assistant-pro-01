@@ -22,33 +22,57 @@ interface NormalizedLandmark {
   visibility: number;
 }
 
-// MediaPipe Pose connections
+// MediaPipe Pose connections - full body
 const POSE_CONNECTIONS: [number, number][] = [
+  // Torso
   [11, 12], [11, 23], [12, 24], [23, 24],
+  // Left arm
   [11, 13], [13, 15],
+  // Right arm
   [12, 14], [14, 16],
+  // Left leg
   [23, 25], [25, 27],
+  // Right leg
   [24, 26], [26, 28],
+  // Face outline
   [0, 1], [1, 2], [2, 3], [3, 7],
   [0, 4], [4, 5], [5, 6], [6, 8],
+  // Mouth
   [9, 10],
+  // Left hand
   [15, 17], [15, 19], [15, 21],
+  // Right hand
   [16, 18], [16, 20], [16, 22],
+  // Left foot
   [27, 29], [27, 31],
+  // Right foot
   [28, 30], [28, 32],
 ];
 
-// Body part groupings for coloring
-function getConnectionColor(i1: number, i2: number): string {
-  if ([11, 12, 23, 24].includes(i1) && [11, 12, 23, 24].includes(i2)) return "#00ff88";
-  if ([11, 13, 15].includes(i1) && [11, 13, 15].includes(i2)) return "#ff6b6b";
-  if ([12, 14, 16].includes(i1) && [12, 14, 16].includes(i2)) return "#4ecdc4";
-  if ([23, 25, 27].includes(i1) && [23, 25, 27].includes(i2)) return "#ffd93d";
-  if ([24, 26, 28].includes(i1) && [24, 26, 28].includes(i2)) return "#6c5ce7";
-  if (i1 <= 10 && i2 <= 10) return "#a8e6cf";
-  if ([15, 16, 17, 18, 19, 20, 21, 22].includes(i1)) return "#ff8a80";
-  if ([27, 28, 29, 30, 31, 32].includes(i1)) return "#80cbc4";
-  return "#ffffff";
+// Body part groups for distinct coloring
+const BODY_GROUPS: Record<string, { indices: number[][]; color: string; glow: string }> = {
+  torso:    { indices: [[11,12],[11,23],[12,24],[23,24]], color: "#00ff88", glow: "rgba(0,255,136,0.5)" },
+  leftArm:  { indices: [[11,13],[13,15]], color: "#ff6b6b", glow: "rgba(255,107,107,0.5)" },
+  rightArm: { indices: [[12,14],[14,16]], color: "#4ecdc4", glow: "rgba(78,205,196,0.5)" },
+  leftLeg:  { indices: [[23,25],[25,27]], color: "#ffd93d", glow: "rgba(255,217,61,0.5)" },
+  rightLeg: { indices: [[24,26],[26,28]], color: "#6c5ce7", glow: "rgba(108,92,231,0.5)" },
+  face:     { indices: [[0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],[9,10]], color: "#a8e6cf", glow: "rgba(168,230,207,0.4)" },
+  leftHand: { indices: [[15,17],[15,19],[15,21]], color: "#ff8a80", glow: "rgba(255,138,128,0.4)" },
+  rightHand:{ indices: [[16,18],[16,20],[16,22]], color: "#82b1ff", glow: "rgba(130,177,255,0.4)" },
+  leftFoot: { indices: [[27,29],[27,31]], color: "#80cbc4", glow: "rgba(128,203,196,0.4)" },
+  rightFoot:{ indices: [[28,30],[28,32]], color: "#ce93d8", glow: "rgba(206,147,216,0.4)" },
+};
+
+function getConnectionStyle(i1: number, i2: number): { color: string; glow: string; width: number } {
+  for (const group of Object.values(BODY_GROUPS)) {
+    for (const [a, b] of group.indices) {
+      if ((i1 === a && i2 === b) || (i1 === b && i2 === a)) {
+        const isMajor = i1 >= 11 && i1 <= 28 && i2 >= 11 && i2 <= 28;
+        return { color: group.color, glow: group.glow, width: isMajor ? 3.5 : 1.5 };
+      }
+    }
+  }
+  return { color: "#ffffff", glow: "rgba(255,255,255,0.3)", width: 2 };
 }
 
 export function PoseDetectionOverlay({
@@ -268,20 +292,19 @@ export function PoseDetectionOverlay({
         ctx.fill();
       }
 
-      // Draw connections with proper thickness
+      // Draw connections with body-part-specific colors and glow
       for (const [i1, i2] of POSE_CONNECTIONS) {
         const l1 = landmarks[i1];
         const l2 = landmarks[i2];
         if (!l1 || !l2 || l1.visibility < 0.2 || l2.visibility < 0.2) continue;
 
-        const color = getConnectionColor(i1, i2);
-        // Thicker lines for major body parts, thinner for face/hands/feet
-        const isMajor = (i1 >= 11 && i1 <= 28 && i2 >= 11 && i2 <= 28);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = isMajor ? 4 : 2;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = isMajor ? 8 : 4;
+        const style = getConnectionStyle(i1, i2);
+        ctx.strokeStyle = style.color;
+        ctx.lineWidth = style.width;
+        ctx.shadowColor = style.glow;
+        ctx.shadowBlur = style.width > 2 ? 10 : 5;
         ctx.lineCap = "round";
+        ctx.lineJoin = "round";
         ctx.beginPath();
         ctx.moveTo(l1.x * canvas.width, l1.y * canvas.height);
         ctx.lineTo(l2.x * canvas.width, l2.y * canvas.height);
