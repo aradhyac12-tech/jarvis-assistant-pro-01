@@ -12,6 +12,7 @@ import {
   Menu,
   X,
   Camera,
+  Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 const navItems = [
   { title: "Hub", url: "/hub", icon: Home },
   { title: "Voice AI", url: "/voice", icon: Mic },
+  { title: "Notifications", url: "/notifications", icon: Bell },
   { title: "Apps", url: "/apps", icon: AppWindow },
   { title: "Files", url: "/files", icon: FolderOpen },
   { title: "Camera", url: "/miccamera", icon: Camera },

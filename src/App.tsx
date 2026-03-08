@@ -26,6 +26,7 @@ const Files = lazy(() => import("./pages/Files"));
 const MicCamera = lazy(() => import("./pages/MicCamera"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
+const Notifications = lazy(() => import("./pages/Notifications"));
 
 const queryClient = new QueryClient();
 
@@ -161,6 +162,7 @@ function AppRoutes() {
           <Route path="/miccamera" element={<ProtectedRoute><MicCamera /></ProtectedRoute>} />
           <Route path="/webcam" element={<Navigate to="/miccamera" replace />} />
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
