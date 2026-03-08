@@ -101,7 +101,7 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
     if (!isConnected) return;
     setLoading(true);
     try {
-      const result = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 5000 });
+      const result = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 8000 });
       if (result.success && "result" in result) {
         const r = result.result as any;
         const cpuTemp = r.cpu_temp ?? r.cpu_temperature ?? null;
@@ -139,10 +139,42 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
             setThrottleAlert(null);
           }
         }
+      } else {
+        // Fallback: use system_info from device heartbeat
+        const sysInfo = selectedDevice?.system_info as Record<string, any> | null;
+        if (sysInfo) {
+          const snapshot: StatsSnapshot = {
+            cpu: sysInfo.cpu_percent ?? 0,
+            ram: sysInfo.memory_percent ?? 0,
+            disk: 0,
+            netUp: 0,
+            netDown: 0,
+            cpuTemp: null,
+            gpuTemp: null,
+            ts: Date.now(),
+          };
+          setHistory(prev => [...prev, snapshot].slice(-MAX_HISTORY));
+        }
       }
-    } catch {}
+    } catch {
+      // Fallback: use system_info from device heartbeat
+      const sysInfo = selectedDevice?.system_info as Record<string, any> | null;
+      if (sysInfo) {
+        const snapshot: StatsSnapshot = {
+          cpu: sysInfo.cpu_percent ?? 0,
+          ram: sysInfo.memory_percent ?? 0,
+          disk: 0,
+          netUp: 0,
+          netDown: 0,
+          cpuTemp: null,
+          gpuTemp: null,
+          ts: Date.now(),
+        };
+        setHistory(prev => [...prev, snapshot].slice(-MAX_HISTORY));
+      }
+    }
     setLoading(false);
-  }, [isConnected, sendCommand, notify]);
+  }, [isConnected, sendCommand, notify, selectedDevice?.system_info]);
 
   const fetchProcesses = useCallback(async () => {
     if (!isConnected) return;
