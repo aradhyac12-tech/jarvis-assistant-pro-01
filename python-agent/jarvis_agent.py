@@ -3096,7 +3096,55 @@ class JarvisAgent:
             pass
         return surv_dir
 
-    def _save_surveillance_clip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _save_surveillance_event_to_cloud(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Save a surveillance event to the cloud database from agent side."""
+        try:
+            event_type = payload.get("event_type", "motion")
+            confidence = int(payload.get("confidence", 0))
+            recognized = bool(payload.get("recognized", False))
+            recognized_label = payload.get("recognized_label")
+            recognition_confidence = int(payload.get("recognition_confidence", 0))
+            metadata = payload.get("metadata", {})
+            
+            # Upload screenshot if image data provided
+            screenshot_url = None
+            image_data = payload.get("image_data", "")
+            if image_data and self._device_id:
+                if "," in image_data:
+                    image_data = image_data.split(",", 1)[1]
+                img_bytes = base64.b64decode(image_data)
+                filename = f"{self._user_id}/{self._device_id}/{int(time.time())}.jpg"
+                try:
+                    resp = self._sb.storage.from_("surveillance-screenshots").upload(
+                        filename, img_bytes, {"content-type": "image/jpeg"}
+                    )
+                    signed = self._sb.storage.from_("surveillance-screenshots").create_signed_url(
+                        filename, 60 * 60 * 24 * 15
+                    )
+                    screenshot_url = signed.get("signedURL") if isinstance(signed, dict) else None
+                except Exception as e:
+                    _log("warn", f"Screenshot upload failed: {e}")
+            
+            # Insert event
+            if self._device_id and self._user_id:
+                self._sb.table("surveillance_events").insert({
+                    "device_id": self._device_id,
+                    "user_id": self._user_id,
+                    "event_type": event_type,
+                    "confidence": confidence,
+                    "recognized": recognized,
+                    "recognized_label": recognized_label,
+                    "recognition_confidence": recognition_confidence,
+                    "screenshot_url": screenshot_url,
+                    "metadata": metadata,
+                }).execute()
+                _log("info", f"Surveillance event saved to cloud: {event_type} (confidence: {confidence}%)")
+                return {"success": True, "event_type": event_type}
+            return {"success": False, "error": "No device/user ID"}
+        except Exception as e:
+            _log("error", f"Failed to save surveillance event: {e}")
+            return {"success": False, "error": str(e)}
+
         """Save a surveillance clip snapshot to the surveillance folder."""
         try:
             surv_dir = self._get_surveillance_dir()
@@ -4526,6 +4574,8 @@ class JarvisAgent:
                 return get_face_recognizer().get_status()
             elif cmd == "recognize_frame":
                 return self._recognize_from_base64(payload)
+            elif cmd == "save_surveillance_event":
+                return self._save_surveillance_event_to_cloud(payload)
 
             elif cmd == "open_p2p_ports":
                 return self._open_p2p_firewall_ports()
