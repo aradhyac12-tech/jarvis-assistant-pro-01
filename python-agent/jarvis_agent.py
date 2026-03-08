@@ -37,7 +37,7 @@ import webbrowser
 import urllib.parse
 import urllib.request
 import traceback
-import calendar as cal_module
+import calendar as cal_module  # used by calendar/notes/reminders handler
 
 # ============== VERSION ==============
 AGENT_VERSION = "5.7.0"
@@ -655,7 +655,7 @@ class BleReassembler:
         self.timeout_sec = timeout_sec
         self.last_receive = 0.0
     
-    def feed(self, raw: bytes) -> bytes | None:
+    def feed(self, raw: bytes) -> Optional[bytes]:
         """Feed a raw BLE write. Returns assembled bytes when complete, or None."""
         parsed = ble_parse_chunk_header(raw)
         if parsed is None:
@@ -3778,7 +3778,7 @@ class JarvisAgent:
                                 duration = [int]$timeline.EndTime.TotalSeconds
                                 app = $current.SourceAppUserModelId
                             }}
-                            {"'$obj[\"thumbnail\"] = $thumbB64' | Invoke-Expression" if include_thumbnail else ""}
+                            {"$obj['thumbnail'] = $thumbB64" if include_thumbnail else ""}
                             $obj | ConvertTo-Json
                         }} else {{ '{{}}' }}
                         """
@@ -4407,7 +4407,11 @@ class JarvisAgent:
             ws_base = self._get_ws_base()
 
             def stream_audio():
-                import websockets.sync.client as ws_client
+                try:
+                    import websockets.sync.client as ws_client
+                except (ImportError, AttributeError):
+                    add_log("error", "websockets.sync.client not available (requires websockets>=12.0). Audio streaming disabled.", category="audio")
+                    return
                 ws_url = f"{ws_base}/functions/v1/audio-relay?sessionId={session_id}&type=pc&direction={direction}&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
@@ -5137,7 +5141,11 @@ class JarvisAgent:
             ws_base = self._get_ws_base()
             
             def stream_camera():
-                import websockets.sync.client as ws_client
+                try:
+                    import websockets.sync.client as ws_client
+                except (ImportError, AttributeError):
+                    add_log("error", "websockets.sync.client not available (requires websockets>=12.0). Camera streaming disabled.", category="camera")
+                    return
                 ws_url = f"{ws_base}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
@@ -5237,7 +5245,11 @@ class JarvisAgent:
             ws_base = self._get_ws_base()
             
             def stream_screen():
-                import websockets.sync.client as ws_client
+                try:
+                    import websockets.sync.client as ws_client
+                except (ImportError, AttributeError):
+                    add_log("error", "websockets.sync.client not available (requires websockets>=12.0). Screen streaming disabled.", category="screen")
+                    return
                 ws_url = f"{ws_base}/functions/v1/camera-relay?sessionId={session_id}&type=phone&fps={fps}&quality={quality}&binary=true&session_token={session_token}"
                 retry_delay = 2
                 max_retry_delay = 30
@@ -5327,7 +5339,11 @@ class JarvisAgent:
         ws_base = self._get_ws_base()
         
         def send_patterns():
-            import websockets.sync.client as ws_client
+            try:
+                import websockets.sync.client as ws_client
+            except (ImportError, AttributeError):
+                add_log("error", "websockets.sync.client not available (requires websockets>=12.0). Test pattern disabled.", category="camera")
+                return
             ws_url = f"{ws_base}/functions/v1/camera-relay?sessionId={session_id}&type=phone&binary=true&session_token={session_token}"
             try:
                 with ws_client.connect(ws_url, open_timeout=10) as ws:
@@ -5577,25 +5593,19 @@ class JarvisAgent:
                 "get_system_state": "system_state",
                 "get_cameras": "list_cameras",
                 "get_audio_devices": "audio_devices",
-                "spotify": "spotify",
-                "spotify_control": "spotify",
-                "spotify_play": "spotify",
-                "spotify_pause": "spotify",
-                "spotify_next": "spotify",
-                "spotify_prev": "spotify",
-                "calendar": "calendar",
-                "notes": "calendar",
-                "reminders": "calendar",
-                "todo": "calendar",
-                "add_note": "calendar",
-                "get_notes": "calendar",
-                "brightness": "brightness_volume",
-                "volume": "brightness_volume",
-                "mute": "brightness_volume",
-                "unmute": "brightness_volume",
-                "system_control": "system_control",
-                "power": "system_control",
-                "boost": "system_control",
+                "spotify": "play_music",
+                "spotify_control": "media_control",
+                "spotify_play": "play_music",
+                "spotify_pause": "media_control",
+                "spotify_next": "media_control",
+                "spotify_prev": "media_control",
+                "brightness": "set_brightness",
+                "volume": "set_volume",
+                "mute": "mute_pc",
+                "unmute": "unmute_pc",
+                "system_control": "get_system_stats",
+                "power": "shutdown",
+                "boost": "get_system_stats",
             }
             cmd = alias_map.get(cmd, cmd)
             
@@ -5891,6 +5901,39 @@ class JarvisAgent:
                     webbrowser.open(url)
                     return {"success": True, "message": f"Searching '{query}' on {engine}"}
             
+            # Calendar / Notes / Reminders (stub — stores locally)
+            elif cmd in ["calendar", "notes", "reminders", "todo", "get_notes"]:
+                action = payload.get("action", "list")
+                notes_file = os.path.join(AGENT_DIR, "jarvis_notes.json")
+                try:
+                    existing = json.load(open(notes_file)) if os.path.exists(notes_file) else []
+                except Exception:
+                    existing = []
+                if action == "add" or cmd == "add_note":
+                    text = payload.get("text", payload.get("note", ""))
+                    if text:
+                        existing.append({"text": text, "created": datetime.now().isoformat(), "type": cmd})
+                        with open(notes_file, "w") as f:
+                            json.dump(existing, f, indent=2)
+                        return {"success": True, "message": f"Note added: {text[:80]}"}
+                    return {"success": False, "error": "No text provided"}
+                else:
+                    return {"success": True, "notes": existing[-50:], "total": len(existing)}
+            elif cmd == "add_note":
+                # Handled above via alias, but explicit fallthrough
+                text = payload.get("text", payload.get("note", ""))
+                notes_file = os.path.join(AGENT_DIR, "jarvis_notes.json")
+                try:
+                    existing = json.load(open(notes_file)) if os.path.exists(notes_file) else []
+                except Exception:
+                    existing = []
+                if text:
+                    existing.append({"text": text, "created": datetime.now().isoformat(), "type": "note"})
+                    with open(notes_file, "w") as f:
+                        json.dump(existing, f, indent=2)
+                    return {"success": True, "message": f"Note added: {text[:80]}"}
+                return {"success": False, "error": "No text provided"}
+
             elif cmd in ["answer_call", "end_call", "decline_call", "call_mute"]:
                 return {"success": True, "message": f"{cmd} acknowledged (mobile-side action)"}
             
@@ -6875,13 +6918,14 @@ def _agent_watchdog(agent_thread, agent_ref, gui_ref=None):
         time.sleep(15)
         if not agent_thread.is_alive():
             add_log("warn", "Watchdog: Agent thread died! Restarting...", category="system")
-            new_agent = JarvisAgent()
+            # Re-use the existing agent instance to preserve config/state
+            reuse_agent = agent_ref if agent_ref else JarvisAgent()
             if gui_ref:
                 try:
-                    gui_ref.agent = new_agent
+                    gui_ref.agent = reuse_agent
                 except Exception:
                     pass
-            agent_thread = threading.Thread(target=_run_agent_loop, args=(new_agent,), daemon=True)
+            agent_thread = threading.Thread(target=_run_agent_loop, args=(reuse_agent,), daemon=True)
             agent_thread.start()
             add_log("info", "Watchdog: Agent thread restarted successfully", category="system")
 
