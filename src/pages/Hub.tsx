@@ -66,7 +66,7 @@ import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
-type Tab = "control" | "remote" | "media" | "apps" | "zoom" | "network" | "settings";
+type Tab = "control" | "remote" | "media" | "apps" | "more";
 
 interface SystemStats {
   cpu_percent?: number;
