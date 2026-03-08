@@ -161,16 +161,5 @@ export function GlobalClipboardSync() {
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [isWifiConnected, sendCommand]);
 
-  // Reset backoff externally (on copy/cut activity) — restarts fast polling
-  const resetBackoffAndRestart = useCallback(() => {
-    noChangeCountRef.current = 0;
-    if (currentIntervalRef.current !== FAST_INTERVAL && checkRef.current) {
-      currentIntervalRef.current = FAST_INTERVAL;
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = window.setInterval(checkRef.current, FAST_INTERVAL);
-      console.log("[Clipboard] ⚡ Resumed fast polling (user activity)");
-    }
-  }, []);
-
   return null; // headless
 }
