@@ -51,6 +51,9 @@ import { useGlobalPiP } from "@/contexts/GlobalPiPContext";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
+const PIP_CAMERA_STREAM_ID = "pip-camera";
+const PIP_SCREEN_STREAM_ID = "pip-screen";
+
 // ==================== Settings Persistence ====================
 function loadSetting<T>(key: string, fallback: T): T {
   try {
