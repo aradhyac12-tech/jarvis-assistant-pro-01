@@ -64,6 +64,9 @@ import { KDEMediaControl } from "@/components/KDEMediaControl";
 import { RemoteScreenshot } from "@/components/RemoteScreenshot";
 import { RemoteAppLauncher } from "@/components/RemoteAppLauncher";
 import { DragDropFileTransfer } from "@/components/DragDropFileTransfer";
+import { PCNotificationMirror } from "@/components/PCNotificationMirror";
+import { WakeOnLan } from "@/components/WakeOnLan";
+import { ConnectionTimeline } from "@/components/ConnectionTimeline";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -1246,11 +1249,24 @@ export default function Hub() {
             {/* More Tab — Zoom, Network, File Transfer, Settings */}
             {activeTab === "more" && (
               <div className="space-y-2.5">
+                {/* PC Notification Mirroring */}
+                <PCNotificationMirror isConnected={isConnected} />
+
                 {/* Remote Screenshot */}
                 <RemoteScreenshot isConnected={isConnected} />
 
                 {/* App Launcher */}
                 <RemoteAppLauncher isConnected={isConnected} />
+
+                {/* Wake-on-LAN */}
+                <WakeOnLan
+                  isConnected={isConnected}
+                  deviceId={selectedDevice?.id}
+                  systemInfo={selectedDevice?.system_info as Record<string, any> | null}
+                />
+
+                {/* Connection Mode Timeline */}
+                <ConnectionTimeline connectionMode={connectionMode} latency={p2pLatency} />
 
                 {/* Drag & Drop File Transfer */}
                 <DragDropFileTransfer isConnected={isConnected} />
