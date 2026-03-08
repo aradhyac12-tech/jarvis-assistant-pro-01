@@ -716,112 +716,38 @@ export default function Hub() {
           </div>
         </header>
 
-        {/* Persistent Transport Status Bar */}
-        {selectedDevice && (
-          <div className="sticky top-12 z-40 border-b border-border/10 bg-card/60 backdrop-blur-lg px-3 py-1.5">
-            <div className="flex items-center justify-between text-[11px]">
-              <div className="flex items-center gap-3">
-                {/* WiFi */}
-                <div className={cn(
-                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
-                  isConnected && connectionMode !== "fallback"
-                    ? "bg-emerald-500/10 text-emerald-400"
-                    : "bg-muted/30 text-muted-foreground"
-                )}>
-                  {isConnected && connectionMode !== "fallback" ? (
-                    <Wifi className="w-3 h-3" />
-                  ) : (
-                    <WifiOff className="w-3 h-3" />
-                  )}
-                  <span>WiFi</span>
-                </div>
-
-                {/* BLE */}
-                <div className={cn(
-                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
-                  bluetooth.isReady
-                    ? "bg-blue-500/10 text-blue-400"
-                    : bluetooth.state.isScanning
-                      ? "bg-blue-500/10 text-blue-300 animate-pulse"
-                      : "bg-muted/30 text-muted-foreground"
-                )}>
-                  <Bluetooth className="w-3 h-3" />
-                  <span>{bluetooth.isReady ? "BLE" : bluetooth.state.isScanning ? "Scanning" : "BLE"}</span>
-                </div>
-
-                {/* Cloud */}
-                <div className={cn(
-                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
-                  connectionMode === "fallback"
-                    ? "bg-amber-500/10 text-amber-400"
-                    : "bg-muted/30 text-muted-foreground"
-                )}>
-                  <Globe className="w-3 h-3" />
-                  <span>Cloud</span>
-                </div>
-              </div>
-
-              {/* Active transport + latency */}
-              <div className="flex items-center gap-2">
-                {isConnected && (
-                  <div className="flex items-center gap-1.5 font-mono">
-                    <Signal className="w-3 h-3 text-primary" />
-                    <span className="text-primary">
-                      {connectionMode === "local_p2p" ? "Local" : connectionMode === "p2p" ? "P2P" : connectionMode === "websocket" ? "WS" : connectionMode === "fallback" ? "Cloud" : "…"}
-                    </span>
-                    {p2pLatency > 0 && (
-                      <span className={cn(
-                        "tabular-nums",
-                        p2pLatency < 50 ? "text-emerald-400" : p2pLatency < 150 ? "text-amber-400" : "text-destructive"
-                      )}>
-                        {p2pLatency}ms
-                      </span>
-                    )}
-                  </div>
-                )}
-                {bluetooth.isReady && bluetooth.state.latency > 0 && (
-                  <div className="flex items-center gap-1 font-mono text-blue-400">
-                    <Bluetooth className="w-2.5 h-2.5" />
-                    <span className="tabular-nums">{bluetooth.state.latency}ms</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <ScrollArea className={cn("h-[calc(100vh-3rem)]", selectedDevice && "h-[calc(100vh-5.5rem)]")}>
-          <main className="p-3 space-y-3 pb-6">
+        <ScrollArea className="h-[calc(100vh-2.75rem)]">
+          <main className="p-3 space-y-2.5 pb-6">
             {/* Command Input */}
-            <div className="flex gap-2">
+            <div className="flex gap-1.5">
               <Input
-                placeholder="Type a command... (open, play, search)"
+                placeholder="Type a command..."
                 value={cmdInput}
                 onChange={(e) => setCmdInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCommand()}
-                className="flex-1 h-10 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
+                className="flex-1 h-9 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
                 disabled={!isConnected}
               />
-              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-10 w-10 shrink-0">
+              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-9 w-9 shrink-0">
                 {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </Button>
             </div>
 
-            {/* Tab Navigation — 3 columns, proper mobile grid */}
-            <div className="grid grid-cols-3 gap-1 p-1 bg-card/30 rounded-xl w-full border border-border/10">
+            {/* Tab Navigation — 5 columns */}
+            <div className="grid grid-cols-5 gap-0.5 p-0.5 bg-card/30 rounded-xl w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => { setActiveTab(tab.id); haptic.tap(); }}
                   className={cn(
-                    "flex items-center justify-center gap-1.5 px-2 py-2.5 rounded-lg text-xs font-medium transition-all",
+                    "flex flex-col items-center justify-center gap-0.5 px-1 py-2 rounded-lg text-[10px] font-medium transition-all",
                     activeTab === tab.id
                       ? "bg-primary text-primary-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground hover:bg-secondary/30"
                   )}
                 >
                   <tab.icon className="w-4 h-4 shrink-0" />
-                  <span className="text-[10px] truncate">{tab.label}</span>
+                  <span className="truncate">{tab.label}</span>
                 </button>
               ))}
             </div>
