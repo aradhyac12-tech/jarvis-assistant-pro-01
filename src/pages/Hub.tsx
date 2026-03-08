@@ -30,6 +30,7 @@ import {
   Music,
   Moon,
   Wifi,
+  WifiOff,
   Wrench,
   AppWindow,
   Search,
@@ -41,6 +42,9 @@ import {
   Eye,
   EyeOff,
   Keyboard,
+  Bluetooth,
+  Globe,
+  Signal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -58,6 +62,7 @@ import { PureTrackpad } from "@/components/PureTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
+import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
@@ -110,6 +115,7 @@ export default function Hub() {
     fireGesture3Finger,
     fireGesture4Finger,
   } = useP2PCommand();
+  const bluetooth = useSharedBluetooth();
   const { toast } = useToast();
 
   // Helper to load persisted state
@@ -691,7 +697,81 @@ export default function Hub() {
           </div>
         </header>
 
-        <ScrollArea className="h-[calc(100vh-3rem)]">
+        {/* Persistent Transport Status Bar */}
+        {selectedDevice && (
+          <div className="sticky top-12 z-40 border-b border-border/10 bg-card/60 backdrop-blur-lg px-3 py-1.5">
+            <div className="flex items-center justify-between text-[11px]">
+              <div className="flex items-center gap-3">
+                {/* WiFi */}
+                <div className={cn(
+                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
+                  isConnected && connectionMode !== "fallback"
+                    ? "bg-emerald-500/10 text-emerald-400"
+                    : "bg-muted/30 text-muted-foreground"
+                )}>
+                  {isConnected && connectionMode !== "fallback" ? (
+                    <Wifi className="w-3 h-3" />
+                  ) : (
+                    <WifiOff className="w-3 h-3" />
+                  )}
+                  <span>WiFi</span>
+                </div>
+
+                {/* BLE */}
+                <div className={cn(
+                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
+                  bluetooth.isReady
+                    ? "bg-blue-500/10 text-blue-400"
+                    : bluetooth.state.isScanning
+                      ? "bg-blue-500/10 text-blue-300 animate-pulse"
+                      : "bg-muted/30 text-muted-foreground"
+                )}>
+                  <Bluetooth className="w-3 h-3" />
+                  <span>{bluetooth.isReady ? "BLE" : bluetooth.state.isScanning ? "Scanning" : "BLE"}</span>
+                </div>
+
+                {/* Cloud */}
+                <div className={cn(
+                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
+                  connectionMode === "fallback"
+                    ? "bg-amber-500/10 text-amber-400"
+                    : "bg-muted/30 text-muted-foreground"
+                )}>
+                  <Globe className="w-3 h-3" />
+                  <span>Cloud</span>
+                </div>
+              </div>
+
+              {/* Active transport + latency */}
+              <div className="flex items-center gap-2">
+                {isConnected && (
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <Signal className="w-3 h-3 text-primary" />
+                    <span className="text-primary">
+                      {connectionMode === "local_p2p" ? "Local" : connectionMode === "p2p" ? "P2P" : connectionMode === "websocket" ? "WS" : connectionMode === "fallback" ? "Cloud" : "…"}
+                    </span>
+                    {p2pLatency > 0 && (
+                      <span className={cn(
+                        "tabular-nums",
+                        p2pLatency < 50 ? "text-emerald-400" : p2pLatency < 150 ? "text-amber-400" : "text-destructive"
+                      )}>
+                        {p2pLatency}ms
+                      </span>
+                    )}
+                  </div>
+                )}
+                {bluetooth.isReady && bluetooth.state.latency > 0 && (
+                  <div className="flex items-center gap-1 font-mono text-blue-400">
+                    <Bluetooth className="w-2.5 h-2.5" />
+                    <span className="tabular-nums">{bluetooth.state.latency}ms</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <ScrollArea className={cn("h-[calc(100vh-3rem)]", selectedDevice && "h-[calc(100vh-5.5rem)]")}>
           <main className="p-3 space-y-3 pb-6">
             {/* Command Input */}
             <div className="flex gap-2">
