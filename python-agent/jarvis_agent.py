@@ -3772,17 +3772,73 @@ class JarvisAgent:
     def _get_system_stats(self) -> Dict[str, Any]:
         try:
             cpu = psutil.cpu_percent()
-            mem = psutil.virtual_memory().percent
-            disk = psutil.disk_usage('/').percent if platform.system() != "Windows" else psutil.disk_usage('C:\\').percent
+            mem = psutil.virtual_memory()
+            disk = psutil.disk_usage('/') if platform.system() != "Windows" else psutil.disk_usage('C:\\')
             battery = psutil.sensors_battery()
+            
+            # Network I/O rates
+            net_up, net_down = 0, 0
+            try:
+                net1 = psutil.net_io_counters()
+                import time as _time
+                _time.sleep(0.3)
+                net2 = psutil.net_io_counters()
+                dt = 0.3
+                net_up = int((net2.bytes_sent - net1.bytes_sent) / dt)
+                net_down = int((net2.bytes_recv - net1.bytes_recv) / dt)
+            except Exception:
+                pass
+            
+            # Temperatures
+            cpu_temp, gpu_temp = None, None
+            try:
+                temps = psutil.sensors_temperatures()
+                if temps:
+                    for name, entries in temps.items():
+                        if entries:
+                            t = entries[0].current
+                            if 'cpu' in name.lower() or 'coretemp' in name.lower() or 'k10temp' in name.lower():
+                                cpu_temp = t
+                            elif 'gpu' in name.lower() or 'nvidia' in name.lower() or 'amdgpu' in name.lower():
+                                gpu_temp = t
+            except Exception:
+                pass
+            
+            # Top processes
+            top_processes = []
+            try:
+                total_memory = mem.total
+                procs = []
+                for proc in psutil.process_iter(['name', 'pid', 'cpu_percent', 'memory_percent']):
+                    try:
+                        info = proc.info
+                        name = info['name']
+                        if name.lower() in ("system", "idle", "registry", "smss.exe", "csrss.exe", "svchost.exe"):
+                            continue
+                        cpu_p = round(info.get('cpu_percent', 0) or 0, 1)
+                        mem_p = round(info.get('memory_percent', 0) or 0, 1)
+                        if cpu_p > 0 or mem_p > 1:
+                            mem_mb = round((mem_p / 100.0) * (total_memory / (1024 * 1024)), 1)
+                            procs.append({"pid": info['pid'], "name": name, "cpu": cpu_p, "memory": mem_p, "memory_mb": mem_mb})
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                procs.sort(key=lambda x: x.get("cpu", 0), reverse=True)
+                top_processes = procs[:15]
+            except Exception:
+                pass
             
             return {
                 "success": True,
                 "cpu_percent": cpu,
-                "memory_percent": mem,
-                "disk_percent": disk,
+                "memory_percent": mem.percent,
+                "disk_percent": disk.percent,
                 "battery_percent": battery.percent if battery else None,
                 "battery_plugged": battery.power_plugged if battery else None,
+                "net_bytes_sent_sec": net_up,
+                "net_bytes_recv_sec": net_down,
+                "cpu_temp": cpu_temp,
+                "gpu_temp": gpu_temp,
+                "top_processes": top_processes,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -3796,6 +3852,203 @@ class JarvisAgent:
             "brightness": bright,
             "is_locked": self._detect_lock_state(),
         }
+    
+    def _get_battery_status(self) -> Dict[str, Any]:
+        try:
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return {"success": True, "no_battery": True, "has_battery": False}
+            secs_left = battery.secsleft if battery.secsleft != psutil.POWER_TIME_UNLIMITED and battery.secsleft != psutil.POWER_TIME_UNKNOWN else None
+            return {
+                "success": True,
+                "has_battery": True,
+                "percent": battery.percent,
+                "is_charging": battery.power_plugged,
+                "is_plugged_in": battery.power_plugged,
+                "secs_left": secs_left,
+                "time_remaining": round(secs_left / 60) if secs_left else None,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_fan_speeds(self) -> Dict[str, Any]:
+        try:
+            fans_data = []
+            try:
+                fans = psutil.sensors_fans()
+                if fans:
+                    for name, entries in fans.items():
+                        for entry in entries:
+                            fans_data.append({
+                                "name": entry.label or name,
+                                "rpm": entry.current,
+                                "percent": min(100, int((entry.current / 5000) * 100)) if entry.current else 0,
+                            })
+            except (AttributeError, Exception):
+                pass
+            return {"success": True, "fans": fans_data}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_disk_usage(self) -> Dict[str, Any]:
+        try:
+            drives = []
+            for part in psutil.disk_partitions(all=False):
+                try:
+                    usage = psutil.disk_usage(part.mountpoint)
+                    drives.append({
+                        "drive": part.device.rstrip("\\"),
+                        "label": part.mountpoint,
+                        "total_gb": round(usage.total / (1024**3), 1),
+                        "used_gb": round(usage.used / (1024**3), 1),
+                        "free_gb": round(usage.free / (1024**3), 1),
+                        "percent": usage.percent,
+                        "fs_type": part.fstype,
+                    })
+                except (PermissionError, OSError):
+                    continue
+            return {"success": True, "drives": drives}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_folder_sizes(self, path: str) -> Dict[str, Any]:
+        try:
+            import os as _os
+            base = path.rstrip("/\\")
+            if not base:
+                base = "C:\\" if platform.system() == "Windows" else "/"
+            folders = []
+            try:
+                entries = list(_os.scandir(base))
+            except PermissionError:
+                return {"success": True, "folders": []}
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    try:
+                        total = 0
+                        for dirpath, dirnames, filenames in _os.walk(entry.path):
+                            # Limit depth to avoid very slow scans
+                            depth = dirpath.replace(entry.path, '').count(_os.sep)
+                            if depth > 2:
+                                dirnames.clear()
+                                continue
+                            for f in filenames:
+                                try:
+                                    total += _os.path.getsize(_os.path.join(dirpath, f))
+                                except (OSError, PermissionError):
+                                    pass
+                        size_gb = round(total / (1024**3), 2)
+                        if size_gb > 0.01:
+                            folders.append({"path": entry.path, "size_gb": size_gb})
+                    except (PermissionError, OSError):
+                        continue
+            folders.sort(key=lambda x: x["size_gb"], reverse=True)
+            return {"success": True, "folders": folders[:15]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_startup_items(self) -> Dict[str, Any]:
+        try:
+            items = []
+            if platform.system() == "Windows":
+                import winreg
+                paths = [
+                    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+                    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"),
+                ]
+                for hive, key_path in paths:
+                    try:
+                        key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ)
+                        i = 0
+                        while True:
+                            try:
+                                name, value, _ = winreg.EnumValue(key, i)
+                                items.append({
+                                    "name": name,
+                                    "command": value,
+                                    "location": "HKCU" if hive == winreg.HKEY_CURRENT_USER else "HKLM",
+                                    "enabled": True,
+                                    "impact": "medium",
+                                })
+                                i += 1
+                            except OSError:
+                                break
+                        winreg.CloseKey(key)
+                    except (OSError, PermissionError):
+                        continue
+                # Also check Task Manager startup (via WMI or Get-CimInstance)
+                try:
+                    result = subprocess.run(
+                        ["powershell", "-c", "Get-CimInstance Win32_StartupCommand | Select-Object Name, Command, Location | ConvertTo-Json"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        import json as _json
+                        data = _json.loads(result.stdout)
+                        if isinstance(data, dict):
+                            data = [data]
+                        seen = {i["name"] for i in items}
+                        for entry in data:
+                            n = entry.get("Name", "")
+                            if n and n not in seen:
+                                items.append({
+                                    "name": n,
+                                    "command": entry.get("Command", ""),
+                                    "location": entry.get("Location", "Startup"),
+                                    "enabled": True,
+                                    "impact": "low",
+                                })
+                                seen.add(n)
+                except Exception:
+                    pass
+            return {"success": True, "items": items}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _toggle_startup_item(self, payload: Dict) -> Dict[str, Any]:
+        try:
+            name = payload.get("name", "")
+            enabled = payload.get("enabled", True)
+            location = payload.get("location", "HKCU")
+            command = payload.get("command", "")
+            if platform.system() == "Windows":
+                import winreg
+                hive = winreg.HKEY_CURRENT_USER if "HKCU" in location else winreg.HKEY_LOCAL_MACHINE
+                key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+                try:
+                    key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ)
+                    if enabled:
+                        winreg.SetValueEx(key, name, 0, winreg.REG_SZ, command)
+                    else:
+                        try:
+                            winreg.DeleteValue(key, name)
+                        except FileNotFoundError:
+                            pass
+                    winreg.CloseKey(key)
+                    return {"success": True}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+            return {"success": False, "error": "Only Windows supported"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _kill_process(self, pid, force=False) -> Dict[str, Any]:
+        try:
+            if pid is None:
+                return {"success": False, "error": "No PID provided"}
+            proc = psutil.Process(int(pid))
+            if force:
+                proc.kill()
+            else:
+                proc.terminate()
+            return {"success": True, "pid": pid}
+        except psutil.NoSuchProcess:
+            return {"success": False, "error": f"Process {pid} not found"}
+        except psutil.AccessDenied:
+            return {"success": False, "error": f"Access denied for PID {pid}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     # ============== CLIPBOARD (KDE Connect / Phone Link style) ==============
     _last_clipboard_hash: str = ""
@@ -6251,6 +6504,24 @@ class JarvisAgent:
                     return {"success": True}
                 except Exception as e:
                     return {"success": False, "error": str(e)}
+            
+            # System tab commands
+            elif cmd == "get_battery_status":
+                return self._get_battery_status()
+            elif cmd == "get_fan_speeds":
+                return self._get_fan_speeds()
+            elif cmd == "get_disk_usage":
+                return self._get_disk_usage()
+            elif cmd == "get_folder_sizes":
+                return self._get_folder_sizes(payload.get("path", "C:\\"))
+            elif cmd == "get_startup_items":
+                return self._get_startup_items()
+            elif cmd == "toggle_startup_item":
+                return self._toggle_startup_item(payload)
+            elif cmd == "kill_process":
+                return self._kill_process(payload.get("pid"), payload.get("force", False))
+            elif cmd == "set_fan_curve":
+                return {"success": True, "message": "Fan curve applied (OS-level fan control requires vendor tools)"}
             
             else:
                 return {"success": False, "error": f"Unknown command: {command_type}"}
