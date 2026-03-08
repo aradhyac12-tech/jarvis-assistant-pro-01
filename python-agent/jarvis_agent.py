@@ -1635,10 +1635,11 @@ class JarvisGUI:
 # ============== BOOTSTRAP ==============
 _CRITICAL_MISSING_DEPS = []
 _OPTIONAL_MISSING_DEPS = []
+_STARTUP_BLOCKED = False
 
 def _check_dependencies() -> None:
     """Validate dependencies without hard-crashing on optional modules."""
-    global _CRITICAL_MISSING_DEPS, _OPTIONAL_MISSING_DEPS
+    global _CRITICAL_MISSING_DEPS, _OPTIONAL_MISSING_DEPS, _STARTUP_BLOCKED
 
     critical_required = {
         "supabase": "supabase",
@@ -1661,13 +1662,17 @@ def _check_dependencies() -> None:
         except Exception:
             _OPTIONAL_MISSING_DEPS.append(pkg)
 
+    _OPTIONAL_MISSING_DEPS = sorted(set(_OPTIONAL_MISSING_DEPS))
+    _CRITICAL_MISSING_DEPS = sorted(set(_CRITICAL_MISSING_DEPS))
+    _STARTUP_BLOCKED = len(_CRITICAL_MISSING_DEPS) > 0
+
     if _OPTIONAL_MISSING_DEPS:
         print(
             "⚠ Optional packages missing (agent will still run with reduced features): "
             + ", ".join(_OPTIONAL_MISSING_DEPS)
         )
 
-    if _CRITICAL_MISSING_DEPS:
+    if _STARTUP_BLOCKED:
         msg = (
             f"❌ Missing required packages: {', '.join(_CRITICAL_MISSING_DEPS)}\n"
             f"   Run: pip install {' '.join(_CRITICAL_MISSING_DEPS)}"
@@ -1688,12 +1693,19 @@ def _check_dependencies() -> None:
             _root.destroy()
         except Exception:
             pass
-        raise RuntimeError(msg)
 
 _check_dependencies()
 
-# Third-party imports — critical deps are validated by _check_dependencies()
-from supabase import create_client, Client
+# Third-party imports — startup can continue to show diagnostics even if critical deps are missing
+try:
+    from supabase import create_client, Client
+    HAS_SUPABASE = True
+except Exception as _e:
+    print(f"Warning: supabase import issue: {_e}")
+    create_client = None
+    Client = Any
+    HAS_SUPABASE = False
+
 try:
     import pyautogui
 except Exception as _e:
@@ -1708,7 +1720,13 @@ except Exception as _e:
     Image = None
     HAS_PIL = False
 
-import psutil
+try:
+    import psutil
+    HAS_PSUTIL = True
+except Exception as _e:
+    print(f"Warning: psutil import issue: {_e}")
+    psutil = None
+    HAS_PSUTIL = False
 
 try:
     import mss
