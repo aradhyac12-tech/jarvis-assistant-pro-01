@@ -66,7 +66,7 @@ import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
-type Tab = "control" | "remote" | "media" | "apps" | "zoom" | "network" | "settings";
+type Tab = "control" | "remote" | "media" | "apps" | "more";
 
 interface SystemStats {
   cpu_percent?: number;
@@ -623,10 +623,8 @@ export default function Hub() {
     { id: "control" as Tab, label: "Control", icon: Monitor },
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
-    { id: "apps" as Tab, label: "Apps & Files", icon: AppWindow },
-    { id: "zoom" as Tab, label: "Zoom", icon: Video },
-    { id: "network" as Tab, label: "Network", icon: Wifi },
-    { id: "settings" as Tab, label: "Settings", icon: Settings },
+    { id: "apps" as Tab, label: "Apps", icon: AppWindow },
+    { id: "more" as Tab, label: "More", icon: Settings },
   ];
 
   // Filter apps by search
@@ -666,143 +664,90 @@ export default function Hub() {
       <div className="min-h-screen bg-black text-foreground">
         {/* Header */}
         <header className="sticky top-0 z-50 border-b border-border/10 bg-black/90 backdrop-blur-xl safe-area-top">
-          <div className="flex items-center justify-between h-12 px-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
-                <Bot className="w-4 h-4 text-primary-foreground" />
+          <div className="flex items-center justify-between h-11 px-3">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-md bg-primary flex items-center justify-center">
+                <Bot className="w-3.5 h-3.5 text-primary-foreground" />
               </div>
               <span className="font-semibold text-sm tracking-tight">JARVIS</span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              {/* Compact system stats */}
               {systemStats && (
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
-                  <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />{systemStats.cpu_percent}%</span>
-                  <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" />{systemStats.memory_percent}%</span>
-                  {systemStats.battery_percent !== undefined && (
-                    <span className="flex items-center gap-1"><Battery className="w-3 h-3" />{systemStats.battery_percent}%</span>
+                <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground font-mono">
+                  <span className="flex items-center gap-0.5"><Cpu className="w-2.5 h-2.5" />{systemStats.cpu_percent}%</span>
+                  <span className="flex items-center gap-0.5"><HardDrive className="w-2.5 h-2.5" />{systemStats.memory_percent}%</span>
+                </div>
+              )}
+
+              {/* Compact transport indicator */}
+              {selectedDevice && (
+                <div className={cn(
+                  "flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium",
+                  isConnected
+                    ? connectionMode === "local_p2p" ? "text-emerald-400"
+                      : connectionMode === "fallback" ? "text-amber-400"
+                      : "text-primary"
+                    : "text-muted-foreground"
+                )}>
+                  {bluetooth.isReady ? <Bluetooth className="w-2.5 h-2.5 text-blue-400" /> : null}
+                  {isConnected ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
+                  {p2pLatency > 0 && (
+                    <span className={cn(
+                      "tabular-nums",
+                      p2pLatency < 50 ? "text-emerald-400" : p2pLatency < 150 ? "text-amber-400" : "text-destructive"
+                    )}>
+                      {p2pLatency}ms
+                    </span>
                   )}
                 </div>
               )}
 
-              <div className={cn("flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-medium", status.color)}>
+              <div className={cn("flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium", status.color)}>
                 <span className={cn("w-1.5 h-1.5 rounded-full", status.dot)} />
                 {status.text}
               </div>
 
-              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-7 w-7">
-                <RefreshCw className={cn("w-3.5 h-3.5", isLoading && "animate-spin")} />
+              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-6 w-6">
+                <RefreshCw className={cn("w-3 h-3", isLoading && "animate-spin")} />
               </Button>
             </div>
           </div>
         </header>
 
-        {/* Persistent Transport Status Bar */}
-        {selectedDevice && (
-          <div className="sticky top-12 z-40 border-b border-border/10 bg-card/60 backdrop-blur-lg px-3 py-1.5">
-            <div className="flex items-center justify-between text-[11px]">
-              <div className="flex items-center gap-3">
-                {/* WiFi */}
-                <div className={cn(
-                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
-                  isConnected && connectionMode !== "fallback"
-                    ? "bg-emerald-500/10 text-emerald-400"
-                    : "bg-muted/30 text-muted-foreground"
-                )}>
-                  {isConnected && connectionMode !== "fallback" ? (
-                    <Wifi className="w-3 h-3" />
-                  ) : (
-                    <WifiOff className="w-3 h-3" />
-                  )}
-                  <span>WiFi</span>
-                </div>
-
-                {/* BLE */}
-                <div className={cn(
-                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
-                  bluetooth.isReady
-                    ? "bg-blue-500/10 text-blue-400"
-                    : bluetooth.state.isScanning
-                      ? "bg-blue-500/10 text-blue-300 animate-pulse"
-                      : "bg-muted/30 text-muted-foreground"
-                )}>
-                  <Bluetooth className="w-3 h-3" />
-                  <span>{bluetooth.isReady ? "BLE" : bluetooth.state.isScanning ? "Scanning" : "BLE"}</span>
-                </div>
-
-                {/* Cloud */}
-                <div className={cn(
-                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium transition-colors",
-                  connectionMode === "fallback"
-                    ? "bg-amber-500/10 text-amber-400"
-                    : "bg-muted/30 text-muted-foreground"
-                )}>
-                  <Globe className="w-3 h-3" />
-                  <span>Cloud</span>
-                </div>
-              </div>
-
-              {/* Active transport + latency */}
-              <div className="flex items-center gap-2">
-                {isConnected && (
-                  <div className="flex items-center gap-1.5 font-mono">
-                    <Signal className="w-3 h-3 text-primary" />
-                    <span className="text-primary">
-                      {connectionMode === "local_p2p" ? "Local" : connectionMode === "p2p" ? "P2P" : connectionMode === "websocket" ? "WS" : connectionMode === "fallback" ? "Cloud" : "…"}
-                    </span>
-                    {p2pLatency > 0 && (
-                      <span className={cn(
-                        "tabular-nums",
-                        p2pLatency < 50 ? "text-emerald-400" : p2pLatency < 150 ? "text-amber-400" : "text-destructive"
-                      )}>
-                        {p2pLatency}ms
-                      </span>
-                    )}
-                  </div>
-                )}
-                {bluetooth.isReady && bluetooth.state.latency > 0 && (
-                  <div className="flex items-center gap-1 font-mono text-blue-400">
-                    <Bluetooth className="w-2.5 h-2.5" />
-                    <span className="tabular-nums">{bluetooth.state.latency}ms</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <ScrollArea className={cn("h-[calc(100vh-3rem)]", selectedDevice && "h-[calc(100vh-5.5rem)]")}>
-          <main className="p-3 space-y-3 pb-6">
+        <ScrollArea className="h-[calc(100vh-2.75rem)]">
+          <main className="p-3 space-y-2.5 pb-6">
             {/* Command Input */}
-            <div className="flex gap-2">
+            <div className="flex gap-1.5">
               <Input
-                placeholder="Type a command... (open, play, search)"
+                placeholder="Type a command..."
                 value={cmdInput}
                 onChange={(e) => setCmdInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCommand()}
-                className="flex-1 h-10 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
+                className="flex-1 h-9 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
                 disabled={!isConnected}
               />
-              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-10 w-10 shrink-0">
+              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-9 w-9 shrink-0">
                 {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </Button>
             </div>
 
-            {/* Tab Navigation — 3 columns, proper mobile grid */}
-            <div className="grid grid-cols-3 gap-1 p-1 bg-card/30 rounded-xl w-full border border-border/10">
+            {/* Tab Navigation — 5 columns */}
+            <div className="grid grid-cols-5 gap-0.5 p-0.5 bg-card/30 rounded-xl w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => { setActiveTab(tab.id); haptic.tap(); }}
                   className={cn(
-                    "flex items-center justify-center gap-1.5 px-2 py-2.5 rounded-lg text-xs font-medium transition-all",
+                    "flex flex-col items-center justify-center gap-0.5 px-1 py-2 rounded-lg text-[10px] font-medium transition-all",
                     activeTab === tab.id
                       ? "bg-primary text-primary-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground hover:bg-secondary/30"
                   )}
                 >
                   <tab.icon className="w-4 h-4 shrink-0" />
-                  <span className="text-[10px] truncate">{tab.label}</span>
+                  <span className="truncate">{tab.label}</span>
                 </button>
               ))}
             </div>
@@ -1299,22 +1244,37 @@ export default function Hub() {
               </div>
             )}
 
-            {/* Zoom Tab */}
-            {activeTab === "zoom" && (
-              <div className="grid gap-3">
+            {/* More Tab — Zoom, Network, File Transfer, Settings */}
+            {activeTab === "more" && (
+              <div className="space-y-2.5">
+                {/* Zoom Meetings */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-0">
                     <ZoomMeetings />
                   </CardContent>
                 </Card>
-              </div>
-            )}
 
-            {/* Settings Tab (merged with tools) */}
-            {activeTab === "settings" && (
-              <div className="grid gap-3">
+                {/* Network / Connection */}
+                <SmartP2PManager
+                  connectionMode={connectionMode}
+                  latency={p2pLatency}
+                  networkState={networkState}
+                  localP2PState={localP2PState}
+                  autoP2P={autoP2P}
+                  autoLocalP2P={autoLocalP2P}
+                  onToggleAutoP2P={toggleAutoP2P}
+                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
+                  onForceUpgrade={forceP2PUpgrade}
+                  onForceLocalP2P={forceLocalP2P}
+                />
+
+                {/* File Transfer */}
                 <BidirectionalFileTransfer />
+
+                {/* PC Boost */}
                 <BoostPC />
+
+                {/* App Settings Link */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3">
                     <Link to="/settings" className="flex items-center gap-3 w-full">
@@ -1328,24 +1288,6 @@ export default function Hub() {
                     </Link>
                   </CardContent>
                 </Card>
-              </div>
-            )}
-
-            {/* Network Tab */}
-            {activeTab === "network" && (
-              <div className="space-y-3 max-w-full overflow-hidden">
-                <SmartP2PManager
-                  connectionMode={connectionMode}
-                  latency={p2pLatency}
-                  networkState={networkState}
-                  localP2PState={localP2PState}
-                  autoP2P={autoP2P}
-                  autoLocalP2P={autoLocalP2P}
-                  onToggleAutoP2P={toggleAutoP2P}
-                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
-                  onForceUpgrade={forceP2PUpgrade}
-                  onForceLocalP2P={forceLocalP2P}
-                />
               </div>
             )}
 
