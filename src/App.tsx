@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { DeviceSessionProvider, useDeviceSession } from "@/hooks/useDeviceSession";
+import { AuthProvider } from "@/hooks/useAuth";
 import { DeviceProvider } from "@/hooks/useDeviceContext";
 import { GlobalPiPProvider } from "@/contexts/GlobalPiPContext";
 import { BluetoothProvider } from "@/contexts/BluetoothContext";
@@ -175,6 +176,7 @@ function AppRoutes() {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
+      <AuthProvider>
       <DeviceSessionProvider>
         <DeviceProvider>
           <BluetoothProvider>
@@ -193,6 +195,7 @@ const App = () => (
           </BluetoothProvider>
         </DeviceProvider>
       </DeviceSessionProvider>
+      </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );
