@@ -623,10 +623,8 @@ export default function Hub() {
     { id: "control" as Tab, label: "Control", icon: Monitor },
     { id: "remote" as Tab, label: "Remote", icon: Mouse },
     { id: "media" as Tab, label: "Media", icon: Music },
-    { id: "apps" as Tab, label: "Apps & Files", icon: AppWindow },
-    { id: "zoom" as Tab, label: "Zoom", icon: Video },
-    { id: "network" as Tab, label: "Network", icon: Wifi },
-    { id: "settings" as Tab, label: "Settings", icon: Settings },
+    { id: "apps" as Tab, label: "Apps", icon: AppWindow },
+    { id: "more" as Tab, label: "More", icon: Settings },
   ];
 
   // Filter apps by search
