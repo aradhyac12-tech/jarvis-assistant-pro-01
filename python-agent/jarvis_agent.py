@@ -3951,6 +3951,10 @@ class JarvisAgent:
                 "net_bytes_recv_sec": net_down,
                 "cpu_temp": cpu_temp,
                 "gpu_temp": gpu_temp,
+                "gpu_name": gpu_name,
+                "gpu_util": gpu_util,
+                "gpu_mem_used_mb": gpu_mem_used,
+                "gpu_mem_total_mb": gpu_mem_total,
                 "top_processes": top_processes,
             }
         except Exception as e:

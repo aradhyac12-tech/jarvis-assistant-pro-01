@@ -23,6 +23,10 @@ interface StatsSnapshot {
   netDown: number;
   cpuTemp: number | null;
   gpuTemp: number | null;
+  gpuName: string | null;
+  gpuUtil: number | null;
+  gpuMemUsed: number | null;
+  gpuMemTotal: number | null;
   ts: number;
 }
 
@@ -115,6 +119,10 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
           netDown: r.net_bytes_recv_sec ?? r.net_download ?? 0,
           cpuTemp: typeof cpuTemp === "number" ? cpuTemp : null,
           gpuTemp: typeof gpuTemp === "number" ? gpuTemp : null,
+          gpuName: r.gpu_name ?? null,
+          gpuUtil: typeof r.gpu_util === "number" ? r.gpu_util : null,
+          gpuMemUsed: typeof r.gpu_mem_used_mb === "number" ? r.gpu_mem_used_mb : null,
+          gpuMemTotal: typeof r.gpu_mem_total_mb === "number" ? r.gpu_mem_total_mb : null,
           ts: Date.now(),
         };
         setHistory(prev => [...prev, snapshot].slice(-MAX_HISTORY));
