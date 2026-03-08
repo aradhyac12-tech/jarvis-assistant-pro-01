@@ -781,12 +781,24 @@ export default function MicCamera() {
   }, [sendCommand, toast]);
 
   // ==================== CLEANUP ====================
-  // Don't close WebSockets that were handed off to GlobalPiP context
   useEffect(() => {
     return () => {
-      // Only close WS if PiP context hasn't taken ownership (ref will be null if transferred)
-      pcCamWsRef.current?.close();
-      screenWsRef.current?.close();
+      if (splitModeRef.current) {
+        if (pcCamWsRef.current?.readyState === WebSocket.OPEN && !hasWebSocketOwnership(PIP_CAMERA_STREAM_ID)) {
+          takeWebSocketOwnership(PIP_CAMERA_STREAM_ID, pcCamWsRef.current);
+        }
+        if (screenWsRef.current?.readyState === WebSocket.OPEN && !hasWebSocketOwnership(PIP_SCREEN_STREAM_ID)) {
+          takeWebSocketOwnership(PIP_SCREEN_STREAM_ID, screenWsRef.current);
+        }
+      }
+
+      if (!hasWebSocketOwnership(PIP_CAMERA_STREAM_ID)) {
+        pcCamWsRef.current?.close();
+      }
+      if (!hasWebSocketOwnership(PIP_SCREEN_STREAM_ID)) {
+        screenWsRef.current?.close();
+      }
+
       audioWsRef.current?.close();
       micStreamRef.current?.getTracks().forEach(t => t.stop());
       processorRef.current?.disconnect();
@@ -794,9 +806,26 @@ export default function MicCamera() {
       if (camBlobUrl.current) URL.revokeObjectURL(camBlobUrl.current);
       if (screenBlobUrl.current) URL.revokeObjectURL(screenBlobUrl.current);
     };
-  }, []);
+  }, [hasWebSocketOwnership, takeWebSocketOwnership]);
 
   const DirectionIcon = audioDirection === "phone_to_pc" ? ArrowRight : audioDirection === "pc_to_phone" ? ArrowLeft : ArrowLeftRight;
+
+  const handleSplitToggle = useCallback(() => {
+    setSplitMode((prev) => {
+      if (prev) {
+        setFloating(false);
+        pinStream(null);
+        releaseWebSocketOwnership(PIP_CAMERA_STREAM_ID);
+        releaseWebSocketOwnership(PIP_SCREEN_STREAM_ID);
+      }
+      return !prev;
+    });
+  }, [pinStream, releaseWebSocketOwnership, setFloating]);
+
+  const activateSplitStream = useCallback((stream: "camera" | "screen") => {
+    setSplitStream(stream);
+    setSplitMode(true);
+  }, []);
 
   // ==================== RENDER ====================
   return (
