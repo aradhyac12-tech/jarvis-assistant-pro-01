@@ -670,7 +670,7 @@ export default function MicCamera() {
       };
 
       ws.onerror = () => { addLog("error", "web", "Audio WS error"); toast({ title: "Audio Error", variant: "destructive" }); };
-      ws.onclose = () => { clearInterval(pingInterval); setAudioActive(false); setAudioLevel(0); addLog("info", "web", "Audio WS closed"); };
+      ws.onclose = () => { clearInterval(pingInterval); setAudioActive(false); setAudioLevel(0); setPcAudioLevel(0); setAudioPackets({ sent: 0, received: 0 }); addLog("info", "web", "Audio WS closed"); };
 
       toast({ title: "Audio Relay Started", description: audioDirection.replace(/_/g, " ") });
     } catch (err) {
@@ -693,7 +693,7 @@ export default function MicCamera() {
     analyserRef.current = null;
     audioWsRef.current?.close();
     audioWsRef.current = null;
-    setAudioActive(false); setAudioLevel(0);
+    setAudioActive(false); setAudioLevel(0); setPcAudioLevel(0); setAudioPackets({ sent: 0, received: 0 });
     toast({ title: "Audio Relay Stopped" });
   }, [sendCommand, toast]);
 
