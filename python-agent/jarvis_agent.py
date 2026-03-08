@@ -1611,19 +1611,52 @@ class JarvisGUI:
 
 
 # ============== BOOTSTRAP ==============
+_MISSING_DEPS = []
+
 def _check_dependencies() -> None:
-    try:
-        import supabase
-        return
-    except ImportError:
-        print("❌ Missing Python packages. Run: pip install -r requirements.txt")
+    """Check ALL required dependencies and report which are missing."""
+    global _MISSING_DEPS
+    required = {
+        "supabase": "supabase",
+        "pyautogui": "pyautogui",
+        "PIL": "pillow",
+        "psutil": "psutil",
+    }
+    for mod, pkg in required.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            _MISSING_DEPS.append(pkg)
+    
+    if _MISSING_DEPS:
+        msg = f"❌ Missing required packages: {', '.join(_MISSING_DEPS)}\n   Run: pip install -r requirements.txt"
+        print(msg)
+        # Show GUI error dialog if possible
+        try:
+            import tkinter as _tk
+            from tkinter import messagebox as _mb
+            _root = _tk.Tk()
+            _root.withdraw()
+            _mb.showerror("JARVIS - Missing Dependencies", 
+                         f"The following packages are not installed:\n\n"
+                         f"{chr(10).join('  • ' + d for d in _MISSING_DEPS)}\n\n"
+                         f"Run this command to fix:\n"
+                         f"pip install {' '.join(_MISSING_DEPS)}")
+            _root.destroy()
+        except Exception:
+            pass
         sys.exit(1)
 
 _check_dependencies()
 
-# Third-party imports
+# Third-party imports — now guaranteed to exist by _check_dependencies()
 from supabase import create_client, Client
-import pyautogui
+try:
+    import pyautogui
+except Exception as _e:
+    print(f"Warning: pyautogui import issue: {_e}")
+    pyautogui = None
+
 from PIL import Image
 
 import psutil
@@ -6580,4 +6613,37 @@ def _agent_watchdog(agent_thread, agent_ref, gui_ref=None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as _fatal:
+        # Last-resort crash handler — show error even with .pyw (no console)
+        error_msg = f"JARVIS Agent crashed:\n\n{_fatal}\n\n{traceback.format_exc()}"
+        print(error_msg)
+        
+        # Write crash log to file
+        try:
+            crash_log = os.path.join(AGENT_DIR, "crash.log")
+            with open(crash_log, "a") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"CRASH at {datetime.now().isoformat()}\n")
+                f.write(error_msg)
+                f.write(f"\n{'='*60}\n")
+        except Exception:
+            pass
+        
+        # Show GUI error dialog (works even with .pyw)
+        try:
+            import tkinter as _tk
+            from tkinter import messagebox as _mb
+            _root = _tk.Tk()
+            _root.withdraw()
+            _mb.showerror("JARVIS - Fatal Error", error_msg[:1000])
+            _root.destroy()
+        except Exception:
+            pass
+        
+        # Wait before exiting so user can see the console error
+        try:
+            input("\nPress Enter to exit...")
+        except Exception:
+            time.sleep(10)
