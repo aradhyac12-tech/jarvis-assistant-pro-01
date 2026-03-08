@@ -680,20 +680,21 @@ export default function Hub() {
     <TooltipProvider>
       <div className="min-h-screen bg-black text-foreground">
         {/* Header */}
-        <header className="sticky top-0 z-50 border-b border-border/10 bg-black/90 backdrop-blur-xl safe-area-top">
-          <div className="flex items-center justify-between h-11 px-3">
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-md bg-primary flex items-center justify-center">
-                <Bot className="w-3.5 h-3.5 text-primary-foreground" />
+        <header className="sticky top-0 z-50 border-b border-border/8 bg-black/95 backdrop-blur-2xl safe-area-top">
+          <div className="flex items-center justify-between h-12 px-3.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center shadow-lg shadow-primary/20">
+                <Bot className="w-4 h-4 text-primary-foreground" />
               </div>
-              <span className="font-semibold text-sm tracking-tight">JARVIS</span>
+              <span className="font-bold text-sm tracking-tight">JARVIS</span>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
               {/* Compact system stats */}
               {systemStats && (
-                <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground font-mono">
+                <div className="flex items-center gap-2 text-[9px] text-muted-foreground font-mono bg-secondary/20 rounded-full px-2 py-0.5">
                   <span className="flex items-center gap-0.5"><Cpu className="w-2.5 h-2.5" />{systemStats.cpu_percent}%</span>
+                  <span className="w-px h-2.5 bg-border/30" />
                   <span className="flex items-center gap-0.5"><HardDrive className="w-2.5 h-2.5" />{systemStats.memory_percent}%</span>
                 </div>
               )}
@@ -721,20 +722,20 @@ export default function Hub() {
                 </div>
               )}
 
-              <div className={cn("flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium", status.color)}>
+              <div className={cn("flex items-center gap-1 px-2 py-1 rounded-full text-[9px] font-semibold bg-secondary/15", status.color)}>
                 <span className={cn("w-1.5 h-1.5 rounded-full", status.dot)} />
                 {status.text}
               </div>
 
-              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-6 w-6">
-                <RefreshCw className={cn("w-3 h-3", isLoading && "animate-spin")} />
+              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-7 w-7 rounded-lg">
+                <RefreshCw className={cn("w-3.5 h-3.5", isLoading && "animate-spin")} />
               </Button>
             </div>
           </div>
         </header>
 
-        <ScrollArea className="h-[calc(100vh-2.75rem)]">
-          <main className="p-3 space-y-2.5 pb-6">
+        <ScrollArea className="h-[calc(100vh-3rem)]">
+          <main className="p-3 space-y-3 pb-8">
             {/* Command Input */}
             <div className="flex gap-1.5">
               <Input
@@ -742,25 +743,25 @@ export default function Hub() {
                 value={cmdInput}
                 onChange={(e) => setCmdInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCommand()}
-                className="flex-1 h-9 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
+                className="flex-1 h-10 bg-card/40 border-border/15 focus-visible:ring-1 focus-visible:ring-primary/40 text-sm rounded-xl placeholder:text-muted-foreground/50"
                 disabled={!isConnected}
               />
-              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-9 w-9 shrink-0">
+              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-10 w-10 shrink-0 rounded-xl shadow-lg shadow-primary/10">
                 {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </Button>
             </div>
 
             {/* Tab Navigation — 6 columns */}
-            <div className="grid grid-cols-6 gap-0.5 p-0.5 bg-card/30 rounded-xl w-full border border-border/10">
+            <div className="grid grid-cols-6 gap-0.5 p-1 bg-card/40 rounded-2xl w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => { setActiveTab(tab.id); haptic.tap(); }}
                   className={cn(
-                    "flex flex-col items-center justify-center gap-0.5 px-1 py-2 rounded-lg text-[10px] font-medium transition-all",
+                    "flex flex-col items-center justify-center gap-0.5 px-1 py-2.5 rounded-xl text-[10px] font-medium transition-all duration-200",
                     activeTab === tab.id
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/30"
+                      ? "bg-primary text-primary-foreground shadow-md shadow-primary/20"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/20 active:scale-95"
                   )}
                 >
                   <tab.icon className="w-4 h-4 shrink-0" />
