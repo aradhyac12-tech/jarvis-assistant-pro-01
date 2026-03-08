@@ -1462,6 +1462,7 @@ export default function Hub() {
                 </CardContent>
               </Card>
             )}
+            </div>
           </main>
         </ScrollArea>
       </div>
