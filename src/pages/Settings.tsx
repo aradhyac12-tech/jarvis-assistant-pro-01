@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity, User, ChevronLeft } from "lucide-react";
+import { ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity, ChevronLeft } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -23,40 +23,34 @@ import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "device" | "calls" | "system";
 
 /* ── iOS-style settings row ── */
-function SettingsRow({ icon: Icon, label, subtitle, onClick, iconBg, trailing, isFirst, isLast }: {
+function SettingsRow({ icon: Icon, label, subtitle, onClick, iconBg, trailing, isLast }: {
   icon: React.ElementType;
   label: string;
   subtitle?: string;
   onClick: () => void;
   iconBg: string;
   trailing?: React.ReactNode;
-  isFirst?: boolean;
   isLast?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className={cn(
-        "flex items-center gap-3.5 w-full px-4 py-[13px] active:bg-foreground/[0.04] transition-colors duration-75",
-        "hover:bg-foreground/[0.03]"
-      )}
+      className="flex items-center gap-3 w-full pl-4 pr-3 active:bg-muted/60 transition-colors duration-100"
     >
-      <div className={cn("w-[30px] h-[30px] rounded-[7px] flex items-center justify-center shrink-0", iconBg)}>
-        <Icon className="h-[16px] w-[16px] text-white" strokeWidth={2.2} />
+      <div className={cn("w-[29px] h-[29px] rounded-[7px] flex items-center justify-center shrink-0", iconBg)}>
+        <Icon className="h-[15px] w-[15px] text-white" strokeWidth={2.2} />
       </div>
       <div className={cn(
-        "flex-1 flex items-center justify-between min-w-0",
-        !isLast && "border-b border-foreground/[0.06]",
-        "pb-0",
-        !isLast && "pb-[13px] -mb-[13px]"
+        "flex-1 flex items-center justify-between min-w-0 py-[11px]",
+        !isLast && "border-b border-border/60"
       )}>
         <div className="text-left min-w-0 flex-1">
-          <p className="text-[15px] font-normal text-foreground leading-snug">{label}</p>
-          {subtitle && <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate">{subtitle}</p>}
+          <p className="text-[16px] text-foreground leading-snug">{label}</p>
+          {subtitle && <p className="text-[12px] text-muted-foreground leading-tight mt-0.5 truncate">{subtitle}</p>}
         </div>
         <div className="flex items-center gap-1 ml-2 shrink-0">
           {trailing}
-          <ChevronRight className="h-[14px] w-[14px] text-muted-foreground/40" strokeWidth={2.5} />
+          <ChevronRight className="h-[13px] w-[13px] text-muted-foreground/50" strokeWidth={2.5} />
         </div>
       </div>
     </button>
@@ -66,7 +60,7 @@ function SettingsRow({ icon: Icon, label, subtitle, onClick, iconBg, trailing, i
 /* ── Section label ── */
 function SectionLabel({ children }: { children: string }) {
   return (
-    <p className="text-[13px] font-normal text-muted-foreground px-5 pb-[6px] pt-1">
+    <p className="text-[13px] font-medium text-muted-foreground uppercase tracking-wide px-5 pb-[5px]">
       {children}
     </p>
   );
@@ -75,7 +69,7 @@ function SectionLabel({ children }: { children: string }) {
 /* ── Grouped card ── */
 function GroupedCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-[12px] bg-card border border-foreground/[0.06] overflow-hidden">
+    <div className="rounded-xl bg-card overflow-hidden">
       {children}
     </div>
   );
@@ -165,19 +159,17 @@ export default function Settings() {
     };
 
     return (
-      <div className="min-h-screen bg-background">
-        <div className="max-w-lg mx-auto px-4 pt-3 pb-8 animate-fade-in">
-          {/* iOS-style nav bar */}
-          <div className="flex items-center gap-1 mb-5">
-            <button
-              onClick={() => setActivePane(null)}
-              className="flex items-center gap-0.5 text-primary text-[15px] font-normal -ml-1 px-1 py-1 rounded-lg active:bg-foreground/[0.04] transition-colors"
-            >
-              <ChevronLeft className="h-5 w-5" strokeWidth={2} />
-              <span>Settings</span>
-            </button>
-          </div>
-          <h1 className="text-[34px] font-bold tracking-tight leading-tight mb-5">{titles[activePane]}</h1>
+      <div className="min-h-screen bg-secondary/50">
+        <div className="max-w-lg mx-auto px-4 pt-2 pb-8">
+          {/* iOS back bar */}
+          <button
+            onClick={() => setActivePane(null)}
+            className="flex items-center gap-0.5 text-primary text-[17px] -ml-1 py-2 mb-1 active:opacity-60 transition-opacity"
+          >
+            <ChevronLeft className="h-[22px] w-[22px]" strokeWidth={2.2} />
+            <span>Settings</span>
+          </button>
+          <h1 className="text-[34px] font-bold tracking-tight text-foreground mb-5">{titles[activePane]}</h1>
 
           <div className="space-y-4">
             {activePane === "theme" && <ThemeSettingsCard />}
@@ -236,8 +228,8 @@ export default function Settings() {
             {activePane === "system" && (
               <div className="space-y-3">
                 <StreamingDiagnostics />
-                <SystemDiagnosticsPanel className="border-foreground/[0.06] bg-card rounded-[12px]" />
-                <BoostPC className="border-foreground/[0.06] bg-card rounded-[12px]" />
+                <SystemDiagnosticsPanel className="bg-card rounded-xl" />
+                <BoostPC className="bg-card rounded-xl" />
                 <OTAUpdateCard />
               </div>
             )}
@@ -249,45 +241,43 @@ export default function Settings() {
 
   /* ── Main Settings menu ── */
   return (
-    <div className="min-h-screen bg-background">
-      <div className="max-w-lg mx-auto px-4 pt-3 pb-10 animate-fade-in">
-        {/* iOS large title header */}
+    <div className="min-h-screen bg-secondary/50">
+      <div className="max-w-lg mx-auto px-4 pt-2 pb-10">
+        {/* Header */}
         <div className="flex items-center mb-1">
           <BackButton showHome={false} />
         </div>
-        <h1 className="text-[34px] font-bold tracking-tight leading-tight mb-6">Settings</h1>
+        <h1 className="text-[34px] font-bold tracking-tight text-foreground mb-6">Settings</h1>
 
-        <div className="space-y-7">
-          {/* ── Profile / Device section ── */}
-          <div>
-            <GroupedCard>
-              <button
-                onClick={() => setActivePane("device")}
-                className="flex items-center gap-3.5 w-full px-4 py-3.5 active:bg-foreground/[0.04] hover:bg-foreground/[0.03] transition-colors"
-              >
-                <div className="w-[52px] h-[52px] rounded-full bg-gradient-to-br from-primary/80 to-primary flex items-center justify-center shrink-0">
-                  <Monitor className="h-6 w-6 text-primary-foreground" strokeWidth={1.8} />
-                </div>
-                <div className="flex-1 text-left min-w-0">
-                  <p className="text-[17px] font-semibold text-foreground leading-snug truncate">
-                    {selectedDevice?.name || session?.device_name || "My PC"}
-                  </p>
-                  <p className="text-[13px] text-muted-foreground leading-snug mt-0.5">
-                    {isConnected ? "Connected" : "Offline"} · Device Settings
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <div className={cn(
-                    "w-2.5 h-2.5 rounded-full",
-                    isConnected
-                      ? "bg-[hsl(var(--accent-green))] shadow-[0_0_8px_hsl(var(--accent-green)/0.5)]"
-                      : "bg-muted-foreground/30"
-                  )} />
-                  <ChevronRight className="h-[14px] w-[14px] text-muted-foreground/40" strokeWidth={2.5} />
-                </div>
-              </button>
-            </GroupedCard>
-          </div>
+        <div className="space-y-8">
+          {/* ── Device profile card ── */}
+          <GroupedCard>
+            <button
+              onClick={() => setActivePane("device")}
+              className="flex items-center gap-3.5 w-full px-4 py-3 active:bg-muted/60 transition-colors"
+            >
+              <div className="w-[54px] h-[54px] rounded-full bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center shrink-0 shadow-sm">
+                <Monitor className="h-6 w-6 text-primary-foreground" strokeWidth={1.7} />
+              </div>
+              <div className="flex-1 text-left min-w-0">
+                <p className="text-[17px] font-semibold text-foreground leading-snug truncate">
+                  {selectedDevice?.name || session?.device_name || "My PC"}
+                </p>
+                <p className="text-[13px] text-muted-foreground leading-snug mt-0.5">
+                  {isConnected ? "Connected" : "Offline"} · Device Settings
+                </p>
+              </div>
+              <div className="flex items-center gap-2.5 shrink-0">
+                <div className={cn(
+                  "w-[10px] h-[10px] rounded-full",
+                  isConnected
+                    ? "bg-[hsl(var(--accent-green))] shadow-[0_0_6px_hsl(var(--accent-green)/0.5)]"
+                    : "bg-muted-foreground/30"
+                )} />
+                <ChevronRight className="h-[13px] w-[13px] text-muted-foreground/50" strokeWidth={2.5} />
+              </div>
+            </button>
+          </GroupedCard>
 
           {/* ── Appearance ── */}
           <div>
@@ -297,7 +287,7 @@ export default function Settings() {
                 label="Appearance"
                 subtitle="Theme, colors, dark mode"
                 onClick={() => setActivePane("theme")}
-                iconBg="bg-gradient-to-br from-[hsl(var(--accent-purple))] to-[hsl(var(--accent-pink))]"
+                iconBg="bg-[hsl(var(--accent-blue))]"
                 isLast
               />
             </GroupedCard>
@@ -310,14 +300,14 @@ export default function Settings() {
               <SettingsRow
                 icon={Mic}
                 label="Voice"
-                subtitle={`"${wakeWord}"`}
+                subtitle={`Wake word: "${wakeWord}"`}
                 onClick={() => setActivePane("voice")}
-                iconBg="bg-[hsl(var(--accent-purple))]"
+                iconBg="bg-[hsl(var(--accent-orange))]"
               />
               <SettingsRow
                 icon={Bell}
                 label="Notifications"
-                subtitle={notifEnabled ? "Active" : "Off"}
+                subtitle={notifEnabled ? "On" : "Off"}
                 onClick={() => setActivePane("notifications")}
                 iconBg="bg-[hsl(var(--destructive))]"
                 isLast
@@ -332,7 +322,9 @@ export default function Settings() {
               <SettingsRow
                 icon={Shield}
                 label="App Lock"
-                subtitle={appLockEnabled ? `${lockMethod === "both" ? "Biometric + PIN" : lockMethod === "biometric" ? biometricTypeName : "PIN"}` : "Off"}
+                subtitle={appLockEnabled
+                  ? lockMethod === "both" ? "Biometric + PIN" : lockMethod === "biometric" ? biometricTypeName : "PIN"
+                  : "Off"}
                 onClick={() => setActivePane("security")}
                 iconBg="bg-[hsl(var(--accent-green))]"
                 isLast
