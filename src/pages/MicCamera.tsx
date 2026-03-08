@@ -620,7 +620,7 @@ export default function MicCamera() {
               const s = Math.max(-1, Math.min(1, resampled[i]));
               int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
             }
-            try { ws.send(int16.buffer); } catch {}
+            try { ws.send(int16.buffer); setAudioPackets(prev => ({ ...prev, sent: prev.sent + 1 })); } catch {}
 
             if (analyserRef.current) {
               const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
