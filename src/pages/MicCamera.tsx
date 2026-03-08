@@ -484,10 +484,14 @@ export default function MicCamera() {
         float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7fff);
       }
 
-      // Use native sample rate for smooth playback
+      // Compute incoming audio RMS level
+      let sum = 0;
+      for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+      const rms = Math.sqrt(sum / float32.length);
+      setPcAudioLevel(Math.min(1, rms * 3)); // amplify for visibility
+      setAudioPackets(prev => ({ ...prev, received: prev.received + 1 }));
+
       const sampleRate = audioCtxRef.current.sampleRate;
-      
-      // The agent sends at 16kHz, we need to resample to the context's native rate
       const AGENT_SAMPLE_RATE = 16000;
       const ratio = sampleRate / AGENT_SAMPLE_RATE;
       const outputLength = Math.round(float32.length * ratio);
@@ -495,7 +499,6 @@ export default function MicCamera() {
       const audioBuffer = audioCtxRef.current.createBuffer(1, outputLength, sampleRate);
       const outputChannel = audioBuffer.getChannelData(0);
       
-      // Linear interpolation resampling
       for (let i = 0; i < outputLength; i++) {
         const srcIndex = i / ratio;
         const srcIndexFloor = Math.floor(srcIndex);
@@ -507,9 +510,8 @@ export default function MicCamera() {
       const source = audioCtxRef.current.createBufferSource();
       source.buffer = audioBuffer;
       
-      // Add gain node for volume control
       const gainNode = audioCtxRef.current.createGain();
-      gainNode.gain.value = 1.5; // Boost volume slightly
+      gainNode.gain.value = 1.5;
       source.connect(gainNode);
       gainNode.connect(audioCtxRef.current.destination);
 
