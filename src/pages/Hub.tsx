@@ -173,8 +173,37 @@ export default function Hub() {
 
   const volumeCommitRef = useRef<number | null>(null); // kept for potential future use
   const brightnessCommitRef = useRef<number | null>(null); // kept for potential future use
+  const volumeSyncLockUntilRef = useRef(0);
+  const brightnessSyncLockUntilRef = useRef(0);
+  const volumeDebounceRef = useRef<number | null>(null);
+  const brightnessDebounceRef = useRef<number | null>(null);
 
   const isConnected = selectedDevice?.is_online || false;
+
+  const pushVolumeToPc = useCallback(async (level: number, awaitResult: boolean) => {
+    if (!isConnected) return { success: false, error: "Device offline" } as const;
+    return await sendCommand(
+      "set_volume",
+      { level },
+      awaitResult ? { awaitResult: true, timeoutMs: 7000, pollIntervalMs: 500 } : undefined
+    );
+  }, [isConnected, sendCommand]);
+
+  const pushBrightnessToPc = useCallback(async (level: number, awaitResult: boolean) => {
+    if (!isConnected) return { success: false, error: "Device offline" } as const;
+    return await sendCommand(
+      "set_brightness",
+      { level },
+      awaitResult ? { awaitResult: true, timeoutMs: 7000, pollIntervalMs: 500 } : undefined
+    );
+  }, [isConnected, sendCommand]);
+
+  useEffect(() => {
+    return () => {
+      if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+      if (brightnessDebounceRef.current) clearTimeout(brightnessDebounceRef.current);
+    };
+  }, []);
 
   // Force dark mode
   useEffect(() => {
@@ -215,10 +244,16 @@ export default function Hub() {
   // Sync volume/brightness from device
   useEffect(() => {
     if (selectedDevice) {
+      const now = Date.now();
       const deviceVol = selectedDevice.current_volume;
       const deviceBright = selectedDevice.current_brightness;
-      if (typeof deviceVol === 'number' && deviceVol >= 0) setVolume(deviceVol);
-      if (typeof deviceBright === 'number' && deviceBright >= 0) setBrightness(deviceBright);
+
+      if (typeof deviceVol === "number" && deviceVol >= 0 && now >= volumeSyncLockUntilRef.current) {
+        setVolume(deviceVol);
+      }
+      if (typeof deviceBright === "number" && deviceBright >= 0 && now >= brightnessSyncLockUntilRef.current) {
+        setBrightness(deviceBright);
+      }
       setIsLocked(selectedDevice.is_locked ?? false);
     }
   }, [selectedDevice?.id, selectedDevice?.current_volume, selectedDevice?.current_brightness, selectedDevice?.is_locked]);
@@ -227,12 +262,36 @@ export default function Hub() {
   const syncSystemState = useCallback(async () => {
     if (!selectedDevice?.is_online) return;
     try {
-      const result = await sendCommand("get_system_state", {}, { awaitResult: true, timeoutMs: 5000 });
-      if (result?.success && 'result' in result && result.result) {
+      let stateApplied = false;
+      const result = await sendCommand("get_system_state", {}, { awaitResult: true, timeoutMs: 7000, pollIntervalMs: 500 });
+
+      if (result?.success && "result" in result && result.result) {
         const state = result.result as { volume?: number; brightness?: number; is_locked?: boolean };
-        if (typeof state.volume === 'number') setVolume(state.volume);
-        if (typeof state.brightness === 'number') setBrightness(state.brightness);
-        if (typeof state.is_locked === 'boolean') setIsLocked(state.is_locked);
+        const now = Date.now();
+        if (typeof state.volume === "number" && now >= volumeSyncLockUntilRef.current) {
+          setVolume(state.volume);
+          stateApplied = true;
+        }
+        if (typeof state.brightness === "number" && now >= brightnessSyncLockUntilRef.current) {
+          setBrightness(state.brightness);
+          stateApplied = true;
+        }
+        if (typeof state.is_locked === "boolean") setIsLocked(state.is_locked);
+      }
+
+      if (!stateApplied) {
+        const [volResult, brightResult] = await Promise.all([
+          sendCommand("get_volume", {}, { awaitResult: true, timeoutMs: 5000, pollIntervalMs: 500 }),
+          sendCommand("get_brightness", {}, { awaitResult: true, timeoutMs: 5000, pollIntervalMs: 500 }),
+        ]);
+
+        const now = Date.now();
+        if (volResult.success && "result" in volResult && typeof (volResult.result as { volume?: number })?.volume === "number" && now >= volumeSyncLockUntilRef.current) {
+          setVolume((volResult.result as { volume: number }).volume);
+        }
+        if (brightResult.success && "result" in brightResult && typeof (brightResult.result as { brightness?: number })?.brightness === "number" && now >= brightnessSyncLockUntilRef.current) {
+          setBrightness((brightResult.result as { brightness: number }).brightness);
+        }
       }
     } catch (e) {
       console.debug("System state sync:", e);
@@ -273,10 +332,11 @@ export default function Hub() {
         table: "devices",
         filter: `id=eq.${selectedDevice.id}`,
       }, (payload) => {
+        const now = Date.now();
         const d = payload.new as { current_volume?: number; current_brightness?: number; is_locked?: boolean };
-        if (typeof d.current_volume === 'number') setVolume(d.current_volume);
-        if (typeof d.current_brightness === 'number') setBrightness(d.current_brightness);
-        if (typeof d.is_locked === 'boolean') setIsLocked(d.is_locked);
+        if (typeof d.current_volume === "number" && now >= volumeSyncLockUntilRef.current) setVolume(d.current_volume);
+        if (typeof d.current_brightness === "number" && now >= brightnessSyncLockUntilRef.current) setBrightness(d.current_brightness);
+        if (typeof d.is_locked === "boolean") setIsLocked(d.is_locked);
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -284,39 +344,58 @@ export default function Hub() {
 
   // Volume handler
   const handleVolumeSlider = useCallback((v: number[]) => {
-    setVolume(v[0]);
-  }, []);
+    const level = v[0];
+    setVolume(level);
+    volumeSyncLockUntilRef.current = Date.now() + 1600;
+
+    if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+    volumeDebounceRef.current = window.setTimeout(() => {
+      void pushVolumeToPc(level, false);
+    }, 180);
+  }, [pushVolumeToPc]);
 
   const handleVolumeCommit = useCallback(async (v: number[]) => {
     const level = v[0];
-    console.log("[Hub] Volume commit:", level);
-    try {
-      // Fire-and-forget for instant feel, then sync
-      sendCommand("set_volume", { level });
-      if (selectedDevice?.id) {
-        supabase.from("devices").update({ current_volume: level }).eq("id", selectedDevice.id);
-      }
-    } catch (e) {
-      console.error("Volume update failed:", e);
+    volumeSyncLockUntilRef.current = Date.now() + 2200;
+    if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+
+    const result = await pushVolumeToPc(level, true);
+    if (!result.success) {
+      toast({
+        title: "Volume update failed",
+        description: String(result.error || "Unable to set volume"),
+        variant: "destructive",
+      });
+      syncSystemState();
     }
-  }, [sendCommand, selectedDevice?.id]);
+  }, [pushVolumeToPc, syncSystemState, toast]);
 
   const handleBrightnessSlider = useCallback((v: number[]) => {
-    setBrightness(v[0]);
-  }, []);
+    const level = v[0];
+    setBrightness(level);
+    brightnessSyncLockUntilRef.current = Date.now() + 1600;
+
+    if (brightnessDebounceRef.current) clearTimeout(brightnessDebounceRef.current);
+    brightnessDebounceRef.current = window.setTimeout(() => {
+      void pushBrightnessToPc(level, false);
+    }, 180);
+  }, [pushBrightnessToPc]);
 
   const handleBrightnessCommit = useCallback(async (v: number[]) => {
     const level = v[0];
-    console.log("[Hub] Brightness commit:", level);
-    try {
-      sendCommand("set_brightness", { level });
-      if (selectedDevice?.id) {
-        supabase.from("devices").update({ current_brightness: level }).eq("id", selectedDevice.id);
-      }
-    } catch (e) {
-      console.error("Brightness update failed:", e);
+    brightnessSyncLockUntilRef.current = Date.now() + 2200;
+    if (brightnessDebounceRef.current) clearTimeout(brightnessDebounceRef.current);
+
+    const result = await pushBrightnessToPc(level, true);
+    if (!result.success) {
+      toast({
+        title: "Brightness update failed",
+        description: String(result.error || "Unable to set brightness"),
+        variant: "destructive",
+      });
+      syncSystemState();
     }
-  }, [sendCommand, selectedDevice?.id]);
+  }, [pushBrightnessToPc, syncSystemState, toast]);
 
   const handleLock = useCallback(async () => {
     setIsLocked(true);
