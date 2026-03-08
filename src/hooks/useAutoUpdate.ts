@@ -9,6 +9,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { Capacitor } from "@capacitor/core";
 
 const APP_VERSION = "1.0.0"; // Bump this on each release
