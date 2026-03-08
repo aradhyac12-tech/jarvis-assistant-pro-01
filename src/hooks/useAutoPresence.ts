@@ -197,30 +197,48 @@ export function useAutoPresence() {
     return () => clearInterval(interval);
   }, [enabled, selectedDevice?.id, user, awayDelay, presenceMode, evaluatePresence]);
 
-  // Geofence polling
+  // Geofence: use watchPosition for continuous real-time updates + fallback polling
+  const watchIdRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (!enabled || presenceMode === "device") return;
     if (homeLat === null || homeLng === null) return;
     if (!("geolocation" in navigator)) return;
 
-    const checkGeo = () => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const dist = getDistanceMeters(homeLat, homeLng, pos.coords.latitude, pos.coords.longitude);
-          setCurrentDistance(Math.round(dist));
-          geoInsideRef.current = dist <= homeRadius;
-          evaluatePresence();
-        },
-        (err) => {
-          if (err.code === err.PERMISSION_DENIED) setGeoPermission("denied");
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
+    const handlePosition = (pos: GeolocationPosition) => {
+      const dist = getDistanceMeters(homeLat, homeLng, pos.coords.latitude, pos.coords.longitude);
+      setCurrentDistance(Math.round(dist));
+      const wasInside = geoInsideRef.current;
+      geoInsideRef.current = dist <= homeRadius;
+      // Only re-evaluate if state changed or first reading
+      if (wasInside !== geoInsideRef.current || wasInside === null) {
+        addLog("info", "web", `Geofence: ${dist.toFixed(0)}m from home (${geoInsideRef.current ? "inside" : "outside"} ${homeRadius}m radius)`);
+      }
+      evaluatePresence();
     };
 
-    checkGeo();
-    const interval = setInterval(checkGeo, geoPollInterval);
-    return () => clearInterval(interval);
+    const handleError = (err: GeolocationPositionError) => {
+      if (err.code === err.PERMISSION_DENIED) setGeoPermission("denied");
+      addLog("warn", "web", `Geolocation error: ${err.message}`);
+    };
+
+    const geoOptions: PositionOptions = { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 };
+
+    // Use watchPosition for real-time continuous tracking
+    const watchId = navigator.geolocation.watchPosition(handlePosition, handleError, geoOptions);
+    watchIdRef.current = watchId;
+    setGeoPermission("granted");
+
+    // Also poll at interval as a fallback (watchPosition can stall on some devices)
+    const fallbackInterval = setInterval(() => {
+      navigator.geolocation.getCurrentPosition(handlePosition, handleError, geoOptions);
+    }, geoPollInterval);
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      watchIdRef.current = null;
+      clearInterval(fallbackInterval);
+    };
   }, [enabled, presenceMode, homeLat, homeLng, homeRadius, geoPollInterval, evaluatePresence]);
 
   // Realtime device updates
