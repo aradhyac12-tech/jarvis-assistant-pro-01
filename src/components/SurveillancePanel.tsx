@@ -1053,6 +1053,43 @@ export function SurveillancePanel({ className }: { className?: string }) {
                       <div className="flex items-center gap-2"><Eye className="h-4 w-4 text-primary" /><Label className="text-xs">Continuous Recognition (30s)</Label></div>
                       <Switch checked={continuousRecognition} onCheckedChange={setContinuousRecognition} />
                     </div>
+
+                    {/* Auto-Presence Section */}
+                    <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <ShieldCheck className="h-4 w-4 text-primary" />
+                          <Label className="text-xs font-medium">Auto-Presence Mode</Label>
+                        </div>
+                        <Switch checked={autoPresence.enabled} onCheckedChange={autoPresence.setEnabled} />
+                      </div>
+                      <p className="text-[10px] text-muted-foreground leading-relaxed">
+                        Auto-enables surveillance when you leave (phone disconnects) and disables it when you return.
+                      </p>
+                      {autoPresence.enabled && (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={autoPresence.presenceStatus === "home" ? "default" : autoPresence.presenceStatus === "away" ? "destructive" : "secondary"} className="text-[10px]">
+                              {autoPresence.presenceStatus === "home" ? "🏠 Home" : autoPresence.presenceStatus === "away" ? "🔒 Away" : "⏳ Detecting..."}
+                            </Badge>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-[10px]">Grace Period</Label>
+                              <span className="font-mono text-[10px] text-primary">{autoPresence.awayDelay / 1000}s</span>
+                            </div>
+                            <Slider
+                              value={[autoPresence.awayDelay / 1000]}
+                              onValueChange={([v]) => autoPresence.setAwayDelay(v * 1000)}
+                              min={15}
+                              max={300}
+                              step={15}
+                              className="w-full"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   <div className="space-y-2 pt-2">
