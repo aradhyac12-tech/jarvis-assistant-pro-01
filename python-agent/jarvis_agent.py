@@ -3772,17 +3772,73 @@ class JarvisAgent:
     def _get_system_stats(self) -> Dict[str, Any]:
         try:
             cpu = psutil.cpu_percent()
-            mem = psutil.virtual_memory().percent
-            disk = psutil.disk_usage('/').percent if platform.system() != "Windows" else psutil.disk_usage('C:\\').percent
+            mem = psutil.virtual_memory()
+            disk = psutil.disk_usage('/') if platform.system() != "Windows" else psutil.disk_usage('C:\\')
             battery = psutil.sensors_battery()
+            
+            # Network I/O rates
+            net_up, net_down = 0, 0
+            try:
+                net1 = psutil.net_io_counters()
+                import time as _time
+                _time.sleep(0.3)
+                net2 = psutil.net_io_counters()
+                dt = 0.3
+                net_up = int((net2.bytes_sent - net1.bytes_sent) / dt)
+                net_down = int((net2.bytes_recv - net1.bytes_recv) / dt)
+            except Exception:
+                pass
+            
+            # Temperatures
+            cpu_temp, gpu_temp = None, None
+            try:
+                temps = psutil.sensors_temperatures()
+                if temps:
+                    for name, entries in temps.items():
+                        if entries:
+                            t = entries[0].current
+                            if 'cpu' in name.lower() or 'coretemp' in name.lower() or 'k10temp' in name.lower():
+                                cpu_temp = t
+                            elif 'gpu' in name.lower() or 'nvidia' in name.lower() or 'amdgpu' in name.lower():
+                                gpu_temp = t
+            except Exception:
+                pass
+            
+            # Top processes
+            top_processes = []
+            try:
+                total_memory = mem.total
+                procs = []
+                for proc in psutil.process_iter(['name', 'pid', 'cpu_percent', 'memory_percent']):
+                    try:
+                        info = proc.info
+                        name = info['name']
+                        if name.lower() in ("system", "idle", "registry", "smss.exe", "csrss.exe", "svchost.exe"):
+                            continue
+                        cpu_p = round(info.get('cpu_percent', 0) or 0, 1)
+                        mem_p = round(info.get('memory_percent', 0) or 0, 1)
+                        if cpu_p > 0 or mem_p > 1:
+                            mem_mb = round((mem_p / 100.0) * (total_memory / (1024 * 1024)), 1)
+                            procs.append({"pid": info['pid'], "name": name, "cpu": cpu_p, "memory": mem_p, "memory_mb": mem_mb})
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                procs.sort(key=lambda x: x.get("cpu", 0), reverse=True)
+                top_processes = procs[:15]
+            except Exception:
+                pass
             
             return {
                 "success": True,
                 "cpu_percent": cpu,
-                "memory_percent": mem,
-                "disk_percent": disk,
+                "memory_percent": mem.percent,
+                "disk_percent": disk.percent,
                 "battery_percent": battery.percent if battery else None,
                 "battery_plugged": battery.power_plugged if battery else None,
+                "net_bytes_sent_sec": net_up,
+                "net_bytes_recv_sec": net_down,
+                "cpu_temp": cpu_temp,
+                "gpu_temp": gpu_temp,
+                "top_processes": top_processes,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
