@@ -3251,6 +3251,7 @@ class JarvisAgent:
                 "session_id": session_id,
                 "direction": direction,
                 "running": True,
+                "lock": threading.Lock()
             }
 
             ws_base = self._get_ws_base()
@@ -3440,7 +3441,8 @@ class JarvisAgent:
     def _stop_audio_relay(self) -> Dict[str, Any]:
         try:
             if self._audio_streamer:
-                self._audio_streamer["running"] = False
+                with self._audio_streamer.get("lock", threading.Lock()):
+                    self._audio_streamer["running"] = False
             if self._audio_ws:
                 try:
                     self._audio_ws.close()
