@@ -14,6 +14,7 @@ import { LazyLoadErrorBoundary } from "@/components/LazyLoadErrorBoundary";
 import { AppLockScreen, isAppLockEnabled } from "@/components/AppLockScreen";
 import { useAppStatePersistence, getLastRoute } from "@/hooks/useAppState";
 import { useBackgroundPersistence } from "@/hooks/useBackgroundPersistence";
+import { useAutoUpdate } from "@/hooks/useAutoUpdate";
 import { Loader2 } from "lucide-react";
 import React, { lazy, Suspense, forwardRef, useState, useEffect, useCallback } from "react";
 
@@ -56,6 +57,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function StatePersistence() {
   useAppStatePersistence();
   useBackgroundPersistence();
+  useAutoUpdate(); // Global auto-update check (APK + web)
   return null;
 }
 
