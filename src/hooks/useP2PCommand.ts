@@ -684,6 +684,11 @@ export function useP2PCommand() {
     setAutoLocalP2P((prev) => !prev);
   }, []);
 
+  // Toggle auto-Bluetooth
+  const toggleAutoBluetooth = useCallback(() => {
+    setAutoBluetooth((prev) => !prev);
+  }, []);
+
   // Force P2P upgrade attempt
   const forceP2PUpgrade = useCallback(() => {
     tryP2PUpgrade();
