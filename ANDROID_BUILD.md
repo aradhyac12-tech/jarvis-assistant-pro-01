@@ -312,6 +312,8 @@ When phone and PC are on the same network:
    - **Camera** → `ws://pcIp:9876/camera`
    - **Screen** → `ws://pcIp:9876/screen`
    - **Audio** → `ws://pcIp:9876/audio`
+   - **File Upload** → `ws://pcIp:9876/file-upload` (binary)
+   - **File Download** → `ws://pcIp:9876/file-download` (binary)
 4. Latency drops from ~200ms (cloud) to ~5ms (local)
 
 ### Firewall:
@@ -319,6 +321,50 @@ The PC agent auto-adds firewall rules. If blocked, manually run:
 ```
 netsh advfirewall firewall add rule name="JARVIS P2P" dir=in action=allow protocol=TCP localport=9876-9877
 ```
+
+---
+
+## High-Speed File Transfer
+
+File transfer is optimized for 10-20 Mbps throughput using dedicated binary WebSocket endpoints on P2P, with cloud storage fallback.
+
+### Architecture:
+
+| Mode | Method | Speed | When Used |
+|------|--------|-------|-----------|
+| **P2P Binary** | Direct WebSocket binary frames | 10-20+ Mbps | Same network (auto-detected) |
+| **Cloud Relay** | Supabase Storage upload/download | 2-5 Mbps | Different networks |
+
+### P2P Binary Transfer Protocol:
+
+**Upload (Phone → PC):**
+1. Phone opens `ws://pcIp:9876/file-upload?fileName=X&fileSize=N&saveFolder=...`
+2. Agent sends `{"type": "ready", "maxChunkSize": 2097152}`
+3. Phone streams raw binary 2MB chunks (no base64 encoding)
+4. Agent sends lightweight JSON acks with real-time speed: `{"ack": N, "speed_mbps": 15.2}`
+5. Phone sends `{"type": "done"}` when complete
+6. Agent confirms: `{"complete": true, "speed_mbps": 15.2}`
+
+**Download (PC → Phone):**
+1. Phone opens `ws://pcIp:9876/file-download?path=/path/to/file`
+2. Agent sends header: `{"type": "header", "fileName": "X", "fileSize": N}`
+3. Phone sends `{"type": "ready"}`
+4. Agent streams raw binary 2MB chunks
+5. Agent sends `{"complete": true, "speed_mbps": 18.1}`
+6. Phone assembles chunks into Blob and triggers browser download
+
+### Why it's fast:
+- **No base64 encoding** — Previous approach had 33% overhead from base64
+- **No database relay** — Previous approach routed each 512KB chunk through Supabase insert/poll cycle
+- **2MB chunks** — 4x larger than previous 512KB chunks, fewer round-trips
+- **Streaming ReadableStream** — Uses `file.stream().getReader()` for zero-copy reads
+- **Minimal acks** — Lightweight JSON ack per chunk, not full command cycle
+
+### Cloud Fallback:
+When P2P is unavailable, files are uploaded to Supabase Storage, a signed URL is generated, and the agent downloads from that URL directly. This avoids the old chunk-through-command-queue approach entirely.
+
+### Diagnostics:
+The Diagnose tab includes a **P2P Binary Transfer** speed test that sends 4MB and measures actual throughput in Mbps.
 
 ---
 
@@ -420,7 +466,7 @@ pip install opencv-python face_recognition numpy
 | Audio relay (bidirectional) | ✅ | 16kHz PCM with JS resampling, WASAPI loopback |
 | Trackpad / Keyboard | ✅ | Multi-touch trackpad, full keyboard with special keys |
 | Volume & Brightness control | ✅ | Slider with real-time PC state sync |
-| File transfer (bidirectional) | ✅ | Chunked transfer with retry, share-to-phone support |
+| File transfer (bidirectional) | ✅ | P2P binary WebSocket (10-20 Mbps), cloud fallback, 2MB chunks |
 | Clipboard sync | ✅ | Always-on background sync, copy/cut instant push |
 | KDE Connect notifications | ✅ | Full notification panel with reply, dismiss, quick actions |
 | Notification mirroring | ✅ | Phone notifications → PC Windows toasts |
