@@ -213,13 +213,13 @@
 
   /* Fade in animation */
   .animate-fade-in {
-    animation: fade-in 0.15s ease-out;
+    animation: fade-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   @keyframes fade-in {
     from {
       opacity: 0;
-      transform: translateY(2px);
+      transform: translateY(4px);
     }
     to {
       opacity: 1;
@@ -229,7 +229,7 @@
 
   /* Slide in from right */
   .animate-slide-in {
-    animation: slide-in 0.15s ease-out;
+    animation: slide-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   @keyframes slide-in {
@@ -240,6 +240,22 @@
     to {
       opacity: 1;
       transform: translateX(0);
+    }
+  }
+
+  /* Scale in */
+  .animate-scale-in {
+    animation: scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
     }
   }
 

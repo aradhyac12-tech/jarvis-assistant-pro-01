@@ -668,9 +668,11 @@ export default function Hub() {
   if (isLoading && !selectedDevice) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-black">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-6 h-6 animate-spin text-primary" />
-          <p className="text-xs text-muted-foreground">Connecting...</p>
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center">
+            <Loader2 className="w-5 h-5 animate-spin text-primary" />
+          </div>
+          <p className="text-xs text-muted-foreground font-medium">Connecting to JARVIS...</p>
         </div>
       </div>
     );
@@ -680,20 +682,21 @@ export default function Hub() {
     <TooltipProvider>
       <div className="min-h-screen bg-black text-foreground">
         {/* Header */}
-        <header className="sticky top-0 z-50 border-b border-border/10 bg-black/90 backdrop-blur-xl safe-area-top">
-          <div className="flex items-center justify-between h-11 px-3">
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-md bg-primary flex items-center justify-center">
-                <Bot className="w-3.5 h-3.5 text-primary-foreground" />
+        <header className="sticky top-0 z-50 border-b border-border/8 bg-black/95 backdrop-blur-2xl safe-area-top">
+          <div className="flex items-center justify-between h-12 px-3.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center shadow-lg shadow-primary/20">
+                <Bot className="w-4 h-4 text-primary-foreground" />
               </div>
-              <span className="font-semibold text-sm tracking-tight">JARVIS</span>
+              <span className="font-bold text-sm tracking-tight">JARVIS</span>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
               {/* Compact system stats */}
               {systemStats && (
-                <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground font-mono">
+                <div className="flex items-center gap-2 text-[9px] text-muted-foreground font-mono bg-secondary/20 rounded-full px-2 py-0.5">
                   <span className="flex items-center gap-0.5"><Cpu className="w-2.5 h-2.5" />{systemStats.cpu_percent}%</span>
+                  <span className="w-px h-2.5 bg-border/30" />
                   <span className="flex items-center gap-0.5"><HardDrive className="w-2.5 h-2.5" />{systemStats.memory_percent}%</span>
                 </div>
               )}
@@ -721,20 +724,20 @@ export default function Hub() {
                 </div>
               )}
 
-              <div className={cn("flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium", status.color)}>
+              <div className={cn("flex items-center gap-1 px-2 py-1 rounded-full text-[9px] font-semibold bg-secondary/15", status.color)}>
                 <span className={cn("w-1.5 h-1.5 rounded-full", status.dot)} />
                 {status.text}
               </div>
 
-              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-6 w-6">
-                <RefreshCw className={cn("w-3 h-3", isLoading && "animate-spin")} />
+              <Button variant="ghost" size="icon" onClick={() => { refreshDevices(); fetchStats(); syncSystemState(); }} disabled={isLoading} className="h-7 w-7 rounded-lg">
+                <RefreshCw className={cn("w-3.5 h-3.5", isLoading && "animate-spin")} />
               </Button>
             </div>
           </div>
         </header>
 
-        <ScrollArea className="h-[calc(100vh-2.75rem)]">
-          <main className="p-3 space-y-2.5 pb-6">
+        <ScrollArea className="h-[calc(100vh-3rem)]">
+          <main className="p-3 space-y-3 pb-8">
             {/* Command Input */}
             <div className="flex gap-1.5">
               <Input
@@ -742,25 +745,25 @@ export default function Hub() {
                 value={cmdInput}
                 onChange={(e) => setCmdInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCommand()}
-                className="flex-1 h-9 bg-card/30 border-border/10 focus-visible:ring-1 text-sm"
+                className="flex-1 h-10 bg-card/40 border-border/15 focus-visible:ring-1 focus-visible:ring-primary/40 text-sm rounded-xl placeholder:text-muted-foreground/50"
                 disabled={!isConnected}
               />
-              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-9 w-9 shrink-0">
+              <Button onClick={handleCommand} disabled={!isConnected || isProcessing} size="icon" className="h-10 w-10 shrink-0 rounded-xl shadow-lg shadow-primary/10">
                 {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </Button>
             </div>
 
             {/* Tab Navigation — 6 columns */}
-            <div className="grid grid-cols-6 gap-0.5 p-0.5 bg-card/30 rounded-xl w-full border border-border/10">
+            <div className="grid grid-cols-6 gap-0.5 p-1 bg-card/40 rounded-2xl w-full border border-border/10">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => { setActiveTab(tab.id); haptic.tap(); }}
                   className={cn(
-                    "flex flex-col items-center justify-center gap-0.5 px-1 py-2 rounded-lg text-[10px] font-medium transition-all",
+                    "flex flex-col items-center justify-center gap-0.5 px-1 py-2.5 rounded-xl text-[10px] font-medium transition-all duration-200",
                     activeTab === tab.id
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/30"
+                      ? "bg-primary text-primary-foreground shadow-md shadow-primary/20"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/20 active:scale-95"
                   )}
                 >
                   <tab.icon className="w-4 h-4 shrink-0" />
@@ -778,25 +781,30 @@ export default function Hub() {
                     <Link key={link.href} to={link.href}>
                       <Button
                         variant="outline"
-                        className="w-full h-12 gap-2 border-border/20 hover:bg-secondary/30"
+                        className="w-full h-14 gap-2.5 border-border/15 hover:bg-secondary/20 hover:border-primary/20 rounded-xl transition-all duration-200 active:scale-[0.98]"
                         onClick={() => haptic.tap()}
                       >
-                        <link.icon className="w-4 h-4 text-primary shrink-0" />
-                        <span className="text-xs">{link.title}</span>
+                        <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                          <link.icon className="w-4 h-4 text-primary" />
+                        </div>
+                        <span className="text-xs font-medium">{link.title}</span>
                       </Button>
                     </Link>
                   ))}
                 </div>
 
                 {/* Volume & Brightness */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-3 space-y-4">
-                    <div className="space-y-2">
+                <Card className="border-border/15 bg-card/50 rounded-2xl overflow-hidden">
+                  <CardContent className="p-4 space-y-5">
+                    <div className="space-y-3">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="flex items-center gap-1.5 text-muted-foreground">
-                          <VolumeIcon className="w-3.5 h-3.5 cursor-pointer" onClick={() => { handleMuteToggle(); haptic.tap(); }} /> Volume
+                        <span className="flex items-center gap-2 text-muted-foreground font-medium">
+                          <div className="w-6 h-6 rounded-md bg-primary/10 flex items-center justify-center">
+                            <VolumeIcon className="w-3.5 h-3.5 text-primary cursor-pointer" onClick={() => { handleMuteToggle(); haptic.tap(); }} />
+                          </div>
+                          Volume
                         </span>
-                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0">{volume}%</Badge>
+                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0.5 rounded-md">{volume}%</Badge>
                       </div>
                       <Slider
                         value={[volume]}
@@ -809,12 +817,17 @@ export default function Hub() {
                       />
                     </div>
 
-                    <div className="space-y-2">
+                    <div className="w-full h-px bg-border/10" />
+
+                    <div className="space-y-3">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="flex items-center gap-1.5 text-muted-foreground">
-                          <Sun className="w-3.5 h-3.5" /> Brightness
+                        <span className="flex items-center gap-2 text-muted-foreground font-medium">
+                          <div className="w-6 h-6 rounded-md bg-amber-500/10 flex items-center justify-center">
+                            <Sun className="w-3.5 h-3.5 text-amber-400" />
+                          </div>
+                          Brightness
                         </span>
-                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0">{brightness}%</Badge>
+                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0.5 rounded-md">{brightness}%</Badge>
                       </div>
                       <Slider
                         value={[brightness]}
@@ -830,39 +843,39 @@ export default function Hub() {
                 </Card>
 
                 {/* Power Controls */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-3">
-                    <div className="grid grid-cols-3 gap-1.5">
+                <Card className="border-border/15 bg-card/50 rounded-2xl">
+                  <CardContent className="p-3.5">
+                    <div className="grid grid-cols-3 gap-2">
                       {[
-                        { icon: Lock, action: handleLock, label: "Lock", danger: false },
-                        { icon: Moon, action: () => handlePower("sleep"), label: "Sleep", danger: false },
-                        { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart", danger: false },
-                        { icon: Power, action: () => handlePower("shutdown"), label: "Off", danger: true },
-                        { icon: Zap, action: handleQuickBoost, label: "Boost", danger: false },
+                        { icon: Lock, action: handleLock, label: "Lock", danger: false, color: "text-primary" },
+                        { icon: Moon, action: () => handlePower("sleep"), label: "Sleep", danger: false, color: "text-indigo-400" },
+                        { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart", danger: false, color: "text-amber-400" },
+                        { icon: Power, action: () => handlePower("shutdown"), label: "Off", danger: true, color: "text-destructive" },
+                        { icon: Zap, action: handleQuickBoost, label: "Boost", danger: false, color: "text-emerald-400" },
                       ].map((btn) => (
                         <Button 
                           key={btn.label}
                           variant="outline" 
                           className={cn(
-                            "h-14 w-full flex flex-col gap-1 border-border/20 text-xs",
-                            btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30",
-                            btn.label === "Boost" && "hover:border-primary/30"
+                            "h-16 w-full flex flex-col gap-1.5 border-border/15 text-xs rounded-xl transition-all duration-200 active:scale-[0.95]",
+                            btn.danger && "hover:border-destructive/30 hover:bg-destructive/5",
+                            !btn.danger && "hover:border-primary/20 hover:bg-secondary/20"
                           )}
                           onClick={() => { btn.action(); haptic.tap(); }} 
                           disabled={!isConnected || (btn.label === "Boost" && isBoosting)}
                         >
-                          <btn.icon className="w-4 h-4" />
-                          <span className="text-[10px]">{btn.label}</span>
+                          <btn.icon className={cn("w-4.5 h-4.5", btn.color)} />
+                          <span className="text-[10px] font-medium">{btn.label}</span>
                         </Button>
                       ))}
                     </div>
                     {/* Ghost Mode Button */}
-                    <div className="mt-2">
+                    <div className="mt-3">
                       <Button
                         variant="outline"
                         className={cn(
-                          "w-full h-10 gap-2 text-xs border-border/20",
-                          ghostMode && "bg-primary/10 border-primary/30 text-primary"
+                          "w-full h-11 gap-2.5 text-xs border-border/15 rounded-xl transition-all duration-200",
+                          ghostMode && "bg-primary/10 border-primary/30 text-primary shadow-inner shadow-primary/5"
                         )}
                         onClick={handleGhostMode}
                         disabled={!isConnected}
@@ -1347,12 +1360,14 @@ export default function Hub() {
 
             {/* No Device Warning */}
             {!isLoading && devices.length === 0 && (
-              <Card className="border-border/20 bg-card/50">
-                <CardContent className="p-6 text-center">
-                  <Wifi className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-                  <h3 className="font-medium text-sm mb-1">No PC Connected</h3>
-                  <p className="text-xs text-muted-foreground mb-3">Run the Python agent on your PC</p>
-                  <code className="block p-2 bg-secondary/50 rounded-md text-[10px] font-mono">
+              <Card className="border-border/15 bg-card/50 rounded-2xl">
+                <CardContent className="p-8 text-center">
+                  <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                    <Wifi className="w-7 h-7 text-primary/60" />
+                  </div>
+                  <h3 className="font-semibold text-sm mb-1.5">No PC Connected</h3>
+                  <p className="text-xs text-muted-foreground mb-4">Run the Python agent on your PC to get started</p>
+                  <code className="block p-3 bg-secondary/30 rounded-xl text-[11px] font-mono text-foreground/70 border border-border/10">
                     python jarvis_agent.py --gui
                   </code>
                 </CardContent>
