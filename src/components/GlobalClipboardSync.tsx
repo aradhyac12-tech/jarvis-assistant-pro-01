@@ -25,6 +25,12 @@ export function GlobalClipboardSync() {
   const lastReceivedRef = useRef("");
   const pollRef = useRef<number | null>(null);
   const busyRef = useRef(false);
+  const noChangeCountRef = useRef(0);
+  const currentIntervalRef = useRef(1000);
+
+  const FAST_INTERVAL = 1000;
+  const SLOW_INTERVAL = 5000;
+  const SLOWDOWN_THRESHOLD = 30; // polls with no change before slowing
 
   // Push clipboard text to PC via best available transport
   const pushToPc = useCallback(async (text: string) => {
