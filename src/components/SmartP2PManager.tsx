@@ -163,6 +163,7 @@ export function SmartP2PManager({
   onToggleAutoLocalP2P,
   onForceUpgrade,
   onForceLocalP2P,
+  pcSystemInfo,
   className,
 }: SmartP2PManagerProps) {
   const [isUpgrading, setIsUpgrading] = useState(false);
