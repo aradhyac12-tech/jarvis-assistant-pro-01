@@ -31,7 +31,6 @@ import {
   Shield,
   Headphones,
   Rows2,
-  X,
   Loader2,
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
@@ -48,8 +47,12 @@ import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
 import { useP2PStreaming } from "@/hooks/useP2PStreaming";
+import { useGlobalPiP } from "@/contexts/GlobalPiPContext";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
+
+const PIP_CAMERA_STREAM_ID = "pip-camera";
+const PIP_SCREEN_STREAM_ID = "pip-screen";
 
 // ==================== Settings Persistence ====================
 function loadSetting<T>(key: string, fallback: T): T {
@@ -157,6 +160,16 @@ export default function MicCamera() {
   const { selectedDevice } = useDeviceContext();
   const { session } = useDeviceSession();
   const {
+    registerStream,
+    updateStreamFrame: updateGlobalFrame,
+    setStreamActive: setGlobalStreamActive,
+    pinStream,
+    setFloating,
+    takeWebSocketOwnership,
+    hasWebSocketOwnership,
+    releaseWebSocketOwnership,
+  } = useGlobalPiP();
+  const {
     inputDevices, outputDevices, selectedInput, selectedOutput,
     setSelectedInput, setSelectedOutput, refreshDevices, loading: devicesLoading,
   } = useAudioDevices();
@@ -166,7 +179,7 @@ export default function MicCamera() {
   const [activeTab, setActiveTab] = useState(() => loadSetting("mic_camera_tab", "audio"));
   const handleTabChange = (v: string) => { setActiveTab(v); saveSetting("mic_camera_tab", v); };
 
-  // Split view mode — video on top, controls below
+  // PiP mode — floating and movable across app routes
   const [splitMode, setSplitMode] = useState(() => loadSetting("mic_split_mode", false));
   const [splitStream, setSplitStream] = useState<"camera" | "screen">(() => loadSetting("mic_split_stream", "camera"));
 
@@ -232,18 +245,82 @@ export default function MicCamera() {
   useEffect(() => { saveSetting("mic_split_mode", splitMode); }, [splitMode]);
   useEffect(() => { saveSetting("mic_split_stream", splitStream); }, [splitStream]);
 
-  // Computed split view values
-  const splitFrame = splitStream === "camera" ? pcCamFrame : screenFrame;
-  const splitFps = splitStream === "camera" ? liveCamFps : liveScreenFps;
-  const splitLatency = splitStream === "camera" ? camLatency : screenLatency;
+  const splitModeRef = useRef(splitMode);
 
-  // Auto-switch split stream to whichever is active
+  useEffect(() => {
+    splitModeRef.current = splitMode;
+  }, [splitMode]);
+
+  useEffect(() => {
+    registerStream({
+      id: PIP_CAMERA_STREAM_ID,
+      title: "PC Camera",
+      frame: null,
+      fps: 0,
+      latency: 0,
+      isActive: false,
+      type: "camera",
+    });
+    registerStream({
+      id: PIP_SCREEN_STREAM_ID,
+      title: "Screen Mirror",
+      frame: null,
+      fps: 0,
+      latency: 0,
+      isActive: false,
+      type: "screen",
+    });
+  }, [registerStream]);
+
+  useEffect(() => {
+    setGlobalStreamActive(PIP_CAMERA_STREAM_ID, pcCamActive);
+  }, [pcCamActive, setGlobalStreamActive]);
+
+  useEffect(() => {
+    setGlobalStreamActive(PIP_SCREEN_STREAM_ID, screenActive);
+  }, [screenActive, setGlobalStreamActive]);
+
+  useEffect(() => {
+    if (pcCamFrame) {
+      updateGlobalFrame(PIP_CAMERA_STREAM_ID, pcCamFrame, liveCamFps, camLatency);
+    }
+  }, [pcCamFrame, liveCamFps, camLatency, updateGlobalFrame]);
+
+  useEffect(() => {
+    if (screenFrame) {
+      updateGlobalFrame(PIP_SCREEN_STREAM_ID, screenFrame, liveScreenFps, screenLatency);
+    }
+  }, [screenFrame, liveScreenFps, screenLatency, updateGlobalFrame]);
+
+  // Auto-switch PiP stream to whichever is active
   useEffect(() => {
     if (splitMode) {
       if (splitStream === "camera" && !pcCamActive && screenActive) setSplitStream("screen");
       if (splitStream === "screen" && !screenActive && pcCamActive) setSplitStream("camera");
     }
   }, [splitMode, pcCamActive, screenActive, splitStream]);
+
+  // Keep PiP visible and pinned to selected active stream
+  useEffect(() => {
+    if (!splitMode) {
+      setFloating(false);
+      pinStream(null);
+      return;
+    }
+
+    const targetStreamId = splitStream === "camera"
+      ? (pcCamActive ? PIP_CAMERA_STREAM_ID : screenActive ? PIP_SCREEN_STREAM_ID : null)
+      : (screenActive ? PIP_SCREEN_STREAM_ID : pcCamActive ? PIP_CAMERA_STREAM_ID : null);
+
+    if (!targetStreamId) {
+      setFloating(false);
+      pinStream(null);
+      return;
+    }
+
+    pinStream(targetStreamId);
+    setFloating(true);
+  }, [splitMode, splitStream, pcCamActive, screenActive, pinStream, setFloating]);
 
   // ==================== HELPERS ====================
   const processFrames = useCallback((
@@ -385,11 +462,14 @@ export default function MicCamera() {
 
   const stopPcCamera = useCallback(async () => {
     sendCommand("stop_camera_stream", {});
+    if (hasWebSocketOwnership(PIP_CAMERA_STREAM_ID)) {
+      releaseWebSocketOwnership(PIP_CAMERA_STREAM_ID);
+    }
     pcCamWsRef.current?.close();
     pcCamWsRef.current = null;
     setPcCamActive(false); setPcCamFrame(null); setLiveCamFps(0); setCamLatency(0);
     toast({ title: "Camera Stopped" });
-  }, [sendCommand, toast]);
+  }, [sendCommand, hasWebSocketOwnership, releaseWebSocketOwnership, toast]);
 
   const updateCamSettings = useCallback(async (fps: number, quality: number) => {
     // Cap quality when FPS is high to prevent agent crash
@@ -457,12 +537,15 @@ export default function MicCamera() {
   }, [sendCommand, screenFps, screenQuality, p2pStreaming, session, toast, waitForWsOpen, processFrames]);
 
   const stopScreen = useCallback(async () => {
+    if (hasWebSocketOwnership(PIP_SCREEN_STREAM_ID)) {
+      releaseWebSocketOwnership(PIP_SCREEN_STREAM_ID);
+    }
     screenWsRef.current?.close();
     screenWsRef.current = null;
     sendCommand("stop_screen_stream", {});
     setScreenActive(false); setScreenFrame(null); setLiveScreenFps(0); setScreenLatency(0);
     toast({ title: "Screen Mirror Stopped" });
-  }, [sendCommand, toast]);
+  }, [sendCommand, hasWebSocketOwnership, releaseWebSocketOwnership, toast]);
 
   const updateScreenSettings = useCallback(async (fps: number, quality: number) => {
     if (screenActive) sendCommand("update_screen_settings", { fps, quality: fps > 30 ? Math.min(quality, 90) : quality });
@@ -698,12 +781,24 @@ export default function MicCamera() {
   }, [sendCommand, toast]);
 
   // ==================== CLEANUP ====================
-  // Don't close WebSockets that were handed off to GlobalPiP context
   useEffect(() => {
     return () => {
-      // Only close WS if PiP context hasn't taken ownership (ref will be null if transferred)
-      pcCamWsRef.current?.close();
-      screenWsRef.current?.close();
+      if (splitModeRef.current) {
+        if (pcCamWsRef.current?.readyState === WebSocket.OPEN && !hasWebSocketOwnership(PIP_CAMERA_STREAM_ID)) {
+          takeWebSocketOwnership(PIP_CAMERA_STREAM_ID, pcCamWsRef.current);
+        }
+        if (screenWsRef.current?.readyState === WebSocket.OPEN && !hasWebSocketOwnership(PIP_SCREEN_STREAM_ID)) {
+          takeWebSocketOwnership(PIP_SCREEN_STREAM_ID, screenWsRef.current);
+        }
+      }
+
+      if (!hasWebSocketOwnership(PIP_CAMERA_STREAM_ID)) {
+        pcCamWsRef.current?.close();
+      }
+      if (!hasWebSocketOwnership(PIP_SCREEN_STREAM_ID)) {
+        screenWsRef.current?.close();
+      }
+
       audioWsRef.current?.close();
       micStreamRef.current?.getTracks().forEach(t => t.stop());
       processorRef.current?.disconnect();
@@ -711,9 +806,26 @@ export default function MicCamera() {
       if (camBlobUrl.current) URL.revokeObjectURL(camBlobUrl.current);
       if (screenBlobUrl.current) URL.revokeObjectURL(screenBlobUrl.current);
     };
-  }, []);
+  }, [hasWebSocketOwnership, takeWebSocketOwnership]);
 
   const DirectionIcon = audioDirection === "phone_to_pc" ? ArrowRight : audioDirection === "pc_to_phone" ? ArrowLeft : ArrowLeftRight;
+
+  const handleSplitToggle = useCallback(() => {
+    setSplitMode((prev) => {
+      if (prev) {
+        setFloating(false);
+        pinStream(null);
+        releaseWebSocketOwnership(PIP_CAMERA_STREAM_ID);
+        releaseWebSocketOwnership(PIP_SCREEN_STREAM_ID);
+      }
+      return !prev;
+    });
+  }, [pinStream, releaseWebSocketOwnership, setFloating]);
+
+  const activateSplitStream = useCallback((stream: "camera" | "screen") => {
+    setSplitStream(stream);
+    setSplitMode(true);
+  }, []);
 
   // ==================== RENDER ====================
   return (
@@ -728,8 +840,9 @@ export default function MicCamera() {
             <span className="font-semibold text-sm">Mic & Camera</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setSplitMode(!splitMode)}
-              className={cn("h-8 text-xs gap-1", splitMode ? "bg-primary/20 text-primary" : "")}>
+            <Button variant="ghost" size="sm" onClick={handleSplitToggle}
+              className={cn("h-8 text-xs gap-1", splitMode ? "bg-primary/20 text-primary" : "")}
+              title={splitMode ? "Disable floating PiP" : "Enable floating PiP"}>
               <Rows2 className="h-3.5 w-3.5" />
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setShowDebug(!showDebug)} className={cn("h-8 text-xs", showDebug ? "bg-primary/20" : "")}>
@@ -745,64 +858,44 @@ export default function MicCamera() {
         </div>
       </header>
 
-      {/* ===== SPLIT VIEW VIDEO PANEL ===== */}
-      {splitMode && (pcCamActive || screenActive) && (
-        <div className="sticky top-12 z-40 bg-black border-b border-border/20">
-          <div className="relative h-[35vh] min-h-[180px] max-h-[280px]">
-            {splitFrame ? (
-              <img src={splitFrame} alt="Split view" className="w-full h-full object-contain bg-black" draggable={false} />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-black">
-                <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              </div>
-            )}
-            {/* Stream switcher */}
-            <div className="absolute top-2 left-2 flex gap-1">
-              {pcCamActive && (
-                <Button variant={splitStream === "camera" ? "default" : "ghost"} size="sm"
-                  className="h-7 text-[10px] bg-black/60 backdrop-blur-sm border-0"
-                  onClick={() => setSplitStream("camera")}>
-                  <Webcam className="h-3 w-3 mr-1" />Cam
-                </Button>
-              )}
-              {screenActive && (
-                <Button variant={splitStream === "screen" ? "default" : "ghost"} size="sm"
-                  className="h-7 text-[10px] bg-black/60 backdrop-blur-sm border-0"
-                  onClick={() => setSplitStream("screen")}>
-                  <ScreenShare className="h-3 w-3 mr-1" />Screen
-                </Button>
-              )}
-            </div>
-            {/* Close split */}
-            <div className="absolute top-2 right-2">
-              <Button variant="ghost" size="icon" className="h-7 w-7 bg-black/60 backdrop-blur-sm text-white"
-                onClick={() => setSplitMode(false)}>
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-            {/* Stats */}
-            <div className="absolute bottom-2 left-2 flex gap-1.5">
-              <Badge variant="outline" className="bg-black/50 text-white text-[10px] font-mono border-transparent">
-                {splitFps} FPS
+      {splitMode && (
+        <div className="border-b border-border/20 bg-background/80 backdrop-blur-sm px-3 py-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Rows2 className="h-3.5 w-3.5 text-primary" />
+              <span>Floating PiP is active</span>
+              <Badge variant="outline" className="text-[10px]">
+                Drag anywhere on screen
               </Badge>
-              {splitLatency > 0 && (
-                <Badge variant="outline" className={cn(
-                  "bg-black/50 text-[10px] font-mono border-transparent",
-                  splitLatency > 100 ? "text-destructive" : "text-primary"
-                )}>
-                  {splitLatency}ms
-                </Badge>
-              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant={splitStream === "camera" ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-[10px]"
+                disabled={!pcCamActive}
+                onClick={() => activateSplitStream("camera")}
+              >
+                <Webcam className="h-3 w-3 mr-1" />Cam
+              </Button>
+              <Button
+                variant={splitStream === "screen" ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-[10px]"
+                disabled={!screenActive}
+                onClick={() => activateSplitStream("screen")}
+              >
+                <ScreenShare className="h-3 w-3 mr-1" />Screen
+              </Button>
+              <Button variant="ghost" size="sm" className="h-7 text-[10px]" onClick={handleSplitToggle}>
+                Close PiP
+              </Button>
             </div>
           </div>
         </div>
       )}
 
-      <ScrollArea className={cn(
-        splitMode && (pcCamActive || screenActive)
-          ? "h-[calc(65vh-3rem)]"
-          : "h-[calc(100vh-3rem)]"
-      )}>
+      <ScrollArea className="h-[calc(100vh-3rem)]">
         <main className="p-3 space-y-3 pb-6">
           {showDebug && (
             <Card className="border-border/40">

@@ -69,16 +69,23 @@ export function StreamDisplayControls({
     return () => window.removeEventListener("keydown", handleKey);
   }, [isFullscreen]);
 
-  // Lock body scroll when fullscreen
+  // Lock page scrolling when fullscreen (CSS-only, avoids mobile refresh/reload issues)
   useEffect(() => {
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevOverscroll = document.documentElement.style.overscrollBehaviorY;
+
     if (isFullscreen) {
       document.body.style.overflow = "hidden";
-      try { (screen.orientation as any)?.lock?.("landscape"); } catch { }
+      document.documentElement.style.overscrollBehaviorY = "contain";
     } else {
       document.body.style.overflow = "";
-      try { (screen.orientation as any)?.unlock?.(); } catch { }
+      document.documentElement.style.overscrollBehaviorY = "";
     }
-    return () => { document.body.style.overflow = ""; };
+
+    return () => {
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overscrollBehaviorY = prevOverscroll;
+    };
   }, [isFullscreen]);
 
   const toggleFullscreen = useCallback(() => {
