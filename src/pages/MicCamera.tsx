@@ -858,64 +858,44 @@ export default function MicCamera() {
         </div>
       </header>
 
-      {/* ===== SPLIT VIEW VIDEO PANEL ===== */}
-      {splitMode && (pcCamActive || screenActive) && (
-        <div className="sticky top-12 z-40 bg-black border-b border-border/20">
-          <div className="relative h-[35vh] min-h-[180px] max-h-[280px]">
-            {splitFrame ? (
-              <img src={splitFrame} alt="Split view" className="w-full h-full object-contain bg-black" draggable={false} />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-black">
-                <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              </div>
-            )}
-            {/* Stream switcher */}
-            <div className="absolute top-2 left-2 flex gap-1">
-              {pcCamActive && (
-                <Button variant={splitStream === "camera" ? "default" : "ghost"} size="sm"
-                  className="h-7 text-[10px] bg-black/60 backdrop-blur-sm border-0"
-                  onClick={() => setSplitStream("camera")}>
-                  <Webcam className="h-3 w-3 mr-1" />Cam
-                </Button>
-              )}
-              {screenActive && (
-                <Button variant={splitStream === "screen" ? "default" : "ghost"} size="sm"
-                  className="h-7 text-[10px] bg-black/60 backdrop-blur-sm border-0"
-                  onClick={() => setSplitStream("screen")}>
-                  <ScreenShare className="h-3 w-3 mr-1" />Screen
-                </Button>
-              )}
-            </div>
-            {/* Close split */}
-            <div className="absolute top-2 right-2">
-              <Button variant="ghost" size="icon" className="h-7 w-7 bg-black/60 backdrop-blur-sm text-white"
-                onClick={() => setSplitMode(false)}>
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-            {/* Stats */}
-            <div className="absolute bottom-2 left-2 flex gap-1.5">
-              <Badge variant="outline" className="bg-black/50 text-white text-[10px] font-mono border-transparent">
-                {splitFps} FPS
+      {splitMode && (
+        <div className="border-b border-border/20 bg-background/80 backdrop-blur-sm px-3 py-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Rows2 className="h-3.5 w-3.5 text-primary" />
+              <span>Floating PiP is active</span>
+              <Badge variant="outline" className="text-[10px]">
+                Drag anywhere on screen
               </Badge>
-              {splitLatency > 0 && (
-                <Badge variant="outline" className={cn(
-                  "bg-black/50 text-[10px] font-mono border-transparent",
-                  splitLatency > 100 ? "text-destructive" : "text-primary"
-                )}>
-                  {splitLatency}ms
-                </Badge>
-              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant={splitStream === "camera" ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-[10px]"
+                disabled={!pcCamActive}
+                onClick={() => activateSplitStream("camera")}
+              >
+                <Webcam className="h-3 w-3 mr-1" />Cam
+              </Button>
+              <Button
+                variant={splitStream === "screen" ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-[10px]"
+                disabled={!screenActive}
+                onClick={() => activateSplitStream("screen")}
+              >
+                <ScreenShare className="h-3 w-3 mr-1" />Screen
+              </Button>
+              <Button variant="ghost" size="sm" className="h-7 text-[10px]" onClick={handleSplitToggle}>
+                Close PiP
+              </Button>
             </div>
           </div>
         </div>
       )}
 
-      <ScrollArea className={cn(
-        splitMode && (pcCamActive || screenActive)
-          ? "h-[calc(65vh-3rem)]"
-          : "h-[calc(100vh-3rem)]"
-      )}>
+      <ScrollArea className="h-[calc(100vh-3rem)]">
         <main className="p-3 space-y-3 pb-6">
           {showDebug && (
             <Card className="border-border/40">
