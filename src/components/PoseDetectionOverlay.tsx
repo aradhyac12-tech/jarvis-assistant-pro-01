@@ -292,20 +292,19 @@ export function PoseDetectionOverlay({
         ctx.fill();
       }
 
-      // Draw connections with proper thickness
+      // Draw connections with body-part-specific colors and glow
       for (const [i1, i2] of POSE_CONNECTIONS) {
         const l1 = landmarks[i1];
         const l2 = landmarks[i2];
         if (!l1 || !l2 || l1.visibility < 0.2 || l2.visibility < 0.2) continue;
 
-        const color = getConnectionColor(i1, i2);
-        // Thicker lines for major body parts, thinner for face/hands/feet
-        const isMajor = (i1 >= 11 && i1 <= 28 && i2 >= 11 && i2 <= 28);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = isMajor ? 4 : 2;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = isMajor ? 8 : 4;
+        const style = getConnectionStyle(i1, i2);
+        ctx.strokeStyle = style.color;
+        ctx.lineWidth = style.width;
+        ctx.shadowColor = style.glow;
+        ctx.shadowBlur = style.width > 2 ? 10 : 5;
         ctx.lineCap = "round";
+        ctx.lineJoin = "round";
         ctx.beginPath();
         ctx.moveTo(l1.x * canvas.width, l1.y * canvas.height);
         ctx.lineTo(l2.x * canvas.width, l2.y * canvas.height);
