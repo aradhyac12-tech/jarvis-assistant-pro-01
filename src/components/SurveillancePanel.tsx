@@ -25,6 +25,7 @@ import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { useSurveillanceEvents, type SurveillanceEvent } from "@/hooks/useSurveillanceEvents";
 import { useAutoPresence } from "@/hooks/useAutoPresence";
+import { GeofenceMap } from "@/components/GeofenceMap";
 
 interface MotionEvent {
   id: string;
@@ -1328,6 +1329,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
                                   <p className="text-[9px] text-muted-foreground font-mono">
                                     📍 {autoPresence.homeLat?.toFixed(5)}, {autoPresence.homeLng?.toFixed(5)}
                                   </p>
+
+                                  {/* Geofence Map */}
+                                  <GeofenceMap
+                                    homeLat={autoPresence.homeLat}
+                                    homeLng={autoPresence.homeLng}
+                                    homeRadius={autoPresence.homeRadius}
+                                    currentDistance={autoPresence.currentDistance}
+                                    isInside={autoPresence.presenceStatus === "home" || (autoPresence.currentDistance !== null && autoPresence.currentDistance <= autoPresence.homeRadius)}
+                                  />
 
                                   {/* Radius Slider */}
                                   <div className="space-y-1">
