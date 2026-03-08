@@ -1502,10 +1502,92 @@ class JarvisGUI:
         url = os.environ.get("JARVIS_APP_URL", "https://id-preview--d1b9acd5-529c-4761-84e6-7717f3667310.lovable.app")
         webbrowser.open(url)
 
+    def _set_ghost_mode(self, mode):
+        """Switch between gui / tray / ghost modes."""
+        prev = self._ghost_mode
+        self._ghost_mode = mode
+
+        # update button visuals
+        for m, widgets in self._ghost_btns.items():
+            active = m == mode
+            bg = _Theme.ACCENT_DIM if active else _Theme.BG_ELEVATED
+            border = _Theme.ACCENT if active else _Theme.BORDER
+            fg = _Theme.TEXT if active else _Theme.TEXT_DIM
+            widgets["frame"].configure(bg=bg, highlightbackground=border)
+            widgets["inner"].configure(bg=bg)
+            widgets["icon"].configure(bg=bg)
+            widgets["text"].configure(bg=bg, fg=fg)
+
+        if mode == "gui":
+            self._ghost_status.configure(text="● GUI Mode — Full window visible", fg=_Theme.SUCCESS)
+            # restore window
+            self.root.deiconify()
+            self.root.attributes("-alpha", 1.0)
+            if self.agent:
+                try: self.agent._disable_ghost_mode()
+                except Exception: pass
+
+        elif mode == "tray":
+            self._ghost_status.configure(text="● Tray Mode — Hidden to system tray", fg=_Theme.WARNING)
+            # minimize to tray (withdraw window, agent keeps running)
+            self.root.after(500, self._minimize_to_tray)
+
+        elif mode == "ghost":
+            self._ghost_status.configure(text="● Total Ghost — Fully invisible, auto-start enabled", fg=_Theme.ERROR)
+            # enable full ghost mode via agent, then hide window
+            if self.agent:
+                try: self.agent._enable_ghost_mode({})
+                except Exception: pass
+            self.root.after(800, self._go_total_ghost)
+
+    def _minimize_to_tray(self):
+        """Withdraw GUI but keep agent running. Try pystray if available."""
+        self.root.withdraw()
+        try:
+            import pystray
+            from PIL import Image
+            # create a simple tray icon
+            icon_img = Image.new("RGB", (64, 64), _Theme.ACCENT)
+            def _restore(icon, item):
+                icon.stop()
+                self.root.after(0, self._restore_from_tray)
+            def _quit_tray(icon, item):
+                icon.stop()
+                self.root.after(0, self._quit)
+            menu = pystray.Menu(
+                pystray.MenuItem("Show JARVIS", _restore, default=True),
+                pystray.MenuItem("Quit", _quit_tray),
+            )
+            self._tray_icon = pystray.Icon("JARVIS", icon_img, "JARVIS Agent", menu)
+            threading.Thread(target=self._tray_icon.run, daemon=True).start()
+        except ImportError:
+            # no pystray — show a notification hint
+            pass
+
+    def _restore_from_tray(self):
+        """Restore GUI from tray mode."""
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        self._set_ghost_mode("gui")
+
+    def _go_total_ghost(self):
+        """Fully hide — no window, no tray, agent runs headless with auto-start."""
+        self.root.withdraw()
+        # Hide console window on Windows
+        if platform.system() == "Windows":
+            try:
+                hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+                if hwnd:
+                    ctypes.windll.user32.ShowWindow(hwnd, 0)
+            except Exception:
+                pass
+
     def _ghost(self):
-        if self.agent:
-            try: self.agent._enable_ghost_mode({})
-            except Exception: pass
+        """Legacy — cycle through modes."""
+        modes = ["gui", "tray", "ghost"]
+        idx = modes.index(self._ghost_mode)
+        self._set_ghost_mode(modes[(idx + 1) % 3])
 
     def _restart(self):
         if self.agent:
