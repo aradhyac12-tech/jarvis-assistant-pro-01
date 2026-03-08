@@ -118,6 +118,8 @@ export function GlobalClipboardSync() {
   }, [isBleConnected, bluetooth]);
 
   // PC → Phone: poll with exponential backoff over WiFi
+  const checkRef = useRef<(() => Promise<void>) | null>(null);
+
   useEffect(() => {
     if (!isWifiConnected) {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -133,16 +135,23 @@ export function GlobalClipboardSync() {
           const data = result.result as { changed?: boolean; content?: string };
           if (data.changed && data.content && data.content !== lastSentRef.current && data.content !== lastReceivedRef.current) {
             lastReceivedRef.current = data.content;
-            resetBackoff(); // clipboard changed — stay fast
+            // Clipboard changed — reset to fast polling
+            noChangeCountRef.current = 0;
+            if (currentIntervalRef.current !== FAST_INTERVAL) {
+              currentIntervalRef.current = FAST_INTERVAL;
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = window.setInterval(check, FAST_INTERVAL);
+              console.log("[Clipboard] ⚡ Resumed fast polling (change detected)");
+            }
             try { await navigator.clipboard.writeText(data.content); } catch { /* silent */ }
           } else {
             // No change — increment counter, maybe slow down
             noChangeCountRef.current++;
             if (noChangeCountRef.current >= SLOWDOWN_THRESHOLD && currentIntervalRef.current === FAST_INTERVAL) {
               currentIntervalRef.current = SLOW_INTERVAL;
-              // Restart timer at slower rate
               if (pollRef.current) clearInterval(pollRef.current);
               pollRef.current = window.setInterval(check, SLOW_INTERVAL);
+              console.log("[Clipboard] 🐢 Slowed polling to 5s (no changes for 30s)");
             }
           }
         }
@@ -150,12 +159,24 @@ export function GlobalClipboardSync() {
       busyRef.current = false;
     };
 
+    checkRef.current = check;
     currentIntervalRef.current = FAST_INTERVAL;
     noChangeCountRef.current = 0;
     check();
     pollRef.current = window.setInterval(check, FAST_INTERVAL);
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, [isWifiConnected, sendCommand, resetBackoff]);
+  }, [isWifiConnected, sendCommand]);
+
+  // Reset backoff externally (on copy/cut activity) — restarts fast polling
+  const resetBackoffAndRestart = useCallback(() => {
+    noChangeCountRef.current = 0;
+    if (currentIntervalRef.current !== FAST_INTERVAL && checkRef.current) {
+      currentIntervalRef.current = FAST_INTERVAL;
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = window.setInterval(checkRef.current, FAST_INTERVAL);
+      console.log("[Clipboard] ⚡ Resumed fast polling (user activity)");
+    }
+  }, []);
 
   return null; // headless
 }
