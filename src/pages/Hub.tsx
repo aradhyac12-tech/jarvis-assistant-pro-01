@@ -779,25 +779,30 @@ export default function Hub() {
                     <Link key={link.href} to={link.href}>
                       <Button
                         variant="outline"
-                        className="w-full h-12 gap-2 border-border/20 hover:bg-secondary/30"
+                        className="w-full h-14 gap-2.5 border-border/15 hover:bg-secondary/20 hover:border-primary/20 rounded-xl transition-all duration-200 active:scale-[0.98]"
                         onClick={() => haptic.tap()}
                       >
-                        <link.icon className="w-4 h-4 text-primary shrink-0" />
-                        <span className="text-xs">{link.title}</span>
+                        <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                          <link.icon className="w-4 h-4 text-primary" />
+                        </div>
+                        <span className="text-xs font-medium">{link.title}</span>
                       </Button>
                     </Link>
                   ))}
                 </div>
 
                 {/* Volume & Brightness */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-3 space-y-4">
-                    <div className="space-y-2">
+                <Card className="border-border/15 bg-card/50 rounded-2xl overflow-hidden">
+                  <CardContent className="p-4 space-y-5">
+                    <div className="space-y-3">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="flex items-center gap-1.5 text-muted-foreground">
-                          <VolumeIcon className="w-3.5 h-3.5 cursor-pointer" onClick={() => { handleMuteToggle(); haptic.tap(); }} /> Volume
+                        <span className="flex items-center gap-2 text-muted-foreground font-medium">
+                          <div className="w-6 h-6 rounded-md bg-primary/10 flex items-center justify-center">
+                            <VolumeIcon className="w-3.5 h-3.5 text-primary cursor-pointer" onClick={() => { handleMuteToggle(); haptic.tap(); }} />
+                          </div>
+                          Volume
                         </span>
-                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0">{volume}%</Badge>
+                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0.5 rounded-md">{volume}%</Badge>
                       </div>
                       <Slider
                         value={[volume]}
@@ -810,12 +815,17 @@ export default function Hub() {
                       />
                     </div>
 
-                    <div className="space-y-2">
+                    <div className="w-full h-px bg-border/10" />
+
+                    <div className="space-y-3">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="flex items-center gap-1.5 text-muted-foreground">
-                          <Sun className="w-3.5 h-3.5" /> Brightness
+                        <span className="flex items-center gap-2 text-muted-foreground font-medium">
+                          <div className="w-6 h-6 rounded-md bg-amber-500/10 flex items-center justify-center">
+                            <Sun className="w-3.5 h-3.5 text-amber-400" />
+                          </div>
+                          Brightness
                         </span>
-                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0">{brightness}%</Badge>
+                        <Badge variant="secondary" className="text-[10px] font-mono px-2 py-0.5 rounded-md">{brightness}%</Badge>
                       </div>
                       <Slider
                         value={[brightness]}
@@ -831,39 +841,39 @@ export default function Hub() {
                 </Card>
 
                 {/* Power Controls */}
-                <Card className="border-border/20 bg-card/50">
-                  <CardContent className="p-3">
-                    <div className="grid grid-cols-3 gap-1.5">
+                <Card className="border-border/15 bg-card/50 rounded-2xl">
+                  <CardContent className="p-3.5">
+                    <div className="grid grid-cols-3 gap-2">
                       {[
-                        { icon: Lock, action: handleLock, label: "Lock", danger: false },
-                        { icon: Moon, action: () => handlePower("sleep"), label: "Sleep", danger: false },
-                        { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart", danger: false },
-                        { icon: Power, action: () => handlePower("shutdown"), label: "Off", danger: true },
-                        { icon: Zap, action: handleQuickBoost, label: "Boost", danger: false },
+                        { icon: Lock, action: handleLock, label: "Lock", danger: false, color: "text-primary" },
+                        { icon: Moon, action: () => handlePower("sleep"), label: "Sleep", danger: false, color: "text-indigo-400" },
+                        { icon: RefreshCw, action: () => handlePower("restart"), label: "Restart", danger: false, color: "text-amber-400" },
+                        { icon: Power, action: () => handlePower("shutdown"), label: "Off", danger: true, color: "text-destructive" },
+                        { icon: Zap, action: handleQuickBoost, label: "Boost", danger: false, color: "text-emerald-400" },
                       ].map((btn) => (
                         <Button 
                           key={btn.label}
                           variant="outline" 
                           className={cn(
-                            "h-14 w-full flex flex-col gap-1 border-border/20 text-xs",
-                            btn.danger && "text-destructive hover:text-destructive hover:border-destructive/30",
-                            btn.label === "Boost" && "hover:border-primary/30"
+                            "h-16 w-full flex flex-col gap-1.5 border-border/15 text-xs rounded-xl transition-all duration-200 active:scale-[0.95]",
+                            btn.danger && "hover:border-destructive/30 hover:bg-destructive/5",
+                            !btn.danger && "hover:border-primary/20 hover:bg-secondary/20"
                           )}
                           onClick={() => { btn.action(); haptic.tap(); }} 
                           disabled={!isConnected || (btn.label === "Boost" && isBoosting)}
                         >
-                          <btn.icon className="w-4 h-4" />
-                          <span className="text-[10px]">{btn.label}</span>
+                          <btn.icon className={cn("w-4.5 h-4.5", btn.color)} />
+                          <span className="text-[10px] font-medium">{btn.label}</span>
                         </Button>
                       ))}
                     </div>
                     {/* Ghost Mode Button */}
-                    <div className="mt-2">
+                    <div className="mt-3">
                       <Button
                         variant="outline"
                         className={cn(
-                          "w-full h-10 gap-2 text-xs border-border/20",
-                          ghostMode && "bg-primary/10 border-primary/30 text-primary"
+                          "w-full h-11 gap-2.5 text-xs border-border/15 rounded-xl transition-all duration-200",
+                          ghostMode && "bg-primary/10 border-primary/30 text-primary shadow-inner shadow-primary/5"
                         )}
                         onClick={handleGhostMode}
                         disabled={!isConnected}
