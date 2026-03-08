@@ -9,6 +9,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { Capacitor } from "@capacitor/core";
 
 const APP_VERSION = "1.0.0"; // Bump this on each release
@@ -25,6 +26,7 @@ interface UpdateInfo {
 
 export function useAutoUpdate() {
   const { toast } = useToast();
+  const { notifyUpdateAvailable } = useAppNotifications();
   const intervalRef = useRef<number | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -73,6 +75,9 @@ export function useAutoUpdate() {
         };
         setUpdateAvailable(info);
 
+        // Send push notification (works even when backgrounded)
+        notifyUpdateAvailable(info.version, info.releaseNotes);
+
         // Force update — auto-apply immediately
         if (info.forceUpdate) {
           applyUpdate(info);
@@ -95,7 +100,7 @@ export function useAutoUpdate() {
     }
     setChecking(false);
     return null;
-  }, [currentVersion, isNative, isNewer, toast]);
+  }, [currentVersion, isNative, isNewer, toast, notifyUpdateAvailable]);
 
   const applyUpdate = useCallback((info?: UpdateInfo | null) => {
     const update = info || updateAvailable;

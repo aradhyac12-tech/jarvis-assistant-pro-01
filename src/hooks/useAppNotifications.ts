@@ -99,6 +99,10 @@ export function useAppNotifications() {
     notify("p2p-upgrade", "⚡ Connection Upgraded", `Switched to ${mode} for faster performance`, 30000);
   }, [notify]);
 
+  const notifyUpdateAvailable = useCallback((version: string, releaseNotes?: string | null) => {
+    notify("update-available", "🆕 Update Available", releaseNotes || `Version ${version} is ready to install`, 60000);
+  }, [notify]);
+
   return {
     notify,
     notifyPcConnected,
@@ -107,6 +111,7 @@ export function useAppNotifications() {
     notifyHumanDetected,
     notifyCallIncoming,
     notifyP2PUpgrade,
+    notifyUpdateAvailable,
     requestPermission,
   };
 }
