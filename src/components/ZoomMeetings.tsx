@@ -482,16 +482,6 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         <CardTitle className="flex items-center gap-2 text-lg">
           <Video className="h-5 w-5 text-primary" />
           Zoom Meetings
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto gap-1"
-            disabled={isCapturing}
-            onClick={() => captureScreenshot("Quick screenshot")}
-          >
-            {isCapturing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Image className="h-3 w-3" />}
-            Screenshot
-          </Button>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
