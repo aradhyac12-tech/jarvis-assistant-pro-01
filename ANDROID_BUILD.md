@@ -420,7 +420,7 @@ pip install opencv-python face_recognition numpy
 | Audio relay (bidirectional) | ✅ | 16kHz PCM with JS resampling, WASAPI loopback |
 | Trackpad / Keyboard | ✅ | Multi-touch trackpad, full keyboard with special keys |
 | Volume & Brightness control | ✅ | Slider with real-time PC state sync |
-| File transfer (bidirectional) | ✅ | Chunked transfer with retry, share-to-phone support |
+| File transfer (bidirectional) | ✅ | P2P binary WebSocket (10-20 Mbps), cloud fallback, 2MB chunks |
 | Clipboard sync | ✅ | Always-on background sync, copy/cut instant push |
 | KDE Connect notifications | ✅ | Full notification panel with reply, dismiss, quick actions |
 | Notification mirroring | ✅ | Phone notifications → PC Windows toasts |
