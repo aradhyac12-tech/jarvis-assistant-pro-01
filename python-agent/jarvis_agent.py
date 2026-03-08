@@ -696,10 +696,13 @@ class BluetoothServer:
         self.running = False
         self._server = None
         self._thread = None
+        self._clipboard_thread = None
         self._response_queue: deque = deque(maxlen=32)
         self._loop = None
         self._cmd_reassembler = BleReassembler()
         self._clip_reassembler = BleReassembler()
+        self._last_clipboard_hash = ""
+        self._clipboard_push_interval = 1.5  # seconds between clipboard checks
     
     def start(self):
         if not HAS_BLESS:
