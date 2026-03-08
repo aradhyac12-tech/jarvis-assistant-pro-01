@@ -701,6 +701,34 @@ export default function Hub() {
     { id: "more" as Tab, label: "More", icon: Settings },
   ];
 
+  // Swipe to change tabs
+  const swipeStartX = useRef<number | null>(null);
+  const swipeStartY = useRef<number | null>(null);
+  const handleSwipeStart = useCallback((e: ReactTouchEvent) => {
+    // Don't intercept swipes on the remote/trackpad tab
+    if (activeTab === "remote") return;
+    swipeStartX.current = e.touches[0].clientX;
+    swipeStartY.current = e.touches[0].clientY;
+  }, [activeTab]);
+
+  const handleSwipeEnd = useCallback((e: ReactTouchEvent) => {
+    if (swipeStartX.current === null || swipeStartY.current === null) return;
+    const dx = e.changedTouches[0].clientX - swipeStartX.current;
+    const dy = e.changedTouches[0].clientY - swipeStartY.current;
+    swipeStartX.current = null;
+    swipeStartY.current = null;
+    // Only trigger if horizontal swipe is dominant and > 60px
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.7) return;
+    const currentIdx = tabs.findIndex(t => t.id === activeTab);
+    if (dx < 0 && currentIdx < tabs.length - 1) {
+      setActiveTab(tabs[currentIdx + 1].id);
+      haptic.tap();
+    } else if (dx > 0 && currentIdx > 0) {
+      setActiveTab(tabs[currentIdx - 1].id);
+      haptic.tap();
+    }
+  }, [activeTab, tabs, haptic]);
+
   // Filter apps by search
   const filteredRunning = runningApps
     .filter(a => a.name.toLowerCase().includes(appSearch.toLowerCase()))
