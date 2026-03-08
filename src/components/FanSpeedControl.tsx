@@ -106,6 +106,7 @@ export function FanSpeedControl({ className }: { className?: string }) {
   const isConnected = selectedDevice?.is_online || false;
 
   const [fans, setFans] = useState<FanInfo[]>([]);
+  const [fanNote, setFanNote] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [curve, setCurve] = useState<CurvePoint[]>(DEFAULT_CURVE);
@@ -123,6 +124,7 @@ export function FanSpeedControl({ className }: { className?: string }) {
         const r = result.result as any;
         const fanData = r.fans || r.fan_speeds || [];
         setFans(fanData);
+        setFanNote(r.note || null);
         if (r.current_curve) {
           setCurve(r.current_curve);
           setActivePreset(r.curve_preset || "Custom");
