@@ -732,6 +732,7 @@ export function useP2PCommand() {
     autoBluetooth,
     toggleAutoP2P,
     toggleAutoLocalP2P,
+    toggleAutoBluetooth,
     forceP2PUpgrade,
     forceLocalP2P,
     bluetooth,
