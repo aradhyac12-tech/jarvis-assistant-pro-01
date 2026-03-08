@@ -12,7 +12,7 @@ import {
   Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
   Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
   AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2, X, Image as ImageIcon,
-  ScanFace, Crosshair, RotateCw, Search, History, Clock, ShieldCheck, ShieldAlert,
+  ScanFace, Crosshair, RotateCw, Search, History, Clock, ShieldCheck, ShieldAlert, MapPin, Navigation, Radio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
