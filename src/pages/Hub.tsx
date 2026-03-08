@@ -1252,6 +1252,15 @@ export default function Hub() {
             {/* More Tab — Zoom, Network, File Transfer, Settings */}
             {activeTab === "more" && (
               <div className="space-y-2.5">
+                {/* Multi-Device Dashboard */}
+                <MultiDeviceDashboard />
+
+                {/* Remote Terminal */}
+                <RemoteTerminal isConnected={isConnected} />
+
+                {/* Scheduled Commands */}
+                <ScheduledCommands isConnected={isConnected} />
+
                 {/* PC Notification Mirroring */}
                 <PCNotificationMirror isConnected={isConnected} />
 
