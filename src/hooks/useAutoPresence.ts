@@ -360,5 +360,6 @@ export function useAutoPresence() {
     setCurrentAsHome,
     settingHome,
     homeConfigured: homeLat !== null && homeLng !== null,
+    backgroundTracking,
   };
 }
