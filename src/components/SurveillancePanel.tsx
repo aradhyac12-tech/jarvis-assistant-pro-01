@@ -1733,34 +1733,42 @@ export function SurveillancePanel({ className }: { className?: string }) {
                   }
                   setTrainingActive(true);
                   setTrainingFrameCount(0);
+                  // Fire-and-forget: just start the training session on the agent
                   const result = await sendCommand("start_face_training", {
                     label: "owner",
                     mode: trainingMode,
                     num_frames: 20,
                     interval_ms: 500,
-                  }, { awaitResult: true, timeoutMs: 5000 });
+                  }, { awaitResult: true, timeoutMs: 25000 });
                   if (result.success) {
                     toast({ title: "🎯 Training started", description: "Capturing 20 frames over 10s — look around naturally" });
-                    // Poll for frames
-                    let count = 0;
+                    // Poll agent for real progress
+                    let staleCount = 0;
+                    let lastCount = 0;
                     const poll = setInterval(async () => {
-                      count++;
-                      setTrainingFrameCount(count);
-                      if (count >= 20) {
-                        clearInterval(poll);
-                        setTrainingActive(false);
-                        toast({ title: "✅ Training complete", description: "20 frames captured" });
-                        // Refresh status
+                      try {
                         const status = await sendCommand("get_training_status", {}, { awaitResult: true, timeoutMs: 5000 });
                         if (status.success && "result" in status) {
                           const s = status.result as any;
+                          const currentCount = s.labels?.owner || 0;
+                          setTrainingFrameCount(currentCount);
                           setTrainingStatus(s.labels || {});
+                          if (currentCount === lastCount) staleCount++;
+                          else staleCount = 0;
+                          lastCount = currentCount;
+                          // Done when we have enough frames or agent stopped
+                          if (currentCount >= 20 || staleCount >= 6) {
+                            clearInterval(poll);
+                            setTrainingActive(false);
+                            toast({ title: "✅ Training complete", description: `${currentCount} frames captured` });
+                          }
                         }
-                      }
-                    }, 500);
+                      } catch {}
+                    }, 1000);
                   } else {
                     setTrainingActive(false);
-                    toast({ title: "Training failed", variant: "destructive" });
+                    const errorMsg = result && "error" in result ? String(result.error) : "Could not start training. Make sure your PC camera is available.";
+                    toast({ title: "Training failed", description: errorMsg, variant: "destructive" });
                   }
                 }}
               >
