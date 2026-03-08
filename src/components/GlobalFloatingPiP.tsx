@@ -174,6 +174,30 @@ export function GlobalFloatingPiP() {
           )}
         </div>
         <div className="flex gap-0.5">
+          {/* Quick source switch: Camera / Screen */}
+          {(() => {
+            const cameraStream = streamList.find(s => s.type === "camera");
+            const screenStream = streamList.find(s => s.type === "screen");
+            const hasBoth = cameraStream && screenStream;
+            if (!hasBoth) return null;
+            const isCamera = pinnedStream?.type === "camera";
+            return (
+              <div className="flex bg-white/10 rounded-md mr-1">
+                <Button variant="ghost" size="icon"
+                  className={cn("h-7 w-7 rounded-r-none", isCamera ? "bg-white/20 text-white" : "text-white/50 hover:text-white hover:bg-white/10")}
+                  onClick={(e) => { e.stopPropagation(); pinStream(cameraStream.id); }}
+                  title="Camera">
+                  <Camera className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="icon"
+                  className={cn("h-7 w-7 rounded-l-none", !isCamera ? "bg-white/20 text-white" : "text-white/50 hover:text-white hover:bg-white/10")}
+                  onClick={(e) => { e.stopPropagation(); pinStream(screenStream.id); }}
+                  title="Screen">
+                  <Monitor className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            );
+          })()}
           {streamList.length > 1 && (
             <>
               <Button variant="ghost" size="icon" className="h-7 w-7 text-white/80 hover:text-white hover:bg-white/10"
