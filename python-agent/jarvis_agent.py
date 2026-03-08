@@ -2327,6 +2327,9 @@ agent_status: Dict[str, Any] = {
     "local_ips": [],
     "p2p_port": LOCAL_P2P_PORT,
     "connection_mode": "cloud",
+    "internet_online": True,
+    "ble_active": False,
+    "ble_fallback_mode": False,
 }
 
 
@@ -2461,6 +2464,111 @@ def _is_vpn_ip(ip: str) -> bool:
 def get_network_prefix(ip: str) -> str:
     parts = ip.split(".")
     return ".".join(parts[:3]) if len(parts) == 4 else ""
+
+
+# ============== INTERNET CONNECTIVITY MONITOR ==============
+class InternetMonitor:
+    """Monitors internet connectivity and triggers BLE auto-fallback.
+    
+    Checks connectivity every `interval` seconds by probing DNS/HTTP.
+    When internet drops:
+      - Fires on_offline callback (used to start BLE)
+      - Updates agent_status with connectivity info
+    When internet returns:
+      - Fires on_online callback (used to stop BLE if desired)
+    """
+    
+    PROBE_HOSTS = [
+        ("8.8.8.8", 53),        # Google DNS
+        ("1.1.1.1", 53),        # Cloudflare DNS
+        ("208.67.222.222", 53), # OpenDNS
+    ]
+    
+    def __init__(
+        self,
+        interval: float = 10.0,
+        on_offline: Optional[Callable] = None,
+        on_online: Optional[Callable] = None,
+        log_fn: Optional[Callable] = None,
+    ):
+        self.interval = interval
+        self.on_offline = on_offline
+        self.on_online = on_online
+        self.log_fn = log_fn or (lambda level, msg: add_log(level, msg, category="network"))
+        self._online = True  # Assume online at start
+        self._consecutive_fails = 0
+        self._consecutive_ok = 0
+        self._thread: Optional[threading.Thread] = None
+        self.running = False
+        self._fail_threshold = 3   # Must fail 3 consecutive probes to declare offline
+        self._ok_threshold = 2     # Must succeed 2 consecutive probes to declare online
+    
+    @property
+    def is_online(self) -> bool:
+        return self._online
+    
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self.running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="internet-monitor")
+        self._thread.start()
+    
+    def stop(self):
+        self.running = False
+    
+    def check_once(self) -> bool:
+        """Single connectivity probe. Returns True if internet is reachable."""
+        for host, port in self.PROBE_HOSTS:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3)
+                sock.connect((host, port))
+                sock.close()
+                return True
+            except (OSError, socket.timeout):
+                continue
+        # All probes failed — also try HTTP as last resort
+        try:
+            urllib.request.urlopen("http://www.gstatic.com/generate_204", timeout=4)
+            return True
+        except Exception:
+            pass
+        return False
+    
+    def _loop(self):
+        while self.running:
+            try:
+                reachable = self.check_once()
+                
+                if reachable:
+                    self._consecutive_fails = 0
+                    self._consecutive_ok += 1
+                    if not self._online and self._consecutive_ok >= self._ok_threshold:
+                        self._online = True
+                        self.log_fn("info", "Internet connectivity restored")
+                        update_agent_status({"internet_online": True})
+                        if self.on_online:
+                            try:
+                                self.on_online()
+                            except Exception as e:
+                                self.log_fn("warn", f"on_online callback error: {e}")
+                else:
+                    self._consecutive_ok = 0
+                    self._consecutive_fails += 1
+                    if self._online and self._consecutive_fails >= self._fail_threshold:
+                        self._online = False
+                        self.log_fn("warn", f"Internet connectivity lost (failed {self._consecutive_fails} probes)")
+                        update_agent_status({"internet_online": False})
+                        if self.on_offline:
+                            try:
+                                self.on_offline()
+                            except Exception as e:
+                                self.log_fn("warn", f"on_offline callback error: {e}")
+            except Exception as e:
+                self.log_fn("warn", f"Internet monitor error: {e}")
+            
+            time.sleep(self.interval)
 
 
 def _add_firewall_rule(port: int):
