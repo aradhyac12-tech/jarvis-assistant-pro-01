@@ -795,17 +795,36 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => {
     autoPresence.setOnAway(() => {
       if (!monitoring && session?.session_token) {
-        addLog("info", "web", "Auto-presence triggered: starting surveillance");
+        addLog("info", "web", "Auto-presence triggered: starting surveillance (away mode)");
+        // Force auto-siren ON when owner is away — intruders get siren automatically
+        setAutoSirenOnDetect(true);
+        setOwnerConfirmed(false);
+        humanNotifiedRef.current = false;
         startSurveillance();
+      } else if (monitoring) {
+        // Already monitoring — just arm the siren
+        setAutoSirenOnDetect(true);
+        setOwnerConfirmed(false);
+        humanNotifiedRef.current = false;
+        addLog("info", "web", "Auto-presence: away mode — auto-siren armed");
       }
     });
     autoPresence.setOnHome(() => {
+      // Stop siren immediately if active
+      if (sirenActive) {
+        setSirenActive(false);
+        sendCommand("play_alarm", { type: "siren", action: "stop" });
+        addLog("info", "web", "Auto-presence: owner home — siren auto-stopped");
+      }
+      setOwnerConfirmed(true);
+      setIdentityPrompt(false);
+      setHumanPresent(false);
       if (monitoring) {
-        addLog("info", "web", "Auto-presence triggered: stopping surveillance");
+        addLog("info", "web", "Auto-presence triggered: stopping surveillance (home)");
         stopSurveillance();
       }
     });
-  }, [monitoring, session?.session_token, startSurveillance, stopSurveillance, autoPresence]);
+  }, [monitoring, session?.session_token, startSurveillance, stopSurveillance, autoPresence, sirenActive, sendCommand]);
 
   // Auto-resume
   const autoResumedRef = useRef(false);
@@ -1032,12 +1051,14 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
                       notifyHumanDetected(confPct);
                       
-                      // Auto-siren on detection if enabled and not confirmed as owner
-                      if (autoSirenOnDetect && !ownerConfirmed) {
+                      // Auto-siren: activate if enabled OR if auto-presence is in away mode
+                      const shouldSiren = (autoSirenOnDetect || autoPresence.presenceStatus === "away") && !ownerConfirmed;
+                      if (shouldSiren) {
                         setSirenActive(true);
                         sendCommand("set_volume", { level: 100 }, { awaitResult: false });
                         sendCommand("play_alarm", { type: "siren", action: "start" });
-                        toast({ title: "🚨 INTRUDER DETECTED!", description: `Confidence: ${confPct}% — Siren activated` });
+                        toast({ title: "🚨 INTRUDER DETECTED!", description: `Confidence: ${confPct}% — Siren activated`, variant: "destructive" });
+                        addLog("warn", "web", `🚨 Intruder siren triggered (away mode, confidence: ${confPct}%)`);
                       } else {
                         toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
                       }
