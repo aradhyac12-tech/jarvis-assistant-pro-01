@@ -840,8 +840,9 @@ export default function MicCamera() {
             <span className="font-semibold text-sm">Mic & Camera</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setSplitMode(!splitMode)}
-              className={cn("h-8 text-xs gap-1", splitMode ? "bg-primary/20 text-primary" : "")}>
+            <Button variant="ghost" size="sm" onClick={handleSplitToggle}
+              className={cn("h-8 text-xs gap-1", splitMode ? "bg-primary/20 text-primary" : "")}
+              title={splitMode ? "Disable floating PiP" : "Enable floating PiP"}>
               <Rows2 className="h-3.5 w-3.5" />
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setShowDebug(!showDebug)} className={cn("h-8 text-xs", showDebug ? "bg-primary/20" : "")}>
