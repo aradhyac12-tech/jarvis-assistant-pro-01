@@ -47,7 +47,7 @@ export function useSurveillanceEvents() {
 
   // Save a new event with optional screenshot
   const saveEvent = useCallback(async (params: {
-    event_type: "motion" | "human" | "intruder" | "owner_recognized";
+    event_type: "motion" | "human" | "intruder" | "owner_recognized" | "call_started" | "call_ended";
     confidence: number;
     recognized?: boolean;
     recognized_label?: string | null;
