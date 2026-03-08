@@ -5901,6 +5901,39 @@ class JarvisAgent:
                     webbrowser.open(url)
                     return {"success": True, "message": f"Searching '{query}' on {engine}"}
             
+            # Calendar / Notes / Reminders (stub — stores locally)
+            elif cmd in ["calendar", "notes", "reminders", "todo", "get_notes"]:
+                action = payload.get("action", "list")
+                notes_file = os.path.join(AGENT_DIR, "jarvis_notes.json")
+                try:
+                    existing = json.load(open(notes_file)) if os.path.exists(notes_file) else []
+                except Exception:
+                    existing = []
+                if action == "add" or cmd == "add_note":
+                    text = payload.get("text", payload.get("note", ""))
+                    if text:
+                        existing.append({"text": text, "created": datetime.now().isoformat(), "type": cmd})
+                        with open(notes_file, "w") as f:
+                            json.dump(existing, f, indent=2)
+                        return {"success": True, "message": f"Note added: {text[:80]}"}
+                    return {"success": False, "error": "No text provided"}
+                else:
+                    return {"success": True, "notes": existing[-50:], "total": len(existing)}
+            elif cmd == "add_note":
+                # Handled above via alias, but explicit fallthrough
+                text = payload.get("text", payload.get("note", ""))
+                notes_file = os.path.join(AGENT_DIR, "jarvis_notes.json")
+                try:
+                    existing = json.load(open(notes_file)) if os.path.exists(notes_file) else []
+                except Exception:
+                    existing = []
+                if text:
+                    existing.append({"text": text, "created": datetime.now().isoformat(), "type": "note"})
+                    with open(notes_file, "w") as f:
+                        json.dump(existing, f, indent=2)
+                    return {"success": True, "message": f"Note added: {text[:80]}"}
+                return {"success": False, "error": "No text provided"}
+
             elif cmd in ["answer_call", "end_call", "decline_call", "call_mute"]:
                 return {"success": True, "message": f"{cmd} acknowledged (mobile-side action)"}
             
