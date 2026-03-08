@@ -281,6 +281,46 @@ export const MobileKeyboard = memo(function MobileKeyboard({
         ))}
       </div>
 
+      {/* Function Keys — scrollable row */}
+      <div className="overflow-x-auto -mx-1 px-1">
+        <div className="flex gap-1 min-w-max pb-1">
+          {Array.from({ length: 12 }, (_, i) => (
+            <Button
+              key={`f${i + 1}`}
+              variant="outline"
+              size="sm"
+              className="h-8 px-2.5 text-[10px] font-mono shrink-0"
+              onClick={() => quickSend(`f${i + 1}`)}
+              disabled={disabled}
+            >
+              F{i + 1}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {/* Special Keys row */}
+      <div className="grid grid-cols-5 gap-1.5">
+        {[
+          { label: "PrtSc", key: "printscreen" },
+          { label: "Pause", key: "pause" },
+          { label: "Ins", key: "insert" },
+          { label: "PgUp", key: "pageup" },
+          { label: "PgDn", key: "pagedown" },
+        ].map((a) => (
+          <Button
+            key={a.key}
+            variant="outline"
+            size="sm"
+            className="h-9 text-[10px] font-medium"
+            onClick={() => quickSend(a.key)}
+            disabled={disabled}
+          >
+            {a.label}
+          </Button>
+        ))}
+      </div>
+
       {/* Quick actions — 2 rows */}
       <div className="grid grid-cols-5 gap-1.5">
         {[
