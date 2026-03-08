@@ -3,7 +3,6 @@ import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 import { toast } from "sonner";
-import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 /**
  * Headless global clipboard sync — runs at App level.
