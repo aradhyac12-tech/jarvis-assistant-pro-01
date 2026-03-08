@@ -535,7 +535,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
           ws.onmessage = (event) => {
             const data = JSON.parse(event.data as string);
             if (data.type === "ready") {
-              ws.send(testData);
+              ws.send(testData.buffer as ArrayBuffer);
               ws.send(JSON.stringify({ type: "done" }));
             } else if (data.complete) {
               done = true;
