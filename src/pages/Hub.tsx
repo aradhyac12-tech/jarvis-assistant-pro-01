@@ -67,6 +67,9 @@ import { DragDropFileTransfer } from "@/components/DragDropFileTransfer";
 import { PCNotificationMirror } from "@/components/PCNotificationMirror";
 import { WakeOnLan } from "@/components/WakeOnLan";
 import { ConnectionTimeline } from "@/components/ConnectionTimeline";
+import { ScheduledCommands } from "@/components/ScheduledCommands";
+import { RemoteTerminal } from "@/components/RemoteTerminal";
+import { MultiDeviceDashboard } from "@/components/MultiDeviceDashboard";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
