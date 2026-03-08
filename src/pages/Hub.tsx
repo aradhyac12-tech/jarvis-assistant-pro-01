@@ -285,8 +285,7 @@ export default function Hub() {
   // Volume handler
   const handleVolumeSlider = useCallback((v: number[]) => {
     setVolume(v[0]);
-    haptic.scroll();
-  }, [haptic]);
+  }, []);
 
   const handleVolumeCommit = useCallback(async (v: number[]) => {
     if (volumeCommitRef.current !== null) clearTimeout(volumeCommitRef.current);
@@ -315,8 +314,7 @@ export default function Hub() {
 
   const handleBrightnessSlider = useCallback((v: number[]) => {
     setBrightness(v[0]);
-    haptic.scroll();
-  }, [haptic]);
+  }, []);
 
   const handleBrightnessCommit = useCallback(async (v: number[]) => {
     if (brightnessCommitRef.current !== null) clearTimeout(brightnessCommitRef.current);
