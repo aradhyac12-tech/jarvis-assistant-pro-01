@@ -209,6 +209,8 @@ export default function MicCamera() {
   const [audioDirection, setAudioDirection] = useState<StreamDirection>(() => loadSetting("audio_direction", "phone_to_pc"));
   const [audioActive, setAudioActive] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [pcAudioLevel, setPcAudioLevel] = useState(0);
+  const [audioPackets, setAudioPackets] = useState({ sent: 0, received: 0 });
   const [systemAudio, setSystemAudio] = useState(() => loadSetting("system_audio", false));
   const audioWsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
