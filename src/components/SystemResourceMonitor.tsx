@@ -217,7 +217,7 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
       return;
     }
     fetchStats();
-    intervalRef.current = window.setInterval(fetchStats, 3000);
+    intervalRef.current = window.setInterval(fetchStats, 5000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [polling, isConnected, fetchStats]);
 
