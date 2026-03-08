@@ -71,6 +71,7 @@ import { ScheduledCommands } from "@/components/ScheduledCommands";
 import { RemoteTerminal } from "@/components/RemoteTerminal";
 import { MultiDeviceDashboard } from "@/components/MultiDeviceDashboard";
 import { SystemResourceMonitor } from "@/components/SystemResourceMonitor";
+import { FanSpeedControl } from "@/components/FanSpeedControl";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -769,6 +770,9 @@ export default function Hub() {
               <div className="grid gap-3">
                 {/* System Resource Monitor */}
                 <SystemResourceMonitor />
+
+                {/* Fan Speed Control */}
+                <FanSpeedControl />
 
                 {/* Quick Links — above sliders */}
                 <div className="grid grid-cols-2 gap-2">
