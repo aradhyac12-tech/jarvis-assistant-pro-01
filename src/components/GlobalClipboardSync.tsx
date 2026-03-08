@@ -54,24 +54,18 @@ export function GlobalClipboardSync() {
   const SLOW_INTERVAL = 5000;
   const SLOWDOWN_THRESHOLD = 30; // polls with no change before slowing
 
-  // Reset polling to fast interval on activity
-  const resetBackoff = useCallback(() => {
-    noChangeCountRef.current = 0;
-    if (currentIntervalRef.current !== FAST_INTERVAL) {
-      currentIntervalRef.current = FAST_INTERVAL;
-      // Restart poll timer at fast rate
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    }
-  }, []);
-
   // Push clipboard text to PC via best available transport
   const pushToPc = useCallback(async (text: string) => {
     if (!text.trim() || text === lastSentRef.current) return;
     lastSentRef.current = text;
-    resetBackoff(); // user activity — go fast
+    // Reset backoff inline — user copied something
+    noChangeCountRef.current = 0;
+    if (currentIntervalRef.current !== FAST_INTERVAL && checkRef.current) {
+      currentIntervalRef.current = FAST_INTERVAL;
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = window.setInterval(checkRef.current, FAST_INTERVAL);
+      console.log("[Clipboard] ⚡ Resumed fast polling (user copy)");
+    }
     try {
       if (!isWifiConnected && isBleConnected) {
         await bluetooth.sendClipboard(text);
@@ -79,7 +73,7 @@ export function GlobalClipboardSync() {
         await sendCommand("set_clipboard", { content: text }, { awaitResult: false });
       }
     } catch { /* silent */ }
-  }, [sendCommand, isWifiConnected, isBleConnected, bluetooth, resetBackoff]);
+  }, [sendCommand, isWifiConnected, isBleConnected, bluetooth]);
 
   // Phone → PC: instant on copy/cut
   useEffect(() => {
