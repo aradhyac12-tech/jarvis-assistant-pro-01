@@ -209,6 +209,8 @@ export default function MicCamera() {
   const [audioDirection, setAudioDirection] = useState<StreamDirection>(() => loadSetting("audio_direction", "phone_to_pc"));
   const [audioActive, setAudioActive] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [pcAudioLevel, setPcAudioLevel] = useState(0);
+  const [audioPackets, setAudioPackets] = useState({ sent: 0, received: 0 });
   const [systemAudio, setSystemAudio] = useState(() => loadSetting("system_audio", false));
   const audioWsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -482,10 +484,14 @@ export default function MicCamera() {
         float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7fff);
       }
 
-      // Use native sample rate for smooth playback
+      // Compute incoming audio RMS level
+      let sum = 0;
+      for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+      const rms = Math.sqrt(sum / float32.length);
+      setPcAudioLevel(Math.min(1, rms * 3)); // amplify for visibility
+      setAudioPackets(prev => ({ ...prev, received: prev.received + 1 }));
+
       const sampleRate = audioCtxRef.current.sampleRate;
-      
-      // The agent sends at 16kHz, we need to resample to the context's native rate
       const AGENT_SAMPLE_RATE = 16000;
       const ratio = sampleRate / AGENT_SAMPLE_RATE;
       const outputLength = Math.round(float32.length * ratio);
@@ -493,7 +499,6 @@ export default function MicCamera() {
       const audioBuffer = audioCtxRef.current.createBuffer(1, outputLength, sampleRate);
       const outputChannel = audioBuffer.getChannelData(0);
       
-      // Linear interpolation resampling
       for (let i = 0; i < outputLength; i++) {
         const srcIndex = i / ratio;
         const srcIndexFloor = Math.floor(srcIndex);
@@ -505,9 +510,8 @@ export default function MicCamera() {
       const source = audioCtxRef.current.createBufferSource();
       source.buffer = audioBuffer;
       
-      // Add gain node for volume control
       const gainNode = audioCtxRef.current.createGain();
-      gainNode.gain.value = 1.5; // Boost volume slightly
+      gainNode.gain.value = 1.5;
       source.connect(gainNode);
       gainNode.connect(audioCtxRef.current.destination);
 
@@ -616,7 +620,7 @@ export default function MicCamera() {
               const s = Math.max(-1, Math.min(1, resampled[i]));
               int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
             }
-            try { ws.send(int16.buffer); } catch {}
+            try { ws.send(int16.buffer); setAudioPackets(prev => ({ ...prev, sent: prev.sent + 1 })); } catch {}
 
             if (analyserRef.current) {
               const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
@@ -666,7 +670,7 @@ export default function MicCamera() {
       };
 
       ws.onerror = () => { addLog("error", "web", "Audio WS error"); toast({ title: "Audio Error", variant: "destructive" }); };
-      ws.onclose = () => { clearInterval(pingInterval); setAudioActive(false); setAudioLevel(0); addLog("info", "web", "Audio WS closed"); };
+      ws.onclose = () => { clearInterval(pingInterval); setAudioActive(false); setAudioLevel(0); setPcAudioLevel(0); setAudioPackets({ sent: 0, received: 0 }); addLog("info", "web", "Audio WS closed"); };
 
       toast({ title: "Audio Relay Started", description: audioDirection.replace(/_/g, " ") });
     } catch (err) {
@@ -689,7 +693,7 @@ export default function MicCamera() {
     analyserRef.current = null;
     audioWsRef.current?.close();
     audioWsRef.current = null;
-    setAudioActive(false); setAudioLevel(0);
+    setAudioActive(false); setAudioLevel(0); setPcAudioLevel(0); setAudioPackets({ sent: 0, received: 0 });
     toast({ title: "Audio Relay Stopped" });
   }, [sendCommand, toast]);
 
@@ -901,62 +905,112 @@ export default function MicCamera() {
                     <RefreshCw className={cn("h-4 w-4 mr-2", devicesLoading && "animate-spin")} />Refresh Devices
                   </Button>
 
-                  {/* Audio Visualizer */}
-                  <div className="relative h-32 bg-secondary/30 rounded-xl border border-border/50 overflow-hidden">
-                    <div className="absolute inset-0 flex items-center justify-center gap-1">
-                      {Array.from({ length: 20 }).map((_, i) => (
-                        <div
-                          key={i}
-                          className={cn("w-2 rounded-full transition-all duration-75", audioActive ? "bg-primary" : "bg-muted")}
-                          style={{ height: audioActive ? `${Math.max(8, audioLevel * 100 * Math.sin((i + Date.now() / 100) * 0.5))}px` : "8px" }}
-                        />
-                      ))}
+                  {/* Dual Audio Level Visualizer */}
+                  <div className="rounded-xl border border-border/50 overflow-hidden bg-secondary/20">
+                    {/* Header */}
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-border/30">
+                      <span className="text-xs font-medium text-muted-foreground">Audio Levels</span>
+                      {audioActive && (
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-[9px] font-mono px-1.5 py-0 h-4 border-primary/30 text-primary">
+                            ↑{audioPackets.sent} ↓{audioPackets.received}
+                          </Badge>
+                          <Badge className="bg-emerald-500/80 text-white text-[9px] px-1.5 py-0 h-4">
+                            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse mr-1" />LIVE
+                          </Badge>
+                        </div>
+                      )}
                     </div>
+
+                    {/* Phone Mic Level */}
+                    <div className="px-3 py-2.5 space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <div className={cn(
+                          "w-6 h-6 rounded-md flex items-center justify-center shrink-0",
+                          audioActive && (audioDirection !== "pc_to_phone") ? "bg-primary/20" : "bg-muted/30"
+                        )}>
+                          <Smartphone className={cn("w-3.5 h-3.5",
+                            audioActive && (audioDirection !== "pc_to_phone") ? "text-primary" : "text-muted-foreground"
+                          )} />
+                        </div>
+                        <div className="flex-1 space-y-0.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[11px] font-medium">Phone Mic</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">
+                              {audioActive && (audioDirection !== "pc_to_phone") ? `${Math.round(audioLevel * 100)}%` : "—"}
+                            </span>
+                          </div>
+                          <div className="h-2 bg-secondary/50 rounded-full overflow-hidden">
+                            <div
+                              className={cn(
+                                "h-full rounded-full transition-all duration-75",
+                                !audioActive || audioDirection === "pc_to_phone" ? "bg-muted/30 w-0" :
+                                audioLevel > 0.7 ? "bg-destructive" : audioLevel > 0.4 ? "bg-amber-500" : "bg-primary"
+                              )}
+                              style={{ width: audioActive && audioDirection !== "pc_to_phone" ? `${Math.max(2, audioLevel * 100)}%` : "0%" }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Divider with direction arrow */}
+                    <div className="flex items-center gap-2 px-3">
+                      <div className="flex-1 h-px bg-border/20" />
+                      <DirectionIcon className={cn("h-3.5 w-3.5 shrink-0", audioActive ? "text-primary" : "text-muted-foreground/40")} />
+                      <div className="flex-1 h-px bg-border/20" />
+                    </div>
+
+                    {/* PC Audio Level */}
+                    <div className="px-3 py-2.5 space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <div className={cn(
+                          "w-6 h-6 rounded-md flex items-center justify-center shrink-0",
+                          audioActive && (audioDirection !== "phone_to_pc") ? "bg-emerald-500/20" : "bg-muted/30"
+                        )}>
+                          <Monitor className={cn("w-3.5 h-3.5",
+                            audioActive && (audioDirection !== "phone_to_pc") ? "text-emerald-400" : "text-muted-foreground"
+                          )} />
+                        </div>
+                        <div className="flex-1 space-y-0.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[11px] font-medium">PC {systemAudio ? "System Audio" : "Audio"}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">
+                              {audioActive && (audioDirection !== "phone_to_pc") ? `${Math.round(pcAudioLevel * 100)}%` : "—"}
+                            </span>
+                          </div>
+                          <div className="h-2 bg-secondary/50 rounded-full overflow-hidden">
+                            <div
+                              className={cn(
+                                "h-full rounded-full transition-all duration-75",
+                                !audioActive || audioDirection === "phone_to_pc" ? "bg-muted/30 w-0" :
+                                pcAudioLevel > 0.7 ? "bg-destructive" : pcAudioLevel > 0.4 ? "bg-amber-500" : "bg-emerald-500"
+                              )}
+                              style={{ width: audioActive && audioDirection !== "phone_to_pc" ? `${Math.max(2, pcAudioLevel * 100)}%` : "0%" }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* No data flowing warning */}
+                    {audioActive && audioPackets.received === 0 && audioPackets.sent === 0 && (
+                      <div className="px-3 pb-2.5">
+                        <div className="flex items-center gap-2 p-2 rounded-md bg-amber-500/10 border border-amber-500/20">
+                          <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span className="text-[10px] text-amber-400">Waiting for audio data…</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Inactive state */}
                     {!audioActive && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
-                        <MicOff className="h-12 w-12 mb-2 opacity-50" />
-                        <p className="text-sm">Audio relay is off</p>
+                      <div className="flex flex-col items-center justify-center py-6 text-muted-foreground/50">
+                        <MicOff className="h-8 w-8 mb-1.5" />
+                        <p className="text-xs">Audio relay is off</p>
                       </div>
                     )}
-                    {audioActive && (
-                      <Badge className="absolute top-3 left-3 bg-neon-green/80 text-background">
-                        <span className="w-2 h-2 rounded-full bg-white animate-pulse mr-2" />STREAMING
-                      </Badge>
-                    )}
                   </div>
-
-                  {/* Direction indicator */}
-                  <div className="flex items-center justify-center gap-4 p-4 rounded-lg bg-secondary/10">
-                    <div className={cn("flex flex-col items-center p-3 rounded-lg transition-colors",
-                      (audioDirection !== "pc_to_phone") && audioActive ? "bg-primary/20 text-primary" : "text-muted-foreground"
-                    )}>
-                      <Smartphone className="h-8 w-8 mb-1" /><span className="text-xs">Phone Mic</span>
-                    </div>
-                    <DirectionIcon className={cn("h-8 w-8", audioActive ? "text-primary animate-pulse" : "text-muted-foreground")} />
-                    <div className={cn("flex flex-col items-center p-3 rounded-lg transition-colors",
-                      (audioDirection !== "phone_to_pc") && audioActive ? "bg-primary/20 text-primary" : "text-muted-foreground"
-                    )}>
-                      <Speaker className="h-8 w-8 mb-1" /><span className="text-xs">PC {systemAudio ? "System" : "Speakers"}</span>
-                    </div>
-                  </div>
-
-                  {/* Audio Level */}
-                  {audioActive && (
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Audio Level</span>
-                        <span>{Math.round(audioLevel * 100)}%</span>
-                      </div>
-                      <div className="h-3 bg-secondary/50 rounded-full overflow-hidden">
-                        <div
-                          className={cn("h-full transition-all duration-75 rounded-full",
-                            audioLevel > 0.7 ? "bg-destructive" : audioLevel > 0.4 ? "bg-neon-orange" : "bg-neon-green"
-                          )}
-                          style={{ width: `${audioLevel * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
 
                   {/* Controls */}
                   <div className="flex items-center justify-center gap-4">
