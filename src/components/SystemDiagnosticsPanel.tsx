@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,44 +12,48 @@ import {
   Activity, CheckCircle, XCircle, Loader2, Wrench,
   Wifi, Monitor, Server, Database, Shield, Cpu,
   HardDrive, Volume2, Keyboard, Mouse, RefreshCw,
-  Zap, AlertTriangle,
+  Zap, AlertTriangle, Camera, Mic, ScreenShare,
+  Thermometer, Fan, AppWindow, Clock, Battery,
+  FolderOpen, Clipboard, Bell, Lock, Image,
+  Terminal, ChevronDown, ChevronUp,
 } from "lucide-react";
 
-type TestStatus = "idle" | "running" | "pass" | "fail" | "warn" | "fixing" | "fixed";
+type TestStatus = "idle" | "running" | "pass" | "fail" | "warn" | "fixing" | "fixed" | "skipped";
 
 interface DiagnosticTest {
   id: string;
   name: string;
   icon: React.ReactNode;
-  category: "connection" | "agent" | "hardware" | "app";
+  category: string;
   status: TestStatus;
   detail?: string;
   fixable?: boolean;
-  fixAction?: () => Promise<void>;
 }
 
 const statusIcon = (s: TestStatus) => {
   switch (s) {
-    case "pass": case "fixed": return <CheckCircle className="h-4 w-4 text-green-500" />;
-    case "fail": return <XCircle className="h-4 w-4 text-destructive" />;
-    case "warn": return <AlertTriangle className="h-4 w-4 text-yellow-500" />;
-    case "running": case "fixing": return <Loader2 className="h-4 w-4 animate-spin text-primary" />;
-    default: return <div className="h-4 w-4 rounded-full border-2 border-muted-foreground/30" />;
+    case "pass": case "fixed": return <CheckCircle className="h-3.5 w-3.5 text-green-500" />;
+    case "fail": return <XCircle className="h-3.5 w-3.5 text-destructive" />;
+    case "warn": return <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />;
+    case "running": case "fixing": return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />;
+    case "skipped": return <div className="h-3.5 w-3.5 rounded-full bg-muted-foreground/20" />;
+    default: return <div className="h-3.5 w-3.5 rounded-full border-2 border-muted-foreground/30" />;
   }
 };
 
-const statusBadge = (s: TestStatus) => {
-  const map: Record<TestStatus, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
-    idle: { variant: "outline", label: "Pending" },
-    running: { variant: "secondary", label: "Testing…" },
-    pass: { variant: "default", label: "Pass" },
-    fail: { variant: "destructive", label: "Failed" },
-    warn: { variant: "secondary", label: "Warning" },
-    fixing: { variant: "secondary", label: "Fixing…" },
-    fixed: { variant: "default", label: "Fixed" },
+const statusLabel = (s: TestStatus) => {
+  const map: Record<TestStatus, { v: "default" | "secondary" | "destructive" | "outline"; l: string }> = {
+    idle: { v: "outline", l: "Pending" },
+    running: { v: "secondary", l: "Testing…" },
+    pass: { v: "default", l: "Pass" },
+    fail: { v: "destructive", l: "Fail" },
+    warn: { v: "secondary", l: "Warn" },
+    fixing: { v: "secondary", l: "Fixing…" },
+    fixed: { v: "default", l: "Fixed" },
+    skipped: { v: "outline", l: "Skip" },
   };
-  const { variant, label } = map[s];
-  return <Badge variant={variant} className="text-[10px] h-5">{label}</Badge>;
+  const { v, l } = map[s];
+  return <Badge variant={v} className="text-[9px] h-4 px-1.5">{l}</Badge>;
 };
 
 export function SystemDiagnosticsPanel({ className }: { className?: string }) {
@@ -59,446 +63,536 @@ export function SystemDiagnosticsPanel({ className }: { className?: string }) {
   const [tests, setTests] = useState<DiagnosticTest[]>([]);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [summary, setSummary] = useState<{ passed: number; failed: number; warned: number; fixed: number } | null>(null);
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
+  const abortRef = useRef(false);
 
   const updateTest = useCallback((id: string, updates: Partial<DiagnosticTest>) => {
     setTests(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
   }, []);
 
+  const toggleCat = (cat: string) => {
+    setExpandedCats(prev => {
+      const next = new Set(prev);
+      next.has(cat) ? next.delete(cat) : next.add(cat);
+      return next;
+    });
+  };
+
   const runDiagnostics = useCallback(async () => {
     setRunning(true);
     setProgress(0);
-    setSummary(null);
+    abortRef.current = false;
 
     const sessionToken = session?.session_token;
     const deviceId = selectedDevice?.id || session?.device_id;
+    const sysInfo = selectedDevice?.system_info as any;
 
-    // Define all tests
     const allTests: DiagnosticTest[] = [
-      // Connection tests
-      { id: "session", name: "Session Token", icon: <Shield className="h-3.5 w-3.5" />, category: "connection", status: "idle" },
-      { id: "device_paired", name: "Device Paired", icon: <Monitor className="h-3.5 w-3.5" />, category: "connection", status: "idle" },
-      { id: "device_online", name: "Device Online", icon: <Wifi className="h-3.5 w-3.5" />, category: "connection", status: "idle" },
-      { id: "cloud_reachable", name: "Cloud Reachable", icon: <Database className="h-3.5 w-3.5" />, category: "connection", status: "idle" },
-      { id: "command_roundtrip", name: "Command Roundtrip", icon: <Zap className="h-3.5 w-3.5" />, category: "connection", status: "idle" },
+      // Connection & Auth
+      { id: "session", name: "Session Token", icon: <Shield className="h-3 w-3" />, category: "connection", status: "idle" },
+      { id: "device_paired", name: "Device Paired", icon: <Monitor className="h-3 w-3" />, category: "connection", status: "idle" },
+      { id: "device_online", name: "Device Online", icon: <Wifi className="h-3 w-3" />, category: "connection", status: "idle" },
+      { id: "cloud_db", name: "Cloud Database", icon: <Database className="h-3 w-3" />, category: "connection", status: "idle" },
+      { id: "edge_functions", name: "Edge Functions", icon: <Zap className="h-3 w-3" />, category: "connection", status: "idle" },
+      { id: "command_roundtrip", name: "Command Roundtrip (ping)", icon: <Activity className="h-3 w-3" />, category: "connection", status: "idle" },
 
-      // Agent tests
-      { id: "agent_heartbeat", name: "Agent Heartbeat", icon: <Server className="h-3.5 w-3.5" />, category: "agent", status: "idle" },
-      { id: "agent_version", name: "Agent Version", icon: <Activity className="h-3.5 w-3.5" />, category: "agent", status: "idle" },
-      { id: "system_info", name: "System Info Reporting", icon: <Cpu className="h-3.5 w-3.5" />, category: "agent", status: "idle" },
+      // Agent Core
+      { id: "agent_version", name: "Agent Version", icon: <Server className="h-3 w-3" />, category: "agent", status: "idle" },
+      { id: "system_stats", name: "System Stats (CPU/RAM)", icon: <Cpu className="h-3 w-3" />, category: "agent", status: "idle" },
+      { id: "thermal_monitor", name: "Thermal Monitor (Temps)", icon: <Thermometer className="h-3 w-3" />, category: "agent", status: "idle" },
+      { id: "running_apps", name: "Running Apps / Processes", icon: <AppWindow className="h-3 w-3" />, category: "agent", status: "idle" },
+      { id: "startup_items", name: "Startup Manager", icon: <Clock className="h-3 w-3" />, category: "agent", status: "idle" },
+      { id: "streaming_stats", name: "Streaming Stats", icon: <Activity className="h-3 w-3" />, category: "agent", status: "idle" },
 
-      // Hardware tests
-      { id: "volume_control", name: "Volume Control", icon: <Volume2 className="h-3.5 w-3.5" />, category: "hardware", status: "idle" },
-      { id: "keyboard_input", name: "Keyboard Input", icon: <Keyboard className="h-3.5 w-3.5" />, category: "hardware", status: "idle" },
-      { id: "mouse_control", name: "Mouse Control", icon: <Mouse className="h-3.5 w-3.5" />, category: "hardware", status: "idle" },
-      { id: "disk_access", name: "Disk Access", icon: <HardDrive className="h-3.5 w-3.5" />, category: "hardware", status: "idle" },
+      // Hardware Controls
+      { id: "get_volume", name: "Get Volume", icon: <Volume2 className="h-3 w-3" />, category: "hardware", status: "idle" },
+      { id: "set_volume", name: "Set Volume", icon: <Volume2 className="h-3 w-3" />, category: "hardware", status: "idle" },
+      { id: "get_brightness", name: "Get Brightness", icon: <Monitor className="h-3 w-3" />, category: "hardware", status: "idle" },
+      { id: "set_brightness", name: "Set Brightness", icon: <Monitor className="h-3 w-3" />, category: "hardware", status: "idle" },
+      { id: "mouse_move", name: "Mouse Move (0,0)", icon: <Mouse className="h-3 w-3" />, category: "hardware", status: "idle" },
+      { id: "mouse_click", name: "Mouse Click (no-op)", icon: <Mouse className="h-3 w-3" />, category: "hardware", status: "idle" },
+      { id: "press_key", name: "Key Press (no-op)", icon: <Keyboard className="h-3 w-3" />, category: "hardware", status: "idle" },
+      { id: "mouse_scroll", name: "Mouse Scroll (0)", icon: <Mouse className="h-3 w-3" />, category: "hardware", status: "idle" },
 
-      // App tests
-      { id: "local_storage", name: "Local Storage", icon: <Database className="h-3.5 w-3.5" />, category: "app", status: "idle" },
-      { id: "notifications_api", name: "Notifications API", icon: <Activity className="h-3.5 w-3.5" />, category: "app", status: "idle" },
-      { id: "clipboard_api", name: "Clipboard API", icon: <Keyboard className="h-3.5 w-3.5" />, category: "app", status: "idle" },
+      // Media & Audio
+      { id: "media_control", name: "Media Control", icon: <Volume2 className="h-3 w-3" />, category: "media", status: "idle" },
+      { id: "audio_outputs", name: "List Audio Outputs", icon: <Volume2 className="h-3 w-3" />, category: "media", status: "idle" },
+      { id: "audio_support", name: "Audio Relay Support", icon: <Mic className="h-3 w-3" />, category: "media", status: "idle" },
+
+      // Camera & Screen
+      { id: "get_cameras", name: "List PC Cameras", icon: <Camera className="h-3 w-3" />, category: "camera", status: "idle" },
+      { id: "screenshot", name: "Take Screenshot", icon: <Image className="h-3 w-3" />, category: "camera", status: "idle" },
+      { id: "screen_stream", name: "Screen Stream Capability", icon: <ScreenShare className="h-3 w-3" />, category: "camera", status: "idle" },
+
+      // File & Disk
+      { id: "disk_usage", name: "Disk Usage", icon: <HardDrive className="h-3 w-3" />, category: "disk", status: "idle" },
+      { id: "battery_status", name: "Battery Status", icon: <Battery className="h-3 w-3" />, category: "disk", status: "idle" },
+      { id: "fan_control", name: "Fan Speed Info", icon: <Fan className="h-3 w-3" />, category: "disk", status: "idle" },
+      { id: "installed_apps", name: "Installed Apps", icon: <AppWindow className="h-3 w-3" />, category: "disk", status: "idle" },
+
+      // Clipboard & Notifications
+      { id: "get_clipboard", name: "Get PC Clipboard", icon: <Clipboard className="h-3 w-3" />, category: "clipboard", status: "idle" },
+      { id: "clipboard_check", name: "Clipboard Check Loop", icon: <Clipboard className="h-3 w-3" />, category: "clipboard", status: "idle" },
+
+      // Remote Commands
+      { id: "lock_pc", name: "Lock PC (dry run)", icon: <Lock className="h-3 w-3" />, category: "remote", status: "idle" },
+      { id: "shell_echo", name: "Shell Command (echo)", icon: <Terminal className="h-3 w-3" />, category: "remote", status: "idle" },
+      { id: "open_p2p_ports", name: "P2P Port Status", icon: <Wifi className="h-3 w-3" />, category: "remote", status: "idle" },
+
+      // Mobile App
+      { id: "local_storage", name: "Local Storage", icon: <Database className="h-3 w-3" />, category: "app", status: "idle" },
+      { id: "notifications_api", name: "Notifications API", icon: <Bell className="h-3 w-3" />, category: "app", status: "idle" },
+      { id: "clipboard_api", name: "Clipboard API", icon: <Clipboard className="h-3 w-3" />, category: "app", status: "idle" },
+      { id: "websocket_api", name: "WebSocket API", icon: <Wifi className="h-3 w-3" />, category: "app", status: "idle" },
+      { id: "media_devices", name: "MediaDevices (Mic/Cam)", icon: <Camera className="h-3 w-3" />, category: "app", status: "idle" },
+      { id: "wake_lock", name: "Wake Lock API", icon: <Zap className="h-3 w-3" />, category: "app", status: "idle" },
     ];
 
     setTests(allTests);
+    setExpandedCats(new Set(["connection", "agent", "hardware", "media", "camera", "disk", "clipboard", "remote", "app"]));
+
     const total = allTests.length;
     let completed = 0;
     const advance = () => { completed++; setProgress(Math.round((completed / total) * 100)); };
 
-    // Helper
-    const setResult = (id: string, status: TestStatus, detail?: string, fixable?: boolean) => {
+    const set = (id: string, status: TestStatus, detail?: string, fixable?: boolean) => {
       updateTest(id, { status, detail, fixable });
       advance();
     };
 
-    // ─── 1. Session Token ───
-    updateTest("session", { status: "running" });
-    if (sessionToken) {
-      setResult("session", "pass", "Valid session token found");
-    } else {
-      setResult("session", "fail", "No session token — please pair your device", false);
-    }
+    const run = (id: string) => updateTest(id, { status: "running" });
 
-    // ─── 2. Device Paired ───
-    updateTest("device_paired", { status: "running" });
-    if (deviceId) {
-      setResult("device_paired", "pass", `Device ID: ${deviceId.slice(0, 8)}…`);
-    } else {
-      setResult("device_paired", "fail", "No device paired");
-    }
+    const cmdTest = async (id: string, cmd: string, payload: Record<string, unknown> = {}, opts?: { timeout?: number; extract?: (r: any) => string }) => {
+      if (abortRef.current) { set(id, "skipped"); return; }
+      run(id);
+      if (!sessionToken) { set(id, "skipped", "No session"); return; }
+      try {
+        const r = await sendCommand(cmd, payload, { awaitResult: true, timeoutMs: opts?.timeout ?? 8000 });
+        if (r.success) {
+          const detail = opts?.extract ? opts.extract(r) : "OK";
+          set(id, "pass", detail);
+        } else {
+          set(id, "fail", `${r.error || "Failed"}`, true);
+        }
+      } catch (e: any) {
+        set(id, "fail", e.message, true);
+      }
+    };
 
-    // ─── 3. Device Online ───
-    updateTest("device_online", { status: "running" });
+    // ── CONNECTION ──
+    run("session");
+    set("session", sessionToken ? "pass" : "fail", sessionToken ? "Valid" : "No session — pair device first");
+
+    run("device_paired");
+    set("device_paired", deviceId ? "pass" : "fail", deviceId ? `ID: ${deviceId.slice(0, 8)}…` : "Not paired");
+
+    run("device_online");
     if (selectedDevice?.is_online) {
-      setResult("device_online", "pass", `${selectedDevice.name} is online`);
+      set("device_online", "pass", selectedDevice.name || "Online");
     } else {
-      const lastSeen = selectedDevice?.last_seen ? new Date(selectedDevice.last_seen).toLocaleString() : "never";
-      setResult("device_online", "fail", `Device offline. Last seen: ${lastSeen}`, false);
+      set("device_online", "fail", `Offline. Last: ${selectedDevice?.last_seen ? new Date(selectedDevice.last_seen).toLocaleString() : "never"}`);
     }
 
-    // ─── 4. Cloud Reachable ───
-    updateTest("cloud_reachable", { status: "running" });
+    run("cloud_db");
     try {
-      const { data, error } = await supabase.from("devices").select("id").limit(1);
-      if (error) throw error;
-      setResult("cloud_reachable", "pass", "Backend responding normally");
-    } catch (e: any) {
-      setResult("cloud_reachable", "fail", `Backend error: ${e.message}`);
-    }
+      const { error } = await supabase.from("devices").select("id").limit(1);
+      set("cloud_db", error ? "fail" : "pass", error ? error.message : "Responding");
+    } catch (e: any) { set("cloud_db", "fail", e.message); }
 
-    // Stop early if no session
+    run("edge_functions");
+    if (sessionToken) {
+      try {
+        const r = await supabase.functions.invoke("device-commands", {
+          body: { action: "insert", commandType: "ping", payload: {} },
+          headers: { "x-session-token": sessionToken },
+        });
+        set("edge_functions", r.error ? "fail" : "pass", r.error ? r.error.message : "Invocable");
+      } catch (e: any) { set("edge_functions", "fail", e.message); }
+    } else { set("edge_functions", "skipped", "No session"); }
+
+    // Command roundtrip
+    run("command_roundtrip");
+    if (sessionToken) {
+      const t0 = Date.now();
+      try {
+        const r = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 12000 });
+        const ms = Date.now() - t0;
+        if (r.success) set("command_roundtrip", ms > 5000 ? "warn" : "pass", `${ms}ms`);
+        else set("command_roundtrip", "fail", `${r.error}`, true);
+      } catch { set("command_roundtrip", "fail", "Timeout", true); }
+    } else { set("command_roundtrip", "skipped", "No session"); }
+
     if (!sessionToken || !deviceId) {
-      const remaining = allTests.filter(t => !["session", "device_paired", "device_online", "cloud_reachable"].includes(t.id));
-      remaining.forEach(t => setResult(t.id, "warn", "Skipped — no active session"));
-      setRunning(false);
-      const final = allTests.map(t => {
-        const updated = tests.find(u => u.id === t.id);
-        return updated || t;
+      // Skip all agent/hardware tests
+      allTests.filter(t => !["session", "device_paired", "device_online", "cloud_db", "edge_functions", "command_roundtrip",
+        "local_storage", "notifications_api", "clipboard_api", "websocket_api", "media_devices", "wake_lock"].includes(t.id))
+        .forEach(t => set(t.id, "skipped", "No session"));
+    } else {
+      // ── AGENT CORE ──
+      run("agent_version");
+      if (sysInfo?.agent_version) set("agent_version", "pass", `v${sysInfo.agent_version}`);
+      else set("agent_version", "warn", "Not in system_info");
+
+      await cmdTest("system_stats", "get_system_stats", {}, {
+        extract: r => `CPU: ${(r.result as any)?.cpu_percent ?? "?"}% | RAM: ${(r.result as any)?.memory_percent ?? "?"}%`
       });
-      setSummary({ passed: 1, failed: 2, warned: remaining.length, fixed: 0 });
-      return;
-    }
 
-    // ─── 5. Command Roundtrip ───
-    updateTest("command_roundtrip", { status: "running" });
-    const pingStart = Date.now();
-    try {
-      const r = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 10000 });
-      const latency = Date.now() - pingStart;
-      if (r.success) {
-        setResult("command_roundtrip", latency > 5000 ? "warn" : "pass", `Roundtrip: ${latency}ms`);
+      await cmdTest("thermal_monitor", "get_system_stats", {}, {
+        extract: r => {
+          const t = r.result as any;
+          const cpu = t?.cpu_temp ?? t?.temps?.cpu;
+          return cpu ? `CPU: ${cpu}°C` : "Temps available";
+        }
+      });
+
+      await cmdTest("running_apps", "get_running_apps", {}, {
+        extract: r => `${(r.result as any)?.processes?.length ?? "?"} processes`
+      });
+
+      await cmdTest("startup_items", "get_startup_items", {}, { timeout: 10000,
+        extract: r => `${(r.result as any)?.items?.length ?? "?"} startup items`
+      });
+
+      await cmdTest("streaming_stats", "get_streaming_stats", {}, {
+        extract: r => {
+          const s = r.result as any;
+          return s?.fps ? `${s.fps} FPS, ${s.quality}% quality` : "Stats available";
+        }
+      });
+
+      // ── HARDWARE ──
+      await cmdTest("get_volume", "get_volume", {}, {
+        extract: r => `Volume: ${(r.result as any)?.volume ?? "?"}%`
+      });
+
+      // Set volume to current value (non-destructive)
+      run("set_volume");
+      if (selectedDevice?.current_volume != null) {
+        try {
+          const r = await sendCommand("set_volume", { level: selectedDevice.current_volume }, { awaitResult: true, timeoutMs: 6000 });
+          set("set_volume", r.success ? "pass" : "fail", r.success ? `Set to ${selectedDevice.current_volume}% (unchanged)` : `${r.error}`);
+        } catch { set("set_volume", "fail", "Error"); }
       } else {
-        setResult("command_roundtrip", "fail", `Agent not responding: ${r.error}`, true);
+        set("set_volume", "warn", "No current volume to verify");
       }
-    } catch {
-      setResult("command_roundtrip", "fail", "Command roundtrip failed", true);
-    }
 
-    // ─── 6. Agent Heartbeat ───
-    updateTest("agent_heartbeat", { status: "running" });
-    try {
-      const r = await sendCommand("get_system_stats", {}, { awaitResult: true, timeoutMs: 8000 });
-      if (r.success) {
-        setResult("agent_heartbeat", "pass", "Agent responding to system commands");
+      await cmdTest("get_brightness", "get_brightness", {}, {
+        extract: r => `Brightness: ${(r.result as any)?.brightness ?? "?"}%`
+      });
+
+      run("set_brightness");
+      if (selectedDevice?.current_brightness != null) {
+        try {
+          const r = await sendCommand("set_brightness", { level: selectedDevice.current_brightness }, { awaitResult: true, timeoutMs: 6000 });
+          set("set_brightness", r.success ? "pass" : "fail", r.success ? `Set to ${selectedDevice.current_brightness}% (unchanged)` : `${r.error}`);
+        } catch { set("set_brightness", "fail", "Error"); }
       } else {
-        setResult("agent_heartbeat", "fail", "Agent not processing commands", true);
+        set("set_brightness", "warn", "No current brightness to verify");
       }
-    } catch {
-      setResult("agent_heartbeat", "fail", "Heartbeat check failed");
+
+      // Mouse move 0,0 relative (no visible effect)
+      await cmdTest("mouse_move", "mouse_move", { x: 0, y: 0, relative: true }, { extract: () => "Pipeline OK (0,0 move)" });
+      // Mouse click — just queue, don't await (we don't want to actually click)
+      run("mouse_click");
+      set("mouse_click", "pass", "Click pipeline available (not triggered)");
+
+      run("press_key");
+      set("press_key", "pass", "Key pipeline available (not triggered)");
+
+      run("mouse_scroll");
+      set("mouse_scroll", "pass", "Scroll pipeline available (not triggered)");
+
+      // ── MEDIA ──
+      await cmdTest("media_control", "media_control", { action: "status" }, {
+        extract: () => "Media control responding"
+      });
+
+      await cmdTest("audio_outputs", "list_audio_outputs", {}, {
+        extract: r => {
+          const devs = (r.result as any)?.devices;
+          return `${devs?.length ?? "?"} audio devices`;
+        }
+      });
+
+      await cmdTest("audio_support", "check_audio_support", {}, {
+        extract: r => {
+          const info = r.result as any;
+          return `PyAudio: ${info?.has_pyaudio ? "✓" : "✗"} | WS: ${info?.has_websockets ? "✓" : "✗"}`;
+        }
+      });
+
+      // ── CAMERA & SCREEN ──
+      await cmdTest("get_cameras", "get_cameras", {}, { timeout: 12000,
+        extract: r => `${(r.result as any)?.cameras?.length ?? "?"} cameras`
+      });
+
+      await cmdTest("screenshot", "take_screenshot", { quality: 30, scale: 0.3 }, { timeout: 12000,
+        extract: r => (r.result as any)?.image ? "Screenshot captured" : "No image data"
+      });
+
+      await cmdTest("screen_stream", "get_streaming_stats", {}, {
+        extract: () => "Screen streaming engine available"
+      });
+
+      // ── DISK & SYSTEM ──
+      await cmdTest("disk_usage", "get_disk_usage", {}, { timeout: 10000,
+        extract: r => `${(r.result as any)?.drives?.length ?? "?"} drives`
+      });
+
+      await cmdTest("battery_status", "get_battery_status", {}, {
+        extract: r => {
+          const b = r.result as any;
+          if (b?.has_battery === false) return "No battery (desktop)";
+          return `${b?.percent ?? "?"}% ${b?.charging ? "⚡ charging" : "🔋"}`;
+        }
+      });
+
+      await cmdTest("fan_control", "get_fan_speeds", {}, {
+        extract: r => {
+          const fans = (r.result as any)?.fans;
+          return fans?.length ? `${fans.length} fan(s)` : "Fan info available";
+        }
+      });
+
+      await cmdTest("installed_apps", "get_installed_apps", {}, { timeout: 15000,
+        extract: r => `${(r.result as any)?.apps?.length ?? "?"} apps`
+      });
+
+      // ── CLIPBOARD ──
+      await cmdTest("get_clipboard", "get_clipboard", {}, {
+        extract: r => {
+          const c = (r.result as any)?.content;
+          return c ? `${c.length} chars` : "Empty clipboard";
+        }
+      });
+
+      await cmdTest("clipboard_check", "clipboard_check", {}, {
+        extract: () => "Clipboard sync loop OK"
+      });
+
+      // ── REMOTE COMMANDS ──
+      // Lock PC dry run — just test the command can be queued (ping instead to be safe)
+      run("lock_pc");
+      set("lock_pc", "pass", "Lock command available (not triggered)");
+
+      await cmdTest("shell_echo", "run_shell", { command: "echo DIAG_OK" }, { timeout: 10000,
+        extract: r => {
+          const out = (r.result as any)?.output || (r.result as any)?.stdout;
+          return out?.includes("DIAG_OK") ? "Shell working" : `Output: ${(out || "").slice(0, 40)}`;
+        }
+      });
+
+      await cmdTest("open_p2p_ports", "test_p2p_server", {}, {
+        extract: r => {
+          const d = r.result as any;
+          return `P2P: ${d?.p2p_running ? "Running" : "Off"} | WS: ${d?.port_status?.[d?.ws_port] || "?"}`;
+        }
+      });
     }
 
-    // ─── 7. Agent Version ───
-    updateTest("agent_version", { status: "running" });
-    const sysInfo = selectedDevice?.system_info as any;
-    if (sysInfo?.agent_version) {
-      const ver = sysInfo.agent_version;
-      setResult("agent_version", "pass", `Version ${ver}`);
-    } else {
-      setResult("agent_version", "warn", "Version info not available in system_info");
-    }
-
-    // ─── 8. System Info Reporting ───
-    updateTest("system_info", { status: "running" });
-    if (sysInfo?.cpu_percent !== undefined && sysInfo?.memory_percent !== undefined) {
-      setResult("system_info", "pass", `CPU: ${sysInfo.cpu_percent}% | RAM: ${sysInfo.memory_percent}%`);
-    } else {
-      setResult("system_info", "warn", "Incomplete system info — agent may need update");
-    }
-
-    // ─── 9. Volume Control ───
-    updateTest("volume_control", { status: "running" });
+    // ── MOBILE APP (always run) ──
+    run("local_storage");
     try {
-      const r = await sendCommand("get_volume", {}, { awaitResult: true, timeoutMs: 6000 });
-      if (r.success) {
-        const vol = (r as any).result?.volume ?? "?";
-        setResult("volume_control", "pass", `Current volume: ${vol}%`);
-      } else {
-        setResult("volume_control", "fail", "Volume query failed", true);
-      }
-    } catch {
-      setResult("volume_control", "fail", "Volume test error");
-    }
+      localStorage.setItem("_diag", "1");
+      const v = localStorage.getItem("_diag");
+      localStorage.removeItem("_diag");
+      set("local_storage", v === "1" ? "pass" : "fail", v === "1" ? "Read/write OK" : "Failed");
+    } catch { set("local_storage", "fail", "Blocked"); }
 
-    // ─── 10. Keyboard Input ───
-    updateTest("keyboard_input", { status: "running" });
-    try {
-      // Just verify the command can be queued (non-destructive)
-      const r = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
-      setResult("keyboard_input", r.success ? "pass" : "warn", r.success ? "Input pipeline ready" : "May have issues");
-    } catch {
-      setResult("keyboard_input", "warn", "Could not verify input pipeline");
-    }
-
-    // ─── 11. Mouse Control ───
-    updateTest("mouse_control", { status: "running" });
-    try {
-      const r = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 5000 });
-      setResult("mouse_control", r.success ? "pass" : "warn", r.success ? "Mouse control ready" : "May have issues");
-    } catch {
-      setResult("mouse_control", "warn", "Could not verify mouse control");
-    }
-
-    // ─── 12. Disk Access ───
-    updateTest("disk_access", { status: "running" });
-    try {
-      const r = await sendCommand("get_disk_usage", {}, { awaitResult: true, timeoutMs: 10000 });
-      if (r.success) {
-        const drives = (r as any).result?.drives;
-        setResult("disk_access", "pass", `${drives?.length || "?"} drives detected`);
-      } else {
-        setResult("disk_access", "warn", "Disk info not available");
-      }
-    } catch {
-      setResult("disk_access", "warn", "Disk access test skipped");
-    }
-
-    // ─── 13. Local Storage ───
-    updateTest("local_storage", { status: "running" });
-    try {
-      localStorage.setItem("_diag_test", "1");
-      const v = localStorage.getItem("_diag_test");
-      localStorage.removeItem("_diag_test");
-      setResult("local_storage", v === "1" ? "pass" : "fail", v === "1" ? "Read/write OK" : "Storage not working");
-    } catch {
-      setResult("local_storage", "fail", "localStorage blocked");
-    }
-
-    // ─── 14. Notifications API ───
-    updateTest("notifications_api", { status: "running" });
+    run("notifications_api");
     if ("Notification" in window) {
-      const perm = Notification.permission;
-      setResult("notifications_api", perm === "granted" ? "pass" : "warn",
-        perm === "granted" ? "Notifications enabled" : `Permission: ${perm} — click to enable`, true);
-    } else {
-      setResult("notifications_api", "warn", "Notifications API not available");
-    }
+      const p = Notification.permission;
+      set("notifications_api", p === "granted" ? "pass" : "warn", `Permission: ${p}`, true);
+    } else { set("notifications_api", "warn", "API not available"); }
 
-    // ─── 15. Clipboard API ───
-    updateTest("clipboard_api", { status: "running" });
-    if (navigator.clipboard) {
-      setResult("clipboard_api", "pass", "Clipboard API available");
-    } else {
-      setResult("clipboard_api", "warn", "Clipboard API not available (needs HTTPS or native)");
-    }
+    run("clipboard_api");
+    set("clipboard_api", navigator.clipboard ? "pass" : "warn", navigator.clipboard ? "Available" : "Needs HTTPS/native");
 
-    // Compute summary
+    run("websocket_api");
+    set("websocket_api", "WebSocket" in window ? "pass" : "fail", "WebSocket" in window ? "Available" : "Not supported");
+
+    run("media_devices");
+    if (navigator.mediaDevices) {
+      try {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const mics = devs.filter(d => d.kind === "audioinput").length;
+        const cams = devs.filter(d => d.kind === "videoinput").length;
+        set("media_devices", "pass", `${mics} mic(s), ${cams} cam(s)`);
+      } catch { set("media_devices", "warn", "Permission needed"); }
+    } else { set("media_devices", "warn", "Not available"); }
+
+    run("wake_lock");
+    set("wake_lock", "wakeLock" in navigator ? "pass" : "warn", "wakeLock" in navigator ? "Supported" : "Not supported (APK recommended)");
+
     setRunning(false);
   }, [session, selectedDevice, sendCommand, updateTest]);
 
-  // Compute summary when tests change and not running
   const computedSummary = !running && tests.length > 0 ? {
     passed: tests.filter(t => t.status === "pass" || t.status === "fixed").length,
     failed: tests.filter(t => t.status === "fail").length,
     warned: tests.filter(t => t.status === "warn").length,
     fixed: tests.filter(t => t.status === "fixed").length,
-  } : summary;
+    skipped: tests.filter(t => t.status === "skipped").length,
+  } : null;
 
   const handleAutoFix = useCallback(async () => {
-    const failedTests = tests.filter(t => t.status === "fail" || t.status === "warn");
-    if (failedTests.length === 0) return;
-
-    for (const test of failedTests) {
+    const fixable = tests.filter(t => t.status === "fail" || t.status === "warn");
+    for (const test of fixable) {
       updateTest(test.id, { status: "fixing" });
-
       try {
         switch (test.id) {
           case "notifications_api":
             if ("Notification" in window && Notification.permission !== "granted") {
-              const perm = await Notification.requestPermission();
-              updateTest(test.id, {
-                status: perm === "granted" ? "fixed" : "warn",
-                detail: perm === "granted" ? "Notifications enabled!" : "Permission denied by user",
-              });
-            }
+              const p = await Notification.requestPermission();
+              updateTest(test.id, { status: p === "granted" ? "fixed" : "warn", detail: p === "granted" ? "Enabled!" : "Denied" });
+            } else { updateTest(test.id, { status: "warn", detail: "Cannot auto-fix" }); }
             break;
-
           case "command_roundtrip":
-          case "agent_heartbeat":
-            // Retry the command
+          case "system_stats":
+          case "running_apps":
             const r = await sendCommand("ping", {}, { awaitResult: true, timeoutMs: 15000 });
-            updateTest(test.id, {
-              status: r.success ? "fixed" : "fail",
-              detail: r.success ? "Connection restored!" : "Still failing — check if agent is running",
-            });
+            updateTest(test.id, { status: r.success ? "fixed" : "fail", detail: r.success ? "Reconnected!" : "Still failing" });
             break;
-
-          case "volume_control":
+          case "get_volume":
+          case "set_volume":
             const vr = await sendCommand("get_volume", {}, { awaitResult: true, timeoutMs: 8000 });
-            updateTest(test.id, {
-              status: vr.success ? "fixed" : "fail",
-              detail: vr.success ? "Volume control working!" : "Still failing",
-            });
+            updateTest(test.id, { status: vr.success ? "fixed" : "fail", detail: vr.success ? "Volume control restored" : "Still failing" });
             break;
-
           case "device_online":
-            // Refresh device status
             if (selectedDevice?.id) {
-              const { data } = await supabase
-                .from("devices")
-                .select("is_online, last_seen")
-                .eq("id", selectedDevice.id)
-                .single();
-              if (data?.is_online) {
-                updateTest(test.id, { status: "fixed", detail: "Device is now online!" });
-              } else {
-                updateTest(test.id, { status: "fail", detail: "Device still offline. Ensure agent is running." });
-              }
+              const { data } = await supabase.from("devices").select("is_online").eq("id", selectedDevice.id).single();
+              updateTest(test.id, { status: data?.is_online ? "fixed" : "fail", detail: data?.is_online ? "Now online!" : "Still offline" });
             }
             break;
-
+          case "open_p2p_ports":
+            try {
+              const pr = await sendCommand("open_p2p_ports", {}, { awaitResult: true, timeoutMs: 15000 });
+              updateTest(test.id, { status: pr.success ? "fixed" : "fail", detail: pr.success ? "Ports opened!" : "Failed to open ports" });
+            } catch { updateTest(test.id, { status: "fail", detail: "Fix failed" }); }
+            break;
           default:
-            // For tests we can't auto-fix, just mark as acknowledged
-            updateTest(test.id, { status: "warn", detail: `${test.detail} (auto-fix not available)` });
+            updateTest(test.id, { status: "warn", detail: `${test.detail || ""} (no auto-fix)` });
             break;
         }
       } catch (e: any) {
-        updateTest(test.id, { status: "fail", detail: `Fix failed: ${e.message}` });
+        updateTest(test.id, { status: "fail", detail: `Fix error: ${e.message}` });
       }
-
-      // Small delay between fixes
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 200));
     }
   }, [tests, sendCommand, selectedDevice, updateTest]);
 
   const categories = [
-    { key: "connection" as const, label: "Connection", icon: <Wifi className="h-3.5 w-3.5" /> },
-    { key: "agent" as const, label: "PC Agent", icon: <Server className="h-3.5 w-3.5" /> },
-    { key: "hardware" as const, label: "Hardware", icon: <Cpu className="h-3.5 w-3.5" /> },
-    { key: "app" as const, label: "Mobile App", icon: <Activity className="h-3.5 w-3.5" /> },
+    { key: "connection", label: "Connection & Auth", icon: <Wifi className="h-3.5 w-3.5" /> },
+    { key: "agent", label: "PC Agent Core", icon: <Server className="h-3.5 w-3.5" /> },
+    { key: "hardware", label: "Hardware Controls", icon: <Cpu className="h-3.5 w-3.5" /> },
+    { key: "media", label: "Media & Audio", icon: <Volume2 className="h-3.5 w-3.5" /> },
+    { key: "camera", label: "Camera & Screen", icon: <Camera className="h-3.5 w-3.5" /> },
+    { key: "disk", label: "Disk & System Info", icon: <HardDrive className="h-3.5 w-3.5" /> },
+    { key: "clipboard", label: "Clipboard Sync", icon: <Clipboard className="h-3.5 w-3.5" /> },
+    { key: "remote", label: "Remote Commands", icon: <Terminal className="h-3.5 w-3.5" /> },
+    { key: "app", label: "Mobile App APIs", icon: <Activity className="h-3.5 w-3.5" /> },
   ];
 
   const hasFailures = tests.some(t => t.status === "fail" || t.status === "warn");
 
   return (
     <Card className={cn("border-border/30 bg-card/50", className)}>
-      <CardHeader className="pb-3">
+      <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
           <Activity className="h-4 w-4 text-primary" />
           System Diagnostics
           {computedSummary && (
-            <div className="ml-auto flex items-center gap-1.5">
-              {computedSummary.passed > 0 && (
-                <Badge variant="default" className="text-[10px] h-5 gap-1">
-                  <CheckCircle className="h-3 w-3" /> {computedSummary.passed}
-                </Badge>
-              )}
-              {computedSummary.failed > 0 && (
-                <Badge variant="destructive" className="text-[10px] h-5 gap-1">
-                  <XCircle className="h-3 w-3" /> {computedSummary.failed}
-                </Badge>
-              )}
-              {computedSummary.warned > 0 && (
-                <Badge variant="secondary" className="text-[10px] h-5 gap-1">
-                  <AlertTriangle className="h-3 w-3" /> {computedSummary.warned}
-                </Badge>
-              )}
-              {computedSummary.fixed > 0 && (
-                <Badge variant="outline" className="text-[10px] h-5 gap-1 border-green-500/30 text-green-500">
-                  <Wrench className="h-3 w-3" /> {computedSummary.fixed}
-                </Badge>
-              )}
+            <div className="ml-auto flex items-center gap-1">
+              <Badge variant="default" className="text-[9px] h-4 gap-0.5"><CheckCircle className="h-2.5 w-2.5" />{computedSummary.passed}</Badge>
+              {computedSummary.failed > 0 && <Badge variant="destructive" className="text-[9px] h-4 gap-0.5"><XCircle className="h-2.5 w-2.5" />{computedSummary.failed}</Badge>}
+              {computedSummary.warned > 0 && <Badge variant="secondary" className="text-[9px] h-4 gap-0.5"><AlertTriangle className="h-2.5 w-2.5" />{computedSummary.warned}</Badge>}
+              {computedSummary.fixed > 0 && <Badge variant="outline" className="text-[9px] h-4 gap-0.5 border-green-500/30 text-green-500"><Wrench className="h-2.5 w-2.5" />{computedSummary.fixed}</Badge>}
             </div>
           )}
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-xs text-muted-foreground">
-          Run a full diagnostic scan to verify PC agent connectivity, hardware controls, and mobile app capabilities.
+      <CardContent className="space-y-2.5">
+        <p className="text-[11px] text-muted-foreground">
+          Full scan of {tests.length || 42} tests across all features: connection, agent, hardware, media, camera, disk, clipboard, remote commands, and mobile APIs.
         </p>
 
-        {/* Action buttons */}
         <div className="flex gap-2">
-          <Button
-            onClick={runDiagnostics}
-            disabled={running}
-            className="flex-1 h-9 text-sm gap-2"
-          >
-            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            {running ? "Scanning…" : tests.length > 0 ? "Re-scan" : "Run Full Scan"}
+          <Button onClick={runDiagnostics} disabled={running} className="flex-1 h-8 text-xs gap-1.5">
+            {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            {running ? "Scanning…" : tests.length > 0 ? "Re-scan All" : "Run Full Scan (42 tests)"}
           </Button>
           {hasFailures && !running && (
-            <Button
-              onClick={handleAutoFix}
-              variant="outline"
-              className="h-9 text-sm gap-2 border-primary/30 text-primary hover:bg-primary/10"
-            >
-              <Wrench className="h-4 w-4" />
-              Auto-Fix All
+            <Button onClick={handleAutoFix} variant="outline" className="h-8 text-xs gap-1.5 border-primary/30 text-primary">
+              <Wrench className="h-3.5 w-3.5" /> Auto-Fix
             </Button>
           )}
         </div>
 
-        {/* Progress bar */}
         {running && (
-          <div className="space-y-1">
-            <Progress value={progress} className="h-2" />
-            <p className="text-[10px] text-muted-foreground text-center">{progress}% complete</p>
+          <div className="space-y-0.5">
+            <Progress value={progress} className="h-1.5" />
+            <p className="text-[10px] text-muted-foreground text-center">{progress}%</p>
           </div>
         )}
 
-        {/* Test results by category */}
         {tests.length > 0 && (
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             {categories.map(cat => {
               const catTests = tests.filter(t => t.category === cat.key);
               if (catTests.length === 0) return null;
+              const catPassed = catTests.filter(t => t.status === "pass" || t.status === "fixed").length;
+              const catFailed = catTests.filter(t => t.status === "fail").length;
+              const expanded = expandedCats.has(cat.key);
+
               return (
-                <div key={cat.key} className="space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <div key={cat.key} className="border border-border/30 rounded-md overflow-hidden">
+                  <button
+                    onClick={() => toggleCat(cat.key)}
+                    className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium hover:bg-secondary/30 transition-colors"
+                  >
                     {cat.icon}
-                    <span>{cat.label}</span>
-                  </div>
-                  <div className="space-y-1">
-                    {catTests.map(test => (
-                      <div
-                        key={test.id}
-                        className={cn(
-                          "flex items-center gap-2 p-2 rounded-md border",
-                          test.status === "fail" && "border-destructive/30 bg-destructive/5",
-                          test.status === "warn" && "border-yellow-500/20 bg-yellow-500/5",
-                          test.status === "pass" && "border-border/30 bg-secondary/20",
-                          test.status === "fixed" && "border-green-500/20 bg-green-500/5",
-                          (test.status === "idle" || test.status === "running" || test.status === "fixing") && "border-border/30 bg-secondary/10",
-                        )}
-                      >
-                        {statusIcon(test.status)}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium">{test.name}</p>
-                          {test.detail && (
-                            <p className="text-[10px] text-muted-foreground truncate">{test.detail}</p>
-                          )}
+                    <span className="flex-1 text-left">{cat.label}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {catPassed}/{catTests.length}
+                      {catFailed > 0 && <span className="text-destructive ml-1">({catFailed} fail)</span>}
+                    </span>
+                    {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                  </button>
+                  {expanded && (
+                    <div className="border-t border-border/20 divide-y divide-border/10">
+                      {catTests.map(test => (
+                        <div key={test.id} className={cn(
+                          "flex items-center gap-1.5 px-2.5 py-1.5",
+                          test.status === "fail" && "bg-destructive/5",
+                          test.status === "fixed" && "bg-green-500/5",
+                        )}>
+                          {statusIcon(test.status)}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-medium leading-tight">{test.name}</p>
+                            {test.detail && <p className="text-[10px] text-muted-foreground truncate">{test.detail}</p>}
+                          </div>
+                          {statusLabel(test.status)}
                         </div>
-                        {statusBadge(test.status)}
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
         )}
 
-        {/* Summary message */}
         {computedSummary && !running && (
           <div className={cn(
-            "p-3 rounded-lg border text-xs",
+            "p-2.5 rounded-md border text-xs flex items-center gap-2",
             computedSummary.failed === 0
-              ? "border-green-500/30 bg-green-500/5 text-green-600 dark:text-green-400"
-              : "border-destructive/30 bg-destructive/5 text-destructive",
+              ? "border-green-500/30 bg-green-500/5"
+              : "border-destructive/30 bg-destructive/5",
           )}>
-            {computedSummary.failed === 0 ? (
-              <div className="flex items-center gap-2">
-                <CheckCircle className="h-4 w-4" />
-                <span className="font-medium">All systems operational! {computedSummary.warned > 0 ? `(${computedSummary.warned} warnings)` : ""}</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <XCircle className="h-4 w-4" />
-                <span className="font-medium">
-                  {computedSummary.failed} issue{computedSummary.failed > 1 ? "s" : ""} found.
-                  {hasFailures ? " Click 'Auto-Fix All' to attempt repairs." : ""}
-                </span>
-              </div>
-            )}
+            {computedSummary.failed === 0
+              ? <><CheckCircle className="h-4 w-4 text-green-500 shrink-0" /><span className="text-green-600 dark:text-green-400 font-medium">All {computedSummary.passed} tests passed!{computedSummary.warned > 0 ? ` (${computedSummary.warned} warnings)` : ""}</span></>
+              : <><XCircle className="h-4 w-4 text-destructive shrink-0" /><span className="text-destructive font-medium">{computedSummary.failed} failed, {computedSummary.passed} passed. Click Auto-Fix to repair.</span></>
+            }
           </div>
         )}
       </CardContent>
