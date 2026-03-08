@@ -255,7 +255,47 @@ export function SmartP2PManager({
         {/* BLE Connection Panel */}
         <BleStatusPanel />
 
-        {/* Manual PC IP Entry */}
+        {/* PC Internet / BLE Fallback Status */}
+        {pcSystemInfo && (
+          <div className={cn(
+            "flex items-center gap-3 p-3 rounded-lg",
+            pcSystemInfo.internet_online === false
+              ? "bg-amber-500/10 border border-amber-500/20"
+              : pcSystemInfo.ble_active
+                ? "bg-indigo-500/5 border border-indigo-500/10"
+                : "bg-muted/30"
+          )}>
+            {pcSystemInfo.internet_online === false ? (
+              <WifiOff className="h-4 w-4 text-amber-500 shrink-0" />
+            ) : pcSystemInfo.ble_active ? (
+              <BluetoothConnected className="h-4 w-4 text-indigo-400 shrink-0" />
+            ) : (
+              <Wifi className="h-4 w-4 text-emerald-500 shrink-0" />
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium">
+                {pcSystemInfo.internet_online === false
+                  ? "PC Internet Offline — BLE Fallback Active"
+                  : pcSystemInfo.ble_active
+                    ? "PC BLE Server Running"
+                    : "PC Online"}
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                {pcSystemInfo.internet_online === false
+                  ? "Commands routed through Bluetooth"
+                  : pcSystemInfo.ble_active
+                    ? "Ready for offline fallback if internet drops"
+                    : "All transports available"}
+              </p>
+            </div>
+            {pcSystemInfo.ble_fallback_mode && (
+              <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-500">
+                Offline
+              </Badge>
+            )}
+          </div>
+        )}
+
         <div className="space-y-2">
           <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
             <Link2 className="w-3 h-3" /> Direct PC IP Connection
