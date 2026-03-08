@@ -25,7 +25,17 @@ import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { useSurveillanceEvents, type SurveillanceEvent } from "@/hooks/useSurveillanceEvents";
 import { useAutoPresence } from "@/hooks/useAutoPresence";
-import { GeofenceMap } from "@/components/GeofenceMap";
+import React, { lazy, Suspense } from "react";
+
+const GeofenceMap = lazy(() => import("@/components/GeofenceMap").then(m => ({ default: m.GeofenceMap })));
+
+function SafeGeofenceMap(props: React.ComponentProps<typeof GeofenceMap>) {
+  return (
+    <Suspense fallback={<div className="h-48 rounded-md border border-border/30 bg-muted/20 flex items-center justify-center text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin mr-2" />Loading map...</div>}>
+      <GeofenceMap {...props} />
+    </Suspense>
+  );
+}
 
 interface MotionEvent {
   id: string;
