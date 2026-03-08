@@ -239,7 +239,6 @@ export function useAutoPresence() {
       watchIdRef.current = null;
       clearInterval(fallbackInterval);
     };
-    return () => clearInterval(interval);
   }, [enabled, presenceMode, homeLat, homeLng, homeRadius, geoPollInterval, evaluatePresence]);
 
   // Realtime device updates
