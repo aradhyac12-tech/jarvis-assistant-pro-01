@@ -129,7 +129,14 @@ After `npx cap add android`, edit `android/app/src/main/AndroidManifest.xml`.
 <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+<!-- ═══════════ BACKGROUND GEOLOCATION ═══════════ -->
+<!-- Used for: presence tracking (geofence) even when app is minimized -->
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
 <!-- ═══════════ BIOMETRIC ═══════════ -->
 <uses-permission android:name="android.permission.USE_BIOMETRIC" />

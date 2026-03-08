@@ -1298,9 +1298,16 @@ export function SurveillancePanel({ className }: { className?: string }) {
                           {/* Geofence Config */}
                           {(autoPresence.presenceMode === "geofence" || autoPresence.presenceMode === "both") && (
                             <div className="rounded-md border border-border/30 bg-secondary/10 p-2.5 space-y-2.5">
-                              <div className="flex items-center gap-1.5 text-[10px] font-medium">
-                                <MapPin className="h-3 w-3 text-primary" />
-                                Geofence Settings
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1.5 text-[10px] font-medium">
+                                  <MapPin className="h-3 w-3 text-primary" />
+                                  Geofence Settings
+                                </div>
+                                {autoPresence.backgroundTracking && (
+                                  <Badge variant="default" className="text-[9px] gap-1 h-4">
+                                    <Zap className="h-2.5 w-2.5" /> BG Active
+                                  </Badge>
+                                )}
                               </div>
 
                               {/* Set Home Location */}

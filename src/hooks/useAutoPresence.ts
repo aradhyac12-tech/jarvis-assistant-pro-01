@@ -4,6 +4,21 @@ import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useAuth } from "@/hooks/useAuth";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { addLog } from "@/components/IssueLog";
+import { registerPlugin } from "@capacitor/core";
+
+// Background geolocation plugin — only available in native Capacitor context
+interface BackgroundGeolocationWatcher {
+  addWatcher(options: {
+    backgroundMessage: string;
+    backgroundTitle: string;
+    requestPermissions: boolean;
+    stale: boolean;
+    distanceFilter: number;
+  }, callback: (location: { latitude: number; longitude: number; accuracy: number } | undefined, error: any) => void): Promise<string>;
+  removeWatcher(options: { id: string }): Promise<void>;
+}
+
+const BackgroundGeolocation = registerPlugin<BackgroundGeolocationWatcher>("BackgroundGeolocation");
 
 type PresenceStatus = "home" | "away" | "unknown";
 type PresenceMode = "device" | "geofence" | "both";
@@ -197,47 +212,109 @@ export function useAutoPresence() {
     return () => clearInterval(interval);
   }, [enabled, selectedDevice?.id, user, awayDelay, presenceMode, evaluatePresence]);
 
-  // Geofence: use watchPosition for continuous real-time updates + fallback polling
+  // Geofence: use native background geolocation (Capacitor) or web watchPosition
   const watchIdRef = useRef<number | null>(null);
+  const bgWatcherIdRef = useRef<string | null>(null);
+  const [backgroundTracking, setBackgroundTracking] = useState(false);
 
   useEffect(() => {
     if (!enabled || presenceMode === "device") return;
     if (homeLat === null || homeLng === null) return;
-    if (!("geolocation" in navigator)) return;
 
-    const handlePosition = (pos: GeolocationPosition) => {
-      const dist = getDistanceMeters(homeLat, homeLng, pos.coords.latitude, pos.coords.longitude);
+    const handlePosition = (lat: number, lng: number) => {
+      const dist = getDistanceMeters(homeLat, homeLng, lat, lng);
       setCurrentDistance(Math.round(dist));
       const wasInside = geoInsideRef.current;
       geoInsideRef.current = dist <= homeRadius;
-      // Only re-evaluate if state changed or first reading
       if (wasInside !== geoInsideRef.current || wasInside === null) {
         addLog("info", "web", `Geofence: ${dist.toFixed(0)}m from home (${geoInsideRef.current ? "inside" : "outside"} ${homeRadius}m radius)`);
       }
       evaluatePresence();
     };
 
-    const handleError = (err: GeolocationPositionError) => {
-      if (err.code === err.PERMISSION_DENIED) setGeoPermission("denied");
-      addLog("warn", "web", `Geolocation error: ${err.message}`);
+    let cleanupFns: (() => void)[] = [];
+
+    // Try native Capacitor background geolocation first
+    const tryNativeBackground = async () => {
+      try {
+        const watcherId = await BackgroundGeolocation.addWatcher(
+          {
+            backgroundMessage: "JARVIS is tracking your presence for surveillance automation.",
+            backgroundTitle: "Presence Tracking Active",
+            requestPermissions: true,
+            stale: false,
+            distanceFilter: Math.max(20, Math.round(homeRadius / 5)),
+          },
+          (location, error) => {
+            if (error) {
+              if (error.code === "NOT_AUTHORIZED") {
+                setGeoPermission("denied");
+                addLog("warn", "web", "Background geolocation permission denied");
+              }
+              return;
+            }
+            if (location) {
+              setGeoPermission("granted");
+              handlePosition(location.latitude, location.longitude);
+            }
+          }
+        );
+
+        bgWatcherIdRef.current = watcherId;
+        setBackgroundTracking(true);
+        setGeoPermission("granted");
+        addLog("info", "web", "✅ Native background geolocation active — presence tracks even when app is minimized");
+
+        cleanupFns.push(() => {
+          if (bgWatcherIdRef.current) {
+            BackgroundGeolocation.removeWatcher({ id: bgWatcherIdRef.current });
+            bgWatcherIdRef.current = null;
+            setBackgroundTracking(false);
+          }
+        });
+      } catch {
+        // Not running in native Capacitor — fall back to web API
+        addLog("info", "web", "Background geolocation unavailable — using web watchPosition");
+        startWebGeofence();
+      }
     };
 
-    const geoOptions: PositionOptions = { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 };
+    const startWebGeofence = () => {
+      if (!("geolocation" in navigator)) return;
 
-    // Use watchPosition for real-time continuous tracking
-    const watchId = navigator.geolocation.watchPosition(handlePosition, handleError, geoOptions);
-    watchIdRef.current = watchId;
-    setGeoPermission("granted");
+      const geoOptions: PositionOptions = { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 };
 
-    // Also poll at interval as a fallback (watchPosition can stall on some devices)
-    const fallbackInterval = setInterval(() => {
-      navigator.geolocation.getCurrentPosition(handlePosition, handleError, geoOptions);
-    }, geoPollInterval);
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => handlePosition(pos.coords.latitude, pos.coords.longitude),
+        (err) => {
+          if (err.code === err.PERMISSION_DENIED) setGeoPermission("denied");
+          addLog("warn", "web", `Geolocation error: ${err.message}`);
+        },
+        geoOptions
+      );
+      watchIdRef.current = watchId;
+      setGeoPermission("granted");
+
+      // Fallback polling for devices where watchPosition stalls
+      const fallbackInterval = setInterval(() => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => handlePosition(pos.coords.latitude, pos.coords.longitude),
+          () => {},
+          geoOptions
+        );
+      }, geoPollInterval);
+
+      cleanupFns.push(() => {
+        navigator.geolocation.clearWatch(watchId);
+        watchIdRef.current = null;
+        clearInterval(fallbackInterval);
+      });
+    };
+
+    tryNativeBackground();
 
     return () => {
-      navigator.geolocation.clearWatch(watchId);
-      watchIdRef.current = null;
-      clearInterval(fallbackInterval);
+      cleanupFns.forEach(fn => fn());
     };
   }, [enabled, presenceMode, homeLat, homeLng, homeRadius, geoPollInterval, evaluatePresence]);
 
@@ -283,5 +360,6 @@ export function useAutoPresence() {
     setCurrentAsHome,
     settingHome,
     homeConfigured: homeLat !== null && homeLng !== null,
+    backgroundTracking,
   };
 }
