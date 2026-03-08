@@ -6654,6 +6654,9 @@ class JarvisAgent:
                 "p2p_port": p2p_server._actual_port if p2p_server else LOCAL_P2P_PORT,
                 "cpu_percent": psutil.cpu_percent(),
                 "memory_percent": psutil.virtual_memory().percent,
+                "ble_active": _ble_server is not None and _ble_server.running,
+                "internet_online": self._internet_monitor.is_online if hasattr(self, '_internet_monitor') and self._internet_monitor else True,
+                "ble_fallback_mode": agent_status.get("ble_fallback_mode", False),
             }
             
             self.supabase.table("devices").update({
@@ -6670,6 +6673,8 @@ class JarvisAgent:
                 "cpu_percent": system_info["cpu_percent"],
                 "memory_percent": system_info["memory_percent"],
                 "local_ips": local_ips,
+                "ble_active": system_info["ble_active"],
+                "internet_online": system_info["internet_online"],
             })
         except Exception as e:
             add_log("warn", f"Heartbeat failed: {e}", category="system")
@@ -6766,13 +6771,25 @@ class JarvisAgent:
         except Exception as e:
             add_log("warn", f"Auto-updater init failed: {e}", category="system")
         
-        # Start BLE server as fallback transport
+        # Start BLE server (always-on if bless available; acts as fallback transport)
+        self._ble_instance = None
         try:
-            ble = start_ble_server(command_handler=self._handle_command)
-            if ble:
-                add_log("info", "BLE fallback transport started", category="bluetooth")
+            self._ble_instance = start_ble_server(command_handler=self._handle_command)
+            if self._ble_instance:
+                add_log("info", "BLE GATT server started (always-on, ready for fallback)", category="bluetooth")
+                update_agent_status({"ble_active": True})
         except Exception as e:
             add_log("warn", f"BLE server init failed (optional): {e}", category="bluetooth")
+        
+        # Start internet connectivity monitor with BLE auto-fallback
+        self._internet_monitor = InternetMonitor(
+            interval=10.0,
+            on_offline=self._on_internet_lost,
+            on_online=self._on_internet_restored,
+            log_fn=lambda level, msg: add_log(level, msg, category="network"),
+        )
+        self._internet_monitor.start()
+        add_log("info", "Internet connectivity monitor started (10s interval)", category="network")
         
         # Pre-load face recognizer if training data exists
         try:
@@ -6796,11 +6813,12 @@ class JarvisAgent:
                         add_log("warn", f"Heartbeat error (non-fatal): {hb_err}", category="system")
                     last_heartbeat = now
                 
-                # Poll commands
-                try:
-                    self.poll_commands()
-                except Exception as poll_err:
-                    add_log("warn", f"Poll error (non-fatal): {poll_err}", category="system")
+                # Poll commands (skip if internet is down — commands come via BLE)
+                if self._internet_monitor.is_online:
+                    try:
+                        self.poll_commands()
+                    except Exception as poll_err:
+                        add_log("warn", f"Poll error (non-fatal): {poll_err}", category="system")
                 
                 # Sleep
                 time.sleep(POLL_INTERVAL)
@@ -6818,6 +6836,8 @@ class JarvisAgent:
         self._stop_audio_relay()
         stop_local_p2p_server()
         stop_ble_server()
+        if hasattr(self, '_internet_monitor') and self._internet_monitor:
+            self._internet_monitor.stop()
         
         try:
             self.supabase.table("devices").update({"is_online": False}).eq("id", self.device_id).execute()
@@ -6825,6 +6845,31 @@ class JarvisAgent:
             pass
         
         add_log("info", "Agent stopped.", category="system")
+    
+    def _on_internet_lost(self):
+        """Called by InternetMonitor when internet connectivity drops."""
+        add_log("warn", "🔴 Internet lost — entering BLE-only fallback mode", category="bluetooth")
+        update_agent_status({"ble_fallback_mode": True, "internet_online": False})
+        
+        # Ensure BLE server is running
+        if not _ble_server or not _ble_server.running:
+            try:
+                ble = start_ble_server(command_handler=self._handle_command)
+                if ble:
+                    self._ble_instance = ble
+                    add_log("info", "BLE server auto-started as internet fallback", category="bluetooth")
+                    update_agent_status({"ble_active": True})
+            except Exception as e:
+                add_log("error", f"Failed to auto-start BLE fallback: {e}", category="bluetooth")
+        else:
+            add_log("info", "BLE server already running — ready for offline commands", category="bluetooth")
+    
+    def _on_internet_restored(self):
+        """Called by InternetMonitor when internet connectivity is restored."""
+        add_log("info", "🟢 Internet restored — resuming cloud polling", category="bluetooth")
+        update_agent_status({"ble_fallback_mode": False, "internet_online": True})
+        # BLE server stays running (always-on) — it doesn't hurt to keep it available
+        # but we clear the fallback mode flag so the phone knows cloud is available again
 
 # ============== SUPPRESS COM CLEANUP ERRORS ==============
 import atexit
