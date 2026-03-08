@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Cpu, HardDrive, Wifi, Activity, RefreshCw, Loader2, MemoryStick,
-  Thermometer, AlertTriangle, XCircle, ChevronDown, ChevronUp, Skull,
+  Thermometer, AlertTriangle, XCircle, ChevronDown, ChevronUp, Skull, Search,
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -94,6 +95,7 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   const [processesLoading, setProcessesLoading] = useState(false);
   const [killingPid, setKillingPid] = useState<number | null>(null);
+  const [processSearch, setProcessSearch] = useState("");
 
   const fetchStats = useCallback(async () => {
     if (!isConnected) return;
@@ -335,6 +337,19 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
 
           {showProcesses && (
             <div className="border-t border-border/20">
+              {/* Search bar */}
+              <div className="px-2 py-1.5 border-b border-border/10">
+                <div className="relative">
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                  <Input
+                    placeholder="Filter processes..."
+                    value={processSearch}
+                    onChange={e => setProcessSearch(e.target.value)}
+                    className="h-6 text-[10px] pl-7 pr-2 bg-secondary/10 border-border/20"
+                  />
+                </div>
+              </div>
+
               <div className="flex items-center justify-between px-2 py-1 border-b border-border/10">
                 <span className="text-[8px] text-muted-foreground font-medium">NAME</span>
                 <div className="flex items-center gap-3">
