@@ -1024,7 +1024,7 @@ export default function MicCamera() {
 
                   <div className="flex items-center justify-center gap-4">
                     {!pcCamActive ? (
-                      <Button onClick={startPcCamera} className="gradient-primary"><Play className="h-4 w-4 mr-2" />Start PC Camera</Button>
+                      <Button onClick={startPcCamera} className="gradient-primary" disabled={camStarting}>{camStarting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}{camStarting ? "Connecting..." : "Start PC Camera"}</Button>
                     ) : (
                       <Button onClick={stopPcCamera} variant="destructive"><Square className="h-4 w-4 mr-2" />Stop PC Camera</Button>
                     )}
@@ -1065,7 +1065,7 @@ export default function MicCamera() {
 
                   <div className="flex items-center justify-center gap-4">
                     {!screenActive ? (
-                      <Button onClick={startScreen} className="gradient-primary"><ScreenShare className="h-4 w-4 mr-2" />Start Screen Mirror</Button>
+                      <Button onClick={startScreen} className="gradient-primary" disabled={screenStarting}>{screenStarting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ScreenShare className="h-4 w-4 mr-2" />}{screenStarting ? "Connecting..." : "Start Screen Mirror"}</Button>
                     ) : (
                       <Button onClick={stopScreen} variant="destructive"><ScreenShareOff className="h-4 w-4 mr-2" />Stop Screen Mirror</Button>
                     )}
