@@ -61,6 +61,9 @@ import { PureTrackpad } from "@/components/PureTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
+import { RemoteScreenshot } from "@/components/RemoteScreenshot";
+import { RemoteAppLauncher } from "@/components/RemoteAppLauncher";
+import { DragDropFileTransfer } from "@/components/DragDropFileTransfer";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
