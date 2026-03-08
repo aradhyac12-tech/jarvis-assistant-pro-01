@@ -38,8 +38,10 @@ interface SmartP2PManagerProps {
   localP2PState: LocalP2PState;
   autoP2P: boolean;
   autoLocalP2P: boolean;
+  autoBluetooth: boolean;
   onToggleAutoP2P: () => void;
   onToggleAutoLocalP2P: () => void;
+  onToggleAutoBluetooth: () => void;
   onForceUpgrade: () => void;
   onForceLocalP2P: () => void;
   pcSystemInfo?: Record<string, any> | null;
@@ -159,8 +161,10 @@ export function SmartP2PManager({
   localP2PState,
   autoP2P,
   autoLocalP2P,
+  autoBluetooth,
   onToggleAutoP2P,
   onToggleAutoLocalP2P,
+  onToggleAutoBluetooth,
   onForceUpgrade,
   onForceLocalP2P,
   pcSystemInfo,
@@ -429,6 +433,13 @@ export function SmartP2PManager({
               <p className="text-xs text-muted-foreground">Prefer same-network direct path</p>
             </div>
             <Switch checked={autoLocalP2P} onCheckedChange={onToggleAutoLocalP2P} />
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label className="text-sm font-medium">Auto BLE Fallback</Label>
+              <p className="text-xs text-muted-foreground">Switch to Bluetooth when offline</p>
+            </div>
+            <Switch checked={autoBluetooth} onCheckedChange={onToggleAutoBluetooth} />
           </div>
         </div>
 

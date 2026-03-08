@@ -113,8 +113,10 @@ export default function Hub() {
     latency: p2pLatency, 
     autoP2P,
     autoLocalP2P,
+    autoBluetooth,
     toggleAutoP2P,
     toggleAutoLocalP2P,
+    toggleAutoBluetooth,
     forceP2PUpgrade,
     forceLocalP2P,
     networkState,
@@ -1383,8 +1385,10 @@ export default function Hub() {
                   localP2PState={localP2PState}
                   autoP2P={autoP2P}
                   autoLocalP2P={autoLocalP2P}
+                  autoBluetooth={autoBluetooth}
                   onToggleAutoP2P={toggleAutoP2P}
                   onToggleAutoLocalP2P={toggleAutoLocalP2P}
+                  onToggleAutoBluetooth={toggleAutoBluetooth}
                   onForceUpgrade={forceP2PUpgrade}
                   onForceLocalP2P={forceLocalP2P}
                   pcSystemInfo={selectedDevice?.system_info as Record<string, any> | null}
