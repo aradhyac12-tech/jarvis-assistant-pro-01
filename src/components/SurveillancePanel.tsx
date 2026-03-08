@@ -12,7 +12,7 @@ import {
   Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
   Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
   AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2, X, Image as ImageIcon,
-  ScanFace, Crosshair, RotateCw, Search,
+  ScanFace, Crosshair, RotateCw, Search, History, Clock, ShieldCheck, ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -23,6 +23,7 @@ import { getFunctionsWsBase } from "@/lib/relay";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
 import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
+import { useSurveillanceEvents, type SurveillanceEvent } from "@/hooks/useSurveillanceEvents";
 
 interface MotionEvent {
   id: string;
@@ -44,6 +45,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const { session } = useDeviceSession();
   const { toast } = useToast();
   const { notifyHumanDetected } = useAppNotifications();
+  const { events: dbEvents, saveEvent, deleteEvent: deleteDbEvent, clearEvents, fetchEvents, loading: eventsLoading } = useSurveillanceEvents();
 
   // Persisted Settings
   const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
@@ -69,7 +71,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenActive, setSirenActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
   const [humanPresent, setHumanPresent] = useState(false);
-  const [survTab, setSurvTab] = useState<"live" | "clips" | "train">("live");
+  const [survTab, setSurvTab] = useState<"live" | "clips" | "train" | "history">("live");
   const [clipFilter, setClipFilter] = useState<"all" | "human" | "motion">("all");
   const [expandedClip, setExpandedClip] = useState<string | null>(null);
 
@@ -742,8 +744,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
         </div>
 
         {/* Subtabs: Live / Clips */}
-        <Tabs value={survTab} onValueChange={(v) => setSurvTab(v as "live" | "clips" | "train")}>
-          <TabsList className="grid w-full grid-cols-3">
+        <Tabs value={survTab} onValueChange={(v) => setSurvTab(v as "live" | "clips" | "train" | "history")}>
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="live" className="gap-1 text-xs">
               <Eye className="h-3.5 w-3.5" /> Live
               {monitoring && <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />}
@@ -753,6 +755,14 @@ export function SurveillancePanel({ className }: { className?: string }) {
               {clips.length > 0 && (
                 <Badge variant="secondary" className="ml-1 text-[10px] h-4 min-w-[16px] p-0 flex items-center justify-center">
                   {clips.length}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="history" className="gap-1 text-xs">
+              <History className="h-3.5 w-3.5" /> Events
+              {dbEvents.length > 0 && (
+                <Badge variant="secondary" className="ml-1 text-[10px] h-4 min-w-[16px] p-0 flex items-center justify-center">
+                  {dbEvents.length}
                 </Badge>
               )}
             </TabsTrigger>
@@ -777,6 +787,15 @@ export function SurveillancePanel({ className }: { className?: string }) {
                       setHumanPresent(true);
                       triggerAutoClip("human");
 
+                      // Capture screenshot blob for DB storage
+                      let screenshotBlob: Blob | null = null;
+                      if (currentFrame && currentFrame.startsWith("blob:")) {
+                        try {
+                          const resp = await fetch(currentFrame);
+                          screenshotBlob = await resp.blob();
+                        } catch {}
+                      }
+
                       // ML Recognition — ask PC agent to identify the person
                       if (recognitionEnabled && modelBuilt && !recognitionCooldownRef.current) {
                         recognitionCooldownRef.current = true;
@@ -793,15 +812,41 @@ export function SurveillancePanel({ className }: { className?: string }) {
                           });
                           
                           if (r.recognized && r.label === "owner") {
-                            // Owner identified by ML — skip siren
                             setOwnerConfirmed(true);
                             toast({ title: "✅ Owner Recognized", description: `ML confidence: ${r.confidence}%` });
                             addLog("info", "web", `ML recognized owner (confidence: ${r.confidence}%)`);
+                            // Save owner-recognized event
+                            saveEvent({
+                              event_type: "owner_recognized",
+                              confidence: confPct,
+                              recognized: true,
+                              recognized_label: "owner",
+                              recognition_confidence: r.confidence,
+                              screenshot_blob: screenshotBlob,
+                              metadata: { face_detected: true, distance: r.distance },
+                            });
                             return; // Don't trigger siren
                           } else {
                             addLog("warn", "web", `ML: Unknown person (distance: ${r.distance})`);
+                            // Save intruder event
+                            saveEvent({
+                              event_type: "intruder",
+                              confidence: confPct,
+                              recognized: false,
+                              recognized_label: null,
+                              recognition_confidence: r.confidence || 0,
+                              screenshot_blob: screenshotBlob,
+                              metadata: { face_detected: r.face_detected, distance: r.distance },
+                            });
                           }
                         }
+                      } else {
+                        // No ML — save as human detection
+                        saveEvent({
+                          event_type: "human",
+                          confidence: confPct,
+                          screenshot_blob: screenshotBlob,
+                        });
                       }
 
                       notifyHumanDetected(confPct);
@@ -1164,6 +1209,119 @@ export function SurveillancePanel({ className }: { className?: string }) {
                 </ScrollArea>
               );
             })()}
+          </TabsContent>
+
+          {/* ===== EVENTS HISTORY TAB ===== */}
+          <TabsContent value="history" className="mt-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium flex items-center gap-2">
+                <History className="h-4 w-4 text-primary" /> Detection History
+              </p>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => fetchEvents()}
+                  disabled={eventsLoading}
+                >
+                  <RotateCw className={cn("h-3 w-3 mr-1", eventsLoading && "animate-spin")} /> Refresh
+                </Button>
+                {dbEvents.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-destructive"
+                    onClick={clearEvents}
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" /> Clear
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {eventsLoading ? (
+              <div className="text-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto" />
+              </div>
+            ) : dbEvents.length === 0 ? (
+              <div className="text-center py-8">
+                <ShieldCheck className="h-10 w-10 text-muted-foreground mx-auto mb-3 opacity-50" />
+                <p className="text-muted-foreground text-sm">No events recorded yet</p>
+                <p className="text-xs text-muted-foreground mt-1">Events are saved when surveillance detects motion or people</p>
+              </div>
+            ) : (
+              <ScrollArea className="h-[400px]">
+                <div className="space-y-2 pr-2">
+                  {dbEvents.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className={cn(
+                        "rounded-lg border p-3 space-y-2 transition-colors",
+                        ev.event_type === "intruder" ? "border-destructive/50 bg-destructive/5" :
+                        ev.event_type === "owner_recognized" ? "border-primary/50 bg-primary/5" :
+                        "border-border/50 bg-secondary/10"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {ev.event_type === "intruder" && <ShieldAlert className="h-4 w-4 text-destructive" />}
+                          {ev.event_type === "owner_recognized" && <ShieldCheck className="h-4 w-4 text-primary" />}
+                          {ev.event_type === "human" && <PersonStanding className="h-4 w-4 text-amber-500" />}
+                          {ev.event_type === "motion" && <Zap className="h-4 w-4 text-muted-foreground" />}
+                          <div>
+                            <p className="text-sm font-medium capitalize">
+                              {ev.event_type === "owner_recognized" ? "Owner Verified ✅" :
+                               ev.event_type === "intruder" ? "🚨 Intruder!" :
+                               ev.event_type === "human" ? "Person Detected" :
+                               "Motion Detected"}
+                            </p>
+                            <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              {new Date(ev.created_at).toLocaleString()}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Badge
+                            variant={ev.event_type === "intruder" ? "destructive" : ev.event_type === "owner_recognized" ? "default" : "secondary"}
+                            className="text-[10px]"
+                          >
+                            {ev.confidence}%
+                          </Badge>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-destructive"
+                            onClick={() => deleteDbEvent(ev.id)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      {ev.recognized_label && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <ScanFace className="h-3 w-3" />
+                          <span>ML: <strong className="capitalize">{ev.recognized_label}</strong> ({ev.recognition_confidence}%)</span>
+                        </div>
+                      )}
+
+                      {ev.screenshot_url && (
+                        <div className="relative aspect-video rounded overflow-hidden bg-black border border-border/30">
+                          <img
+                            src={ev.screenshot_url}
+                            alt="Detection screenshot"
+                            className="w-full h-full object-contain"
+                            loading="lazy"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
           </TabsContent>
 
           {/* ===== TRAINING TAB ===== */}

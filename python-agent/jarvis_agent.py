@@ -3096,7 +3096,57 @@ class JarvisAgent:
             pass
         return surv_dir
 
-    def _save_surveillance_clip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _save_surveillance_event_to_cloud(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Save a surveillance event to the cloud database from agent side."""
+        try:
+            event_type = payload.get("event_type", "motion")
+            confidence = int(payload.get("confidence", 0))
+            recognized = bool(payload.get("recognized", False))
+            recognized_label = payload.get("recognized_label")
+            recognition_confidence = int(payload.get("recognition_confidence", 0))
+            metadata = payload.get("metadata", {})
+            
+            # Upload screenshot if image data provided
+            screenshot_url = None
+            image_data = payload.get("image_data", "")
+            if image_data and self.device_id:
+                if "," in image_data:
+                    image_data = image_data.split(",", 1)[1]
+                img_bytes = base64.b64decode(image_data)
+                user_id = getattr(self, "current_user_id", "") or ""
+                filename = f"{user_id}/{self.device_id}/{int(time.time())}.jpg"
+                try:
+                    self.supabase.storage.from_("surveillance-screenshots").upload(
+                        filename, img_bytes, {"content-type": "image/jpeg"}
+                    )
+                    signed = self.supabase.storage.from_("surveillance-screenshots").create_signed_url(
+                        filename, 60 * 60 * 24 * 15
+                    )
+                    screenshot_url = signed.get("signedURL") if isinstance(signed, dict) else None
+                except Exception as e:
+                    _log("warn", f"Screenshot upload failed: {e}")
+            
+            # Insert event
+            user_id = getattr(self, "current_user_id", "") or ""
+            if self.device_id and user_id:
+                self.supabase.table("surveillance_events").insert({
+                    "device_id": self.device_id,
+                    "user_id": user_id,
+                    "event_type": event_type,
+                    "confidence": confidence,
+                    "recognized": recognized,
+                    "recognized_label": recognized_label,
+                    "recognition_confidence": recognition_confidence,
+                    "screenshot_url": screenshot_url,
+                    "metadata": metadata,
+                }).execute()
+                _log("info", f"Surveillance event saved to cloud: {event_type} (confidence: {confidence}%)")
+                return {"success": True, "event_type": event_type}
+            return {"success": False, "error": "No device/user ID"}
+        except Exception as e:
+            _log("error", f"Failed to save surveillance event: {e}")
+            return {"success": False, "error": str(e)}
+
         """Save a surveillance clip snapshot to the surveillance folder."""
         try:
             surv_dir = self._get_surveillance_dir()
@@ -4526,6 +4576,8 @@ class JarvisAgent:
                 return get_face_recognizer().get_status()
             elif cmd == "recognize_frame":
                 return self._recognize_from_base64(payload)
+            elif cmd == "save_surveillance_event":
+                return self._save_surveillance_event_to_cloud(payload)
 
             elif cmd == "open_p2p_ports":
                 return self._open_p2p_firewall_ports()
@@ -5210,24 +5262,47 @@ class JarvisAgent:
         return result
     
     def _recognize_face_from_camera(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Capture a frame from camera and run face recognition."""
+        """Capture multiple frames from camera for better accuracy and run face recognition."""
         if not HAS_OPENCV:
             return {"success": False, "error": "OpenCV not available"}
         camera_index = int(payload.get("camera_index", 0))
+        num_captures = int(payload.get("num_captures", 3))  # Multiple frames for accuracy
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             return {"success": False, "error": "Cannot open camera"}
         try:
-            ret, frame = cap.read()
-            if not ret:
-                return {"success": False, "error": "Cannot capture frame"}
             recognizer = get_face_recognizer()
-            result = recognizer.recognize(frame)
-            # Also return a small thumbnail
-            _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            result["image"] = base64.b64encode(buf.tobytes()).decode()
-            result["success"] = True
-            return result
+            best_result = None
+            best_confidence = -1
+            best_frame = None
+            
+            for i in range(num_captures):
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                result = recognizer.recognize(frame)
+                conf = result.get("confidence", 0)
+                if result.get("face_detected", False) and conf > best_confidence:
+                    best_confidence = conf
+                    best_result = result
+                    best_frame = frame
+                if i < num_captures - 1:
+                    time.sleep(0.15)  # Small delay between captures
+            
+            if best_result is None:
+                # Fall back to single frame
+                ret, frame = cap.read()
+                if not ret:
+                    return {"success": False, "error": "Cannot capture frame"}
+                best_result = recognizer.recognize(frame)
+                best_frame = frame
+            
+            # Return a small thumbnail
+            _, buf = cv2.imencode('.jpg', best_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            best_result["image"] = base64.b64encode(buf.tobytes()).decode()
+            best_result["success"] = True
+            best_result["captures_used"] = num_captures
+            return best_result
         finally:
             cap.release()
     
