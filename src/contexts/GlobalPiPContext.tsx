@@ -221,9 +221,15 @@ export function GlobalPiPProvider({ children }: { children: ReactNode }) {
     const ownership = wsOwnerships.current.get(streamId);
     if (ownership) {
       ownership.cleanup?.();
-      // Don't close WS — just release ownership, source component can reclaim
+      if (ownership.ws.readyState === WebSocket.OPEN || ownership.ws.readyState === WebSocket.CONNECTING) {
+        try { ownership.ws.close(); } catch {}
+      }
       wsOwnerships.current.delete(streamId);
     }
+
+    const oldUrl = blobUrls.current.get(streamId);
+    if (oldUrl) URL.revokeObjectURL(oldUrl);
+    blobUrls.current.delete(streamId);
   }, []);
 
   // Cleanup on unmount
