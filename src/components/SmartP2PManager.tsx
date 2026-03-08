@@ -38,8 +38,10 @@ interface SmartP2PManagerProps {
   localP2PState: LocalP2PState;
   autoP2P: boolean;
   autoLocalP2P: boolean;
+  autoBluetooth: boolean;
   onToggleAutoP2P: () => void;
   onToggleAutoLocalP2P: () => void;
+  onToggleAutoBluetooth: () => void;
   onForceUpgrade: () => void;
   onForceLocalP2P: () => void;
   pcSystemInfo?: Record<string, any> | null;
