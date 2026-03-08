@@ -1317,7 +1317,52 @@ class JarvisGUI:
                  fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(anchor="w", pady=(10, 6))
 
         self._btn(frame, "🌐  Open Web App", self._open_web)
-        self._btn(frame, "👻  Ghost Mode", self._ghost)
+
+        # ── Ghost Mode Switcher Card ──
+        gc = self._card(frame, glow=True)
+        gc.pack(fill="x", pady=(0, 6))
+        tk.Label(gc, text="👻  GHOST MODE", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(12, 4))
+        tk.Label(gc, text="Switch visibility: GUI ↔ Tray ↔ Total Ghost",
+                 font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(0, 8))
+
+        self._ghost_mode = "gui"  # gui | tray | ghost
+        ghost_row = tk.Frame(gc, bg=_Theme.BG_CARD)
+        ghost_row.pack(fill="x", padx=12, pady=(0, 12))
+        ghost_row.columnconfigure(0, weight=1)
+        ghost_row.columnconfigure(1, weight=1)
+        ghost_row.columnconfigure(2, weight=1)
+
+        self._ghost_btns = {}
+        for col, (mode, icon, label) in enumerate([
+            ("gui", "🖥", "GUI"),
+            ("tray", "🔽", "Tray Only"),
+            ("ghost", "👻", "Total Ghost"),
+        ]):
+            btn_f = tk.Frame(ghost_row, bg=_Theme.ACCENT_DIM if mode == "gui" else _Theme.BG_ELEVATED,
+                             highlightbackground=_Theme.ACCENT if mode == "gui" else _Theme.BORDER,
+                             highlightthickness=1, bd=0, cursor="hand2")
+            btn_f.grid(row=0, column=col, sticky="nsew", padx=2, pady=2)
+
+            inner = tk.Frame(btn_f, bg=btn_f.cget("bg"))
+            inner.pack(padx=8, pady=8)
+            ico_lbl = tk.Label(inner, text=icon, font=(self._sans, 16), bg=inner.cget("bg"), fg=_Theme.TEXT)
+            ico_lbl.pack()
+            txt_lbl = tk.Label(inner, text=label, font=self.F_TINY,
+                               fg=_Theme.TEXT if mode == "gui" else _Theme.TEXT_DIM,
+                               bg=inner.cget("bg"))
+            txt_lbl.pack()
+
+            self._ghost_btns[mode] = {"frame": btn_f, "inner": inner, "icon": ico_lbl, "text": txt_lbl}
+
+            for w in [btn_f, inner, ico_lbl, txt_lbl]:
+                w.bind("<Button-1>", lambda e, m=mode: self._set_ghost_mode(m))
+
+        # status label
+        self._ghost_status = tk.Label(gc, text="● GUI Mode — Full window visible",
+                                       font=self.F_TINY, fg=_Theme.SUCCESS, bg=_Theme.BG_CARD)
+        self._ghost_status.pack(anchor="w", padx=16, pady=(0, 12))
+
         self._btn(frame, "🔄  Restart Agent", self._restart)
         self._btn(frame, "⏻  Quit Agent", self._quit, danger=True)
 
