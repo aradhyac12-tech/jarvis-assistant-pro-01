@@ -2888,7 +2888,7 @@ class LocalP2PServer:
 
     async def _handle_file_download_binary(self, websocket, client_ip, ws_path):
         """High-speed binary file download from PC to phone.
-        
+
         Protocol:
         1. Query param: ?path=/path/to/file
         2. Agent sends JSON header: {"fileName": "x", "fileSize": N}
@@ -2909,11 +2909,11 @@ class LocalP2PServer:
             if not file_path or not os.path.isfile(file_path):
                 await websocket.send(json.dumps({"error": f"File not found: {file_path}"}))
                 return
-            
+
             file_name = os.path.basename(file_path)
             file_size = os.path.getsize(file_path)
             CHUNK_SIZE = 2 * 1024 * 1024  # 2MB chunks
-            
+
             # Send header
             await websocket.send(json.dumps({
                 "type": "header",
@@ -2922,17 +2922,17 @@ class LocalP2PServer:
                 "chunkSize": CHUNK_SIZE,
                 "totalChunks": (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE,
             }))
-            
+
             # Wait for client ready
             msg = await websocket.recv()
             if isinstance(msg, str):
                 data = json.loads(msg)
                 if data.get("type") != "ready":
                     return
-            
+
             start_time = time.time()
             sent_bytes = 0
-            
+
             with open(file_path, "rb") as f:
                 while True:
                     chunk = f.read(CHUNK_SIZE)
@@ -2940,19 +2940,19 @@ class LocalP2PServer:
                         break
                     await websocket.send(chunk)
                     sent_bytes += len(chunk)
-            
+
             elapsed = time.time() - start_time
             speed_mbps = (sent_bytes * 8 / 1_000_000) / elapsed if elapsed > 0 else 0
-            
+
             await websocket.send(json.dumps({
                 "complete": True,
                 "size": sent_bytes,
                 "speed_mbps": round(speed_mbps, 1),
                 "elapsed_sec": round(elapsed, 2),
             }))
-            
+
             add_log("info", f"File sent via P2P binary: {file_name} ({sent_bytes} bytes, {speed_mbps:.1f} Mbps)", category="file")
-            
+
         except Exception as e:
             add_log("error", f"P2P file download error: {e}", category="file")
             try:
@@ -2962,26 +2962,30 @@ class LocalP2PServer:
         finally:
             add_log("info", f"P2P file download client disconnected: {client_ip}", category="file")
 
+    async def _process_message(self, data: dict):
+        """Handle incoming JSON messages for command P2P clients."""
         msg_type = data.get("type", "")
         request_id = data.get("requestId")
-        
+
         if msg_type == "ping":
             resp: Dict[str, Any] = {"type": "pong", "t": data.get("t", 0), "server_time": datetime.now().isoformat()}
             if request_id:
                 resp["requestId"] = request_id
             return resp
-        
-        elif msg_type == "command":
+
+        if msg_type == "command":
             command_type = data.get("commandType", "")
             payload = data.get("payload", {})
-            
+
             if self.command_handler:
                 try:
                     if asyncio.iscoroutinefunction(self.command_handler):
                         result = await self.command_handler(command_type, payload)
                     else:
                         result = self.command_handler(command_type, payload)
-                    
+                        if asyncio.iscoroutine(result):
+                            result = await result
+
                     return {
                         "type": "command_result",
                         "requestId": request_id,
@@ -2996,8 +3000,8 @@ class LocalP2PServer:
                         "commandType": command_type,
                         "error": str(e),
                     }
-        
-        elif msg_type == "get_info":
+
+        if msg_type == "get_info":
             return {
                 "type": "info",
                 "local_ips": self.local_ips,
@@ -3005,7 +3009,7 @@ class LocalP2PServer:
                 "port": self._actual_port,
                 "clients": len(self.clients),
             }
-        
+
         return None
     
     async def _start_server(self):
