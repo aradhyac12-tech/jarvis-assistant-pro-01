@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Check } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -8,6 +8,7 @@ import { useCapacitorPlugins } from "@/hooks/useCapacitorPlugins";
 import { useNavigate } from "react-router-dom";
 import { BackButton } from "@/components/BackButton";
 import { isAppLockEnabled, getAppLockMethod, getAppPin, setAppLockSettings } from "@/components/AppLockScreen";
+import { cn } from "@/lib/utils";
 
 import { VoiceSettingsCard } from "@/components/settings/VoiceSettingsCard";
 import { SecurityCard } from "@/components/settings/SecurityCard";
@@ -19,6 +20,28 @@ import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
 import { SystemDiagnosticsPanel } from "@/components/SystemDiagnosticsPanel";
 import { BoostPC } from "@/components/BoostPC";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
+
+/** Collapsible section wrapper */
+function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="flex items-center justify-between w-full px-1 py-1.5 group"
+      >
+        <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+          {title}
+        </h2>
+        <ChevronDown className={cn(
+          "h-3.5 w-3.5 text-muted-foreground/40 transition-transform duration-200",
+          open && "rotate-180"
+        )} />
+      </button>
+      {open && <div className="space-y-3 mt-1 animate-fade-in">{children}</div>}
+    </section>
+  );
+}
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState(() => localStorage.getItem("settings_wake_word") || "Hey Jarvis");
@@ -49,12 +72,10 @@ export default function Settings() {
 
   const isConnected = selectedDevice?.is_online || false;
 
-  // Auto-start call detection on mount if native
   useEffect(() => {
     if (isNative && !callDetectionActive) initCallDetection();
   }, [isNative, callDetectionActive, initCallDetection]);
 
-  // Check biometric availability
   useEffect(() => {
     (async () => {
       try {
@@ -93,25 +114,21 @@ export default function Settings() {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="max-w-lg mx-auto px-4 py-6 space-y-6 animate-fade-in">
+      <div className="max-w-lg mx-auto px-4 py-6 space-y-5 animate-fade-in">
         {/* Header */}
-        <div className="flex items-center gap-4 pb-2">
+        <div className="flex items-center gap-4 pb-1">
           <BackButton />
           <div>
             <h1 className="text-xl font-bold tracking-tight">Settings</h1>
-            <p className="text-xs text-muted-foreground">Configure Jarvis</p>
+            <p className="text-[10px] text-muted-foreground">Configure Jarvis</p>
           </div>
         </div>
 
-        {/* Section: Appearance */}
-        <section className="space-y-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1">Appearance</h2>
+        <Section title="Appearance">
           <ThemeSettingsCard />
-        </section>
+        </Section>
 
-        {/* Section: General */}
-        <section className="space-y-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1">General</h2>
+        <Section title="General">
           <VoiceSettingsCard wakeWord={wakeWord} onWakeWordChange={setWakeWord} />
           <NotificationsCard
             notifEnabled={notifEnabled}
@@ -119,11 +136,9 @@ export default function Settings() {
             onNotifChange={setNotifEnabled}
             onPushChange={setNotifications}
           />
-        </section>
+        </Section>
 
-        {/* Section: Privacy & Security */}
-        <section className="space-y-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1">Privacy & Security</h2>
+        <Section title="Privacy & Security">
           <SecurityCard
             appLockEnabled={appLockEnabled}
             lockMethod={lockMethod}
@@ -144,11 +159,9 @@ export default function Settings() {
               setAppLockSettings(true, lockMethod, v, 0);
             }}
           />
-        </section>
+        </Section>
 
-        {/* Section: Device & Connection */}
-        <section className="space-y-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1">Device & Connection</h2>
+        <Section title="Device & Connection">
           <DeviceConnectionCard
             deviceName={selectedDevice?.name || session?.device_name || "My PC"}
             isConnected={isConnected}
@@ -166,16 +179,14 @@ export default function Settings() {
             toggleCallDetection={toggleCallDetection}
             simulateCall={simulateCall}
           />
-        </section>
+        </Section>
 
-        {/* Section: Diagnostics & System */}
-        <section className="space-y-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1">System</h2>
+        <Section title="System" defaultOpen={false}>
           <StreamingDiagnostics />
           <SystemDiagnosticsPanel className="border-border/10 bg-card/40 backdrop-blur-sm rounded-2xl" />
           <BoostPC className="border-border/10 bg-card/40 backdrop-blur-sm rounded-2xl" />
           <OTAUpdateCard />
-        </section>
+        </Section>
 
         {/* Save */}
         <Button
