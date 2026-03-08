@@ -32,19 +32,32 @@ export function GlobalClipboardSync() {
   const SLOW_INTERVAL = 5000;
   const SLOWDOWN_THRESHOLD = 30; // polls with no change before slowing
 
+  // Reset polling to fast interval on activity
+  const resetBackoff = useCallback(() => {
+    noChangeCountRef.current = 0;
+    if (currentIntervalRef.current !== FAST_INTERVAL) {
+      currentIntervalRef.current = FAST_INTERVAL;
+      // Restart poll timer at fast rate
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }
+  }, []);
+
   // Push clipboard text to PC via best available transport
   const pushToPc = useCallback(async (text: string) => {
     if (!text.trim() || text === lastSentRef.current) return;
     lastSentRef.current = text;
+    resetBackoff(); // user activity — go fast
     try {
-      // Prefer BLE clipboard characteristic when WiFi is down
       if (!isWifiConnected && isBleConnected) {
         await bluetooth.sendClipboard(text);
       } else {
         await sendCommand("set_clipboard", { content: text }, { awaitResult: false });
       }
     } catch { /* silent */ }
-  }, [sendCommand, isWifiConnected, isBleConnected, bluetooth]);
+  }, [sendCommand, isWifiConnected, isBleConnected, bluetooth, resetBackoff]);
 
   // Phone → PC: instant on copy/cut
   useEffect(() => {
