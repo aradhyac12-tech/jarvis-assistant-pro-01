@@ -595,7 +595,10 @@ export default function Hub() {
 
   const handleTypeText = useCallback((text: string) => {
     sendCommand("type_text", { text });
-    toast({ title: "Text sent" });
+    // Only toast for compose mode (multi-char), not per-character in direct mode
+    if (text.length > 1) {
+      toast({ title: "Text sent" });
+    }
   }, [sendCommand, toast]);
 
   const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
