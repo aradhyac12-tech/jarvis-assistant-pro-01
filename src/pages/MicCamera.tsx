@@ -31,7 +31,6 @@ import {
   Shield,
   Headphones,
   Rows2,
-  X,
   Loader2,
 } from "lucide-react";
 import { StreamDisplayControls } from "@/components/StreamDisplayControls";
@@ -48,6 +47,7 @@ import { cn } from "@/lib/utils";
 import { addLog } from "@/components/IssueLog";
 import { getFunctionsWsBase } from "@/lib/relay";
 import { useP2PStreaming } from "@/hooks/useP2PStreaming";
+import { useGlobalPiP } from "@/contexts/GlobalPiPContext";
 
 type StreamDirection = "phone_to_pc" | "pc_to_phone" | "bidirectional";
 
