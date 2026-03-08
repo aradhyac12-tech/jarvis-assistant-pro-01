@@ -1244,22 +1244,37 @@ export default function Hub() {
               </div>
             )}
 
-            {/* Zoom Tab */}
-            {activeTab === "zoom" && (
-              <div className="grid gap-3">
+            {/* More Tab — Zoom, Network, File Transfer, Settings */}
+            {activeTab === "more" && (
+              <div className="space-y-2.5">
+                {/* Zoom Meetings */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-0">
                     <ZoomMeetings />
                   </CardContent>
                 </Card>
-              </div>
-            )}
 
-            {/* Settings Tab (merged with tools) */}
-            {activeTab === "settings" && (
-              <div className="grid gap-3">
+                {/* Network / Connection */}
+                <SmartP2PManager
+                  connectionMode={connectionMode}
+                  latency={p2pLatency}
+                  networkState={networkState}
+                  localP2PState={localP2PState}
+                  autoP2P={autoP2P}
+                  autoLocalP2P={autoLocalP2P}
+                  onToggleAutoP2P={toggleAutoP2P}
+                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
+                  onForceUpgrade={forceP2PUpgrade}
+                  onForceLocalP2P={forceLocalP2P}
+                />
+
+                {/* File Transfer */}
                 <BidirectionalFileTransfer />
+
+                {/* PC Boost */}
                 <BoostPC />
+
+                {/* App Settings Link */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-3">
                     <Link to="/settings" className="flex items-center gap-3 w-full">
@@ -1273,24 +1288,6 @@ export default function Hub() {
                     </Link>
                   </CardContent>
                 </Card>
-              </div>
-            )}
-
-            {/* Network Tab */}
-            {activeTab === "network" && (
-              <div className="space-y-3 max-w-full overflow-hidden">
-                <SmartP2PManager
-                  connectionMode={connectionMode}
-                  latency={p2pLatency}
-                  networkState={networkState}
-                  localP2PState={localP2PState}
-                  autoP2P={autoP2P}
-                  autoLocalP2P={autoLocalP2P}
-                  onToggleAutoP2P={toggleAutoP2P}
-                  onToggleAutoLocalP2P={toggleAutoLocalP2P}
-                  onForceUpgrade={forceP2PUpgrade}
-                  onForceLocalP2P={forceLocalP2P}
-                />
               </div>
             )}
 
