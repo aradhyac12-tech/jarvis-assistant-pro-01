@@ -434,6 +434,13 @@ export function SmartP2PManager({
             </div>
             <Switch checked={autoLocalP2P} onCheckedChange={onToggleAutoLocalP2P} />
           </div>
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label className="text-sm font-medium">Auto BLE Fallback</Label>
+              <p className="text-xs text-muted-foreground">Switch to Bluetooth when offline</p>
+            </div>
+            <Switch checked={autoBluetooth} onCheckedChange={onToggleAutoBluetooth} />
+          </div>
         </div>
 
         {/* P2P Diagnostics */}
