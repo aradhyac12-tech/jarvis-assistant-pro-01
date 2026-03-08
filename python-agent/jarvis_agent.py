@@ -6781,6 +6781,10 @@ def main():
     parser.add_argument("--no-gui", action="store_true", help="Alias for --headless")
     parser.add_argument("files", nargs="*", help="Files dragged onto the agent")
     args = parser.parse_args()
+
+    if _STARTUP_BLOCKED or (not HAS_SUPABASE) or (not HAS_PSUTIL):
+        _show_startup_blocker()
+        return
     
     # Handle dragged files first
     if args.files:
