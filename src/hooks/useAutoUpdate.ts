@@ -26,6 +26,7 @@ interface UpdateInfo {
 
 export function useAutoUpdate() {
   const { toast } = useToast();
+  const { notifyUpdateAvailable } = useAppNotifications();
   const intervalRef = useRef<number | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -73,6 +74,9 @@ export function useAutoUpdate() {
           downloadUrl: data.download_url,
         };
         setUpdateAvailable(info);
+
+        // Send push notification (works even when backgrounded)
+        notifyUpdateAvailable(info.version, info.releaseNotes);
 
         // Force update — auto-apply immediately
         if (info.forceUpdate) {
