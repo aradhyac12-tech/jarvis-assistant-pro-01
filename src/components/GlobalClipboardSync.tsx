@@ -6,8 +6,8 @@ import { toast } from "sonner";
 
 /**
  * Headless global clipboard sync — runs at App level.
- * Phone → PC: Listens for copy/cut events and pushes instantly.
- * PC → Phone: Polls every 1s using clipboard_check (hash-based, lightweight).
+ * Phone → PC: Detects clipboard changes via focus/visibility events + copy/cut, pushes instantly.
+ * PC → Phone: Polls every 5s using clipboard_check (hash-based, lightweight).
  * 
  * When WiFi is unavailable but BLE is connected, clipboard sync
  * routes through the Bluetooth GATT clipboard characteristic instead.
@@ -24,6 +24,12 @@ export function GlobalClipboardSync() {
 
   const prevTransportRef = useRef<"none" | "wifi" | "ble">("none");
   const lastSentRef = useRef("");
+  const lastReceivedRef = useRef("");
+  const lastKnownClipboardRef = useRef("");
+  const pollRef = useRef<number | null>(null);
+  const busyRef = useRef(false);
+
+  const POLL_INTERVAL = 5000; // 5s poll for PC → Phone
 
   // Detect transport switches and show toast
   useEffect(() => {
@@ -44,16 +50,12 @@ export function GlobalClipboardSync() {
 
     prevTransportRef.current = current;
   }, [isWifiConnected, isBleConnected]);
-  const lastReceivedRef = useRef("");
-  const pollRef = useRef<number | null>(null);
-  const busyRef = useRef(false);
-
-  const POLL_INTERVAL = 10000; // 10s poll — low priority, doesn't block other commands
 
   // Push clipboard text to PC via best available transport
   const pushToPc = useCallback(async (text: string) => {
     if (!text.trim() || text === lastSentRef.current) return;
     lastSentRef.current = text;
+    lastKnownClipboardRef.current = text;
     try {
       if (!isWifiConnected && isBleConnected) {
         await bluetooth.sendClipboard(text);
@@ -63,16 +65,24 @@ export function GlobalClipboardSync() {
     } catch { /* silent */ }
   }, [sendCommand, isWifiConnected, isBleConnected, bluetooth]);
 
-  // Phone → PC: instant on copy/cut
+  // Read clipboard and push if changed — used by multiple triggers
+  const detectAndPush = useCallback(async () => {
+    if (!isConnected) return;
+    try {
+      const text = await navigator.clipboard?.readText();
+      if (text?.trim() && text !== lastKnownClipboardRef.current && text !== lastReceivedRef.current) {
+        pushToPc(text);
+      }
+    } catch { /* permission denied */ }
+  }, [isConnected, pushToPc]);
+
+  // Phone → PC: instant on copy/cut events
   useEffect(() => {
     if (!isConnected) return;
 
     const handler = async () => {
-      await new Promise(r => setTimeout(r, 50));
-      try {
-        const text = await navigator.clipboard?.readText();
-        if (text?.trim()) pushToPc(text);
-      } catch { /* permission denied */ }
+      await new Promise(r => setTimeout(r, 50)); // brief delay for clipboard to update
+      detectAndPush();
     };
 
     document.addEventListener("copy", handler);
@@ -81,7 +91,30 @@ export function GlobalClipboardSync() {
       document.removeEventListener("copy", handler);
       document.removeEventListener("cut", handler);
     };
-  }, [isConnected, pushToPc]);
+  }, [isConnected, detectAndPush]);
+
+  // Phone → PC: detect clipboard changes on focus/visibility (catches external app copies)
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const onFocus = () => {
+      // Small delay to let clipboard update from other apps
+      setTimeout(detectAndPush, 200);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        setTimeout(detectAndPush, 200);
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [isConnected, detectAndPush]);
 
   // PC → Phone: BLE notification listener (push-based, instant)
   useEffect(() => {
@@ -90,16 +123,17 @@ export function GlobalClipboardSync() {
     bluetooth.onClipboardChange((text: string) => {
       if (text && text !== lastSentRef.current && text !== lastReceivedRef.current) {
         lastReceivedRef.current = text;
+        lastKnownClipboardRef.current = text;
         navigator.clipboard.writeText(text).catch(() => {});
       }
     });
 
     return () => {
-      bluetooth.onClipboardChange(null as any); // unregister
+      bluetooth.onClipboardChange(null as any);
     };
   }, [isBleConnected, bluetooth]);
 
-  // PC → Phone: fixed 5s poll over WiFi
+  // PC → Phone: poll over WiFi
   useEffect(() => {
     if (!isWifiConnected) {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -110,11 +144,12 @@ export function GlobalClipboardSync() {
       if (busyRef.current) return;
       busyRef.current = true;
       try {
-        const result = await sendCommand("clipboard_check", {}, { awaitResult: true, timeoutMs: 2000 });
+        const result = await sendCommand("clipboard_check", {}, { awaitResult: true, timeoutMs: 3000 });
         if (result?.success && "result" in result && result.result) {
           const data = result.result as { changed?: boolean; content?: string };
           if (data.changed && data.content && data.content !== lastSentRef.current && data.content !== lastReceivedRef.current) {
             lastReceivedRef.current = data.content;
+            lastKnownClipboardRef.current = data.content;
             try { await navigator.clipboard.writeText(data.content); } catch { /* silent */ }
           }
         }
