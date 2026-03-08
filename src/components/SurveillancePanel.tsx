@@ -47,6 +47,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const { toast } = useToast();
   const { notifyHumanDetected } = useAppNotifications();
   const { events: dbEvents, saveEvent, deleteEvent: deleteDbEvent, clearEvents, fetchEvents, loading: eventsLoading } = useSurveillanceEvents();
+  const autoPresence = useAutoPresence();
 
   // Persisted Settings
   const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
