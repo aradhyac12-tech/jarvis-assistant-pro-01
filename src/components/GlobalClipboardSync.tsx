@@ -22,7 +22,28 @@ export function GlobalClipboardSync() {
   const isBleConnected = bluetooth.isReady;
   const isConnected = isWifiConnected || isBleConnected;
 
+  const prevTransportRef = useRef<"none" | "wifi" | "ble">("none");
   const lastSentRef = useRef("");
+
+  // Detect transport switches and show toast
+  useEffect(() => {
+    const current = isWifiConnected ? "wifi" : isBleConnected ? "ble" : "none";
+    const prev = prevTransportRef.current;
+
+    if (prev !== "none" && current !== "none" && prev !== current) {
+      if (current === "wifi") {
+        toast.success("Switched to WiFi", { description: "Using fast network connection", duration: 3000 });
+      } else {
+        toast.info("Switched to Bluetooth", { description: "Using BLE fallback (limited bandwidth)", duration: 3000 });
+      }
+    } else if (prev !== "none" && current === "none") {
+      toast.error("Disconnected", { description: "No connection to PC", duration: 3000 });
+    } else if (prev === "none" && current !== "none") {
+      toast.success(current === "wifi" ? "Connected via WiFi" : "Connected via Bluetooth", { duration: 2000 });
+    }
+
+    prevTransportRef.current = current;
+  }, [isWifiConnected, isBleConnected]);
   const lastReceivedRef = useRef("");
   const pollRef = useRef<number | null>(null);
   const busyRef = useRef(false);
