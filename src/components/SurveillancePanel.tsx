@@ -25,6 +25,7 @@ import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { useSurveillanceEvents, type SurveillanceEvent } from "@/hooks/useSurveillanceEvents";
 import { useAutoPresence } from "@/hooks/useAutoPresence";
+import { GeofenceMap } from "@/components/GeofenceMap";
 
 interface MotionEvent {
   id: string;
