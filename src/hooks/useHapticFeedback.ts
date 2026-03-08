@@ -1,70 +1,111 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 
 /**
- * Haptic feedback hook using the Vibration API.
- * Provides different vibration patterns for various gestures.
+ * Haptic feedback hook.
+ * Uses Capacitor Haptics on native, Web Vibration API as fallback.
  */
 export function useHapticFeedback() {
   const isSupported = typeof navigator !== "undefined" && "vibrate" in navigator;
+  const capacitorRef = useRef<any>(null);
+  const checkedRef = useRef(false);
 
-  // Light tap - for clicks
-  const tap = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate(10);
+  const getHaptics = useCallback(async () => {
+    if (capacitorRef.current) return capacitorRef.current;
+    if (checkedRef.current) return null;
+    checkedRef.current = true;
+    try {
+      const { Haptics } = await import("@capacitor/haptics");
+      capacitorRef.current = Haptics;
+      return Haptics;
+    } catch {
+      return null;
     }
-  }, [isSupported]);
+  }, []);
 
-  // Double tap - for right click
-  const doubleTap = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate([10, 30, 10]);
+  const tap = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.impact({ style: "light" }); return; } catch {}
     }
-  }, [isSupported]);
+    if (isSupported) navigator.vibrate(10);
+  }, [isSupported, getHaptics]);
 
-  // Scroll feedback - very subtle
-  const scroll = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate(5);
+  const doubleTap = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.impact({ style: "medium" }); return; } catch {}
     }
-  }, [isSupported]);
+    if (isSupported) navigator.vibrate([10, 30, 10]);
+  }, [isSupported, getHaptics]);
 
-  // Zoom feedback - medium intensity
-  const zoom = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate(15);
+  const scroll = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.impact({ style: "light" }); return; } catch {}
     }
-  }, [isSupported]);
+    if (isSupported) navigator.vibrate(5);
+  }, [isSupported, getHaptics]);
 
-  // Gesture recognized - 3 finger
-  const gesture3Finger = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate([20, 50, 20]);
+  const zoom = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.impact({ style: "medium" }); return; } catch {}
     }
-  }, [isSupported]);
+    if (isSupported) navigator.vibrate(15);
+  }, [isSupported, getHaptics]);
 
-  // Gesture recognized - 4 finger swipe
-  const gesture4Finger = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate([15, 30, 15, 30, 15]);
+  const gesture3Finger = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.notification({ type: "success" }); return; } catch {}
     }
-  }, [isSupported]);
+    if (isSupported) navigator.vibrate([20, 50, 20]);
+  }, [isSupported, getHaptics]);
 
-  // Success feedback
-  const success = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate([10, 50, 30]);
+  const gesture4Finger = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.notification({ type: "warning" }); return; } catch {}
     }
-  }, [isSupported]);
+    if (isSupported) navigator.vibrate([15, 30, 15, 30, 15]);
+  }, [isSupported, getHaptics]);
 
-  // Error feedback
-  const error = useCallback(() => {
-    if (isSupported) {
-      navigator.vibrate([50, 30, 50, 30, 50]);
+  const success = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.notification({ type: "success" }); return; } catch {}
     }
-  }, [isSupported]);
+    if (isSupported) navigator.vibrate([10, 50, 30]);
+  }, [isSupported, getHaptics]);
+
+  const error = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.notification({ type: "error" }); return; } catch {}
+    }
+    if (isSupported) navigator.vibrate([50, 30, 50, 30, 50]);
+  }, [isSupported, getHaptics]);
+
+  // Heavy impact for power controls, toggles
+  const heavy = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.impact({ style: "heavy" }); return; } catch {}
+    }
+    if (isSupported) navigator.vibrate(25);
+  }, [isSupported, getHaptics]);
+
+  // Selection changed - for pickers/tabs
+  const selection = useCallback(async () => {
+    const h = await getHaptics();
+    if (h) {
+      try { await h.selectionChanged(); return; } catch {}
+    }
+    if (isSupported) navigator.vibrate(5);
+  }, [isSupported, getHaptics]);
 
   return {
-    isSupported,
+    isSupported: true, // Always "supported" since we have Capacitor fallback
     tap,
     doubleTap,
     scroll,
@@ -73,5 +114,7 @@ export function useHapticFeedback() {
     gesture4Finger,
     success,
     error,
+    heavy,
+    selection,
   };
 }

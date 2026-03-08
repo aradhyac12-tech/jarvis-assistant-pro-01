@@ -14,6 +14,7 @@ import { SecurityCard } from "@/components/settings/SecurityCard";
 import { DeviceConnectionCard } from "@/components/settings/DeviceConnectionCard";
 import { NotificationsCard } from "@/components/settings/NotificationsCard";
 import { CallDetectionCard } from "@/components/settings/CallDetectionCard";
+import { ThemeSettingsCard } from "@/components/settings/ThemeSettingsCard";
 import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
 import { SystemDiagnosticsPanel } from "@/components/SystemDiagnosticsPanel";
 import { BoostPC } from "@/components/BoostPC";
@@ -101,6 +102,12 @@ export default function Settings() {
             <p className="text-xs text-muted-foreground">Configure Jarvis</p>
           </div>
         </div>
+
+        {/* Section: Appearance */}
+        <section className="space-y-3">
+          <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1">Appearance</h2>
+          <ThemeSettingsCard />
+        </section>
 
         {/* Section: General */}
         <section className="space-y-3">
