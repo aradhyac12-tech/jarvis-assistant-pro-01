@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, PhoneOff, Clock, Copy, FileUp, Smartphone, ArrowRight, Activity, CheckCircle, XCircle, Fingerprint, Lock, Download, RefreshCw, CloudDownload, Wifi } from "lucide-react";
+import { Settings2, Bell, Shield, Mic, Monitor, Check, Link2Off, Phone, PhoneIncoming, PhoneOff, Clock, Copy, FileUp, Smartphone, ArrowRight, Activity, CheckCircle, XCircle, Fingerprint, Lock, Download, RefreshCw, CloudDownload, Wifi, Zap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -19,6 +19,7 @@ import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { isAppLockEnabled, getAppLockMethod, getAppPin, setAppLockSettings } from "@/components/AppLockScreen";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
+import { BoostPC } from "@/components/BoostPC";
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState(() => localStorage.getItem("settings_wake_word") || "Hey Jarvis");
@@ -432,6 +433,9 @@ export default function Settings() {
             )}
           </CardContent>
         </Card>
+
+        {/* PC Boost / Optimization */}
+        <BoostPC className="border-border/30 bg-card/50" />
 
         {/* OTA Updates */}
         <OTAUpdateCard />
