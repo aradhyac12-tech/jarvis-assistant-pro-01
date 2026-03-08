@@ -1471,7 +1471,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
                             variant={ev.event_type === "intruder" ? "destructive" : ev.event_type === "owner_recognized" ? "default" : "secondary"}
                             className="text-[10px]"
                           >
-                            {ev.confidence}%
+                            {(ev.event_type === "call_started" || ev.event_type === "call_ended") ? "call" : `${ev.confidence}%`}
+                          </Badge>
                           </Badge>
                           <Button
                             variant="ghost"
