@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { isAppLockEnabled, getAppLockMethod, getAppPin, setAppLockSettings } from "@/components/AppLockScreen";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 import { BoostPC } from "@/components/BoostPC";
+import { SystemDiagnosticsPanel } from "@/components/SystemDiagnosticsPanel";
 
 export default function Settings() {
   const [wakeWord, setWakeWord] = useState(() => localStorage.getItem("settings_wake_word") || "Hey Jarvis");
@@ -433,6 +434,9 @@ export default function Settings() {
             )}
           </CardContent>
         </Card>
+
+        {/* System Diagnostics */}
+        <SystemDiagnosticsPanel className="border-border/30 bg-card/50" />
 
         {/* PC Boost / Optimization */}
         <BoostPC className="border-border/30 bg-card/50" />
