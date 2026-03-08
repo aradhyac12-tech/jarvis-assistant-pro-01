@@ -100,7 +100,7 @@ export function useAutoUpdate() {
     }
     setChecking(false);
     return null;
-  }, [currentVersion, isNative, isNewer, toast]);
+  }, [currentVersion, isNative, isNewer, toast, notifyUpdateAvailable]);
 
   const applyUpdate = useCallback((info?: UpdateInfo | null) => {
     const update = info || updateAvailable;
