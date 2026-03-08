@@ -1319,6 +1319,32 @@ class JarvisGUI:
         tk.Label(dc, text=f"{platform.system()} {platform.release()}", font=self.F_SMALL,
                  fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(2, 14))
 
+        # startup diagnostics card
+        diag = self._card(frame, glow=True)
+        diag.pack(fill="x", pady=(0, 10))
+        tk.Label(diag, text="STARTUP DIAGNOSTICS", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(12, 4))
+        self._diag_summary = tk.Label(diag, text="Checking feature health…", font=self.F_TINY,
+                                      fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD)
+        self._diag_summary.pack(anchor="w", padx=16, pady=(0, 6))
+
+        self._diag_txt = tk.Text(
+            diag,
+            bg=_Theme.BG_INPUT,
+            fg=_Theme.TEXT,
+            font=self.F_MONO_SM,
+            wrap="word",
+            height=10,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=_Theme.BORDER,
+            padx=10,
+            pady=8,
+            insertbackground=_Theme.TEXT,
+        )
+        self._diag_txt.pack(fill="x", padx=16, pady=(0, 14))
+        self._diag_txt.configure(state="disabled")
+
         tk.Label(frame, text="ACTIONS", font=(self._sans, 8, "bold"),
                  fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(anchor="w", pady=(10, 6))
 
@@ -1487,8 +1513,56 @@ class JarvisGUI:
         self._cmd_lbl.configure(text=str(s.get("commands_executed", 0)))
         self._p2p_cnt.configure(text=str(s.get("p2p_clients", 0)))
 
-        # logs
+        # logs + diagnostics
         self._refresh_log_text()
+        self._refresh_startup_diagnostics()
+
+    def _refresh_startup_diagnostics(self):
+        if not hasattr(self, "_diag_txt"):
+            return
+        try:
+            diag = get_startup_diagnostics()
+            features = diag.get("features", {})
+            healthy = diag.get("healthy_features", 0)
+            total = diag.get("total_features", 0)
+            critical = diag.get("critical_missing", [])
+            optional = diag.get("optional_missing", [])
+
+            if critical:
+                self._diag_summary.configure(
+                    text=f"❌ Startup blocked — missing required deps: {', '.join(critical)}",
+                    fg=_Theme.ERROR,
+                )
+            elif healthy == total:
+                self._diag_summary.configure(
+                    text=f"✅ Feature health: {healthy}/{total} healthy",
+                    fg=_Theme.SUCCESS,
+                )
+            else:
+                self._diag_summary.configure(
+                    text=f"⚠ Feature health: {healthy}/{total} healthy",
+                    fg=_Theme.WARNING,
+                )
+
+            lines = [
+                f"Agent: v{diag.get('agent_version', '?')}   Python: {diag.get('python', '?')}",
+                f"Platform: {diag.get('platform', '?')}",
+                "",
+                "Missing optional dependencies:",
+                (", ".join(optional) if optional else "none"),
+                "",
+                "Feature health:",
+            ]
+            for name, state in features.items():
+                icon = "✅" if state.get("healthy") else "⚠"
+                lines.append(f"{icon} {name}: {state.get('detail', '')}")
+
+            self._diag_txt.configure(state="normal")
+            self._diag_txt.delete("1.0", "end")
+            self._diag_txt.insert("1.0", "\n".join(lines))
+            self._diag_txt.configure(state="disabled")
+        except Exception:
+            pass
 
     def _refresh_log_text(self):
         self._log_txt.configure(state="normal")
@@ -6646,6 +6720,60 @@ def handle_dragged_files(file_paths: list):
             add_log("error", f"Drag-receive failed: {file_name}: {e}", category="file")
 
 # ============== MAIN ENTRY ==============
+def _show_startup_blocker():
+    """Show a persistent startup diagnostics window instead of exiting silently."""
+    diag = get_startup_diagnostics()
+    critical = diag.get("critical_missing", [])
+    optional = diag.get("optional_missing", [])
+
+    lines = [
+        "JARVIS Startup Diagnostics",
+        "=" * 28,
+        f"Agent version: {diag.get('agent_version', '?')}",
+        f"Python: {diag.get('python', '?')}",
+        f"Platform: {diag.get('platform', '?')}",
+        "",
+        "Critical missing dependencies:",
+        (", ".join(critical) if critical else "none"),
+        "",
+        "Optional missing dependencies:",
+        (", ".join(optional) if optional else "none"),
+        "",
+        "Install command:",
+        "pip install -r requirements.txt",
+    ]
+    payload = "\n".join(lines)
+    print(payload)
+
+    if HAS_TKINTER:
+        try:
+            root = tk.Tk()
+            root.title("JARVIS Startup Diagnostics")
+            root.geometry("760x520+120+80")
+            root.configure(bg="#111111")
+
+            title = tk.Label(root, text="JARVIS cannot start yet", fg="#f8fafc", bg="#111111", font=("Segoe UI", 14, "bold"))
+            title.pack(anchor="w", padx=14, pady=(12, 8))
+
+            txt = scrolledtext.ScrolledText(root, wrap="word", bg="#0b0b0b", fg="#e5e7eb", font=("Consolas", 10))
+            txt.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+            txt.insert("1.0", payload)
+            txt.configure(state="disabled")
+
+            btn = tk.Button(root, text="Close", command=root.destroy, bg="#1f2937", fg="#f8fafc", relief="flat")
+            btn.pack(anchor="e", padx=14, pady=(0, 12))
+
+            root.mainloop()
+            return
+        except Exception:
+            pass
+
+    try:
+        input("\nPress Enter to close...")
+    except Exception:
+        time.sleep(30)
+
+
 def main():
     parser = argparse.ArgumentParser(description="JARVIS PC Agent")
     parser.add_argument("--gui", action="store_true", help="Launch with GUI (default)")
