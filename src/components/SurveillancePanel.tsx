@@ -24,6 +24,7 @@ import { InlineDiagnostics } from "@/components/InlineDiagnostics";
 import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { useSurveillanceEvents, type SurveillanceEvent } from "@/hooks/useSurveillanceEvents";
+import { useAutoPresence } from "@/hooks/useAutoPresence";
 
 interface MotionEvent {
   id: string;
