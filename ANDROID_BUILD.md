@@ -14,9 +14,11 @@ This document covers everything needed to build, configure, and deploy the JARVI
 6. [Build APK](#build-apk)
 7. [Background Persistence](#background-persistence)
 8. [P2P Direct Connection](#p2p-direct-connection)
-9. [Features Checklist](#features-checklist)
-10. [Development Workflow](#development-workflow)
-11. [Troubleshooting](#troubleshooting)
+9. [KDE Connect-Style Notifications](#kde-connect-style-notifications)
+10. [Surveillance & Identity Verification](#surveillance--identity-verification)
+11. [Features Checklist](#features-checklist)
+12. [Development Workflow](#development-workflow)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
