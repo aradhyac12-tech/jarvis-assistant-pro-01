@@ -48,7 +48,7 @@ export function GlobalClipboardSync() {
   const pollRef = useRef<number | null>(null);
   const busyRef = useRef(false);
 
-  const POLL_INTERVAL = 5000; // Fixed 5s poll interval
+  const POLL_INTERVAL = 10000; // 10s poll — low priority, doesn't block other commands
 
   // Push clipboard text to PC via best available transport
   const pushToPc = useCallback(async (text: string) => {
