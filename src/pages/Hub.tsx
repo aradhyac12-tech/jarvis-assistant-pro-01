@@ -115,6 +115,7 @@ export default function Hub() {
     fireGesture3Finger,
     fireGesture4Finger,
   } = useP2PCommand();
+  const bluetooth = useSharedBluetooth();
   const { toast } = useToast();
 
   // Helper to load persisted state
