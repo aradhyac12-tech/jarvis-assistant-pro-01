@@ -633,6 +633,22 @@ export function SurveillancePanel({ className }: { className?: string }) {
     toast({ title: "Surveillance Stopped" });
   }, [sendCommand, toast, micEnabled, cleanupWs]);
 
+  // Auto-presence: wire up callbacks to auto-start/stop surveillance
+  useEffect(() => {
+    autoPresence.setOnAway(() => {
+      if (!monitoring && session?.session_token) {
+        addLog("info", "web", "Auto-presence triggered: starting surveillance");
+        startSurveillance();
+      }
+    });
+    autoPresence.setOnHome(() => {
+      if (monitoring) {
+        addLog("info", "web", "Auto-presence triggered: stopping surveillance");
+        stopSurveillance();
+      }
+    });
+  }, [monitoring, session?.session_token, startSurveillance, stopSurveillance, autoPresence]);
+
   // Auto-resume
   const autoResumedRef = useRef(false);
   useEffect(() => {
