@@ -1262,6 +1262,7 @@ export default function Hub() {
                   onToggleAutoLocalP2P={toggleAutoLocalP2P}
                   onForceUpgrade={forceP2PUpgrade}
                   onForceLocalP2P={forceLocalP2P}
+                  pcSystemInfo={selectedDevice?.system_info as Record<string, any> | null}
                 />
 
                 {/* File Transfer */}
