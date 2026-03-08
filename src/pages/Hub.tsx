@@ -61,6 +61,9 @@ import { PureTrackpad } from "@/components/PureTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
+import { RemoteScreenshot } from "@/components/RemoteScreenshot";
+import { RemoteAppLauncher } from "@/components/RemoteAppLauncher";
+import { DragDropFileTransfer } from "@/components/DragDropFileTransfer";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -1243,6 +1246,15 @@ export default function Hub() {
             {/* More Tab — Zoom, Network, File Transfer, Settings */}
             {activeTab === "more" && (
               <div className="space-y-2.5">
+                {/* Remote Screenshot */}
+                <RemoteScreenshot isConnected={isConnected} />
+
+                {/* App Launcher */}
+                <RemoteAppLauncher isConnected={isConnected} />
+
+                {/* Drag & Drop File Transfer */}
+                <DragDropFileTransfer isConnected={isConnected} />
+
                 {/* Zoom Meetings */}
                 <Card className="border-border/20 bg-card/50">
                   <CardContent className="p-0">
@@ -1265,7 +1277,7 @@ export default function Hub() {
                   pcSystemInfo={selectedDevice?.system_info as Record<string, any> | null}
                 />
 
-                {/* File Transfer */}
+                {/* File Transfer (legacy) */}
                 <BidirectionalFileTransfer />
 
                 {/* PC Boost */}
