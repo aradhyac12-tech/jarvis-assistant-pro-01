@@ -73,6 +73,7 @@ import { MultiDeviceDashboard } from "@/components/MultiDeviceDashboard";
 import { SystemResourceMonitor } from "@/components/SystemResourceMonitor";
 import { FanSpeedControl } from "@/components/FanSpeedControl";
 import { StartupManager } from "@/components/StartupManager";
+import { BatteryMonitor } from "@/components/BatteryMonitor";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
@@ -777,6 +778,9 @@ export default function Hub() {
 
                 {/* Startup Manager */}
                 <StartupManager />
+
+                {/* Battery Monitor */}
+                <BatteryMonitor />
 
                 {/* Quick Links — above sliders */}
                 <div className="grid grid-cols-2 gap-2">
