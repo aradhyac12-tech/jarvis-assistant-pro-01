@@ -12,7 +12,7 @@ import {
   Shield, Eye, Bell, Volume2, Phone, Camera, Play, Square, Loader2,
   Settings, ChevronDown, ChevronUp, Video, Mic, MicOff, Zap, Siren,
   AlertTriangle, Gauge, Stethoscope, PersonStanding, Download, Film, Trash2, X, Image as ImageIcon,
-  ScanFace, Crosshair, RotateCw, Search,
+  ScanFace, Crosshair, RotateCw, Search, History, Clock, ShieldCheck, ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
@@ -23,6 +23,7 @@ import { getFunctionsWsBase } from "@/lib/relay";
 import { InlineDiagnostics } from "@/components/InlineDiagnostics";
 import { PoseDetectionOverlay } from "@/components/PoseDetectionOverlay";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
+import { useSurveillanceEvents, type SurveillanceEvent } from "@/hooks/useSurveillanceEvents";
 
 interface MotionEvent {
   id: string;
@@ -44,6 +45,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const { session } = useDeviceSession();
   const { toast } = useToast();
   const { notifyHumanDetected } = useAppNotifications();
+  const { events: dbEvents, saveEvent, deleteEvent: deleteDbEvent, clearEvents, loading: eventsLoading } = useSurveillanceEvents();
 
   // Persisted Settings
   const [startTime, setStartTime] = useState(() => localStorage.getItem("surveillance_start") || "22:00");
@@ -69,7 +71,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenActive, setSirenActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
   const [humanPresent, setHumanPresent] = useState(false);
-  const [survTab, setSurvTab] = useState<"live" | "clips" | "train">("live");
+  const [survTab, setSurvTab] = useState<"live" | "clips" | "train" | "history">("live");
   const [clipFilter, setClipFilter] = useState<"all" | "human" | "motion">("all");
   const [expandedClip, setExpandedClip] = useState<string | null>(null);
 
