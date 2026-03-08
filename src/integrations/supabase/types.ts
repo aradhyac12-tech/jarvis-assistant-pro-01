@@ -41,6 +41,36 @@ export type Database = {
         }
         Relationships: []
       }
+      app_releases: {
+        Row: {
+          created_at: string
+          download_url: string | null
+          force_update: boolean | null
+          id: string
+          platform: string
+          release_notes: string | null
+          version: string
+        }
+        Insert: {
+          created_at?: string
+          download_url?: string | null
+          force_update?: boolean | null
+          id?: string
+          platform: string
+          release_notes?: string | null
+          version: string
+        }
+        Update: {
+          created_at?: string
+          download_url?: string | null
+          force_update?: boolean | null
+          id?: string
+          platform?: string
+          release_notes?: string | null
+          version?: string
+        }
+        Relationships: []
+      }
       assistant_memories: {
         Row: {
           category: string
