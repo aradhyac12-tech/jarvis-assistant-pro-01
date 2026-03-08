@@ -1888,7 +1888,167 @@ class LocalP2PServer:
         finally:
             add_log("info", f"P2P audio client disconnected: {client_ip}", category="audio")
 
-    async def _process_message(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _handle_file_upload_binary(self, websocket, client_ip, ws_path):
+        """High-speed binary file upload from phone to PC.
+        
+        Protocol:
+        1. Phone sends JSON header: {"fileName": "x", "fileSize": N, "saveFolder": "..."}
+        2. Phone sends raw binary chunks (2MB each)
+        3. Agent sends JSON ack after each chunk: {"ack": chunk_index, "received": bytes}
+        4. After all bytes received, agent sends: {"complete": true, "path": "..."}
+        """
+        add_log("info", f"P2P file upload client connected: {client_ip}", category="file")
+        try:
+            import urllib.parse
+            qs = {}
+            try:
+                if '?' in ws_path:
+                    qs = dict(urllib.parse.parse_qsl(ws_path.split('?', 1)[1]))
+            except Exception:
+                pass
+
+            file_name = qs.get("fileName", "received_file")
+            file_size = int(qs.get("fileSize", "0"))
+            save_folder = qs.get("saveFolder", "")
+            
+            if not save_folder or save_folder.strip() == "":
+                save_folder = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
+            elif save_folder.startswith("~"):
+                save_folder = os.path.expanduser(save_folder)
+            
+            os.makedirs(save_folder, exist_ok=True)
+            file_path = os.path.join(save_folder, file_name)
+            
+            # Send ready signal
+            await websocket.send(json.dumps({
+                "type": "ready",
+                "path": file_path,
+                "maxChunkSize": 2 * 1024 * 1024,  # 2MB
+            }))
+            
+            received_bytes = 0
+            chunk_index = 0
+            start_time = time.time()
+            
+            with open(file_path, "wb") as f:
+                async for message in websocket:
+                    if isinstance(message, bytes):
+                        f.write(message)
+                        received_bytes += len(message)
+                        chunk_index += 1
+                        
+                        # Send lightweight ack
+                        elapsed = time.time() - start_time
+                        speed_mbps = (received_bytes * 8 / 1_000_000) / elapsed if elapsed > 0 else 0
+                        await websocket.send(json.dumps({
+                            "ack": chunk_index,
+                            "received": received_bytes,
+                            "speed_mbps": round(speed_mbps, 1),
+                        }))
+                    elif isinstance(message, str):
+                        data = json.loads(message)
+                        if data.get("type") == "done":
+                            break
+            
+            elapsed = time.time() - start_time
+            speed_mbps = (received_bytes * 8 / 1_000_000) / elapsed if elapsed > 0 else 0
+            
+            add_log("info", f"File received via P2P binary: {file_name} ({received_bytes} bytes, {speed_mbps:.1f} Mbps) -> {file_path}", category="file")
+            notification_manager.notify("File Received", f"{file_name} ({received_bytes // (1024*1024)}MB) at {speed_mbps:.1f} Mbps")
+            
+            await websocket.send(json.dumps({
+                "complete": True,
+                "path": file_path,
+                "size": received_bytes,
+                "speed_mbps": round(speed_mbps, 1),
+                "elapsed_sec": round(elapsed, 2),
+            }))
+            
+        except Exception as e:
+            add_log("error", f"P2P file upload error: {e}", category="file")
+            try:
+                await websocket.send(json.dumps({"error": str(e)}))
+            except Exception:
+                pass
+        finally:
+            add_log("info", f"P2P file upload client disconnected: {client_ip}", category="file")
+
+    async def _handle_file_download_binary(self, websocket, client_ip, ws_path):
+        """High-speed binary file download from PC to phone.
+        
+        Protocol:
+        1. Query param: ?path=/path/to/file
+        2. Agent sends JSON header: {"fileName": "x", "fileSize": N}
+        3. Agent sends raw binary chunks (2MB each)
+        4. Agent sends JSON: {"complete": true}
+        """
+        add_log("info", f"P2P file download client connected: {client_ip}", category="file")
+        try:
+            import urllib.parse
+            qs = {}
+            try:
+                if '?' in ws_path:
+                    qs = dict(urllib.parse.parse_qsl(ws_path.split('?', 1)[1]))
+            except Exception:
+                pass
+
+            file_path = qs.get("path", "")
+            if not file_path or not os.path.isfile(file_path):
+                await websocket.send(json.dumps({"error": f"File not found: {file_path}"}))
+                return
+            
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            CHUNK_SIZE = 2 * 1024 * 1024  # 2MB chunks
+            
+            # Send header
+            await websocket.send(json.dumps({
+                "type": "header",
+                "fileName": file_name,
+                "fileSize": file_size,
+                "chunkSize": CHUNK_SIZE,
+                "totalChunks": (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE,
+            }))
+            
+            # Wait for client ready
+            msg = await websocket.recv()
+            if isinstance(msg, str):
+                data = json.loads(msg)
+                if data.get("type") != "ready":
+                    return
+            
+            start_time = time.time()
+            sent_bytes = 0
+            
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    await websocket.send(chunk)
+                    sent_bytes += len(chunk)
+            
+            elapsed = time.time() - start_time
+            speed_mbps = (sent_bytes * 8 / 1_000_000) / elapsed if elapsed > 0 else 0
+            
+            await websocket.send(json.dumps({
+                "complete": True,
+                "size": sent_bytes,
+                "speed_mbps": round(speed_mbps, 1),
+                "elapsed_sec": round(elapsed, 2),
+            }))
+            
+            add_log("info", f"File sent via P2P binary: {file_name} ({sent_bytes} bytes, {speed_mbps:.1f} Mbps)", category="file")
+            
+        except Exception as e:
+            add_log("error", f"P2P file download error: {e}", category="file")
+            try:
+                await websocket.send(json.dumps({"error": str(e)}))
+            except Exception:
+                pass
+        finally:
+            add_log("info", f"P2P file download client disconnected: {client_ip}", category="file")
+
         msg_type = data.get("type", "")
         request_id = data.get("requestId")
         

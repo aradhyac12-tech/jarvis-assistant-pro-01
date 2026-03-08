@@ -8,8 +8,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   FolderOpen, Upload, Download, File, Image, Video, Music, FileText,
-  X, Check, Loader2, Wifi, ArrowUpDown, RefreshCw, Smartphone, Monitor,
-  AlertTriangle, Zap, Stethoscope, CheckCircle, XCircle, Globe, WifiOff,
+  X, Check, Loader2, Wifi, ArrowUpDown, RefreshCw,
+  Zap, Stethoscope, CheckCircle, XCircle, Globe, WifiOff, AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -27,8 +27,9 @@ interface FileTransferItem {
   status: "pending" | "transferring" | "complete" | "error";
   error?: string;
   speed?: number;
+  speedMbps?: number;
   startTime?: number;
-  method?: "p2p" | "relay" | "cloud";
+  method?: "p2p-binary" | "p2p" | "relay" | "cloud";
 }
 
 interface PCFile {
@@ -43,6 +44,9 @@ interface DiagResult {
   status: "pass" | "fail" | "warn" | "running";
   message: string;
 }
+
+// P2P binary transfer chunk size: 2MB for max throughput
+const P2P_CHUNK_SIZE = 2 * 1024 * 1024;
 
 export function BidirectionalFileTransfer({ className }: { className?: string }) {
   const { toast } = useToast();
@@ -68,6 +72,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
   const isConnected = selectedDevice?.is_online || false;
   const isSameNetwork = localStorage.getItem("jarvis_p2p_connected") === "true";
   const p2pIp = localStorage.getItem("jarvis_p2p_known_ip");
+  const p2pPort = localStorage.getItem("jarvis_p2p_port") || "9876";
 
   // Detect connection method
   useEffect(() => {
@@ -105,6 +110,8 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
 
   const formatSpeed = (bytesPerSec: number): string => {
     if (bytesPerSec <= 0) return "—";
+    const mbps = (bytesPerSec * 8) / 1_000_000;
+    if (mbps >= 1) return `${mbps.toFixed(1)} Mbps`;
     return formatSize(bytesPerSec) + "/s";
   };
 
@@ -159,106 +166,261 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
-  // Upload file — uses cloud storage for large/different-network files, chunked relay for same-network
+  // ========== HIGH-SPEED P2P BINARY UPLOAD ==========
+  const uploadFileP2PBinary = useCallback(async (file: File, transferId: string) => {
+    const startTime = Date.now();
+    setTransfers(prev => prev.map(t => t.id === transferId
+      ? { ...t, status: "transferring" as const, startTime, method: "p2p-binary" as const }
+      : t));
+
+    return new Promise<void>((resolve, reject) => {
+      const saveFolder = encodeURIComponent(pcSavePath || "");
+      const fileName = encodeURIComponent(file.name);
+      const wsUrl = `ws://${p2pIp}:${p2pPort}/file-upload?fileName=${fileName}&fileSize=${file.size}&saveFolder=${saveFolder}`;
+      
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      let sentBytes = 0;
+      let sending = false;
+
+      const sendChunks = async () => {
+        if (sending) return;
+        sending = true;
+        const reader = file.stream().getReader();
+        const buffer: Uint8Array[] = [];
+        let bufferSize = 0;
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              // Flush remaining buffer
+              if (bufferSize > 0) {
+                const merged = mergeBuffers(buffer, bufferSize);
+                ws.send(merged);
+                sentBytes += bufferSize;
+                updateProgress(sentBytes, file.size, startTime, transferId);
+              }
+              break;
+            }
+            
+            buffer.push(value);
+            bufferSize += value.byteLength;
+            
+            // Send when we have >= 2MB
+            if (bufferSize >= P2P_CHUNK_SIZE) {
+              const merged = mergeBuffers(buffer, bufferSize);
+              ws.send(merged);
+              sentBytes += bufferSize;
+              updateProgress(sentBytes, file.size, startTime, transferId);
+              buffer.length = 0;
+              bufferSize = 0;
+              
+              // Small yield to let acks flow through
+              await new Promise(r => setTimeout(r, 1));
+            }
+          }
+          
+          // Signal done
+          ws.send(JSON.stringify({ type: "done" }));
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      ws.onopen = () => {
+        // Wait for ready signal
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data as string);
+          if (data.type === "ready") {
+            sendChunks();
+          } else if (data.ack !== undefined) {
+            // Speed update from server
+            if (data.speed_mbps) {
+              setTransfers(prev => prev.map(t => t.id === transferId
+                ? { ...t, speedMbps: data.speed_mbps }
+                : t));
+            }
+          } else if (data.complete) {
+            setTransfers(prev => prev.map(t => t.id === transferId
+              ? { ...t, status: "complete" as const, progress: 100, speedMbps: data.speed_mbps }
+              : t));
+            toast({ title: "Upload complete", description: `${file.name} at ${data.speed_mbps} Mbps` });
+            ws.close();
+            resolve();
+          } else if (data.error) {
+            throw new Error(data.error);
+          }
+        } catch (err) {
+          if (err instanceof Error && err.message) {
+            reject(err);
+          }
+        }
+      };
+
+      ws.onerror = () => {
+        reject(new Error("P2P WebSocket connection failed"));
+      };
+
+      ws.onclose = () => {
+        // If not completed, it's an error
+      };
+    });
+  }, [p2pIp, p2pPort, pcSavePath, toast]);
+
+  // ========== HIGH-SPEED P2P BINARY DOWNLOAD ==========
+  const downloadFileP2PBinary = useCallback(async (pcFile: PCFile, transferId: string) => {
+    const startTime = Date.now();
+    setTransfers(prev => prev.map(t => t.id === transferId
+      ? { ...t, status: "transferring" as const, startTime, method: "p2p-binary" as const }
+      : t));
+
+    return new Promise<void>((resolve, reject) => {
+      const filePath = encodeURIComponent(pcFile.path);
+      const wsUrl = `ws://${p2pIp}:${p2pPort}/file-download?path=${filePath}`;
+      
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      const chunks: ArrayBuffer[] = [];
+      let receivedBytes = 0;
+      let totalSize = pcFile.size;
+      let fileName = pcFile.name;
+
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          chunks.push(event.data);
+          receivedBytes += event.data.byteLength;
+          updateProgress(receivedBytes, totalSize, startTime, transferId);
+        } else {
+          try {
+            const data = JSON.parse(event.data as string);
+            if (data.type === "header") {
+              totalSize = data.fileSize;
+              fileName = data.fileName;
+              // Send ready
+              ws.send(JSON.stringify({ type: "ready" }));
+            } else if (data.complete) {
+              // Assemble and download
+              const blob = new Blob(chunks);
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url; a.download = fileName;
+              document.body.appendChild(a); a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+
+              setTransfers(prev => prev.map(t => t.id === transferId
+                ? { ...t, status: "complete" as const, progress: 100, speedMbps: data.speed_mbps, size: data.size }
+                : t));
+              toast({ title: "Download complete", description: `${fileName} at ${data.speed_mbps} Mbps` });
+              ws.close();
+              resolve();
+            } else if (data.error) {
+              throw new Error(data.error);
+            }
+          } catch (err) {
+            if (err instanceof Error && err.message) reject(err);
+          }
+        }
+      };
+
+      ws.onerror = () => reject(new Error("P2P WebSocket connection failed"));
+    });
+  }, [p2pIp, p2pPort, toast]);
+
+  // Helper: merge typed array buffers
+  function mergeBuffers(buffers: Uint8Array[], totalLength: number): Uint8Array {
+    const merged = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const buf of buffers) {
+      merged.set(buf, offset);
+      offset += buf.byteLength;
+    }
+    return merged;
+  }
+
+  // Helper: update transfer progress
+  function updateProgress(bytesTransferred: number, totalSize: number, startTime: number, transferId: string) {
+    const elapsed = (Date.now() - startTime) / 1000;
+    const speed = elapsed > 0 ? bytesTransferred / elapsed : 0;
+    const progress = totalSize > 0 ? Math.round((bytesTransferred / totalSize) * 100) : 0;
+    setTransfers(prev => prev.map(t => t.id === transferId
+      ? { ...t, progress: Math.min(progress, 99), speed }
+      : t));
+  }
+
+  // ========== UPLOAD DISPATCHER ==========
   const uploadFile = useCallback(async (file: File, transferId: string) => {
     if (!isConnected) {
       setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "error" as const, error: "Not connected" } : t));
       return;
     }
 
-    const startTime = Date.now();
-    const useCloudForLarge = file.size > 50 * 1024 * 1024; // 50MB+ use cloud storage
-    const method = useCloudForLarge ? "cloud" : "relay";
-    
-    setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "transferring" as const, startTime, method } : t));
-
     try {
-      if (method === "cloud") {
-        // Upload to Supabase storage, then tell agent to download from URL
-        const filePath = `transfers/${crypto.randomUUID()}/${file.name}`;
-        
-        // Upload with progress tracking
-        const { data, error } = await supabase.storage
-          .from("agent-files")
-          .upload(filePath, file, { upsert: true });
-
-        if (error) throw new Error(error.message);
-
-        // Get signed URL for agent to download
-        const { data: urlData } = await supabase.storage
-          .from("agent-files")
-          .createSignedUrl(filePath, 3600); // 1 hour expiry
-
-        if (!urlData?.signedUrl) throw new Error("Failed to get download URL");
-
-        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: 50 } : t));
-
-        // Tell agent to download the file from the signed URL
-        const result = await sendCommand("download_from_url", {
-          url: urlData.signedUrl,
-          file_name: file.name,
-          save_folder: pcSavePath || "",
-        }, { awaitResult: true, timeoutMs: 300000 }); // 5 min timeout for large files
-
-        if (!result?.success) throw new Error((result?.error as string) || "Agent download failed");
-
-        // Cleanup cloud file
-        supabase.storage.from("agent-files").remove([filePath]).catch(() => {});
-
-        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
-      } else {
-        // Chunked relay transfer (existing logic, improved)
-        const CHUNK_SIZE = 512 * 1024; // 512KB chunks for better speed
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-        let uploadedBytes = 0;
-        const fileId = crypto.randomUUID();
-
-        for (let i = 0; i < totalChunks; i++) {
-          const start = i * CHUNK_SIZE;
-          const end = Math.min(start + CHUNK_SIZE, file.size);
-          const chunk = file.slice(start, end);
-
-          const base64Chunk = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve((reader.result as string).split(",")[1]);
-            reader.onerror = reject;
-            reader.readAsDataURL(chunk);
-          });
-
-          let chunkSuccess = false;
-          for (let attempt = 0; attempt < 3 && !chunkSuccess; attempt++) {
-            try {
-              const result = await sendCommand("receive_file_chunk", {
-                file_id: fileId, file_name: file.name, chunk_index: i,
-                total_chunks: totalChunks, data: base64Chunk, save_folder: pcSavePath || "",
-              }, { awaitResult: true, timeoutMs: 60000 });
-
-              if (result?.success) { chunkSuccess = true; }
-              else if (attempt === 2) throw new Error((result?.error as string) || "Chunk failed");
-            } catch (err) {
-              if (attempt === 2) throw err;
-              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-            }
-          }
-
-          uploadedBytes += chunk.size;
-          const elapsed = (Date.now() - startTime) / 1000;
-          const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
-          setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: Math.round((uploadedBytes / file.size) * 100), speed } : t));
+      // P2P binary is fastest — try it first if on same network
+      if (isSameNetwork && p2pIp) {
+        try {
+          await uploadFileP2PBinary(file, transferId);
+          return;
+        } catch (e) {
+          console.warn("[FileTransfer] P2P binary failed, falling back:", e);
         }
-
-        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
       }
 
-      toast({ title: "Upload complete", description: `${file.name} (${formatSize(file.size)})` });
+      // Fallback: cloud storage relay for any network
+      await uploadFileCloud(file, transferId);
     } catch (err) {
       const error = err instanceof Error ? err.message : "Upload failed";
       setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "error" as const, error } : t));
       toast({ title: "Upload failed", description: error, variant: "destructive" });
     }
-  }, [isConnected, sendCommand, pcSavePath, toast]);
+  }, [isConnected, isSameNetwork, p2pIp, uploadFileP2PBinary]);
 
-  // Download file from PC
+  // ========== CLOUD UPLOAD (any network) ==========
+  const uploadFileCloud = useCallback(async (file: File, transferId: string) => {
+    const startTime = Date.now();
+    setTransfers(prev => prev.map(t => t.id === transferId
+      ? { ...t, status: "transferring" as const, startTime, method: "cloud" as const }
+      : t));
+
+    const filePath = `transfers/${crypto.randomUUID()}/${file.name}`;
+
+    const { error } = await supabase.storage
+      .from("agent-files")
+      .upload(filePath, file, { upsert: true });
+    if (error) throw new Error(error.message);
+
+    setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: 60 } : t));
+
+    const { data: urlData } = await supabase.storage
+      .from("agent-files")
+      .createSignedUrl(filePath, 3600);
+    if (!urlData?.signedUrl) throw new Error("Failed to get download URL");
+
+    setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: 70 } : t));
+
+    const result = await sendCommand("download_from_url", {
+      url: urlData.signedUrl,
+      file_name: file.name,
+      save_folder: pcSavePath || "",
+    }, { awaitResult: true, timeoutMs: 300000 });
+
+    if (!result?.success) throw new Error((result?.error as string) || "Agent download failed");
+
+    supabase.storage.from("agent-files").remove([filePath]).catch(() => {});
+
+    const elapsed = (Date.now() - startTime) / 1000;
+    const speed = file.size / elapsed;
+    setTransfers(prev => prev.map(t => t.id === transferId
+      ? { ...t, status: "complete" as const, progress: 100, speed }
+      : t));
+    toast({ title: "Upload complete", description: `${file.name} (${formatSize(file.size)})` });
+  }, [sendCommand, pcSavePath, toast]);
+
+  // ========== DOWNLOAD DISPATCHER ==========
   const downloadFileFromPC = useCallback(async (pcFile: PCFile) => {
     if (!isConnected || pcFile.is_directory) {
       if (pcFile.is_directory) browsePCFiles(pcFile.path);
@@ -266,108 +428,68 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
     }
 
     const transferId = crypto.randomUUID();
-    const startTime = Date.now();
-    const useCloud = pcFile.size > 50 * 1024 * 1024;
-    const method = useCloud ? "cloud" : "relay";
-
     setTransfers(prev => [...prev, {
       id: transferId, name: pcFile.name, size: pcFile.size, direction: "pc_to_phone",
-      progress: 0, status: "transferring", startTime, method,
+      progress: 0, status: "pending",
     }]);
 
     try {
-      if (useCloud) {
-        // Tell agent to upload to cloud storage, then we download
-        const filePath = `transfers/${crypto.randomUUID()}/${pcFile.name}`;
-        
-        // Get upload URL for agent
-        const { data: urlData } = await supabase.storage
-          .from("agent-files")
-          .createSignedUrl(filePath, 3600);
-
-        // Tell agent to upload
-        const result = await sendCommand("upload_to_url", {
-          file_path: pcFile.path,
-          upload_path: filePath,
-        }, { awaitResult: true, timeoutMs: 300000 });
-
-        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: 50 } : t));
-
-        if (!result?.success) throw new Error((result?.error as string) || "Agent upload failed");
-
-        // Download from storage
-        const { data: downloadData, error } = await supabase.storage
-          .from("agent-files")
-          .download(filePath);
-
-        if (error || !downloadData) throw new Error(error?.message || "Download failed");
-
-        // Trigger browser download
-        const url = URL.createObjectURL(downloadData);
-        const a = document.createElement("a");
-        a.href = url; a.download = pcFile.name;
-        document.body.appendChild(a); a.click();
-        document.body.removeChild(a); URL.revokeObjectURL(url);
-
-        // Cleanup
-        supabase.storage.from("agent-files").remove([filePath]).catch(() => {});
-
-        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
-      } else {
-        // Chunked download
-        const CHUNK_SIZE = 512 * 1024;
-        const totalChunks = Math.ceil(pcFile.size / CHUNK_SIZE) || 1;
-        const chunks: string[] = [];
-        let downloadedBytes = 0;
-
-        for (let i = 0; i < totalChunks; i++) {
-          let chunkData: string | null = null;
-          for (let attempt = 0; attempt < 3 && !chunkData; attempt++) {
-            try {
-              const result = await sendCommand("send_file_chunk", {
-                path: pcFile.path, chunk_index: i, chunk_size: CHUNK_SIZE,
-              }, { awaitResult: true, timeoutMs: 60000 });
-
-              if (result?.success && result.result) {
-                const data = result.result as { data?: string };
-                if (data.data) chunkData = data.data;
-              }
-              if (!chunkData && attempt === 2) throw new Error((result?.error as string) || "Chunk failed");
-            } catch (err) {
-              if (attempt === 2) throw err;
-              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-            }
-          }
-          if (chunkData) chunks.push(chunkData);
-
-          downloadedBytes = Math.min((i + 1) * CHUNK_SIZE, pcFile.size);
-          const elapsed = (Date.now() - startTime) / 1000;
-          const speed = elapsed > 0 ? downloadedBytes / elapsed : 0;
-          setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: Math.round(((i + 1) / totalChunks) * 100), speed } : t));
+      // P2P binary first
+      if (isSameNetwork && p2pIp) {
+        try {
+          await downloadFileP2PBinary(pcFile, transferId);
+          return;
+        } catch (e) {
+          console.warn("[FileTransfer] P2P binary download failed, falling back:", e);
         }
-
-        const base64Data = chunks.join("");
-        const byteCharacters = atob(base64Data);
-        const byteArray = new Uint8Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) byteArray[i] = byteCharacters.charCodeAt(i);
-        const blob = new Blob([byteArray]);
-
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url; a.download = pcFile.name;
-        document.body.appendChild(a); a.click();
-        document.body.removeChild(a); URL.revokeObjectURL(url);
-
-        setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "complete" as const, progress: 100 } : t));
       }
 
-      toast({ title: "Download complete", description: `${pcFile.name} (${formatSize(pcFile.size)})` });
+      // Fallback: cloud relay
+      await downloadFileCloud(pcFile, transferId);
     } catch (err) {
       const error = err instanceof Error ? err.message : "Download failed";
       setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, status: "error" as const, error } : t));
       toast({ title: "Download failed", description: error, variant: "destructive" });
     }
-  }, [isConnected, sendCommand, browsePCFiles, toast]);
+  }, [isConnected, isSameNetwork, p2pIp, downloadFileP2PBinary, browsePCFiles, toast]);
+
+  // ========== CLOUD DOWNLOAD ==========
+  const downloadFileCloud = useCallback(async (pcFile: PCFile, transferId: string) => {
+    const startTime = Date.now();
+    setTransfers(prev => prev.map(t => t.id === transferId
+      ? { ...t, status: "transferring" as const, startTime, method: "cloud" as const }
+      : t));
+
+    const filePath = `transfers/${crypto.randomUUID()}/${pcFile.name}`;
+
+    const result = await sendCommand("upload_to_url", {
+      file_path: pcFile.path,
+      upload_path: filePath,
+    }, { awaitResult: true, timeoutMs: 300000 });
+
+    if (!result?.success) throw new Error((result?.error as string) || "Agent upload failed");
+    setTransfers(prev => prev.map(t => t.id === transferId ? { ...t, progress: 50 } : t));
+
+    const { data: downloadData, error } = await supabase.storage
+      .from("agent-files")
+      .download(filePath);
+    if (error || !downloadData) throw new Error(error?.message || "Download failed");
+
+    const url = URL.createObjectURL(downloadData);
+    const a = document.createElement("a");
+    a.href = url; a.download = pcFile.name;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+
+    supabase.storage.from("agent-files").remove([filePath]).catch(() => {});
+
+    const elapsed = (Date.now() - startTime) / 1000;
+    const speed = pcFile.size / elapsed;
+    setTransfers(prev => prev.map(t => t.id === transferId
+      ? { ...t, status: "complete" as const, progress: 100, speed }
+      : t));
+    toast({ title: "Download complete", description: `${pcFile.name} (${formatSize(pcFile.size)})` });
+  }, [sendCommand, toast]);
 
   const navigateUp = useCallback(() => {
     const parts = pcBrowsePath.split(/[/\\]/);
@@ -386,12 +508,58 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
 
     results.push({ name: "Device Connection", status: isConnected ? "pass" : "fail", message: isConnected ? "PC is online" : "PC is offline" });
     setDiagResults([...results]);
-
     if (!isConnected) { setDiagRunning(false); return; }
 
     results.push({ name: "Network Mode", status: "pass", message: isSameNetwork ? `Same network (P2P via ${p2pIp})` : "Different network (cloud relay)" });
     setDiagResults([...results]);
 
+    // P2P binary speed test
+    if (isSameNetwork && p2pIp) {
+      results.push({ name: "P2P Binary Transfer", status: "running", message: "Testing speed..." });
+      setDiagResults([...results]);
+      try {
+        const testSize = 4 * 1024 * 1024; // 4MB test
+        const testData = new Uint8Array(testSize);
+        crypto.getRandomValues(testData);
+        const testFile = new File([testData], "_speed_test.bin");
+        const start = Date.now();
+
+        await new Promise<void>((resolve, reject) => {
+          const wsUrl = `ws://${p2pIp}:${p2pPort}/file-upload?fileName=_speed_test.bin&fileSize=${testSize}&saveFolder=`;
+          const ws = new WebSocket(wsUrl);
+          ws.binaryType = "arraybuffer";
+          let done = false;
+          ws.onmessage = (event) => {
+            const data = JSON.parse(event.data as string);
+            if (data.type === "ready") {
+              ws.send(testData);
+              ws.send(JSON.stringify({ type: "done" }));
+            } else if (data.complete) {
+              done = true;
+              ws.close();
+              resolve();
+            } else if (data.error) {
+              reject(new Error(data.error));
+            }
+          };
+          ws.onerror = () => reject(new Error("WS failed"));
+          setTimeout(() => { if (!done) { ws.close(); reject(new Error("Timeout")); } }, 10000);
+        });
+
+        const elapsed = (Date.now() - start) / 1000;
+        const mbps = (testSize * 8 / 1_000_000) / elapsed;
+        results[results.length - 1] = {
+          name: "P2P Binary Transfer",
+          status: mbps >= 10 ? "pass" : "warn",
+          message: `${mbps.toFixed(1)} Mbps (${(testSize / elapsed / (1024 * 1024)).toFixed(1)} MB/s)`,
+        };
+      } catch (e) {
+        results[results.length - 1] = { name: "P2P Binary Transfer", status: "fail", message: `Failed: ${e}` };
+      }
+      setDiagResults([...results]);
+    }
+
+    // Agent ping
     results.push({ name: "Agent Ping", status: "running", message: "Pinging..." });
     setDiagResults([...results]);
     try {
@@ -404,6 +572,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
     }
     setDiagResults([...results]);
 
+    // Cloud storage
     results.push({ name: "Cloud Storage", status: "running", message: "Testing..." });
     setDiagResults([...results]);
     try {
@@ -416,9 +585,8 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       results[results.length - 1] = { name: "Cloud Storage", status: "warn", message: "Cloud storage unavailable" };
     }
     setDiagResults([...results]);
-
     setDiagRunning(false);
-  }, [isConnected, sendCommand, isSameNetwork, p2pIp]);
+  }, [isConnected, sendCommand, isSameNetwork, p2pIp, p2pPort]);
 
   const diagStatusIcon = (s: DiagResult["status"]) => {
     switch (s) {
@@ -441,7 +609,9 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             </div>
             <div>
               <CardTitle className="text-base">File Transfer</CardTitle>
-              <CardDescription className="text-xs">Any network • No size limit</CardDescription>
+              <CardDescription className="text-xs">
+                {connectionMethod === "p2p" ? "P2P Binary • 10-20 Mbps" : "Any network • No size limit"}
+              </CardDescription>
             </div>
           </div>
           <Badge
@@ -449,13 +619,13 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             className={cn("text-xs", connectionMethod === "detecting" && "animate-pulse")}
           >
             <ConnectionIcon className="h-3 w-3 mr-1" />
-            {connectionMethod === "detecting" ? "Detecting..." : connectionMethod === "p2p" ? "LAN" : isConnected ? "Cloud" : "Offline"}
+            {connectionMethod === "detecting" ? "Detecting..." : connectionMethod === "p2p" ? "⚡ LAN" : isConnected ? "Cloud" : "Offline"}
           </Badge>
         </div>
       </CardHeader>
 
       <CardContent className="space-y-4">
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "upload" | "download" | "diag")}>
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="upload" className="text-xs gap-1"><Upload className="h-3 w-3" />Upload</TabsTrigger>
             <TabsTrigger value="download" className="text-xs gap-1"><Download className="h-3 w-3" />Download</TabsTrigger>
@@ -475,7 +645,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
             >
               <Upload className={cn("h-6 w-6", isDragOver ? "text-primary" : "text-muted-foreground")} />
               <span className="text-xs text-muted-foreground">
-                {isDragOver ? "Drop files here!" : "Drag & drop or tap to select • Any size"}
+                {isDragOver ? "Drop files here!" : connectionMethod === "p2p" ? "Drop files • P2P Binary ⚡" : "Drag & drop or tap to select"}
               </span>
             </div>
 
@@ -533,7 +703,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
                 ))}
               </div>
             )}
-            {diagResults.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Run diagnostics to check transfer health</p>}
+            {diagResults.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Run diagnostics to check transfer speed</p>}
           </TabsContent>
         </Tabs>
 
@@ -558,7 +728,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
                           </Badge>
                           {transfer.method && (
                             <Badge variant="secondary" className="text-[8px] px-1 py-0">
-                              {transfer.method === "cloud" ? "☁" : "⚡"}
+                              {transfer.method === "p2p-binary" ? "⚡ P2P" : transfer.method === "cloud" ? "☁" : "⚡"}
                             </Badge>
                           )}
                         </div>
@@ -571,6 +741,11 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
                           {transfer.status === "transferring" && transfer.speed && transfer.speed > 0 && (
                             <span className="text-[10px] text-primary flex items-center gap-0.5">
                               <Zap className="h-2.5 w-2.5" />{formatSpeed(transfer.speed)}
+                            </span>
+                          )}
+                          {transfer.speedMbps && transfer.speedMbps > 0 && (
+                            <span className="text-[10px] text-emerald-500 font-medium">
+                              {transfer.speedMbps} Mbps
                             </span>
                           )}
                         </div>
