@@ -373,7 +373,9 @@ export function SystemResourceMonitor({ className }: { className?: string }) {
               ) : (
                 <ScrollArea className="max-h-44">
                   <div className="divide-y divide-border/10">
-                    {processes.map(proc => (
+                    {processes
+                      .filter(proc => !processSearch || proc.name.toLowerCase().includes(processSearch.toLowerCase()))
+                      .map(proc => (
                       <div
                         key={proc.pid}
                         className={cn(

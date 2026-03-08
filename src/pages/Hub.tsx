@@ -72,6 +72,7 @@ import { RemoteTerminal } from "@/components/RemoteTerminal";
 import { MultiDeviceDashboard } from "@/components/MultiDeviceDashboard";
 import { SystemResourceMonitor } from "@/components/SystemResourceMonitor";
 import { FanSpeedControl } from "@/components/FanSpeedControl";
+import { StartupManager } from "@/components/StartupManager";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
