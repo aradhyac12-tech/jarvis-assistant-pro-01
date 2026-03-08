@@ -4,6 +4,21 @@ import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useAuth } from "@/hooks/useAuth";
 import { useAppNotifications } from "@/hooks/useAppNotifications";
 import { addLog } from "@/components/IssueLog";
+import { registerPlugin } from "@capacitor/core";
+
+// Background geolocation plugin — only available in native Capacitor context
+interface BackgroundGeolocationWatcher {
+  addWatcher(options: {
+    backgroundMessage: string;
+    backgroundTitle: string;
+    requestPermissions: boolean;
+    stale: boolean;
+    distanceFilter: number;
+  }, callback: (location: { latitude: number; longitude: number; accuracy: number } | undefined, error: any) => void): Promise<string>;
+  removeWatcher(options: { id: string }): Promise<void>;
+}
+
+const BackgroundGeolocation = registerPlugin<BackgroundGeolocationWatcher>("BackgroundGeolocation");
 
 type PresenceStatus = "home" | "away" | "unknown";
 type PresenceMode = "device" | "geofence" | "both";
