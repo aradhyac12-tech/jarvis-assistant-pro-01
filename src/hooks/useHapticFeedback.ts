@@ -14,6 +14,8 @@ export function useHapticFeedback() {
     if (checkedRef.current) return null;
     checkedRef.current = true;
     try {
+      const { Capacitor } = await import("@capacitor/core");
+      if (!Capacitor.isNativePlatform()) return null;
       const { Haptics } = await import("@capacitor/haptics");
       capacitorRef.current = Haptics;
       return Haptics;

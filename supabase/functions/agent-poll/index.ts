@@ -4,7 +4,7 @@ import { checkRateLimit, rateLimitExceededResponse, rateLimitHeaders, type RateL
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-device-key",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-device-key, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 // Rate limit: 120 requests per minute per device (agent polls frequently)
@@ -69,7 +69,7 @@ serve(async (req) => {
     }
 
     const deviceId = device.id;
-    const { action, commandId, result, systemInfo, volume, brightness } = await req.json();
+    const { action, commandId, result, systemInfo, volume, brightness, pairingCode, pairingExpiresAt, isLocked } = await req.json();
 
     switch (action) {
       case "poll": {
@@ -169,7 +169,7 @@ serve(async (req) => {
 
       case "register": {
         // Update device registration info
-        const { pairingCode, pairingExpiresAt, isLocked } = await req.json();
+        // pairingCode, pairingExpiresAt, isLocked already destructured from body above
 
         const updateData: Record<string, unknown> = {
           is_online: true,
