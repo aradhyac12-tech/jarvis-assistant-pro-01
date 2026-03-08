@@ -772,21 +772,6 @@ export default function Hub() {
             {/* Control Tab */}
             {activeTab === "control" && (
               <div className="grid gap-3">
-                {/* System Resource Monitor */}
-                <SystemResourceMonitor />
-
-                {/* Fan Speed Control */}
-                <FanSpeedControl />
-
-                {/* Startup Manager */}
-                <StartupManager />
-
-                {/* Battery Monitor */}
-                <BatteryMonitor />
-
-                {/* Disk Usage Breakdown */}
-                <DiskUsageBreakdown />
-
                 {/* Quick Links — above sliders */}
                 <div className="grid grid-cols-2 gap-2">
                   {quickLinks.map((link) => (
