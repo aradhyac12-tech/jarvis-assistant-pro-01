@@ -333,6 +333,56 @@ export type Database = {
           },
         ]
       }
+      surveillance_events: {
+        Row: {
+          confidence: number
+          created_at: string
+          device_id: string
+          event_type: string
+          id: string
+          metadata: Json | null
+          recognition_confidence: number | null
+          recognized: boolean
+          recognized_label: string | null
+          screenshot_url: string | null
+          user_id: string
+        }
+        Insert: {
+          confidence?: number
+          created_at?: string
+          device_id: string
+          event_type?: string
+          id?: string
+          metadata?: Json | null
+          recognition_confidence?: number | null
+          recognized?: boolean
+          recognized_label?: string | null
+          screenshot_url?: string | null
+          user_id: string
+        }
+        Update: {
+          confidence?: number
+          created_at?: string
+          device_id?: string
+          event_type?: string
+          id?: string
+          metadata?: Json | null
+          recognition_confidence?: number | null
+          recognized?: boolean
+          recognized_label?: string | null
+          screenshot_url?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "surveillance_events_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "devices"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_settings: {
         Row: {
           created_at: string
