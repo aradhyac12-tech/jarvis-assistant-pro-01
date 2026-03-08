@@ -30,6 +30,7 @@ import {
   Music,
   Moon,
   Wifi,
+  WifiOff,
   Wrench,
   AppWindow,
   Search,
@@ -41,6 +42,9 @@ import {
   Eye,
   EyeOff,
   Keyboard,
+  Bluetooth,
+  Globe,
+  Signal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -58,6 +62,7 @@ import { PureTrackpad } from "@/components/PureTrackpad";
 import { MobileKeyboard } from "@/components/MobileKeyboard";
 import { AutoClipboardSync } from "@/components/AutoClipboardSync";
 import { KDEMediaControl } from "@/components/KDEMediaControl";
+import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
 
