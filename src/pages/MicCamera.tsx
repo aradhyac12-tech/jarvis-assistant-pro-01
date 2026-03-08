@@ -157,16 +157,29 @@ export default function MicCamera() {
   const { selectedDevice } = useDeviceContext();
   const { session } = useDeviceSession();
   const {
+    registerStream,
+    updateStreamFrame: updateGlobalFrame,
+    setStreamActive: setGlobalStreamActive,
+    pinStream,
+    setFloating,
+    takeWebSocketOwnership,
+    hasWebSocketOwnership,
+    releaseWebSocketOwnership,
+  } = useGlobalPiP();
+  const {
     inputDevices, outputDevices, selectedInput, selectedOutput,
     setSelectedInput, setSelectedOutput, refreshDevices, loading: devicesLoading,
   } = useAudioDevices();
   const p2pStreaming = useP2PStreaming();
 
+  const PIP_CAMERA_STREAM_ID = "pip-camera";
+  const PIP_SCREEN_STREAM_ID = "pip-screen";
+
   // ========== Tab persistence ==========
   const [activeTab, setActiveTab] = useState(() => loadSetting("mic_camera_tab", "audio"));
   const handleTabChange = (v: string) => { setActiveTab(v); saveSetting("mic_camera_tab", v); };
 
-  // Split view mode — video on top, controls below
+  // PiP mode — floating and movable across app routes
   const [splitMode, setSplitMode] = useState(() => loadSetting("mic_split_mode", false));
   const [splitStream, setSplitStream] = useState<"camera" | "screen">(() => loadSetting("mic_split_stream", "camera"));
 
