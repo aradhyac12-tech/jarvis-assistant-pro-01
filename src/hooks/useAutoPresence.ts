@@ -182,7 +182,9 @@ export function useAutoPresence() {
 
         const isOnline = data.is_online;
         const lastSeen = data.last_seen ? new Date(data.last_seen).getTime() : 0;
-        const isStale = lastSeen > 0 && (Date.now() - lastSeen) > awayDelay;
+        // Consider stale if last_seen is older than 2 minutes (agent heartbeat is ~30s)
+        const STALE_THRESHOLD = Math.max(awayDelay, 120_000);
+        const isStale = lastSeen > 0 && (Date.now() - lastSeen) > STALE_THRESHOLD;
         deviceOnlineRef.current = isOnline && !isStale;
         evaluatePresence();
       } catch (err) {
