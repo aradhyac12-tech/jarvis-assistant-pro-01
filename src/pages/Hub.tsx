@@ -668,9 +668,11 @@ export default function Hub() {
   if (isLoading && !selectedDevice) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-black">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-6 h-6 animate-spin text-primary" />
-          <p className="text-xs text-muted-foreground">Connecting...</p>
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center">
+            <Loader2 className="w-5 h-5 animate-spin text-primary" />
+          </div>
+          <p className="text-xs text-muted-foreground font-medium">Connecting to JARVIS...</p>
         </div>
       </div>
     );
@@ -1358,12 +1360,14 @@ export default function Hub() {
 
             {/* No Device Warning */}
             {!isLoading && devices.length === 0 && (
-              <Card className="border-border/20 bg-card/50">
-                <CardContent className="p-6 text-center">
-                  <Wifi className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-                  <h3 className="font-medium text-sm mb-1">No PC Connected</h3>
-                  <p className="text-xs text-muted-foreground mb-3">Run the Python agent on your PC</p>
-                  <code className="block p-2 bg-secondary/50 rounded-md text-[10px] font-mono">
+              <Card className="border-border/15 bg-card/50 rounded-2xl">
+                <CardContent className="p-8 text-center">
+                  <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                    <Wifi className="w-7 h-7 text-primary/60" />
+                  </div>
+                  <h3 className="font-semibold text-sm mb-1.5">No PC Connected</h3>
+                  <p className="text-xs text-muted-foreground mb-4">Run the Python agent on your PC to get started</p>
+                  <code className="block p-3 bg-secondary/30 rounded-xl text-[11px] font-mono text-foreground/70 border border-border/10">
                     python jarvis_agent.py --gui
                   </code>
                 </CardContent>
