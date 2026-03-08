@@ -946,8 +946,11 @@ class BluetoothServer:
             
             try:
                 import pyperclip
+                import hashlib as _hl
                 text = assembled.decode("utf-8")
                 pyperclip.copy(text)
+                # Update hash so push loop doesn't echo it back
+                self._last_clipboard_hash = _hl.md5(text.encode("utf-8", errors="replace")).hexdigest()
                 add_log("info", f"BLE clipboard set: {text[:30]}...", category="bluetooth")
             except Exception as e:
                 add_log("error", f"BLE clipboard write error: {e}", category="bluetooth")
