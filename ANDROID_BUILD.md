@@ -322,6 +322,95 @@ netsh advfirewall firewall add rule name="JARVIS P2P" dir=in action=allow protoc
 
 ---
 
+## KDE Connect-Style Notifications
+
+The app provides a full KDE Connect-style notification system that mirrors phone notifications to the PC and provides quick actions — accessible from a dedicated Notifications page, not embedded in the Hub.
+
+### How it works:
+
+1. **Notification Listener Service** — Uses `@posx/capacitor-notifications-listener` to capture all phone notifications in real-time
+2. **Notification mirroring** — Phone notifications are forwarded to the PC agent, which displays them as Windows toast notifications
+3. **Quick actions from notification panel**:
+   - 📋 **Send Clipboard** — Instantly push phone clipboard to PC
+   - 📁 **Send Files** — Open file transfer
+   - 💬 **Reply** — Reply to messages directly from the panel
+   - 🔗 **Open on PC** — Open notification URLs on the PC browser
+4. **Persistent notification** — Always-on Android notification with "Send Clipboard" and "Send Files" action buttons (like KDE Connect)
+5. **App grouping** — Notifications are grouped by source app with icons and color coding
+6. **Dismissal sync** — Dismiss a notification on phone → dismisses on PC too
+
+### Required Android permissions:
+
+```xml
+<!-- Already included in the manifest permissions above -->
+<uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+```
+
+### Enable Notification Access on device:
+
+After installing the APK, the user must grant Notification Listener access:
+- Settings → Apps → Special app access → Notification access → Enable for JARVIS Remote
+
+---
+
+## Surveillance & Identity Verification
+
+The surveillance system uses the PC webcam to detect intruders and verify identity using face recognition. All events are persisted to the cloud database with full screenshots.
+
+### Architecture:
+
+1. **PC Agent** captures webcam frames and runs detection:
+   - Motion detection (frame differencing)
+   - Human detection (HOG + SVM via OpenCV)
+   - Face recognition (multi-frame capture — 3 frames with 150ms gaps for accuracy)
+2. **Events stored in database** — Every detection is saved to `surveillance_events` table with:
+   - `event_type` (motion, human, face_recognized, intruder)
+   - `confidence` score
+   - `recognized` boolean + `recognized_label` (e.g., "admin")
+   - `screenshot_url` — Full screenshot uploaded to `surveillance-screenshots` storage bucket
+   - `recognition_confidence` — Face match score
+3. **Device-owner-only access** — RLS policies enforce that only the user who paired the device (`devices.user_id = auth.uid()`) can view/manage surveillance events and screenshots
+4. **Real-time push alerts** — Browser Push Notifications fire when an intruder (unrecognized human) is detected
+5. **Events tab** — Scrollable history in the Surveillance panel showing all detections with timestamps and thumbnails
+
+### Database tables:
+
+```sql
+-- surveillance_events (auto-created via migration)
+-- Columns: id, user_id, device_id, event_type, confidence, 
+--          recognized, recognized_label, recognition_confidence,
+--          screenshot_url, metadata, created_at
+
+-- Storage bucket: surveillance-screenshots
+-- Path format: {user_id}/{device_id}/{timestamp}.jpg
+-- RLS: Only device owner can read/write
+```
+
+### PC Agent commands for surveillance:
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `start_surveillance` | `{ sensitivity, detect_humans, sound_alarm }` | Start guard mode |
+| `stop_surveillance` | — | Stop guard mode |
+| `save_surveillance_event` | `{ event_type, confidence, recognized, recognized_label, recognition_confidence, screenshot_base64, device_id }` | Agent uploads detection event directly to cloud |
+| `train_face` | `{ label }` | Capture face samples for recognition training |
+
+### Face recognition improvements:
+
+- **Multi-frame capture**: Takes 3 frames 150ms apart instead of 1, picks the best match
+- **Confidence threshold**: Adjustable (default 0.6) — lower = more permissive, higher = stricter
+- **Training flow**: Train via `train_face` command, stores encodings locally on the PC agent
+
+### Required Python packages (PC agent):
+
+```bash
+pip install opencv-python face_recognition numpy
+# face_recognition requires dlib (may need cmake + C++ build tools)
+```
+
+---
+
 ## Features Checklist
 
 | Feature | Status | Details |
@@ -333,9 +422,14 @@ netsh advfirewall firewall add rule name="JARVIS P2P" dir=in action=allow protoc
 | Volume & Brightness control | ✅ | Slider with real-time PC state sync |
 | File transfer (bidirectional) | ✅ | Chunked transfer with retry, share-to-phone support |
 | Clipboard sync | ✅ | Always-on background sync, copy/cut instant push |
+| KDE Connect notifications | ✅ | Full notification panel with reply, dismiss, quick actions |
 | Notification mirroring | ✅ | Phone notifications → PC Windows toasts |
 | Call detection | ✅ | Auto-pause PC media on incoming call |
 | Surveillance / Guard mode | ✅ | Motion/human detection with alarm and clips |
+| Surveillance event history | ✅ | Full history with screenshots saved to cloud database |
+| Face recognition (multi-frame) | ✅ | 3-frame capture, best-match selection, adjustable threshold |
+| Intruder push alerts | ✅ | Browser Push Notifications on unrecognized human |
+| Device-owner-only access | ✅ | RLS enforced — only paired user can access surveillance |
 | App management | ✅ | Open/kill/restart apps, services, task manager |
 | Zoom meeting control | ✅ | Join, mic/camera toggle, screenshot |
 | Biometric lock | ✅ | Fingerprint/face unlock for app security |
