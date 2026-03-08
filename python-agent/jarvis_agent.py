@@ -2287,6 +2287,57 @@ def get_agent_status() -> Dict[str, Any]:
     return agent_status
 
 
+def get_startup_diagnostics() -> Dict[str, Any]:
+    """Startup dependency/feature health snapshot for diagnostics UI."""
+    optional_missing = sorted(set(_OPTIONAL_MISSING_DEPS))
+    critical_missing = sorted(set(_CRITICAL_MISSING_DEPS))
+
+    features = {
+        "Core Backend": {
+            "healthy": bool(globals().get("HAS_SUPABASE", False)) and not critical_missing,
+            "detail": "Ready" if bool(globals().get("HAS_SUPABASE", False)) and not critical_missing else f"Missing: {', '.join(critical_missing) or 'supabase'}",
+        },
+        "System Metrics": {
+            "healthy": bool(globals().get("HAS_PSUTIL", False)),
+            "detail": "Ready" if bool(globals().get("HAS_PSUTIL", False)) else "psutil missing",
+        },
+        "Input Control": {
+            "healthy": pyautogui is not None,
+            "detail": "Ready" if pyautogui is not None else "pyautogui missing",
+        },
+        "Screen Capture": {
+            "healthy": bool(globals().get("HAS_MSS", False)) or bool(globals().get("HAS_OPENCV", False)),
+            "detail": "Ready" if (bool(globals().get("HAS_MSS", False)) or bool(globals().get("HAS_OPENCV", False))) else "mss/OpenCV missing",
+        },
+        "Auto Update": {
+            "healthy": bool(globals().get("HAS_AUTO_UPDATER", False)),
+            "detail": "Enabled" if bool(globals().get("HAS_AUTO_UPDATER", False)) else "Disabled",
+        },
+        "BLE Fallback": {
+            "healthy": bool(globals().get("HAS_BLESS", False)),
+            "detail": "Ready" if bool(globals().get("HAS_BLESS", False)) else "bless missing",
+        },
+        "Tray Mode": {
+            "healthy": bool(globals().get("HAS_TRAY", False)) and bool(globals().get("HAS_PIL", False)),
+            "detail": "Ready" if (bool(globals().get("HAS_TRAY", False)) and bool(globals().get("HAS_PIL", False))) else "pystray/pillow missing",
+        },
+    }
+
+    unhealthy = sum(1 for f in features.values() if not f["healthy"])
+
+    return {
+        "agent_version": AGENT_VERSION,
+        "python": platform.python_version(),
+        "platform": f"{platform.system()} {platform.release()}",
+        "startup_blocked": bool(globals().get("_STARTUP_BLOCKED", False)),
+        "critical_missing": critical_missing,
+        "optional_missing": optional_missing,
+        "features": features,
+        "healthy_features": len(features) - unhealthy,
+        "total_features": len(features),
+    }
+
+
 # ============== NETWORK UTILITIES ==============
 def get_local_ips() -> List[str]:
     """Get local IPs, filtering out VPN/virtual adapter IPs."""
