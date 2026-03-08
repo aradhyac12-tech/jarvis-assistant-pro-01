@@ -175,9 +175,6 @@ export default function MicCamera() {
   } = useAudioDevices();
   const p2pStreaming = useP2PStreaming();
 
-  const PIP_CAMERA_STREAM_ID = "pip-camera";
-  const PIP_SCREEN_STREAM_ID = "pip-screen";
-
   // ========== Tab persistence ==========
   const [activeTab, setActiveTab] = useState(() => loadSetting("mic_camera_tab", "audio"));
   const handleTabChange = (v: string) => { setActiveTab(v); saveSetting("mic_camera_tab", v); };
