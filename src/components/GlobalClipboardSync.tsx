@@ -95,9 +95,8 @@ export function GlobalClipboardSync() {
     };
   }, [isBleConnected, bluetooth]);
 
-  // PC → Phone: poll every 1s over WiFi (hash-based, lightweight)
+  // PC → Phone: poll with exponential backoff over WiFi
   useEffect(() => {
-    // Only poll over WiFi; BLE uses push notifications above
     if (!isWifiConnected) {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       return;
@@ -112,17 +111,29 @@ export function GlobalClipboardSync() {
           const data = result.result as { changed?: boolean; content?: string };
           if (data.changed && data.content && data.content !== lastSentRef.current && data.content !== lastReceivedRef.current) {
             lastReceivedRef.current = data.content;
+            resetBackoff(); // clipboard changed — stay fast
             try { await navigator.clipboard.writeText(data.content); } catch { /* silent */ }
+          } else {
+            // No change — increment counter, maybe slow down
+            noChangeCountRef.current++;
+            if (noChangeCountRef.current >= SLOWDOWN_THRESHOLD && currentIntervalRef.current === FAST_INTERVAL) {
+              currentIntervalRef.current = SLOW_INTERVAL;
+              // Restart timer at slower rate
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = window.setInterval(check, SLOW_INTERVAL);
+            }
           }
         }
       } catch { /* silent */ }
       busyRef.current = false;
     };
 
+    currentIntervalRef.current = FAST_INTERVAL;
+    noChangeCountRef.current = 0;
     check();
-    pollRef.current = window.setInterval(check, 1000);
+    pollRef.current = window.setInterval(check, FAST_INTERVAL);
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, [isWifiConnected, sendCommand]);
+  }, [isWifiConnected, sendCommand, resetBackoff]);
 
   return null; // headless
 }
