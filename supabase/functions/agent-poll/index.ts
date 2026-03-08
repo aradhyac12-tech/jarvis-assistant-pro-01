@@ -69,7 +69,7 @@ serve(async (req) => {
     }
 
     const deviceId = device.id;
-    const { action, commandId, result, systemInfo, volume, brightness } = await req.json();
+    const { action, commandId, result, systemInfo, volume, brightness, pairingCode, pairingExpiresAt, isLocked } = await req.json();
 
     switch (action) {
       case "poll": {
@@ -169,7 +169,7 @@ serve(async (req) => {
 
       case "register": {
         // Update device registration info
-        const { pairingCode, pairingExpiresAt, isLocked } = await req.json();
+        // pairingCode, pairingExpiresAt, isLocked already destructured from body above
 
         const updateData: Record<string, unknown> = {
           is_online: true,
