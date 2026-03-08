@@ -923,6 +923,560 @@ try:
 except ImportError:
     HAS_TKINTER = False
 
+if HAS_TKINTER:
+    from tkinter import font as tkfont
+
+
+# ============== EMBEDDED GUI ==============
+class _Theme:
+    """Total Black Glassmorphism — ultra-premium dark palette."""
+    BG          = "#000000"
+    BG_CARD     = "#060606"
+    BG_HOVER    = "#0c0c0c"
+    BG_ELEVATED = "#111111"
+    BG_INPUT    = "#0a0a0a"
+
+    BORDER       = "#161616"
+    BORDER_GLOW  = "#1e3a5f"
+
+    TEXT        = "#f0f0f0"
+    TEXT_DIM    = "#8a8a8a"
+    TEXT_MUTED  = "#4a4a4a"
+
+    ACCENT      = "#3b82f6"
+    ACCENT_SOFT = "#1d4ed8"
+    ACCENT_DIM  = "#172554"
+
+    SUCCESS     = "#22c55e"
+    SUCCESS_DIM = "#052e16"
+    WARNING     = "#eab308"
+    WARNING_DIM = "#422006"
+    ERROR       = "#ef4444"
+    ERROR_DIM   = "#450a0a"
+
+    CYAN   = "#06b6d4"
+    PURPLE = "#a855f7"
+    PINK   = "#ec4899"
+    ORANGE = "#f97316"
+
+
+class JarvisGUI:
+    """
+    Polished Total-Black Glassmorphism GUI — embedded directly in the agent.
+    5-tab layout: Dashboard · Actions · Files · Assistant · Settings
+    Smooth progress bars, animated orb, colour-coded logs.
+    """
+
+    def __init__(self, agent=None):
+        self.agent = agent
+        self.root = tk.Tk()
+        self.root.title("JARVIS")
+        self.root.configure(bg=_Theme.BG)
+        self.root.minsize(480, 680)
+        self.root.geometry("500x780+100+60")
+        self.root.resizable(True, True)
+
+        # ── dark titlebar on Win 11 ──
+        if platform.system() == "Windows":
+            try:
+                hwnd = ctypes.windll.user32.GetForegroundWindow()
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int))
+            except Exception:
+                pass
+
+        # ── icon ──
+        try:
+            ico = os.path.join(AGENT_DIR, "icon.ico")
+            if os.path.exists(ico):
+                self.root.iconbitmap(ico)
+        except Exception:
+            pass
+
+        # ── fonts ──
+        families = tkfont.families()
+        self._mono = next((f for f in ["JetBrains Mono", "Cascadia Code", "Fira Code", "Consolas"] if f in families), "Consolas")
+        self._sans = next((f for f in ["Inter", "Segoe UI", "SF Pro Display", "Helvetica Neue"] if f in families), "Segoe UI")
+
+        self.F_TITLE   = (self._sans, 20, "bold")
+        self.F_HEAD    = (self._sans, 13, "bold")
+        self.F_BODY    = (self._sans, 11)
+        self.F_SMALL   = (self._sans, 9)
+        self.F_TINY    = (self._sans, 8)
+        self.F_MONO    = (self._mono, 10)
+        self.F_MONO_SM = (self._mono, 9)
+        self.F_BIG     = (self._mono, 30, "bold")
+        self.F_MED     = (self._mono, 20, "bold")
+
+        # ── state ──
+        self.tab = "dashboard"
+        self._st = {
+            "connected": False, "device_name": platform.node(),
+            "pairing_code": "------", "cpu": 0, "memory": 0,
+            "volume": 50, "brightness": 50, "p2p_mode": "cloud",
+            "local_ips": [], "commands_executed": 0, "p2p_clients": 0,
+        }
+        self._logs: list = []
+        self._t0 = time.time()
+
+        self._build()
+        self._tick()
+
+    # ─────────────────── helpers ───────────────────
+    def _card(self, parent, glow=False):
+        return tk.Frame(parent, bg=_Theme.BG_CARD,
+                        highlightbackground=_Theme.BORDER_GLOW if glow else _Theme.BORDER,
+                        highlightthickness=1, bd=0)
+
+    def _sep(self, parent):
+        tk.Frame(parent, bg=_Theme.BORDER, height=1).pack(fill="x", pady=4)
+
+    def _pill(self, parent, text, fg, bg):
+        lbl = tk.Label(parent, text=f"  {text}  ", font=(self._sans, 8, "bold"),
+                       fg=fg, bg=bg, padx=6, pady=1)
+        return lbl
+
+    def _bar(self, parent, color, h=5):
+        c = tk.Canvas(parent, height=h, bg=_Theme.BG_ELEVATED, highlightthickness=0, bd=0)
+        c._color = color
+        c._val = 0
+        def _draw(v):
+            c.delete("all")
+            w = max(c.winfo_width(), 100)
+            fw = max(0, int(w * v / 100))
+            # track
+            c.create_rectangle(0, 0, w, h, fill=_Theme.BG_ELEVATED, outline="")
+            # filled
+            if fw > 0:
+                c.create_rectangle(0, 0, fw, h, fill=color, outline="")
+            c._val = v
+        c._draw = _draw
+        c.bind("<Configure>", lambda e: _draw(c._val))
+        return c
+
+    def _btn(self, parent, text, cmd, danger=False):
+        frame = tk.Frame(parent, bg=_Theme.BG_CARD,
+                         highlightbackground=_Theme.ERROR_DIM if danger else _Theme.BORDER,
+                         highlightthickness=1, bd=0, cursor="hand2")
+        frame.pack(fill="x", pady=2)
+        lbl = tk.Label(frame, text=text, font=self.F_BODY,
+                       fg=_Theme.ERROR if danger else _Theme.TEXT,
+                       bg=_Theme.BG_CARD, anchor="w", padx=16, pady=10)
+        lbl.pack(fill="x")
+        arr = tk.Label(frame, text="›", font=(self._sans, 14), fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD)
+        arr.place(relx=1.0, rely=0.5, anchor="e", x=-12)
+        def enter(e):
+            for w in [frame, lbl, arr]: w.configure(bg=_Theme.BG_HOVER)
+        def leave(e):
+            for w in [frame, lbl, arr]: w.configure(bg=_Theme.BG_CARD)
+        for w in [frame, lbl, arr]:
+            w.bind("<Enter>", enter); w.bind("<Leave>", leave)
+            w.bind("<Button-1>", lambda e: cmd())
+        return frame
+
+    # ─────────────────── layout ───────────────────
+    def _build(self):
+        main = tk.Frame(self.root, bg=_Theme.BG)
+        main.pack(fill="both", expand=True)
+
+        self._build_header(main)
+
+        self.content = tk.Frame(main, bg=_Theme.BG)
+        self.content.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+
+        self._build_tabs(self.content)
+
+        self.pages = {}
+        self._build_dashboard()
+        self._build_logs_page()
+        self._build_settings_page()
+        self._show_tab("dashboard")
+
+    # ── header ──
+    def _build_header(self, parent):
+        hdr = tk.Frame(parent, bg=_Theme.BG, height=60)
+        hdr.pack(fill="x", padx=16, pady=(14, 6))
+        hdr.pack_propagate(False)
+
+        left = tk.Frame(hdr, bg=_Theme.BG)
+        left.pack(side="left", fill="y")
+
+        self._orb = tk.Canvas(left, width=36, height=36, bg=_Theme.BG, highlightthickness=0)
+        self._orb.pack(side="left", padx=(0, 12))
+        self._draw_orb(False)
+
+        titles = tk.Frame(left, bg=_Theme.BG)
+        titles.pack(side="left")
+        tk.Label(titles, text="JARVIS", font=self.F_TITLE, fg=_Theme.TEXT, bg=_Theme.BG).pack(anchor="w")
+        self._sub = tk.Label(titles, text="Initializing…", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG)
+        self._sub.pack(anchor="w")
+
+        right = tk.Frame(hdr, bg=_Theme.BG)
+        right.pack(side="right", fill="y")
+        self._badge = tk.Label(right, text="  OFFLINE  ", font=(self._sans, 8, "bold"),
+                               fg=_Theme.ERROR, bg=_Theme.ERROR_DIM, padx=6, pady=2)
+        self._badge.pack(side="right", pady=14)
+        tk.Label(right, text=f"v{AGENT_VERSION}", font=self.F_TINY,
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(side="right", padx=(0, 8), pady=14)
+
+    def _draw_orb(self, on):
+        c = self._orb
+        c.delete("all")
+        if on:
+            c.create_oval(2, 2, 34, 34, fill="", outline=_Theme.ACCENT, width=1)
+            c.create_oval(7, 7, 29, 29, fill=_Theme.ACCENT, outline=_Theme.ACCENT_SOFT, width=1)
+            c.create_oval(12, 9, 21, 16, fill="#93c5fd", outline="")
+        else:
+            c.create_oval(7, 7, 29, 29, fill=_Theme.BG_ELEVATED, outline=_Theme.BORDER, width=1)
+            c.create_oval(12, 12, 24, 24, fill=_Theme.TEXT_MUTED, outline="")
+
+    # ── tab bar ──
+    def _build_tabs(self, parent):
+        bar = tk.Frame(parent, bg=_Theme.BG, height=38)
+        bar.pack(fill="x", pady=(0, 10))
+        bar.pack_propagate(False)
+
+        self._tab_btns = {}
+        for tid, label in [("dashboard", "◉ Dashboard"), ("logs", "◎ Logs"), ("settings", "⚙ Settings")]:
+            b = tk.Label(bar, text=label, font=self.F_BODY, fg=_Theme.TEXT_MUTED,
+                         bg=_Theme.BG, cursor="hand2", padx=14, pady=6)
+            b.pack(side="left")
+            b.bind("<Button-1>", lambda e, t=tid: self._show_tab(t))
+            b.bind("<Enter>", lambda e, b=b: b.configure(fg=_Theme.CYAN))
+            b.bind("<Leave>", lambda e, b=b, t=tid: b.configure(fg=_Theme.TEXT if self.tab == t else _Theme.TEXT_MUTED))
+            self._tab_btns[tid] = b
+
+        # subtle underline
+        self._tab_line = tk.Frame(bar, bg=_Theme.ACCENT, height=2, width=80)
+
+    def _show_tab(self, tid):
+        self.tab = tid
+        for k, b in self._tab_btns.items():
+            b.configure(fg=_Theme.TEXT if k == tid else _Theme.TEXT_MUTED)
+        for k, f in self.pages.items():
+            f.pack(fill="both", expand=True) if k == tid else f.pack_forget()
+
+    # ── dashboard ──
+    def _build_dashboard(self):
+        frame = tk.Frame(self.content, bg=_Theme.BG)
+        self.pages["dashboard"] = frame
+
+        canvas = tk.Canvas(frame, bg=_Theme.BG, highlightthickness=0, bd=0)
+        sf = tk.Frame(canvas, bg=_Theme.BG)
+        sf.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=sf, anchor="nw", tags="sw")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig("sw", width=e.width))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # ── connection card (glow border) ──
+        cc = self._card(sf, glow=True)
+        cc.pack(fill="x", pady=(0, 8))
+        row = tk.Frame(cc, bg=_Theme.BG_CARD)
+        row.pack(fill="x", padx=16, pady=(14, 4))
+        tk.Label(row, text="CONNECTION", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(side="left")
+        self._cdot = tk.Canvas(row, width=12, height=12, bg=_Theme.BG_CARD, highlightthickness=0)
+        self._cdot.pack(side="right")
+        self._cdot.create_oval(2, 2, 10, 10, fill=_Theme.ERROR, outline="")
+
+        self._conn_title = tk.Label(cc, text="Disconnected", font=self.F_HEAD,
+                                     fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD)
+        self._conn_title.pack(anchor="w", padx=16)
+        self._conn_sub = tk.Label(cc, text="Waiting for mobile app…", font=self.F_TINY,
+                                   fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD)
+        self._conn_sub.pack(anchor="w", padx=16, pady=(0, 14))
+
+        # ── pairing card ──
+        pc = self._card(sf)
+        pc.pack(fill="x", pady=(0, 8))
+        tk.Label(pc, text="PAIRING CODE", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(14, 6))
+        self._pair_lbl = tk.Label(pc, text="------", font=self.F_BIG,
+                                   fg=_Theme.ACCENT, bg=_Theme.BG_CARD)
+        self._pair_lbl.pack(anchor="w", padx=16)
+        self._pair_timer = tk.Label(pc, text="Generating…", font=self.F_TINY,
+                                     fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD)
+        self._pair_timer.pack(anchor="w", padx=16, pady=(0, 14))
+
+        # ── system metrics ──
+        tk.Label(sf, text="SYSTEM METRICS", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(anchor="w", pady=(10, 6))
+
+        mrow = tk.Frame(sf, bg=_Theme.BG)
+        mrow.pack(fill="x", pady=(0, 6))
+        mrow.columnconfigure(0, weight=1)
+        mrow.columnconfigure(1, weight=1)
+
+        # CPU
+        c1 = self._card(mrow)
+        c1.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
+        tk.Label(c1, text="CPU", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=14, pady=(12, 0))
+        self._cpu_lbl = tk.Label(c1, text="0%", font=self.F_MED, fg=_Theme.CYAN, bg=_Theme.BG_CARD)
+        self._cpu_lbl.pack(anchor="w", padx=14)
+        self._cpu_bar = self._bar(c1, _Theme.CYAN)
+        self._cpu_bar.pack(fill="x", padx=14, pady=(4, 12))
+
+        # MEM
+        c2 = self._card(mrow)
+        c2.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
+        tk.Label(c2, text="MEMORY", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=14, pady=(12, 0))
+        self._mem_lbl = tk.Label(c2, text="0%", font=self.F_MED, fg=_Theme.PURPLE, bg=_Theme.BG_CARD)
+        self._mem_lbl.pack(anchor="w", padx=14)
+        self._mem_bar = self._bar(c2, _Theme.PURPLE)
+        self._mem_bar.pack(fill="x", padx=14, pady=(4, 12))
+
+        # ── volume & brightness ──
+        vrow = tk.Frame(sf, bg=_Theme.BG)
+        vrow.pack(fill="x", pady=(0, 6))
+        vrow.columnconfigure(0, weight=1)
+        vrow.columnconfigure(1, weight=1)
+
+        vc = self._card(vrow)
+        vc.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
+        tk.Label(vc, text="🔊 VOLUME", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=14, pady=(12, 0))
+        self._vol_lbl = tk.Label(vc, text="50%", font=(self._mono, 18, "bold"), fg=_Theme.TEXT, bg=_Theme.BG_CARD)
+        self._vol_lbl.pack(anchor="w", padx=14, pady=(0, 12))
+
+        bc = self._card(vrow)
+        bc.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
+        tk.Label(bc, text="☀ BRIGHTNESS", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=14, pady=(12, 0))
+        self._bri_lbl = tk.Label(bc, text="50%", font=(self._mono, 18, "bold"), fg=_Theme.ORANGE, bg=_Theme.BG_CARD)
+        self._bri_lbl.pack(anchor="w", padx=14, pady=(0, 12))
+
+        # ── network ──
+        nc = self._card(sf)
+        nc.pack(fill="x", pady=(0, 6))
+        tk.Label(nc, text="NETWORK", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(14, 6))
+        self._ip_lbl = tk.Label(nc, text="Detecting…", font=self.F_MONO, fg=_Theme.TEXT, bg=_Theme.BG_CARD)
+        self._ip_lbl.pack(anchor="w", padx=16)
+        self._p2p_lbl = tk.Label(nc, text="P2P: ws://0.0.0.0:9876", font=self.F_MONO_SM,
+                                  fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD)
+        self._p2p_lbl.pack(anchor="w", padx=16, pady=(2, 14))
+
+        # ── stats row ──
+        sc = self._card(sf)
+        sc.pack(fill="x", pady=(0, 8))
+        sr = tk.Frame(sc, bg=_Theme.BG_CARD)
+        sr.pack(fill="x", padx=16, pady=14)
+        sr.columnconfigure(0, weight=1); sr.columnconfigure(1, weight=1); sr.columnconfigure(2, weight=1)
+
+        tk.Label(sr, text="UPTIME", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).grid(row=0, column=0, sticky="w")
+        self._up_lbl = tk.Label(sr, text="0:00:00", font=self.F_MONO, fg=_Theme.TEXT, bg=_Theme.BG_CARD)
+        self._up_lbl.grid(row=1, column=0, sticky="w")
+
+        tk.Label(sr, text="COMMANDS", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).grid(row=0, column=1, sticky="w")
+        self._cmd_lbl = tk.Label(sr, text="0", font=self.F_MONO, fg=_Theme.SUCCESS, bg=_Theme.BG_CARD)
+        self._cmd_lbl.grid(row=1, column=1, sticky="w")
+
+        tk.Label(sr, text="P2P", font=self.F_TINY, fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).grid(row=0, column=2, sticky="w")
+        self._p2p_cnt = tk.Label(sr, text="0", font=self.F_MONO, fg=_Theme.CYAN, bg=_Theme.BG_CARD)
+        self._p2p_cnt.grid(row=1, column=2, sticky="w")
+
+    # ── logs page ──
+    def _build_logs_page(self):
+        frame = tk.Frame(self.content, bg=_Theme.BG)
+        self.pages["logs"] = frame
+
+        hdr = tk.Frame(frame, bg=_Theme.BG)
+        hdr.pack(fill="x", pady=(0, 6))
+        tk.Label(hdr, text="ACTIVITY LOG", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(side="left")
+        clr = tk.Label(hdr, text="Clear", font=self.F_SMALL, fg=_Theme.ACCENT, bg=_Theme.BG, cursor="hand2")
+        clr.pack(side="right")
+        clr.bind("<Button-1>", lambda e: self._clear_logs())
+
+        lc = self._card(frame)
+        lc.pack(fill="both", expand=True)
+        self._log_txt = tk.Text(lc, bg=_Theme.BG_CARD, fg=_Theme.TEXT, font=self.F_MONO_SM,
+                                wrap="word", bd=0, highlightthickness=0, padx=14, pady=14,
+                                insertbackground=_Theme.TEXT, selectbackground=_Theme.ACCENT_DIM)
+        self._log_txt.pack(fill="both", expand=True)
+        for tag, color in [("error", _Theme.ERROR), ("warn", _Theme.WARNING),
+                           ("info", _Theme.CYAN), ("time", _Theme.TEXT_MUTED), ("category", _Theme.PURPLE)]:
+            self._log_txt.tag_configure(tag, foreground=color)
+        self._log_txt.configure(state="disabled")
+
+    # ── settings page ──
+    def _build_settings_page(self):
+        frame = tk.Frame(self.content, bg=_Theme.BG)
+        self.pages["settings"] = frame
+
+        # device card
+        dc = self._card(frame)
+        dc.pack(fill="x", pady=(0, 8))
+        tk.Label(dc, text="DEVICE", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(14, 6))
+        tk.Label(dc, text=platform.node(), font=self.F_HEAD,
+                 fg=_Theme.TEXT, bg=_Theme.BG_CARD).pack(anchor="w", padx=16)
+        tk.Label(dc, text=f"{platform.system()} {platform.release()}", font=self.F_SMALL,
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG_CARD).pack(anchor="w", padx=16, pady=(2, 14))
+
+        tk.Label(frame, text="ACTIONS", font=(self._sans, 8, "bold"),
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(anchor="w", pady=(10, 6))
+
+        self._btn(frame, "🌐  Open Web App", self._open_web)
+        self._btn(frame, "👻  Ghost Mode", self._ghost)
+        self._btn(frame, "🔄  Restart Agent", self._restart)
+        self._btn(frame, "⏻  Quit Agent", self._quit, danger=True)
+
+        tk.Frame(frame, bg=_Theme.BG, height=20).pack(fill="x")
+        tk.Label(frame, text=f"JARVIS Agent v{AGENT_VERSION}", font=self.F_TINY,
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(anchor="center")
+        tk.Label(frame, text="Total Black Edition", font=self.F_TINY,
+                 fg=_Theme.TEXT_MUTED, bg=_Theme.BG).pack(anchor="center")
+
+    # ─────────────────── data flow ───────────────────
+    def update_status(self, data):
+        self._st.update(data)
+
+    def add_log(self, level, message, category="general"):
+        self._logs.append({"time": datetime.now().strftime("%H:%M:%S"),
+                           "level": level, "message": message, "category": category})
+        if len(self._logs) > 300:
+            self._logs = self._logs[-300:]
+
+    # ─────────────────── refresh loop ───────────────────
+    def _tick(self):
+        try:
+            self._refresh()
+        except Exception:
+            pass
+        self.root.after(1000, self._tick)
+
+    def _refresh(self):
+        s = self._st
+
+        # pull live data from agent
+        if self.agent:
+            try:
+                status = get_agent_status()
+                s.update({
+                    "connected": status.get("connected", False),
+                    "pairing_code": status.get("pairing_code", "------"),
+                    "cpu": status.get("cpu_percent", 0),
+                    "memory": status.get("memory_percent", 0),
+                    "volume": status.get("volume", 50),
+                    "brightness": status.get("brightness", 50),
+                    "p2p_mode": status.get("connection_mode", "cloud"),
+                    "local_ips": status.get("local_ips", []),
+                    "device_name": status.get("device_name", platform.node()),
+                    "commands_executed": status.get("commands_executed", 0),
+                })
+                p2p = get_local_p2p_server()
+                if p2p:
+                    s["p2p_clients"] = len(getattr(p2p, 'clients', []))
+
+                agent_logs = get_logs()
+                for lg in agent_logs[len(self._logs):]:
+                    ts = lg.get("timestamp", "")
+                    t_str = ts.split("T")[1][:8] if "T" in ts else ts[:8]
+                    self._logs.append({"time": t_str, "level": lg.get("level", "info"),
+                                       "message": lg.get("message", ""), "category": lg.get("category", "general")})
+            except Exception:
+                pass
+        else:
+            try:
+                import psutil
+                s["cpu"] = psutil.cpu_percent()
+                s["memory"] = psutil.virtual_memory().percent
+            except Exception:
+                pass
+
+        conn = s.get("connected", False)
+
+        # header
+        self._draw_orb(conn)
+        if conn:
+            self._sub.configure(text=f"{s.get('device_name', '')} · Online")
+            self._badge.configure(text="  ONLINE  ", fg=_Theme.SUCCESS, bg=_Theme.SUCCESS_DIM)
+        else:
+            self._sub.configure(text="Waiting for connection…")
+            self._badge.configure(text="  OFFLINE  ", fg=_Theme.ERROR, bg=_Theme.ERROR_DIM)
+
+        # connection card
+        self._cdot.delete("all")
+        self._cdot.create_oval(2, 2, 10, 10, fill=_Theme.SUCCESS if conn else _Theme.ERROR, outline="")
+        mode = s.get("p2p_mode", "cloud")
+        if mode == "local_p2p":
+            self._conn_title.configure(text="Local P2P ⚡", fg=_Theme.SUCCESS)
+            self._conn_sub.configure(text="Ultra-low latency · Same network")
+        elif conn:
+            self._conn_title.configure(text="Cloud Relay", fg=_Theme.ACCENT)
+            self._conn_sub.configure(text="Connected via cloud relay")
+        else:
+            self._conn_title.configure(text="Disconnected", fg=_Theme.TEXT_MUTED)
+            self._conn_sub.configure(text="Waiting for mobile app…")
+
+        # pairing
+        code = s.get("pairing_code", "------")
+        if code and code != "------":
+            self._pair_lbl.configure(text=code)
+
+        # metrics
+        cpu = int(s.get("cpu", 0))
+        mem = int(s.get("memory", 0))
+        self._cpu_lbl.configure(text=f"{cpu}%", fg=_Theme.ERROR if cpu > 80 else _Theme.WARNING if cpu > 60 else _Theme.CYAN)
+        self._mem_lbl.configure(text=f"{mem}%", fg=_Theme.ERROR if mem > 80 else _Theme.WARNING if mem > 60 else _Theme.PURPLE)
+        self._cpu_bar._draw(cpu)
+        self._mem_bar._draw(mem)
+
+        # vol / brightness
+        self._vol_lbl.configure(text=f"{s.get('volume', 0)}%")
+        self._bri_lbl.configure(text=f"{s.get('brightness', 0)}%")
+
+        # network
+        ips = s.get("local_ips", [])
+        self._ip_lbl.configure(text=ips[0] if ips else "No network")
+
+        # stats
+        elapsed = int(time.time() - self._t0)
+        self._up_lbl.configure(text=f"{elapsed//3600}:{(elapsed%3600)//60:02d}:{elapsed%60:02d}")
+        self._cmd_lbl.configure(text=str(s.get("commands_executed", 0)))
+        self._p2p_cnt.configure(text=str(s.get("p2p_clients", 0)))
+
+        # logs
+        self._refresh_log_text()
+
+    def _refresh_log_text(self):
+        self._log_txt.configure(state="normal")
+        self._log_txt.delete("1.0", "end")
+        for lg in reversed(self._logs[-60:]):
+            self._log_txt.insert("end", f"{lg['time']} ", "time")
+            self._log_txt.insert("end", f"[{lg['category']}] ", "category")
+            self._log_txt.insert("end", f"{lg['message']}\n", lg.get("level", "info"))
+        self._log_txt.configure(state="disabled")
+
+    def _clear_logs(self):
+        self._logs.clear()
+        self._refresh_log_text()
+
+    # ── actions ──
+    def _open_web(self):
+        url = os.environ.get("JARVIS_APP_URL", "https://id-preview--d1b9acd5-529c-4761-84e6-7717f3667310.lovable.app")
+        webbrowser.open(url)
+
+    def _ghost(self):
+        if self.agent:
+            try: self.agent._enable_ghost_mode({})
+            except Exception: pass
+
+    def _restart(self):
+        if self.agent:
+            self.agent.running = False
+        self.root.after(1000, lambda: os.execv(sys.executable, [sys.executable] + sys.argv))
+
+    def _quit(self):
+        if self.agent:
+            self.agent.running = False
+        self.root.destroy()
+        sys.exit(0)
+
+    def run(self):
+        self.root.mainloop()
+
+
 # ============== BOOTSTRAP ==============
 def _check_dependencies() -> None:
     try:
@@ -5816,20 +6370,13 @@ def main():
     use_gui = not headless  # GUI is default now
     
     if use_gui and HAS_TKINTER:
-        # Launch GUI with agent in background thread
+        # Launch embedded GUI directly — no external file needed
         try:
-            from jarvis_gui import JarvisGUI
-            
-            # Run agent in background
             agent_thread = threading.Thread(target=_run_agent_loop, args=(agent,), daemon=True)
             agent_thread.start()
-            
-            # Launch GUI on main thread
+
             gui = JarvisGUI(agent=agent)
             gui.run()
-        except ImportError:
-            add_log("warn", "jarvis_gui.py not found, falling back to headless mode", category="system")
-            _run_agent_loop(agent)
         except Exception as e:
             add_log("error", f"GUI failed: {e}, falling back to headless", category="system")
             _run_agent_loop(agent)
