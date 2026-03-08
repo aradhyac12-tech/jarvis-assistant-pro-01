@@ -54,24 +54,18 @@ export function GlobalClipboardSync() {
   const SLOW_INTERVAL = 5000;
   const SLOWDOWN_THRESHOLD = 30; // polls with no change before slowing
 
-  // Reset polling to fast interval on activity
-  const resetBackoff = useCallback(() => {
-    noChangeCountRef.current = 0;
-    if (currentIntervalRef.current !== FAST_INTERVAL) {
-      currentIntervalRef.current = FAST_INTERVAL;
-      // Restart poll timer at fast rate
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    }
-  }, []);
-
   // Push clipboard text to PC via best available transport
   const pushToPc = useCallback(async (text: string) => {
     if (!text.trim() || text === lastSentRef.current) return;
     lastSentRef.current = text;
-    resetBackoff(); // user activity — go fast
+    // Reset backoff inline — user copied something
+    noChangeCountRef.current = 0;
+    if (currentIntervalRef.current !== FAST_INTERVAL && checkRef.current) {
+      currentIntervalRef.current = FAST_INTERVAL;
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = window.setInterval(checkRef.current, FAST_INTERVAL);
+      console.log("[Clipboard] ⚡ Resumed fast polling (user copy)");
+    }
     try {
       if (!isWifiConnected && isBleConnected) {
         await bluetooth.sendClipboard(text);
@@ -79,7 +73,7 @@ export function GlobalClipboardSync() {
         await sendCommand("set_clipboard", { content: text }, { awaitResult: false });
       }
     } catch { /* silent */ }
-  }, [sendCommand, isWifiConnected, isBleConnected, bluetooth, resetBackoff]);
+  }, [sendCommand, isWifiConnected, isBleConnected, bluetooth]);
 
   // Phone → PC: instant on copy/cut
   useEffect(() => {
@@ -118,6 +112,8 @@ export function GlobalClipboardSync() {
   }, [isBleConnected, bluetooth]);
 
   // PC → Phone: poll with exponential backoff over WiFi
+  const checkRef = useRef<(() => Promise<void>) | null>(null);
+
   useEffect(() => {
     if (!isWifiConnected) {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -133,16 +129,23 @@ export function GlobalClipboardSync() {
           const data = result.result as { changed?: boolean; content?: string };
           if (data.changed && data.content && data.content !== lastSentRef.current && data.content !== lastReceivedRef.current) {
             lastReceivedRef.current = data.content;
-            resetBackoff(); // clipboard changed — stay fast
+            // Clipboard changed — reset to fast polling
+            noChangeCountRef.current = 0;
+            if (currentIntervalRef.current !== FAST_INTERVAL) {
+              currentIntervalRef.current = FAST_INTERVAL;
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = window.setInterval(check, FAST_INTERVAL);
+              console.log("[Clipboard] ⚡ Resumed fast polling (change detected)");
+            }
             try { await navigator.clipboard.writeText(data.content); } catch { /* silent */ }
           } else {
             // No change — increment counter, maybe slow down
             noChangeCountRef.current++;
             if (noChangeCountRef.current >= SLOWDOWN_THRESHOLD && currentIntervalRef.current === FAST_INTERVAL) {
               currentIntervalRef.current = SLOW_INTERVAL;
-              // Restart timer at slower rate
               if (pollRef.current) clearInterval(pollRef.current);
               pollRef.current = window.setInterval(check, SLOW_INTERVAL);
+              console.log("[Clipboard] 🐢 Slowed polling to 5s (no changes for 30s)");
             }
           }
         }
@@ -150,12 +153,13 @@ export function GlobalClipboardSync() {
       busyRef.current = false;
     };
 
+    checkRef.current = check;
     currentIntervalRef.current = FAST_INTERVAL;
     noChangeCountRef.current = 0;
     check();
     pollRef.current = window.setInterval(check, FAST_INTERVAL);
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, [isWifiConnected, sendCommand, resetBackoff]);
+  }, [isWifiConnected, sendCommand]);
 
   return null; // headless
 }
