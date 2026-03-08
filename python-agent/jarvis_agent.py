@@ -720,6 +720,7 @@ class BluetoothServer:
                 asyncio.run_coroutine_threadsafe(self._server.stop(), self._loop)
             except Exception:
                 pass
+        # Clipboard thread will exit on self.running = False
     
     def _run(self):
         self._loop = asyncio.new_event_loop()
@@ -776,6 +777,13 @@ class BluetoothServer:
             
             await server.start()
             add_log("info", "BLE GATT server started (JARVIS-PC)", category="bluetooth")
+            
+            # Start clipboard push monitor thread
+            self._clipboard_thread = threading.Thread(
+                target=self._clipboard_push_loop, daemon=True, name="ble-clipboard-push"
+            )
+            self._clipboard_thread.start()
+            add_log("info", "BLE clipboard push monitor started (1.5s interval)", category="bluetooth")
             
             while self.running:
                 await asyncio.sleep(1)
