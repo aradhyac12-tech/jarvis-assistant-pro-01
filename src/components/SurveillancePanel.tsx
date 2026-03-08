@@ -472,7 +472,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
     }, 10000);
   }, [autoAudioCapture, monitoring, startSurvAudioCapture, stopSurvAudioCapture]);
 
-
+  const triggerAlerts = useCallback(async (event: MotionEvent) => {
     // No spam — only alert once per monitoring session
     if (alarmEnabled) {
       await sendCommand("play_alarm", { type: sirenEnabled ? "siren" : "beep" });
@@ -484,7 +484,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
         auto_call: true,
       });
     }
-  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
+    // Trigger audio capture on motion
+    triggerSurvAudioOnMotion();
+  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand, triggerSurvAudioOnMotion]);
 
   const toggleSiren = useCallback(async () => {
     if (sirenActive) {
