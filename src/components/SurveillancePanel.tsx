@@ -1051,12 +1051,14 @@ export function SurveillancePanel({ className }: { className?: string }) {
 
                       notifyHumanDetected(confPct);
                       
-                      // Auto-siren on detection if enabled and not confirmed as owner
-                      if (autoSirenOnDetect && !ownerConfirmed) {
+                      // Auto-siren: activate if enabled OR if auto-presence is in away mode
+                      const shouldSiren = (autoSirenOnDetect || autoPresence.presenceStatus === "away") && !ownerConfirmed;
+                      if (shouldSiren) {
                         setSirenActive(true);
                         sendCommand("set_volume", { level: 100 }, { awaitResult: false });
                         sendCommand("play_alarm", { type: "siren", action: "start" });
-                        toast({ title: "🚨 INTRUDER DETECTED!", description: `Confidence: ${confPct}% — Siren activated` });
+                        toast({ title: "🚨 INTRUDER DETECTED!", description: `Confidence: ${confPct}% — Siren activated`, variant: "destructive" });
+                        addLog("warn", "web", `🚨 Intruder siren triggered (away mode, confidence: ${confPct}%)`);
                       } else {
                         toast({ title: "🧍 Human Detected!", description: `Confidence: ${confPct}%` });
                       }
