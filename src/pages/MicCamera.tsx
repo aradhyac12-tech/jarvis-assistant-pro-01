@@ -462,11 +462,14 @@ export default function MicCamera() {
 
   const stopPcCamera = useCallback(async () => {
     sendCommand("stop_camera_stream", {});
+    if (hasWebSocketOwnership(PIP_CAMERA_STREAM_ID)) {
+      releaseWebSocketOwnership(PIP_CAMERA_STREAM_ID);
+    }
     pcCamWsRef.current?.close();
     pcCamWsRef.current = null;
     setPcCamActive(false); setPcCamFrame(null); setLiveCamFps(0); setCamLatency(0);
     toast({ title: "Camera Stopped" });
-  }, [sendCommand, toast]);
+  }, [sendCommand, hasWebSocketOwnership, releaseWebSocketOwnership, toast]);
 
   const updateCamSettings = useCallback(async (fps: number, quality: number) => {
     // Cap quality when FPS is high to prevent agent crash
@@ -534,12 +537,15 @@ export default function MicCamera() {
   }, [sendCommand, screenFps, screenQuality, p2pStreaming, session, toast, waitForWsOpen, processFrames]);
 
   const stopScreen = useCallback(async () => {
+    if (hasWebSocketOwnership(PIP_SCREEN_STREAM_ID)) {
+      releaseWebSocketOwnership(PIP_SCREEN_STREAM_ID);
+    }
     screenWsRef.current?.close();
     screenWsRef.current = null;
     sendCommand("stop_screen_stream", {});
     setScreenActive(false); setScreenFrame(null); setLiveScreenFps(0); setScreenLatency(0);
     toast({ title: "Screen Mirror Stopped" });
-  }, [sendCommand, toast]);
+  }, [sendCommand, hasWebSocketOwnership, releaseWebSocketOwnership, toast]);
 
   const updateScreenSettings = useCallback(async (fps: number, quality: number) => {
     if (screenActive) sendCommand("update_screen_settings", { fps, quality: fps > 30 ? Math.min(quality, 90) : quality });
