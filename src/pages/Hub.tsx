@@ -775,6 +775,9 @@ export default function Hub() {
                 {/* Fan Speed Control */}
                 <FanSpeedControl />
 
+                {/* Startup Manager */}
+                <StartupManager />
+
                 {/* Quick Links — above sliders */}
                 <div className="grid grid-cols-2 gap-2">
                   {quickLinks.map((link) => (
