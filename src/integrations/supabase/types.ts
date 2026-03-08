@@ -363,6 +363,62 @@ export type Database = {
           },
         ]
       }
+      scheduled_commands: {
+        Row: {
+          command_type: string
+          created_at: string
+          device_id: string
+          enabled: boolean | null
+          id: string
+          label: string | null
+          last_run_at: string | null
+          payload: Json | null
+          repeat_days: string[] | null
+          repeat_mode: string | null
+          scheduled_at: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          command_type: string
+          created_at?: string
+          device_id: string
+          enabled?: boolean | null
+          id?: string
+          label?: string | null
+          last_run_at?: string | null
+          payload?: Json | null
+          repeat_days?: string[] | null
+          repeat_mode?: string | null
+          scheduled_at: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          command_type?: string
+          created_at?: string
+          device_id?: string
+          enabled?: boolean | null
+          id?: string
+          label?: string | null
+          last_run_at?: string | null
+          payload?: Json | null
+          repeat_days?: string[] | null
+          repeat_mode?: string | null
+          scheduled_at?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scheduled_commands_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "devices"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       surveillance_events: {
         Row: {
           confidence: number
