@@ -1348,7 +1348,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
                                   </p>
 
                                   {/* Geofence Map */}
-                                  <GeofenceMap
+                                  <SafeGeofenceMap
                                     homeLat={autoPresence.homeLat}
                                     homeLng={autoPresence.homeLng}
                                     homeRadius={autoPresence.homeRadius}
