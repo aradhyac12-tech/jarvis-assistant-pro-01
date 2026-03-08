@@ -144,7 +144,7 @@ export default function Settings() {
         <div className="flex items-center gap-4">
           <BackButton />
           <div>
-            <h1 className="text-2xl font-bold">Settings</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
             <p className="text-sm text-muted-foreground">Configure your Jarvis assistant</p>
           </div>
         </div>
@@ -153,22 +153,32 @@ export default function Settings() {
         <StreamingDiagnostics />
 
         {/* Voice Settings */}
-        <Card className="border-border/30 bg-card/50">
+        <Card className="border-border/20 bg-card/60 rounded-2xl overflow-hidden">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base"><Mic className="h-4 w-4 text-primary" />Voice Settings</CardTitle>
+            <CardTitle className="flex items-center gap-2.5 text-base">
+              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Mic className="h-3.5 w-3.5 text-primary" />
+              </div>
+              Voice Settings
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="space-y-1">
-              <Label className="text-xs">Wake Word</Label>
-              <Input value={wakeWord} onChange={(e) => setWakeWord(e.target.value)} className="h-8 text-sm" />
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">Wake Word</Label>
+              <Input value={wakeWord} onChange={(e) => setWakeWord(e.target.value)} className="h-9 text-sm rounded-xl bg-secondary/20 border-border/15" />
             </div>
           </CardContent>
         </Card>
 
         {/* App Lock & Security */}
-        <Card className="border-border/30 bg-card/50">
+        <Card className="border-border/20 bg-card/60 rounded-2xl overflow-hidden">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base"><Shield className="h-4 w-4 text-primary" />App Lock & Security</CardTitle>
+            <CardTitle className="flex items-center gap-2.5 text-base">
+              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Shield className="h-3.5 w-3.5 text-primary" />
+              </div>
+              App Lock & Security
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             {/* Enable/Disable App Lock */}
@@ -244,9 +254,14 @@ export default function Settings() {
         </Card>
 
         {/* Device Connection */}
-        <Card className="border-border/30 bg-card/50">
+        <Card className="border-border/20 bg-card/60 rounded-2xl overflow-hidden">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base"><Monitor className="h-4 w-4 text-primary" />Device Connection</CardTitle>
+            <CardTitle className="flex items-center gap-2.5 text-base">
+              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Monitor className="h-3.5 w-3.5 text-primary" />
+              </div>
+              Device Connection
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30">
@@ -268,9 +283,14 @@ export default function Settings() {
         </Card>
 
         {/* Notifications */}
-        <Card className="border-border/30 bg-card/50">
+        <Card className="border-border/20 bg-card/60 rounded-2xl overflow-hidden">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base"><Bell className="h-4 w-4 text-primary" />Notifications</CardTitle>
+            <CardTitle className="flex items-center gap-2.5 text-base">
+              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Bell className="h-3.5 w-3.5 text-primary" />
+              </div>
+              Notifications
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
@@ -324,7 +344,7 @@ export default function Settings() {
         </Card>
 
         {/* Call Detection - Real Native Integration */}
-        <Card className="border-border/30 bg-card/50">
+        <Card className="border-border/20 bg-card/60 rounded-2xl overflow-hidden">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Phone className={cn("h-4 w-4", callState.isInCall ? "text-primary animate-pulse" : "text-muted-foreground")} />
@@ -444,7 +464,7 @@ export default function Settings() {
         {/* OTA Updates */}
         <OTAUpdateCard />
 
-        <Button onClick={handleSave} className="w-full h-9 text-sm">
+        <Button onClick={handleSave} className="w-full h-11 text-sm font-medium rounded-xl shadow-lg shadow-primary/10">
           <Check className="h-4 w-4 mr-2" /> Save Settings
         </Button>
       </div>
