@@ -59,6 +59,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const [sirenEnabled, setSirenEnabled] = useState(() => localStorage.getItem("surveillance_siren") === "true");
   const [autoCall, setAutoCall] = useState(() => localStorage.getItem("surveillance_autocall") === "true");
   const [micEnabled, setMicEnabled] = useState(() => localStorage.getItem("surveillance_mic") === "true");
+  const [autoAudioCapture, setAutoAudioCapture] = useState(() => localStorage.getItem("surveillance_auto_audio") === "true");
   const [survFps, setSurvFps] = useState(() => parseInt(localStorage.getItem("surveillance_fps") || "30"));
   const [survQuality, setSurvQuality] = useState(() => parseInt(localStorage.getItem("surveillance_quality") || "65"));
 
@@ -146,6 +147,13 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const audioWsRef = useRef<WebSocket | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+
+  // Surveillance auto-audio capture refs
+  const survAudioWsRef = useRef<WebSocket | null>(null);
+  const survAudioContextRef = useRef<AudioContext | null>(null);
+  const survAudioActiveRef = useRef(false);
+  const survAudioStopTimerRef = useRef<number | null>(null);
+  const survAudioSessionIdRef = useRef<string | null>(null);
 
   // Refs for streaming
   const wsRef = useRef<WebSocket | null>(null);
@@ -263,6 +271,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
   useEffect(() => localStorage.setItem("surveillance_auto_siren", String(autoSirenOnDetect)), [autoSirenOnDetect]);
   useEffect(() => localStorage.setItem("surveillance_ml_recognition", String(recognitionEnabled)), [recognitionEnabled]);
   useEffect(() => localStorage.setItem("surveillance_continuous_recognition", String(continuousRecognition)), [continuousRecognition]);
+  useEffect(() => localStorage.setItem("surveillance_auto_audio", String(autoAudioCapture)), [autoAudioCapture]);
   useEffect(() => { continuousRecEnabledRef.current = continuousRecognition; }, [continuousRecognition]);
 
   // Check if model exists on mount
@@ -332,6 +341,137 @@ export function SurveillancePanel({ className }: { className?: string }) {
     img.src = base64OrBlob;
   }, [sensitivity]);
 
+  // Auto audio capture: start PC mic recording on motion, stop after 5s inactivity
+  const startSurvAudioCapture = useCallback(async () => {
+    if (survAudioActiveRef.current || !session?.session_token || !autoAudioCapture) return;
+
+    const audioSessionId = crypto.randomUUID();
+    survAudioSessionIdRef.current = audioSessionId;
+
+    try {
+      // Tell PC agent to start capturing audio
+      await sendCommand("start_audio_relay", {
+        session_id: audioSessionId,
+        direction: "pc_to_phone",
+        use_system_audio: false, // Use mic, not system audio
+        surveillance_mode: true,
+      }, { awaitResult: false });
+
+      // Connect WS to receive and record the audio
+      const WS_BASE = getFunctionsWsBase();
+      const wsUrl = `${WS_BASE}/functions/v1/audio-relay?sessionId=${audioSessionId}&type=phone&direction=pc_to_phone&session_token=${session.session_token}`;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => { ws.close(); reject(new Error("timeout")); }, 8000);
+        ws.onopen = () => { clearTimeout(t); resolve(); };
+        ws.onerror = () => { clearTimeout(t); reject(new Error("ws error")); };
+      });
+
+      survAudioWsRef.current = ws;
+      survAudioActiveRef.current = true;
+
+      // Set up audio playback context so we can hear what's happening
+      const ac = new AudioContext();
+      survAudioContextRef.current = ac;
+      if (ac.state === "suspended") await ac.resume();
+
+      const TARGET_RATE = 16000;
+      let playbackTime = 0;
+
+      ws.onmessage = async (event) => {
+        if (event.data instanceof ArrayBuffer && event.data.byteLength > 0) {
+          try {
+            if (ac.state === "suspended") await ac.resume();
+            const pcm16Data = new Int16Array(event.data);
+            const float32 = new Float32Array(pcm16Data.length);
+            for (let i = 0; i < pcm16Data.length; i++) float32[i] = pcm16Data[i] / 32768;
+
+            const playRatio = ac.sampleRate / TARGET_RATE;
+            const outputLen = Math.round(float32.length * playRatio);
+            const buffer = ac.createBuffer(1, outputLen, ac.sampleRate);
+            const out = buffer.getChannelData(0);
+            for (let i = 0; i < outputLen; i++) {
+              const srcIdx = i / playRatio;
+              const floor = Math.floor(srcIdx);
+              const ceil = Math.min(floor + 1, float32.length - 1);
+              const frac = srcIdx - floor;
+              out[i] = float32[floor] * (1 - frac) + float32[ceil] * frac;
+            }
+
+            const bufferSource = ac.createBufferSource();
+            bufferSource.buffer = buffer;
+            bufferSource.connect(ac.destination);
+            const now = ac.currentTime;
+            const startAt = Math.max(now + 0.01, playbackTime);
+            bufferSource.start(startAt);
+            playbackTime = startAt + buffer.duration;
+          } catch {}
+        }
+      };
+
+      ws.onclose = () => {
+        survAudioActiveRef.current = false;
+        survAudioWsRef.current = null;
+      };
+
+      // Ping keepalive
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+        } else clearInterval(pingInterval);
+      }, 30000);
+
+      addLog("info", "web", "🎤 Surveillance audio capture started (motion triggered)");
+
+      // Save event
+      saveEvent({
+        event_type: "motion",
+        confidence: 80,
+        metadata: { audio_capture: true, session_id: audioSessionId },
+      });
+
+    } catch (err) {
+      addLog("warn", "web", `Surveillance audio capture failed: ${err}`);
+      survAudioActiveRef.current = false;
+    }
+  }, [session?.session_token, autoAudioCapture, sendCommand, saveEvent]);
+
+  const stopSurvAudioCapture = useCallback(() => {
+    if (!survAudioActiveRef.current) return;
+    if (survAudioWsRef.current) { try { survAudioWsRef.current.close(); } catch {} survAudioWsRef.current = null; }
+    if (survAudioContextRef.current) { try { survAudioContextRef.current.close(); } catch {} survAudioContextRef.current = null; }
+    if (survAudioSessionIdRef.current) {
+      sendCommand("stop_audio_relay", { session_id: survAudioSessionIdRef.current }, { awaitResult: false });
+      survAudioSessionIdRef.current = null;
+    }
+    survAudioActiveRef.current = false;
+    addLog("info", "web", "🎤 Surveillance audio capture stopped (no motion)");
+  }, [sendCommand]);
+
+  // Extend or start audio capture on motion
+  const triggerSurvAudioOnMotion = useCallback(() => {
+    if (!autoAudioCapture || !monitoring) return;
+
+    // Clear any pending stop timer
+    if (survAudioStopTimerRef.current) {
+      clearTimeout(survAudioStopTimerRef.current);
+      survAudioStopTimerRef.current = null;
+    }
+
+    // Start if not already running
+    if (!survAudioActiveRef.current) {
+      startSurvAudioCapture();
+    }
+
+    // Auto-stop after 10s of no motion
+    survAudioStopTimerRef.current = window.setTimeout(() => {
+      stopSurvAudioCapture();
+      survAudioStopTimerRef.current = null;
+    }, 10000);
+  }, [autoAudioCapture, monitoring, startSurvAudioCapture, stopSurvAudioCapture]);
+
   const triggerAlerts = useCallback(async (event: MotionEvent) => {
     // No spam — only alert once per monitoring session
     if (alarmEnabled) {
@@ -344,7 +484,9 @@ export function SurveillancePanel({ className }: { className?: string }) {
         auto_call: true,
       });
     }
-  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand]);
+    // Trigger audio capture on motion
+    triggerSurvAudioOnMotion();
+  }, [alarmEnabled, sirenEnabled, autoCall, sendCommand, triggerSurvAudioOnMotion]);
 
   const toggleSiren = useCallback(async () => {
     if (sirenActive) {
@@ -638,6 +780,8 @@ export function SurveillancePanel({ className }: { className?: string }) {
   const stopSurveillance = useCallback(() => {
     sendCommand("stop_camera_stream", {});
     if (micEnabled) sendCommand("stop_audio_relay", {});
+    stopSurvAudioCapture(); // Stop motion-triggered audio
+    if (survAudioStopTimerRef.current) { clearTimeout(survAudioStopTimerRef.current); survAudioStopTimerRef.current = null; }
     cleanupWs();
     setMonitoring(false);
     setCurrentFrame(null);
@@ -645,7 +789,7 @@ export function SurveillancePanel({ className }: { className?: string }) {
     setLiveFps(0);
     humanNotifiedRef.current = false;
     toast({ title: "Surveillance Stopped" });
-  }, [sendCommand, toast, micEnabled, cleanupWs]);
+  }, [sendCommand, toast, micEnabled, cleanupWs, stopSurvAudioCapture]);
 
   // Auto-presence: wire up callbacks to auto-start/stop surveillance
   useEffect(() => {
@@ -1051,6 +1195,10 @@ export function SurveillancePanel({ className }: { className?: string }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><Mic className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Listen (Audio)</Label></div>
                       <Switch checked={micEnabled} onCheckedChange={setMicEnabled} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Volume2 className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Auto Audio on Motion</Label></div>
+                      <Switch checked={autoAudioCapture} onCheckedChange={setAutoAudioCapture} />
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2"><Bell className="h-4 w-4 text-muted-foreground" /><Label className="text-xs">Play PC Alarm</Label></div>
