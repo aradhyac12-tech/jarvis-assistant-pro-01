@@ -2365,7 +2365,7 @@ SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
 
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = "1212"
-POLL_INTERVAL = 0.3
+POLL_INTERVAL = 0.08  # 80ms for near-instant response
 HEARTBEAT_INTERVAL = 5
 LOCAL_P2P_PORT = 9876
 PAIRING_CODE_LIFETIME_MINUTES = 30
@@ -7195,44 +7195,52 @@ class JarvisAgent:
     
     def poll_commands(self):
         try:
-            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
-            result = self.supabase.table("commands").select("*").eq(
-                "device_id", self.device_id
-            ).eq("status", "pending").gt("created_at", cutoff).order("created_at").execute()
-            
-            if not result.data:
+            # Use agent-poll edge function for faster polling with claim mechanism
+            edge_url = f"{SUPABASE_URL}/functions/v1/agent-poll"
+            headers = {
+                "Content-Type": "application/json",
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "x-device-key": self.device_key,
+            }
+            import requests as req_lib
+            resp = req_lib.post(edge_url, json={"action": "poll"}, headers=headers, timeout=3)
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+            commands = data.get("commands", [])
+            if not commands:
                 return
             
-            for cmd_row in result.data:
+            for cmd_row in commands:
                 cmd_type = cmd_row.get("command_type", "")
                 payload = cmd_row.get("payload", {}) or {}
                 cmd_id = cmd_row["id"]
                 
-                add_log("info", f"Command executed: {cmd_type}", category="command")
+                add_log("info", f"Command received: {cmd_type}", category="command")
                 
                 try:
-                    self.supabase.table("commands").update({
-                        "status": "processing",
-                        "executed_at": datetime.now(timezone.utc).isoformat()
-                    }).eq("id", cmd_id).execute()
+                    # Reuse the persistent event loop instead of creating new one each time
+                    if not hasattr(self, '_cmd_loop') or self._cmd_loop.is_closed():
+                        self._cmd_loop = asyncio.new_event_loop()
+                    result_data = self._cmd_loop.run_until_complete(self._handle_command(cmd_type, payload))
                     
-                    loop = asyncio.new_event_loop()
-                    result_data = loop.run_until_complete(self._handle_command(cmd_type, payload))
-                    loop.close()
-                    
-                    self.supabase.table("commands").update({
-                        "status": "completed",
+                    # Report completion via edge function
+                    req_lib.post(edge_url, json={
+                        "action": "complete",
+                        "commandId": cmd_id,
                         "result": result_data,
-                    }).eq("id", cmd_id).execute()
+                    }, headers=headers, timeout=3)
                     
                     self.consecutive_failures = 0
                     self.backoff_seconds = 1
                 except Exception as e:
                     add_log("error", f"Command '{cmd_type}' failed: {e}", category="command")
-                    self.supabase.table("commands").update({
-                        "status": "failed",
+                    req_lib.post(edge_url, json={
+                        "action": "complete",
+                        "commandId": cmd_id,
                         "result": {"success": False, "error": str(e)},
-                    }).eq("id", cmd_id).execute()
+                    }, headers=headers, timeout=3)
         except Exception as e:
             self.consecutive_failures += 1
             if "rate limit" not in str(e).lower():

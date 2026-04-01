@@ -7,10 +7,10 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-device-key, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// Rate limit: 120 requests per minute per device (agent polls frequently)
+// Rate limit: 600 requests per minute per device (agent polls at ~12/sec)
 const RATE_LIMIT_CONFIG: RateLimitConfig = {
   windowMs: 60000, // 1 minute
-  maxRequests: 120,
+  maxRequests: 600,
 };
 
 /**
