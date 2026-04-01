@@ -5,6 +5,7 @@ supabase>=2.0.0
 asyncio-compat>=0.1.1
 
 # System Control (Windows)
+requests>=2.31.0           # HTTP requests for edge function calls
 pycaw>=20230407          # Windows audio control
 comtypes>=1.2.0          # COM interface for Windows
 screen-brightness-control>=0.22.0  # Brightness control
