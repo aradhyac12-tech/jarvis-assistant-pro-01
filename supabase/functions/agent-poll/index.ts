@@ -73,7 +73,9 @@ serve(async (req) => {
 
     switch (action) {
       case "poll": {
-        // Get pending commands for this device
+        // Get pending commands for this device, prioritizing user-initiated over background
+        const BACKGROUND_TYPES = ['clipboard_check', 'get_system_state', 'get_volume', 'get_brightness', 'get_system_stats', 'get_media_state'];
+        
         const { data: commands, error: cmdError } = await supabase
           .from("commands")
           .select("id, command_type, payload, created_at")
