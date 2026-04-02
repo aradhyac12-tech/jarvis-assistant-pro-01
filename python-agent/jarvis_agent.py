@@ -7250,6 +7250,68 @@ class JarvisAgent:
             if "rate limit" not in str(e).lower():
                 add_log("warn", f"Poll error: {e}", category="system")
     
+    def _start_realtime_listener(self):
+        """Start a Supabase Realtime WebSocket listener for instant command notifications."""
+        def _listen():
+            import websocket
+            import json as json_mod
+            
+            ws_url = SUPABASE_URL.replace("https://", "wss://").replace("http://", "ws://")
+            realtime_url = f"{ws_url}/realtime/v1/websocket?apikey={SUPABASE_KEY}&vsn=1.0.0"
+            
+            while self.running:
+                try:
+                    ws = websocket.WebSocket()
+                    ws.settimeout(30)
+                    ws.connect(realtime_url)
+                    
+                    # Join the commands channel filtered to this device
+                    join_msg = json_mod.dumps({
+                        "topic": f"realtime:public:commands:device_id=eq.{self.device_id}",
+                        "event": "phx_join",
+                        "payload": {"config": {"broadcast": {"self": False}, "postgres_changes": [
+                            {"event": "INSERT", "schema": "public", "table": "commands", "filter": f"device_id=eq.{self.device_id}"}
+                        ]}},
+                        "ref": "1"
+                    })
+                    ws.send(join_msg)
+                    add_log("info", "Realtime WebSocket connected for instant commands", category="system")
+                    
+                    # Keep-alive heartbeat
+                    last_hb = time.time()
+                    
+                    while self.running:
+                        try:
+                            # Send Phoenix heartbeat every 25s
+                            if time.time() - last_hb > 25:
+                                ws.send(json_mod.dumps({"topic": "phoenix", "event": "heartbeat", "payload": {}, "ref": "hb"}))
+                                last_hb = time.time()
+                            
+                            ws.settimeout(5)
+                            msg = ws.recv()
+                            if msg:
+                                data = json_mod.loads(msg)
+                                event = data.get("event", "")
+                                if event == "postgres_changes" or event == "INSERT":
+                                    # New command inserted! Wake up the poll loop immediately
+                                    self._realtime_notified.set()
+                        except websocket.WebSocketTimeoutException:
+                            continue
+                        except Exception:
+                            break
+                    
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                        
+                except Exception as e:
+                    add_log("warn", f"Realtime WS error (will retry): {e}", category="system")
+                    time.sleep(5)
+        
+        t = threading.Thread(target=_listen, daemon=True, name="realtime-listener")
+        t.start()
+    
     def run(self):
         add_log("info", f"JARVIS Agent v{AGENT_VERSION} starting...", category="system")
         
