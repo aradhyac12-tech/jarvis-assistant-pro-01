@@ -116,6 +116,13 @@ serve(async (req) => {
 
     switch (action) {
       case "insert": {
+        // Determine priority: user-initiated commands are high priority
+        const BACKGROUND_COMMANDS = new Set([
+          "clipboard_check", "get_system_state", "get_volume", "get_brightness",
+          "get_system_stats", "get_media_state",
+        ]);
+        const isBackground = BACKGROUND_COMMANDS.has(commandType);
+
         // Insert a new command for the validated device
         const { data, error } = await supabase
           .from("commands")
@@ -135,7 +142,7 @@ serve(async (req) => {
         }
 
         return new Response(
-          JSON.stringify({ success: true, commandId: data.id }),
+          JSON.stringify({ success: true, commandId: data.id, priority: isBackground ? "low" : "high" }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }

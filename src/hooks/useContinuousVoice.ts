@@ -22,7 +22,7 @@ export function useContinuousVoice({
   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
-  const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isWakeWordActiveRef = useRef(false);
   const continuousRef = useRef(continuous);
   const shouldRestartRef = useRef(false);

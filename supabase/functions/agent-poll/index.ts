@@ -73,7 +73,9 @@ serve(async (req) => {
 
     switch (action) {
       case "poll": {
-        // Get pending commands for this device
+        // Get pending commands for this device, prioritizing user-initiated over background
+        const BACKGROUND_TYPES = ['clipboard_check', 'get_system_state', 'get_volume', 'get_brightness', 'get_system_stats', 'get_media_state'];
+        
         const { data: commands, error: cmdError } = await supabase
           .from("commands")
           .select("id, command_type, payload, created_at")
@@ -102,8 +104,16 @@ serve(async (req) => {
           }
         }
 
+        // Sort: user-initiated commands first, background commands last
+        const sortedCommands = (commands || []).sort((a, b) => {
+          const aIsBg = BACKGROUND_TYPES.includes(a.command_type);
+          const bIsBg = BACKGROUND_TYPES.includes(b.command_type);
+          if (aIsBg !== bIsBg) return aIsBg ? 1 : -1;
+          return 0; // preserve created_at order within same priority
+        });
+
         return new Response(
-          JSON.stringify({ success: true, commands: commands || [] }),
+          JSON.stringify({ success: true, commands: sortedCommands }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
