@@ -7212,6 +7212,10 @@ class JarvisAgent:
             if not commands:
                 return
             
+            # Sort by priority: user-initiated commands first, background checks last
+            BACKGROUND_COMMANDS = {"clipboard_check", "get_system_state", "get_volume", "get_brightness", "get_system_stats", "get_media_state"}
+            commands.sort(key=lambda c: 1 if c.get("command_type", "") in BACKGROUND_COMMANDS else 0)
+            
             for cmd_row in commands:
                 cmd_type = cmd_row.get("command_type", "")
                 payload = cmd_row.get("payload", {}) or {}
