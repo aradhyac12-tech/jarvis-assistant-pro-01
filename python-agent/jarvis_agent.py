@@ -7327,6 +7327,10 @@ class JarvisAgent:
         
         last_heartbeat = 0
         
+        # Start Realtime WebSocket listener for instant command notifications
+        self._realtime_notified = threading.Event()
+        self._start_realtime_listener()
+        
         while self.running:
             try:
                 now = time.time()
@@ -7346,8 +7350,10 @@ class JarvisAgent:
                     except Exception as poll_err:
                         add_log("warn", f"Poll error (non-fatal): {poll_err}", category="system")
                 
-                # Sleep
-                time.sleep(POLL_INTERVAL)
+                # Wait for realtime notification OR fallback poll interval
+                # This means instant response when a command is inserted via Realtime
+                self._realtime_notified.wait(timeout=POLL_INTERVAL)
+                self._realtime_notified.clear()
                 
             except KeyboardInterrupt:
                 add_log("info", "Agent stopped by user", category="system")
