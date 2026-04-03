@@ -17,7 +17,7 @@ import platform
 from pathlib import Path
 
 TASK_NAME = "JarvisAgent"
-AGENT_SCRIPT = "jarvis_agent.pyw"
+AGENT_SCRIPT = "jarvis_agent.py"
 
 
 def get_agent_path() -> Path:
