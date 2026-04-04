@@ -7577,7 +7577,157 @@ def _show_startup_blocker():
         time.sleep(30)
 
 
-def main():
+# ============== SYSTEM TRAY ICON ==============
+class JarvisTrayIcon:
+    """System tray icon with live status, controls, and dashboard link."""
+
+    # Colors for status indicator
+    _GREEN = (0, 200, 100)
+    _YELLOW = (255, 200, 0)
+    _RED = (220, 50, 50)
+    _GRAY = (120, 120, 120)
+    _BG = (30, 30, 40)
+
+    def __init__(self, agent):
+        self.agent = agent
+        self._paused = False
+        self._icon = None
+        self._stop_event = threading.Event()
+
+    # ---- icon drawing ----
+    def _make_icon(self, color=None):
+        """Create a 64×64 tray icon with a colored status dot."""
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            from PIL import Image
+            return Image.new("RGB", (64, 64), self._BG)
+
+        img = Image.new("RGB", (64, 64), self._BG)
+        draw = ImageDraw.Draw(img)
+        # "J" letter
+        draw.text((16, 8), "J", fill=(255, 255, 255))
+        # Status dot (bottom-right)
+        dot_color = color or self._get_status_color()
+        draw.ellipse([44, 44, 60, 60], fill=dot_color)
+        return img
+
+    def _get_status_color(self):
+        if self._paused:
+            return self._YELLOW
+        status = agent_status
+        if status.get("connected"):
+            return self._GREEN
+        if status.get("internet_online", True):
+            return self._YELLOW
+        return self._RED
+
+    def _get_tooltip(self) -> str:
+        status = agent_status
+        parts = [f"JARVIS v{AGENT_VERSION}"]
+        if self._paused:
+            parts.append("⏸ Paused")
+        elif status.get("connected"):
+            parts.append("● Connected")
+        else:
+            parts.append("○ Disconnected")
+        if status.get("device_name"):
+            parts.append(status["device_name"])
+        cpu = status.get("cpu_percent", 0)
+        mem = status.get("memory_percent", 0)
+        if cpu or mem:
+            parts.append(f"CPU {cpu}% | RAM {mem}%")
+        return " — ".join(parts)
+
+    # ---- actions ----
+    def _toggle_pause(self, icon, item):
+        self._paused = not self._paused
+        self.agent.running = not self._paused
+        add_log("info", f"Agent {'paused' if self._paused else 'resumed'} from tray", category="system")
+        self._refresh_icon()
+
+    def _open_dashboard(self, icon, item):
+        try:
+            webbrowser.open(f"https://id-preview--d1b9acd5-529c-4761-84e6-7717f3667310.lovable.app")
+        except Exception:
+            pass
+
+    def _show_status(self, icon, item):
+        """Show a toast notification with current status."""
+        status = agent_status
+        msg = (
+            f"Connected: {'Yes' if status.get('connected') else 'No'}\n"
+            f"Device: {status.get('device_name', 'Unknown')}\n"
+            f"CPU: {status.get('cpu_percent', 0)}% | RAM: {status.get('memory_percent', 0)}%\n"
+            f"Mode: {status.get('connection_mode', 'cloud')}"
+        )
+        if HAS_TOAST:
+            try:
+                toaster = ToastNotifier()
+                toaster.show_toast("JARVIS Status", msg, duration=5, threaded=True)
+            except Exception:
+                pass
+        add_log("info", f"Status check from tray: {msg}", category="system")
+
+    def _quit(self, icon, item):
+        add_log("info", "Agent quit from tray icon", category="system")
+        self.agent.running = False
+        self._stop_event.set()
+        icon.stop()
+
+    # ---- menu ----
+    def _build_menu(self):
+        import pystray
+        return pystray.Menu(
+            pystray.MenuItem("JARVIS Agent", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                lambda item: "▶ Resume" if self._paused else "⏸ Pause",
+                self._toggle_pause
+            ),
+            pystray.MenuItem("📊 Show Status", self._show_status),
+            pystray.MenuItem("🌐 Open Dashboard", self._open_dashboard),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("❌ Quit", self._quit),
+        )
+
+    # ---- refresh loop ----
+    def _refresh_loop(self):
+        """Periodically update the tray icon color and tooltip."""
+        while not self._stop_event.is_set():
+            try:
+                if self._icon:
+                    self._refresh_icon()
+            except Exception:
+                pass
+            self._stop_event.wait(5)
+
+    def _refresh_icon(self):
+        if self._icon:
+            try:
+                self._icon.icon = self._make_icon()
+                self._icon.title = self._get_tooltip()
+            except Exception:
+                pass
+
+    # ---- run ----
+    def run(self):
+        import pystray
+        self._icon = pystray.Icon(
+            "JARVIS",
+            self._make_icon(),
+            self._get_tooltip(),
+            menu=self._build_menu()
+        )
+        # Start refresh thread
+        refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True)
+        refresh_thread.start()
+
+        add_log("info", "System tray icon started", category="system")
+        self._icon.run()  # blocks
+
+
+
     parser = argparse.ArgumentParser(description="JARVIS PC Agent")
     parser.add_argument("--gui", action="store_true", help="Launch with GUI (default)")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode (no GUI)")
@@ -7623,12 +7773,20 @@ def main():
         watchdog = threading.Thread(target=_agent_watchdog, args=(agent_thread, agent), daemon=True)
         watchdog.start()
         
-        # Keep main thread alive
-        try:
-            while True:
-                time.sleep(60)
-        except KeyboardInterrupt:
-            add_log("info", "Agent stopped by user", category="system")
+        # Launch system tray icon if pystray available
+        if HAS_TRAY:
+            tray = JarvisTrayIcon(agent)
+            try:
+                tray.run()  # blocks main thread
+            except KeyboardInterrupt:
+                add_log("info", "Agent stopped by user", category="system")
+        else:
+            # No tray — keep main thread alive
+            try:
+                while True:
+                    time.sleep(60)
+            except KeyboardInterrupt:
+                add_log("info", "Agent stopped by user", category="system")
 
 
 def _run_agent_loop(agent):
