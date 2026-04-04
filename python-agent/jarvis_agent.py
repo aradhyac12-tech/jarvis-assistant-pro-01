@@ -7623,12 +7623,20 @@ def main():
         watchdog = threading.Thread(target=_agent_watchdog, args=(agent_thread, agent), daemon=True)
         watchdog.start()
         
-        # Keep main thread alive
-        try:
-            while True:
-                time.sleep(60)
-        except KeyboardInterrupt:
-            add_log("info", "Agent stopped by user", category="system")
+        # Launch system tray icon if pystray available
+        if HAS_TRAY:
+            tray = JarvisTrayIcon(agent)
+            try:
+                tray.run()  # blocks main thread
+            except KeyboardInterrupt:
+                add_log("info", "Agent stopped by user", category="system")
+        else:
+            # No tray — keep main thread alive
+            try:
+                while True:
+                    time.sleep(60)
+            except KeyboardInterrupt:
+                add_log("info", "Agent stopped by user", category="system")
 
 
 def _run_agent_loop(agent):
