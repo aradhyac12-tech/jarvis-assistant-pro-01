@@ -7669,6 +7669,35 @@ class JarvisTrayIcon:
                 pass
         add_log("info", f"Status check from tray: {msg}", category="system")
 
+    def _reconnect_now(self, icon, item):
+        """Force immediate re-registration with the server."""
+        add_log("info", "Reconnect triggered from tray icon", category="system")
+        if HAS_TOAST:
+            try:
+                toaster = ToastNotifier()
+                toaster.show_toast("JARVIS", "Reconnecting to server...", duration=3, threaded=True)
+            except Exception:
+                pass
+        # Run re-registration in a background thread to avoid blocking the tray
+        def _do_reconnect():
+            try:
+                self.agent.device_id = None
+                self.agent.consecutive_failures = 0
+                self.agent.backoff_seconds = 1
+                success = self.agent.register_device()
+                msg = "Reconnected successfully!" if success else "Reconnection failed — will retry automatically."
+                add_log("info" if success else "warn", msg, category="system")
+                if HAS_TOAST:
+                    try:
+                        toaster = ToastNotifier()
+                        toaster.show_toast("JARVIS", msg, duration=4, threaded=True)
+                    except Exception:
+                        pass
+                self._refresh_icon()
+            except Exception as e:
+                add_log("error", f"Reconnect error: {e}", category="system")
+        threading.Thread(target=_do_reconnect, daemon=True).start()
+
     def _quit(self, icon, item):
         add_log("info", "Agent quit from tray icon", category="system")
         self.agent.running = False
@@ -7685,6 +7714,7 @@ class JarvisTrayIcon:
                 lambda item: "▶ Resume" if self._paused else "⏸ Pause",
                 self._toggle_pause
             ),
+            pystray.MenuItem("🔄 Reconnect Now", self._reconnect_now),
             pystray.MenuItem("📊 Show Status", self._show_status),
             pystray.MenuItem("🌐 Open Dashboard", self._open_dashboard),
             pystray.Menu.SEPARATOR,
