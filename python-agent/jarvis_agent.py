@@ -7483,7 +7483,217 @@ class JarvisAgent:
         # BLE server stays running (always-on) — it doesn't hurt to keep it available
         # but we clear the fallback mode flag so the phone knows cloud is available again
 
-# ============== SUPPRESS COM CLEANUP ERRORS ==============
+
+# ============== PROXIMITY AUTO-LOCK/UNLOCK ==============
+class ProximityMonitor:
+    """Monitors owner proximity via P2P, BLE, and Supabase presence.
+    
+    Auto-unlocks PC when owner is nearby and auto-locks when owner leaves.
+    Also triggers surveillance mode when owner is away.
+    """
+    
+    def __init__(self, agent, log_fn=None):
+        self.agent = agent
+        self.log_fn = log_fn or (lambda level, msg: add_log(level, msg, category="proximity"))
+        self.running = False
+        self._thread = None
+        self._owner_present = True  # assume present on start
+        self._last_seen_time = time.time()
+        self._away_threshold = 30  # seconds without presence signal = away
+        self._grace_period = 15  # seconds before locking after going away
+        self._surveillance_triggered = False
+        self._enabled = True
+        self._lock = threading.Lock()
+        
+        # Load PIN from settings
+        self._unlock_pin = UNLOCK_PIN
+    
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True, name="proximity-monitor")
+        self._thread.start()
+        self.log_fn("info", f"Proximity monitor started (away threshold: {self._away_threshold}s)")
+    
+    def stop(self):
+        self.running = False
+    
+    def update_pin(self, new_pin: str):
+        """Update the unlock PIN (called when settings change from app)."""
+        global UNLOCK_PIN
+        self._unlock_pin = new_pin
+        UNLOCK_PIN = new_pin
+        self.log_fn("info", "Unlock PIN updated from app settings")
+    
+    def signal_presence(self):
+        """Called when owner presence is detected via any transport."""
+        with self._lock:
+            self._last_seen_time = time.time()
+            if not self._owner_present:
+                self._owner_present = True
+                self.log_fn("info", "👤 Owner presence detected — marking as HOME")
+                self._on_owner_arrived()
+    
+    def _check_p2p_presence(self) -> bool:
+        """Check if any P2P client is connected (phone on same network)."""
+        try:
+            p2p = get_local_p2p_server()
+            if p2p and hasattr(p2p, '_clients') and p2p._clients:
+                return True
+            # Also check if the P2P server has had recent activity
+            if p2p and hasattr(p2p, '_last_client_activity'):
+                if time.time() - p2p._last_client_activity < self._away_threshold:
+                    return True
+        except Exception:
+            pass
+        return False
+    
+    def _check_ble_presence(self) -> bool:
+        """Check if BLE client (phone) is connected."""
+        try:
+            if _ble_server and hasattr(_ble_server, 'running') and _ble_server.running:
+                if hasattr(_ble_server, '_connected_clients') and _ble_server._connected_clients:
+                    return True
+                if hasattr(_ble_server, 'is_connected') and _ble_server.is_connected:
+                    return True
+        except Exception:
+            pass
+        return False
+    
+    def _check_cloud_presence(self) -> bool:
+        """Check if there was recent command activity from the phone (cloud)."""
+        try:
+            if self.agent.supabase and self.agent.device_id:
+                result = self.agent.supabase.table("commands").select("created_at").eq(
+                    "device_id", self.agent.device_id
+                ).order("created_at", desc=True).limit(1).execute()
+                if result.data:
+                    last_cmd = datetime.fromisoformat(result.data[0]["created_at"].replace("Z", "+00:00"))
+                    age = (datetime.now(timezone.utc) - last_cmd).total_seconds()
+                    if age < self._away_threshold:
+                        return True
+        except Exception:
+            pass
+        return False
+    
+    def _on_owner_arrived(self):
+        """Owner came back — auto-unlock PC and disable surveillance."""
+        self._surveillance_triggered = False
+        
+        # Auto-unlock if PC is locked
+        if self.agent._detect_lock_state():
+            self.log_fn("info", "🔓 Auto-unlocking PC — owner is nearby")
+            try:
+                result = self.agent._smart_unlock(self._unlock_pin)
+                if result.get("success"):
+                    self.log_fn("info", "✅ PC auto-unlocked successfully")
+                    if HAS_TOAST:
+                        try:
+                            toaster = ToastNotifier()
+                            toaster.show_toast("JARVIS", "PC auto-unlocked — welcome back!", duration=3, threaded=True)
+                        except Exception:
+                            pass
+                else:
+                    self.log_fn("warn", f"Auto-unlock attempt: {result.get('error', 'unknown')}")
+            except Exception as e:
+                self.log_fn("error", f"Auto-unlock failed: {e}")
+        
+        # Send presence notification to phone
+        try:
+            if self.agent.supabase and self.agent.device_id:
+                self.agent.supabase.table("commands").insert({
+                    "device_id": self.agent.device_id,
+                    "command_type": "proximity_status",
+                    "payload": {"status": "home", "timestamp": datetime.now(timezone.utc).isoformat()},
+                    "status": "completed",
+                    "result": {"success": True, "owner_present": True},
+                    "user_id": self.agent.device_id,
+                }).execute()
+        except Exception:
+            pass
+    
+    def _on_owner_left(self):
+        """Owner left — auto-lock PC and enable surveillance."""
+        self.log_fn("info", "🔒 Owner left — auto-locking PC")
+        
+        # Auto-lock PC
+        if not self.agent._detect_lock_state():
+            try:
+                self.agent._lock_screen()
+                self.log_fn("info", "✅ PC auto-locked — owner away")
+            except Exception as e:
+                self.log_fn("error", f"Auto-lock failed: {e}")
+        
+        # Trigger surveillance mode
+        if not self._surveillance_triggered:
+            self._surveillance_triggered = True
+            self.log_fn("info", "🔍 Surveillance mode activated — owner away")
+            try:
+                if self.agent.supabase and self.agent.device_id and self.agent.current_user_id:
+                    self.agent.supabase.table("surveillance_events").insert({
+                        "device_id": self.agent.device_id,
+                        "user_id": self.agent.current_user_id,
+                        "event_type": "proximity_away",
+                        "confidence": 100,
+                        "recognized": False,
+                        "metadata": {"trigger": "proximity_monitor", "timestamp": datetime.now(timezone.utc).isoformat()},
+                    }).execute()
+            except Exception as e:
+                self.log_fn("warn", f"Surveillance event insert failed: {e}")
+            
+            # Notify phone
+            if HAS_TOAST:
+                try:
+                    toaster = ToastNotifier()
+                    toaster.show_toast("JARVIS Security", "Owner away — PC locked, surveillance active", duration=5, threaded=True)
+                except Exception:
+                    pass
+    
+    def _monitor_loop(self):
+        """Main proximity monitoring loop."""
+        time.sleep(10)  # initial delay to let agent fully start
+        
+        while self.running:
+            try:
+                if not self._enabled:
+                    time.sleep(PROXIMITY_CHECK_INTERVAL)
+                    continue
+                
+                # Check all presence signals
+                p2p_present = self._check_p2p_presence()
+                ble_present = self._check_ble_presence()
+                cloud_present = self._check_cloud_presence()
+                
+                any_present = p2p_present or ble_present or cloud_present
+                
+                if any_present:
+                    self.signal_presence()
+                else:
+                    # Check if we've exceeded the away threshold
+                    with self._lock:
+                        elapsed = time.time() - self._last_seen_time
+                        if self._owner_present and elapsed > (self._away_threshold + self._grace_period):
+                            self._owner_present = False
+                            self.log_fn("info", f"👻 Owner absent for {elapsed:.0f}s — marking as AWAY")
+                            self._on_owner_left()
+                
+            except Exception as e:
+                self.log_fn("warn", f"Proximity check error: {e}")
+            
+            time.sleep(PROXIMITY_CHECK_INTERVAL)
+    
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "enabled": self._enabled,
+            "owner_present": self._owner_present,
+            "last_seen_ago": round(time.time() - self._last_seen_time, 1),
+            "surveillance_active": self._surveillance_triggered,
+            "away_threshold": self._away_threshold,
+            "unlock_pin_set": bool(self._unlock_pin),
+        }
+
+
 import atexit
 import warnings
 
