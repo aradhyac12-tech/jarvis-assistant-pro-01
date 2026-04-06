@@ -7430,6 +7430,17 @@ class JarvisAgent:
         except Exception as e:
             add_log("warn", f"Face recognizer pre-load failed: {e}", category="recognition")
         
+        # Start proximity auto-lock/unlock monitor
+        self._proximity_monitor = None
+        try:
+            self._proximity_monitor = ProximityMonitor(
+                agent=self,
+                log_fn=lambda level, msg: add_log(level, f"[Proximity] {msg}", category="proximity"),
+            )
+            self._proximity_monitor.start()
+        except Exception as e:
+            add_log("warn", f"Proximity monitor init failed: {e}", category="proximity")
+        
         last_heartbeat = 0
         
         # Start Realtime WebSocket listener for instant command notifications
