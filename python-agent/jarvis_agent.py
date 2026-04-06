@@ -7757,7 +7757,7 @@ class JarvisTrayIcon:
         self._icon.run()  # blocks
 
 
-
+def main():
     parser = argparse.ArgumentParser(description="JARVIS PC Agent")
     parser.add_argument("--gui", action="store_true", help="Launch with GUI (default)")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode (no GUI)")
