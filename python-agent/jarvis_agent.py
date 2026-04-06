@@ -7214,7 +7214,24 @@ class JarvisAgent:
             
             # Sort by priority: user-initiated commands first, background checks last
             BACKGROUND_COMMANDS = {"clipboard_check", "get_system_state", "get_volume", "get_brightness", "get_system_stats", "get_media_state"}
-            commands.sort(key=lambda c: 1 if c.get("command_type", "") in BACKGROUND_COMMANDS else 0)
+            user_cmds = [c for c in commands if c.get("command_type", "") not in BACKGROUND_COMMANDS]
+            bg_cmds = [c for c in commands if c.get("command_type", "") in BACKGROUND_COMMANDS]
+            
+            # DROP background commands entirely when user commands are present
+            if user_cmds:
+                # Skip bg commands — mark as completed on server
+                for bg in bg_cmds:
+                    try:
+                        req_lib.post(edge_url, json={
+                            "action": "complete",
+                            "commandId": bg["id"],
+                            "result": {"success": True, "skipped": True, "reason": "deprioritized"},
+                        }, headers=headers, timeout=2)
+                    except Exception:
+                        pass
+                commands = user_cmds
+            else:
+                commands = bg_cmds
             
             for cmd_row in commands:
                 cmd_type = cmd_row.get("command_type", "")
