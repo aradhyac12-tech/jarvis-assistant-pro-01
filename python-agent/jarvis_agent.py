@@ -6357,6 +6357,31 @@ class JarvisAgent:
                 return self._lock_screen()
             elif cmd == "smart_unlock":
                 return self._smart_unlock(payload.get("pin", ""))
+            elif cmd == "set_unlock_pin":
+                new_pin = payload.get("pin", "")
+                if new_pin and len(new_pin) >= 4:
+                    global UNLOCK_PIN
+                    UNLOCK_PIN = new_pin
+                    if hasattr(self, '_proximity_monitor') and self._proximity_monitor:
+                        self._proximity_monitor.update_pin(new_pin)
+                    return {"success": True, "message": "Unlock PIN updated"}
+                return {"success": False, "error": "PIN must be at least 4 digits"}
+            elif cmd == "proximity_status":
+                if hasattr(self, '_proximity_monitor') and self._proximity_monitor:
+                    return {"success": True, **self._proximity_monitor.get_status()}
+                return {"success": False, "error": "Proximity monitor not running"}
+            elif cmd == "set_proximity_config":
+                if hasattr(self, '_proximity_monitor') and self._proximity_monitor:
+                    if "enabled" in payload:
+                        self._proximity_monitor._enabled = bool(payload["enabled"])
+                    if "away_threshold" in payload:
+                        self._proximity_monitor._away_threshold = int(payload["away_threshold"])
+                    if "grace_period" in payload:
+                        self._proximity_monitor._grace_period = int(payload["grace_period"])
+                    if "pin" in payload and payload["pin"]:
+                        self._proximity_monitor.update_pin(payload["pin"])
+                    return {"success": True, "config": self._proximity_monitor.get_status()}
+                return {"success": False, "error": "Proximity monitor not running"}
             
             # Notifications (KDE Connect style - phone → PC toast)
             elif cmd == "show_notification":
