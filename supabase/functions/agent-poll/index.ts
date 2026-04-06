@@ -89,9 +89,27 @@ serve(async (req) => {
           throw cmdError;
         }
 
+        // Separate user-initiated and background commands
+        const userCommands = (commands || []).filter(c => !BACKGROUND_TYPES.includes(c.command_type));
+        const bgCommands = (commands || []).filter(c => BACKGROUND_TYPES.includes(c.command_type));
+
+        // DROP background commands when user commands exist — user clicks take absolute priority
+        let finalCommands = userCommands.length > 0 ? userCommands : bgCommands;
+
+        // If we're dropping background commands, mark them as completed/skipped to prevent re-polling
+        if (userCommands.length > 0 && bgCommands.length > 0) {
+          const bgIds = bgCommands.map(c => c.id);
+          await supabase
+            .from("commands")
+            .update({ status: "completed", result: { success: true, skipped: true, reason: "deprioritized" }, executed_at: new Date().toISOString() })
+            .in("id", bgIds)
+            .eq("device_id", deviceId)
+            .eq("status", "pending");
+        }
+
         // Claim commands to avoid collisions (e.g. duplicate agent loops / double polling)
-        if (commands && commands.length > 0) {
-          const ids = commands.map((c) => c.id);
+        if (finalCommands.length > 0) {
+          const ids = finalCommands.map((c) => c.id);
           const { error: claimError } = await supabase
             .from("commands")
             .update({ status: "running" })
@@ -104,16 +122,8 @@ serve(async (req) => {
           }
         }
 
-        // Sort: user-initiated commands first, background commands last
-        const sortedCommands = (commands || []).sort((a, b) => {
-          const aIsBg = BACKGROUND_TYPES.includes(a.command_type);
-          const bIsBg = BACKGROUND_TYPES.includes(b.command_type);
-          if (aIsBg !== bIsBg) return aIsBg ? 1 : -1;
-          return 0; // preserve created_at order within same priority
-        });
-
         return new Response(
-          JSON.stringify({ success: true, commands: sortedCommands }),
+          JSON.stringify({ success: true, commands: finalCommands }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
