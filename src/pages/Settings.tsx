@@ -330,6 +330,13 @@ export default function Settings() {
                   : "Off"}
                 onClick={() => setActivePane("security")}
                 iconBg="bg-[hsl(var(--accent-green))]"
+              />
+              <SettingsRow
+                icon={MapPin}
+                label="Proximity Auto-Lock"
+                subtitle="Auto-lock & unlock your PC"
+                onClick={() => setActivePane("proximity")}
+                iconBg="bg-primary"
                 isLast
               />
             </GroupedCard>
