@@ -19,8 +19,9 @@ import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
 import { SystemDiagnosticsPanel } from "@/components/SystemDiagnosticsPanel";
 import { BoostPC } from "@/components/BoostPC";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
+import { ProximityCard } from "@/components/settings/ProximityCard";
 
-type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "device" | "calls" | "system";
+type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "proximity" | "device" | "calls" | "system";
 
 /* ── iOS-style settings row ── */
 function SettingsRow({ icon: Icon, label, subtitle, onClick, iconBg, trailing, isLast }: {
