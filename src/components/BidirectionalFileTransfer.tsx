@@ -14,6 +14,37 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceCommands } from "@/hooks/useDeviceCommands";
+
+/** Save a Blob to device storage — uses Capacitor Filesystem on native, anchor-click on web */
+async function saveBlobToDevice(blob: Blob, fileName: string): Promise<void> {
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    if (Capacitor.isNativePlatform()) {
+      const { Filesystem, Directory } = await import("@capacitor/filesystem");
+      const arrayBuffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      const base64 = btoa(binary);
+      await Filesystem.writeFile({
+        path: `Download/${fileName}`,
+        data: base64,
+        directory: Directory.ExternalStorage,
+        recursive: true,
+      });
+      return;
+    }
+  } catch {
+    // Not native or Filesystem not available — fall through to web download
+  }
+  // Web: anchor click
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = fileName;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { supabase } from "@/integrations/supabase/client";
@@ -303,14 +334,9 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
               // Send ready
               ws.send(JSON.stringify({ type: "ready" }));
             } else if (data.complete) {
-              // Assemble and download
+              // Assemble and save to device
               const blob = new Blob(chunks);
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url; a.download = fileName;
-              document.body.appendChild(a); a.click();
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
+              await saveBlobToDevice(blob, fileName);
 
               setTransfers(prev => prev.map(t => t.id === transferId
                 ? { ...t, status: "complete" as const, progress: 100, speedMbps: data.speed_mbps, size: data.size }
@@ -475,11 +501,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       .download(filePath);
     if (error || !downloadData) throw new Error(error?.message || "Download failed");
 
-    const url = URL.createObjectURL(downloadData);
-    const a = document.createElement("a");
-    a.href = url; a.download = pcFile.name;
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a); URL.revokeObjectURL(url);
+    await saveBlobToDevice(downloadData, pcFile.name);
 
     supabase.storage.from("agent-files").remove([filePath]).catch(() => {});
 

@@ -184,19 +184,24 @@ export default function Hub() {
 
   const pushVolumeToPc = useCallback(async (level: number, awaitResult: boolean) => {
     if (!isConnected) return { success: false, error: "Device offline" } as const;
+    // Use P2P fast path when available (avoids 7s cloud poll delay)
+    const p2pConnected = localStorage.getItem("jarvis_p2p_connected") === "true";
+    const effectiveTimeout = p2pConnected ? 3000 : 7000;
     return await sendCommand(
       "set_volume",
       { level },
-      awaitResult ? { awaitResult: true, timeoutMs: 7000, pollIntervalMs: 500 } : undefined
+      awaitResult ? { awaitResult: true, timeoutMs: effectiveTimeout, pollIntervalMs: 300 } : undefined
     );
   }, [isConnected, sendCommand]);
 
   const pushBrightnessToPc = useCallback(async (level: number, awaitResult: boolean) => {
     if (!isConnected) return { success: false, error: "Device offline" } as const;
+    const p2pConnected = localStorage.getItem("jarvis_p2p_connected") === "true";
+    const effectiveTimeout = p2pConnected ? 3000 : 7000;
     return await sendCommand(
       "set_brightness",
       { level },
-      awaitResult ? { awaitResult: true, timeoutMs: 7000, pollIntervalMs: 500 } : undefined
+      awaitResult ? { awaitResult: true, timeoutMs: effectiveTimeout, pollIntervalMs: 300 } : undefined
     );
   }, [isConnected, sendCommand]);
 
@@ -358,17 +363,23 @@ export default function Hub() {
 
   const handleVolumeCommit = useCallback(async (v: number[]) => {
     const level = v[0];
-    volumeSyncLockUntilRef.current = Date.now() + 2200;
+    // Lock sync for 10s — long enough for cloud poll (7s timeout) to complete
+    volumeSyncLockUntilRef.current = Date.now() + 10_000;
     if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
 
+    setVolume(level); // Optimistic update
     const result = await pushVolumeToPc(level, true);
     if (!result.success) {
       toast({
         title: "Volume update failed",
-        description: String(result.error || "Unable to set volume"),
+        description: String(result.error || "PC may be offline"),
         variant: "destructive",
       });
+      volumeSyncLockUntilRef.current = 0; // Release lock so real value syncs back
       syncSystemState();
+    } else {
+      // Shorten lock after confirmed success
+      volumeSyncLockUntilRef.current = Date.now() + 2000;
     }
   }, [pushVolumeToPc, syncSystemState, toast]);
 
@@ -385,17 +396,21 @@ export default function Hub() {
 
   const handleBrightnessCommit = useCallback(async (v: number[]) => {
     const level = v[0];
-    brightnessSyncLockUntilRef.current = Date.now() + 2200;
+    brightnessSyncLockUntilRef.current = Date.now() + 10_000;
     if (brightnessDebounceRef.current) clearTimeout(brightnessDebounceRef.current);
 
+    setBrightness(level); // Optimistic update
     const result = await pushBrightnessToPc(level, true);
     if (!result.success) {
       toast({
         title: "Brightness update failed",
-        description: String(result.error || "Unable to set brightness"),
+        description: String(result.error || "PC may not support brightness control"),
         variant: "destructive",
       });
+      brightnessSyncLockUntilRef.current = 0;
       syncSystemState();
+    } else {
+      brightnessSyncLockUntilRef.current = Date.now() + 2000;
     }
   }, [pushBrightnessToPc, syncSystemState, toast]);
 
@@ -900,7 +915,7 @@ export default function Hub() {
                         max={100}
                         step={1}
                         disabled={!isConnected}
-                        className="cursor-pointer w-full"
+                        className="volume-slider cursor-pointer w-full touch-none"
                       />
                     </div>
 
@@ -923,7 +938,7 @@ export default function Hub() {
                         max={100}
                         step={1}
                         disabled={!isConnected}
-                        className="cursor-pointer w-full"
+                        className="brightness-slider cursor-pointer w-full touch-none"
                       />
                     </div>
                   </CardContent>
@@ -1429,6 +1444,21 @@ export default function Hub() {
 
                 {/* PC Boost */}
                 <BoostPC />
+
+                {/* Agent Health Link */}
+                <Card className="border-border/20 bg-card/50">
+                  <CardContent className="p-3">
+                    <Link to="/health" className="flex items-center gap-3 w-full">
+                      <div className="w-8 h-8 rounded-lg bg-violet-500/10 flex items-center justify-center">
+                        <Activity className="w-4 h-4 text-violet-400" />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">Agent Health</p>
+                        <p className="text-[10px] text-muted-foreground">Command audit log &amp; diagnostics</p>
+                      </div>
+                    </Link>
+                  </CardContent>
+                </Card>
 
                 {/* App Settings Link */}
                 <Card className="border-border/20 bg-card/50">

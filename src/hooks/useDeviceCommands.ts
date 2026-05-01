@@ -86,6 +86,60 @@ export function useDeviceCommands() {
       const sessionToken = session?.session_token;
       const deviceId = selectedDevice?.id || session?.device_id;
 
+      // Fast path: if local P2P is connected AND awaitResult is requested,
+      // use P2P invokeCommand for ultra-low latency instead of cloud polling
+      if (options?.awaitResult) {
+        try {
+          const p2pConnected = localStorage.getItem("jarvis_p2p_connected") === "true";
+          const p2pIp = localStorage.getItem("jarvis_p2p_known_ip");
+          if (p2pConnected && p2pIp) {
+            // Use CapacitorHttp POST to the local HTTP API
+            const url = `http://${p2pIp}:9877/command`;
+            const requestId = crypto.randomUUID();
+            const body = { commandType, payload, requestId };
+            let result: any = null;
+
+            // Try native CapacitorHttp first
+            try {
+              const { Capacitor } = await import("@capacitor/core");
+              if (Capacitor.isNativePlatform()) {
+                const { CapacitorHttp } = await import("@capacitor/core");
+                const response = await Promise.race([
+                  CapacitorHttp.post({ url, headers: { "Content-Type": "application/json" }, data: body }),
+                  new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("p2p_timeout")), options?.timeoutMs ?? 30000)),
+                ]) as any;
+                result = response?.data?.result;
+              }
+            } catch (e: any) {
+              if (e.message === "p2p_timeout") throw e;
+            }
+
+            // Web fallback
+            if (result === null) {
+              try {
+                const resp = await fetch(url, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(body),
+                  signal: AbortSignal.timeout(options?.timeoutMs ?? 30000),
+                });
+                if (resp.ok) {
+                  const data = await resp.json();
+                  result = data?.result;
+                }
+              } catch { /* fall through to cloud */ }
+            }
+
+            if (result !== null && result !== undefined) {
+              addLog("info", "web", `[P2P] Command "${commandType}" completed`);
+              return { success: result?.success !== false, result } as const;
+            }
+          }
+        } catch {
+          // P2P failed, fall through to cloud
+        }
+      }
+
       if (!sessionToken) {
         const errorMsg = "No active session";
         addLog("error", "web", `Command "${commandType}" failed: ${errorMsg}`);

@@ -29,13 +29,19 @@ const MicCamera = lazy(() => import("./pages/MicCamera"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const Notifications = lazy(() => import("./pages/Notifications"));
+const AgentHealth = lazy(() => import("./pages/AgentHealth"));
 
-const queryClient = new QueryClient();
 
 const LoadingFallback = forwardRef<HTMLDivElement>(function LoadingFallback(_, ref) {
   return (
-    <div ref={ref} className="min-h-screen flex items-center justify-center bg-background">
-      <Loader2 className="w-8 h-8 animate-spin text-primary" />
+    <div ref={ref} className="min-h-screen flex flex-col items-center justify-center bg-background gap-3">
+      <div className="relative">
+        <div className="w-12 h-12 rounded-full border-2 border-primary/20 flex items-center justify-center">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        </div>
+        <div className="absolute inset-0 rounded-full border border-primary/10 animate-ping" />
+      </div>
+      <p className="text-[11px] text-muted-foreground tracking-widest uppercase font-mono">JARVIS</p>
     </div>
   );
 });
@@ -78,8 +84,9 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
 
     const handleVisibility = () => {
       if (document.hidden) {
-        // App going to background — record time
+        // App going to background — record time in localStorage for cross-reload persistence
         backgroundTimeRef.current = Date.now();
+        localStorage.setItem("jarvis_backgrounded_at", String(backgroundTimeRef.current));
       } else {
         // App coming to foreground — check if we should lock
         if (backgroundTimeRef.current > 0) {
@@ -89,6 +96,7 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
             setLocked(true);
           }
           backgroundTimeRef.current = 0;
+          localStorage.removeItem("jarvis_backgrounded_at");
         }
       }
     };
@@ -100,12 +108,14 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
         App.addListener("appStateChange", ({ isActive }) => {
           if (!isActive) {
             backgroundTimeRef.current = Date.now();
+            localStorage.setItem("jarvis_backgrounded_at", String(backgroundTimeRef.current));
           } else if (backgroundTimeRef.current > 0) {
             const elapsed = Date.now() - backgroundTimeRef.current;
             if (elapsed > 2000) {
               setLocked(true);
             }
             backgroundTimeRef.current = 0;
+            localStorage.removeItem("jarvis_backgrounded_at");
           }
         });
       } catch {
@@ -121,10 +131,18 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Check on initial mount if lock is enabled
+  // Only lock on initial mount if the app was previously backgrounded
+  // (not on every fresh page load / cold start)
   useEffect(() => {
-    if (isAppLockEnabled()) {
-      setLocked(true);
+    if (!isAppLockEnabled()) return;
+    const backgroundedAt = Number(localStorage.getItem("jarvis_backgrounded_at") || "0");
+    if (backgroundedAt > 0) {
+      const elapsed = Date.now() - backgroundedAt;
+      // Only lock if it was backgrounded more than 2 seconds ago
+      if (elapsed > 2000) {
+        setLocked(true);
+      }
+      localStorage.removeItem("jarvis_backgrounded_at");
     }
   }, []);
 
@@ -166,6 +184,7 @@ function AppRoutes() {
           <Route path="/webcam" element={<Navigate to="/miccamera" replace />} />
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
+          <Route path="/health" element={<ProtectedRoute><AgentHealth /></ProtectedRoute>} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
@@ -173,31 +192,45 @@ function AppRoutes() {
   );
 }
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <AuthProvider>
-      <DeviceSessionProvider>
-        <DeviceProvider>
-          <BluetoothProvider>
-          <GlobalPiPProvider>
-            <Toaster />
-            <Sonner />
-            <BrowserRouter>
-              <AppLockGate>
-                <AppRoutes />
-                <GlobalFloatingPiP />
-                <GlobalClipboardSync />
-                <PersistentNotification />
-              </AppLockGate>
-            </BrowserRouter>
-          </GlobalPiPProvider>
-          </BluetoothProvider>
-        </DeviceProvider>
-      </DeviceSessionProvider>
-      </AuthProvider>
-    </TooltipProvider>
-  </QueryClientProvider>
-);
+const App = () => {
+  // Create QueryClient inside the component so it's not shared across
+  // hot-reloads in dev and can be properly garbage-collected
+  const [queryClient] = React.useState(
+    () => new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: 2,
+          staleTime: 30_000,
+        },
+      },
+    })
+  );
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <AuthProvider>
+        <DeviceSessionProvider>
+          <DeviceProvider>
+            <BluetoothProvider>
+            <GlobalPiPProvider>
+              <Toaster />
+              <Sonner />
+              <BrowserRouter>
+                <AppLockGate>
+                  <AppRoutes />
+                  <GlobalFloatingPiP />
+                  <GlobalClipboardSync />
+                  <PersistentNotification />
+                </AppLockGate>
+              </BrowserRouter>
+            </GlobalPiPProvider>
+            </BluetoothProvider>
+          </DeviceProvider>
+        </DeviceSessionProvider>
+        </AuthProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+};
 
 export default App;

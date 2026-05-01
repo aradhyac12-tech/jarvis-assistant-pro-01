@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -106,6 +106,7 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
   const [lastScreenshot, setLastScreenshot] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
+  const zoomPollRef = useRef<number | null>(null);
   
   // Schedule editing
   const [editingSchedule, setEditingSchedule] = useState<string | null>(null);
@@ -136,6 +137,13 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
   useEffect(() => {
     fetchSavedMeetings();
   }, [fetchSavedMeetings]);
+
+  // Cleanup zoom status poll on unmount
+  useEffect(() => {
+    return () => {
+      if (zoomPollRef.current) clearInterval(zoomPollRef.current);
+    };
+  }, []);
 
   // Extract meeting ID from Zoom link
   const extractMeetingInfo = (link: string) => {
@@ -196,10 +204,15 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         return;
       }
       
-      // Extended timeout but now the agent returns immediately (background join)
-      const res = await sendCommand("join_zoom", { ...payload, initial_wait: 240 }, { 
+      // Agent returns immediately — Zoom opens in background with a timed sequence
+      // initial_wait: time for Zoom app to load (15s if already running, 240s cold start)
+      const res = await sendCommand("join_zoom", { 
+        ...payload, 
+        initial_wait: 240,
+        screenshot_wait: 8,   // Capture screenshot 8s after joining
+      }, { 
         awaitResult: true, 
-        timeoutMs: 30000  // Short timeout since agent returns immediately now
+        timeoutMs: 35000,
       });
       
       if (res.success) {
@@ -209,11 +222,12 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
         setLiveMicMuted(muteAudio);
         setLiveVideoOff(muteVideo);
         
+        const wasRunning = result.zoom_was_running;
         toast({
-          title: "Zoom Meeting Joining",
-          description: result.background 
-            ? `Agent is handling join in background. You can use other features.`
-            : `Audio: ${result.muted_audio ? "Muted" : "On"}, Video: ${result.muted_video ? "Off" : "On"}`,
+          title: "🎥 Zoom Opening on PC",
+          description: wasRunning 
+            ? "Zoom was already running — joining now (≈15s)"
+            : "Starting Zoom — joining in ≈4 min (cold start)",
         });
         
         // Log the join (using any type since table was just created)
@@ -246,6 +260,33 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
           await saveMeetingToDb();
         }
         
+        // If agent returned background=true, poll zoom_status every 3s for up to 5 min
+        if (result.background) {
+          if (zoomPollRef.current) clearInterval(zoomPollRef.current);
+          const startPoll = Date.now();
+          zoomPollRef.current = window.setInterval(async () => {
+            if (Date.now() - startPoll > 300_000) {
+              clearInterval(zoomPollRef.current!);
+              zoomPollRef.current = null;
+              return;
+            }
+            try {
+              const statusRes = await sendCommand("zoom_status", {}, { awaitResult: true, timeoutMs: 5000 });
+              const status = (statusRes as any).result ?? statusRes;
+              if (status?.join_result?.success) {
+                clearInterval(zoomPollRef.current!);
+                zoomPollRef.current = null;
+                if (status.join_result.screenshot) {
+                  const src = `data:image/jpeg;base64,${status.join_result.screenshot}`;
+                  setLastScreenshot(src);
+                  setScreenshots(prev => [{ id: crypto.randomUUID(), src, timestamp: new Date(), label: "Meeting joined" }, ...prev].slice(0, 50));
+                  toast({ title: "✅ Zoom Meeting Joined", description: "Screenshot captured" });
+                }
+              }
+            } catch { /* silent */ }
+          }, 3000);
+        }
+
         // Show screenshot preview with base64 data from agent
         if (result.screenshot) {
           const src = `data:image/jpeg;base64,${result.screenshot}`;
@@ -444,24 +485,30 @@ export function ZoomMeetings({ className }: ZoomMeetingsProps) {
     return null;
   }, [sendCommand, toast]);
 
-  // Fire-and-forget mic toggle
-  const toggleMic = useCallback(() => {
+  // Mic toggle — sends Alt+A to Zoom, waits for confirmation
+  const toggleMic = useCallback(async () => {
     const newState = !liveMicMuted;
     setLiveMicMuted(newState);
-    toast({ title: newState ? "🔇 Mic Off" : "🎤 Mic On" });
-    sendCommand("zoom_mic_toggle", {}).catch(() => {
+    toast({ title: newState ? "🔇 Mic Muted" : "🎤 Mic On", description: "Sent Alt+A to Zoom" });
+    try {
+      await sendCommand("zoom_mic_toggle", {}, { awaitResult: true, timeoutMs: 5000 });
+    } catch {
       setLiveMicMuted(!newState); // revert on failure
-    });
+      toast({ title: "Mic toggle failed", variant: "destructive" });
+    }
   }, [liveMicMuted, sendCommand, toast]);
 
-  // Fire-and-forget camera toggle
-  const toggleCamera = useCallback(() => {
+  // Camera toggle — sends Alt+V to Zoom
+  const toggleCamera = useCallback(async () => {
     const newState = !liveVideoOff;
     setLiveVideoOff(newState);
-    toast({ title: newState ? "📷 Camera Off" : "📷 Camera On" });
-    sendCommand("zoom_camera_toggle", {}).catch(() => {
+    toast({ title: newState ? "📷 Camera Off" : "📷 Camera On", description: "Sent Alt+V to Zoom" });
+    try {
+      await sendCommand("zoom_camera_toggle", {}, { awaitResult: true, timeoutMs: 5000 });
+    } catch {
       setLiveVideoOff(!newState);
-    });
+      toast({ title: "Camera toggle failed", variant: "destructive" });
+    }
   }, [liveVideoOff, sendCommand, toast]);
 
   const formatNextSchedule = (meeting: SavedMeeting) => {

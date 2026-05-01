@@ -333,9 +333,9 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         setDeviceInfo(info);
         setIsReconnecting(!info.is_online);
       } else {
-        localStorage.removeItem(SESSION_KEY);
-        setSession(null);
-        setDeviceInfo(null);
+        // Device not found — DON'T clear session, just mark as reconnecting
+        // This prevents session loss on temporary network blips
+        setIsReconnecting(true);
       }
     };
 
@@ -347,6 +347,50 @@ export function DeviceSessionProvider({ children }: { children: ReactNode }) {
         clearInterval(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+    };
+  }, [session, fetchDeviceInfo]);
+
+  // Resume handler: when app comes back from background, silently re-validate session
+  useEffect(() => {
+    if (!session) return;
+
+    const handleResume = async () => {
+      // Silent re-fetch device info without clearing session
+      const info = await fetchDeviceInfo(session.device_id);
+      if (info) {
+        setDeviceInfo(info);
+        setIsReconnecting(!info.is_online);
+      }
+      // Also extend session TTL via lightweight update
+      try {
+        const newExpiry = session.remember_device
+          ? new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
+          : new Date(Date.now() + SESSION_SHORT_TTL_MS).toISOString();
+        await supabase
+          .from("device_sessions")
+          .update({ last_active: new Date().toISOString(), expires_at: newExpiry })
+          .eq("session_token", session.session_token);
+      } catch { /* silent */ }
+    };
+
+    // Listen for resume trigger from useBackgroundPersistence
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "jarvis_resume_trigger" && e.newValue) {
+        handleResume();
+      }
+    };
+
+    // Visibility change fallback
+    const handleVisibility = () => {
+      if (!document.hidden) handleResume();
+    };
+
+    window.addEventListener("storage", handleStorage);
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [session, fetchDeviceInfo]);
 

@@ -86,20 +86,29 @@ export function useCapacitorPlugins() {
 
     const newPermissions: PermissionStatus = { ...permissions };
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      stream.getTracks().forEach(track => track.stop());
-      newPermissions.camera = "granted";
-    } catch {
-      newPermissions.camera = "denied";
-    }
+    // getUserMedia requires a secure context (https: or capacitor://localhost)
+    const isSecureContext = window.isSecureContext ||
+      window.location.protocol === "https:" ||
+      window.location.hostname === "localhost";
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(track => track.stop());
-      newPermissions.microphone = "granted";
-    } catch {
-      newPermissions.microphone = "denied";
+    if (!isSecureContext) {
+      console.warn("[Capacitor] getUserMedia requires secure context — skipping camera/mic check");
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(track => track.stop());
+        newPermissions.camera = "granted";
+      } catch {
+        newPermissions.camera = "denied";
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+        newPermissions.microphone = "granted";
+      } catch {
+        newPermissions.microphone = "denied";
+      }
     }
 
     try {
@@ -243,6 +252,16 @@ export function useCapacitorPlugins() {
 
     setCallDetectionActive(false);
     console.log("[CallDetection] Stopped");
+  }, [isNative, platform]);
+
+  // Auto-init call detection on native Android
+  useEffect(() => {
+    if (isNative && platform === "android" && !callDetectionActive) {
+      initCallDetection().catch(err =>
+        console.warn("[Capacitor] Auto-init call detection failed:", err)
+      );
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNative, platform]);
 
   // Cleanup on unmount

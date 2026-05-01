@@ -27,14 +27,14 @@ export function useP2PStreaming(): P2PStreamingContext {
   const { session } = useDeviceSession();
   const sessionToken = session?.session_token || "";
 
-  // Check if local P2P is connected by reading state from localStorage/global
+  // Check if local P2P is connected by reading state from localStorage/global.
+  // Re-reads on every render so it picks up changes from useLocalP2P hook.
   const p2pState = useMemo(() => {
     const knownIp = localStorage.getItem("jarvis_p2p_known_ip");
-    // We need to check if the P2P WS is actually available
-    // This is updated by useLocalP2P when connected
     const p2pConnected = localStorage.getItem("jarvis_p2p_connected") === "true";
     return { ip: knownIp, connected: p2pConnected };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionToken]); // Re-evaluate when session changes (proxy for connectivity change)
 
   // Also check if we're in a native app where ws:// is allowed
   const isNative = useMemo(() => {

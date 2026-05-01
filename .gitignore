@@ -22,3 +22,21 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ── Environment / Secrets ──────────────────────────────────────────────────
+# NEVER commit .env — use .env.example as a template
+.env
+.env.*
+!.env.example
+
+# ── Python agent runtime artifacts ────────────────────────────────────────
+python-agent/command_audit.db
+python-agent/command_audit.db-wal
+python-agent/command_audit.db-shm
+python-agent/.update_version
+python-agent/.firewall_configured
+python-agent/.backups/
+python-agent/training_data/
+python-agent/__pycache__/
+python-agent/*.pyc
+python-agent/crash.log

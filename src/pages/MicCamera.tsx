@@ -1208,6 +1208,9 @@ export default function MicCamera() {
                     wsRef={screenWsRef}
                     splitMode={splitMode}
                     onSplitToggle={() => setSplitMode(!splitMode)}
+                    onInteractionCommand={(cmd, payload) =>
+                      sendCommand(cmd, payload, { awaitResult: false })
+                    }
                   />
 
                   <div className="flex items-center justify-center gap-4">

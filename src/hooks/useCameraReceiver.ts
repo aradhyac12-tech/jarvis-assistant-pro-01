@@ -121,10 +121,10 @@ export function useCameraReceiver() {
             const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
             const newUrl = URL.createObjectURL(blob);
 
-            if (currentBlobUrlRef.current) {
-              URL.revokeObjectURL(currentBlobUrlRef.current);
-            }
+            // Delay revoke so browser paints new frame before old URL is freed
+            const prevUrl = currentBlobUrlRef.current;
             currentBlobUrlRef.current = newUrl;
+            if (prevUrl) window.setTimeout(() => URL.revokeObjectURL(prevUrl), 200);
 
             frameTimesRef.current.push(now);
             if (frameTimesRef.current.length > 10) {

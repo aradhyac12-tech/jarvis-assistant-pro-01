@@ -7,8 +7,11 @@ import {
   Rows2,
   Loader2,
   ZoomOut,
+  MousePointer2,
+  Eye,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useScreenInteraction } from "@/hooks/useScreenInteraction";
 
 interface StreamDisplayControlsProps {
   frame: string | null;
@@ -25,6 +28,12 @@ interface StreamDisplayControlsProps {
   /** When true, video is shown in the split panel instead */
   splitMode?: boolean;
   onSplitToggle?: () => void;
+  /**
+   * Supply this callback to enable interactive touch control on screen-mirror.
+   * Will be called with (commandType, payload) when the user taps / drags / scrolls.
+   * Only shown when streamType === "screen".
+   */
+  onInteractionCommand?: (cmd: string, payload: Record<string, unknown>) => void;
 }
 
 export function StreamDisplayControls({
@@ -37,14 +46,60 @@ export function StreamDisplayControls({
   className,
   splitMode = false,
   onSplitToggle,
+  streamType,
+  onInteractionCommand,
 }: StreamDisplayControlsProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Whether the user has toggled control mode on (only available for screen streams)
+  const [controlMode, setControlMode] = useState(false);
+  const isScreenStream = streamType === "screen";
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const lastTouchDistRef = useRef<number | null>(null);
   const panStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const imgContainerRef = useRef<HTMLDivElement>(null);
+
+  // ── Screen interaction (control mode) ───────────────────────────────────
+  const interactionActive = isScreenStream && controlMode && !!onInteractionCommand && isActive;
+
+  // Stable wrapper so the hook dep array stays stable
+  const stableSendCommand = useCallback(
+    (cmd: string, payload: Record<string, unknown>) => {
+      onInteractionCommand?.(cmd, payload);
+    },
+    [onInteractionCommand]
+  );
+
+  const { onTouchStart, onTouchMove, onTouchEnd } = useScreenInteraction(
+    stableSendCommand,
+    imgContainerRef,
+    interactionActive
+  );
+
+  // Attach interaction listeners as non-passive (we need preventDefault)
+  useEffect(() => {
+    const el = imgContainerRef.current;
+    if (!el || !interactionActive) return;
+
+    const opts: AddEventListenerOptions = { passive: false };
+    el.addEventListener("touchstart", onTouchStart, opts);
+    el.addEventListener("touchmove", onTouchMove, opts);
+    el.addEventListener("touchend", onTouchEnd, opts);
+    el.addEventListener("touchcancel", onTouchEnd, opts);
+
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [interactionActive, onTouchStart, onTouchMove, onTouchEnd]);
+
+  // Reset control mode when stream stops
+  useEffect(() => {
+    if (!isActive) setControlMode(false);
+  }, [isActive]);
 
   // Exit fullscreen when stream stops
   useEffect(() => {
@@ -183,14 +238,31 @@ export function StreamDisplayControls({
         onTouchStart={isFullscreenMode ? handleTouchStart : undefined}
         onTouchMove={isFullscreenMode ? handleTouchMove : undefined}
         onTouchEnd={isFullscreenMode ? handleTouchEnd : undefined}
+        // In control mode the interaction hook attaches its own native listeners;
+        // disable the zoom/pan React handlers so they don't conflict.
+        style={interactionActive ? { cursor: "crosshair", touchAction: "none" } : undefined}
       >
         <img src={frame} alt={title} className="w-full h-full object-contain" draggable={false}
-          style={isFullscreenMode ? {
+          style={isFullscreenMode && !interactionActive ? {
             transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px)`,
             transformOrigin: "center center",
             transition: isPanning ? "none" : "transform 0.1s ease-out",
           } : undefined}
         />
+
+        {/* Control-mode active hint overlay */}
+        {interactionActive && (
+          <div className="absolute inset-0 pointer-events-none">
+            {/* Thin green border to show control mode is on */}
+            <div className="absolute inset-0 border-2 border-green-500/60 rounded-sm" />
+            {/* Gesture cheat-sheet — fades after 3s */}
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur-sm rounded-lg px-3 py-1.5 text-white/80 text-[10px] whitespace-nowrap flex gap-3 select-none animate-[fadeout_3s_ease_4s_forwards]">
+              <span>👆 Tap = click</span>
+              <span>✌️ 2-finger = scroll</span>
+              <span>⏱ Hold = right-click</span>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -200,7 +272,7 @@ export function StreamDisplayControls({
       "absolute top-2 right-2 flex gap-1 z-10",
       isFullscreenMode ? "opacity-100" : "opacity-0 group-hover:opacity-100 transition-opacity"
     )}>
-      {isFullscreenMode && zoomLevel > 1 && (
+      {isFullscreenMode && zoomLevel > 1 && !interactionActive && (
         <Button variant="ghost" size="icon" className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
           onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }} title="Reset zoom">
           <ZoomOut className="h-5 w-5" />
@@ -211,6 +283,23 @@ export function StreamDisplayControls({
           className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"
           onClick={onSplitToggle} title="Toggle split view">
           <Rows2 className="h-5 w-5" />
+        </Button>
+      )}
+      {/* Control mode toggle — only for screen streams with a command handler */}
+      {isScreenStream && !!onInteractionCommand && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "h-10 w-10 backdrop-blur-sm text-white",
+            controlMode
+              ? "bg-green-500/80 hover:bg-green-500/90"
+              : "bg-black/50 hover:bg-black/70"
+          )}
+          onClick={() => setControlMode((v) => !v)}
+          title={controlMode ? "Switch to view mode (touch won't control PC)" : "Switch to control mode (touch controls PC)"}
+        >
+          {controlMode ? <MousePointer2 className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
         </Button>
       )}
       <Button variant="ghost" size="icon" className="h-10 w-10 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white"

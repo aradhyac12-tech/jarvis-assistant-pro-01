@@ -2,6 +2,25 @@ import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./index.css";
 
+// Capacitor: handle Android back button — minimize instead of exit
+(async () => {
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    if (Capacitor.isNativePlatform()) {
+      const { App: CapApp } = await import("@capacitor/app");
+      CapApp.addListener("backButton", ({ canGoBack }: { canGoBack: boolean }) => {
+        if (canGoBack) {
+          window.history.back();
+        } else {
+          CapApp.minimizeApp();
+        }
+      });
+    }
+  } catch {
+    // Not native or plugin not available
+  }
+})();
+
 // Apply stored theme before render to prevent flash
 (() => {
   try {

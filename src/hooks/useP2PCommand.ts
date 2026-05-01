@@ -76,20 +76,39 @@ export function useP2PCommand() {
     isUpgradingRef.current = false;
   }, []);
 
-  // Attempt P2P upgrade via WebRTC
+  // Supabase Realtime channel used as WebRTC signaling transport
+  const signalingChannelRef = useRef<ReturnType<typeof import("@/integrations/supabase/client")["supabase"]["channel"]> | null>(null);
+
+  const cleanupSignaling = useCallback(() => {
+    if (signalingChannelRef.current) {
+      signalingChannelRef.current.unsubscribe();
+      signalingChannelRef.current = null;
+    }
+  }, []);
+
+  // Attempt P2P upgrade via WebRTC, using Supabase Realtime as the signaling channel
   const tryP2PUpgrade = useCallback(async () => {
-    // NOTE: WebRTC signaling previously depended on a WebSocket endpoint.
-    // The current backend command endpoint is HTTP-only, so we keep WebRTC disabled
-    // until we add a proper signaling channel.
-    return;
     if (isUpgradingRef.current || dataChannelRef.current?.readyState === "open") return;
 
     isUpgradingRef.current = true;
-    console.log("[P2P] Attempting P2P upgrade...");
+    console.log("[P2P] Attempting WebRTC P2P upgrade via Supabase Realtime signaling...");
 
     try {
-      // Cleanup any existing connection
+      // Cleanup any existing connection and signaling channel
       cleanupP2P();
+      cleanupSignaling();
+
+      if (!sessionToken || !deviceId) {
+        isUpgradingRef.current = false;
+        return;
+      }
+
+      // Open a Supabase Realtime channel as our signaling transport
+      const { supabase } = await import("@/integrations/supabase/client");
+      const signalingChannel = supabase.channel(`p2p-signal-${deviceId}`, {
+        config: { private: true },
+      });
+      signalingChannelRef.current = signalingChannel;
 
       const pc = new RTCPeerConnection({
         iceServers: [
@@ -114,8 +133,12 @@ export function useP2PCommand() {
       dc.onclose = () => {
         console.log("[P2P] Data channel closed");
         dataChannelRef.current = null;
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          setConnectionMode("websocket");
+        cleanupSignaling();
+        // Fall back to local P2P or cloud fallback
+        if (localP2P.isReady) {
+          setConnectionMode("local_p2p");
+        } else {
+          setConnectionMode("fallback");
         }
       };
 
@@ -143,11 +166,12 @@ export function useP2PCommand() {
       };
 
       pc.onicecandidate = (event) => {
-        if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: "p2p_ice",
-            candidate: event.candidate,
-          }));
+        if (event.candidate && signalingChannelRef.current) {
+          signalingChannelRef.current.send({
+            type: "broadcast",
+            event: "p2p_ice",
+            payload: { candidate: event.candidate, from: "phone" },
+          });
         }
       };
 
@@ -155,8 +179,12 @@ export function useP2PCommand() {
         console.log("[P2P] Connection state:", pc.connectionState);
         if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
           isUpgradingRef.current = false;
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            setConnectionMode("websocket");
+          cleanupSignaling();
+          // Fall back to local P2P or cloud
+          if (localP2P.isReady) {
+            setConnectionMode("local_p2p");
+          } else {
+            setConnectionMode("fallback");
           }
         }
       };
@@ -165,11 +193,29 @@ export function useP2PCommand() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // Send offer via WebSocket
-      wsRef.current.send(JSON.stringify({
-        type: "p2p_offer",
-        offer: pc.localDescription,
-      }));
+      // Listen for answer and ICE candidates from PC agent via Realtime
+      signalingChannel
+        .on("broadcast", { event: "p2p_answer" }, async ({ payload }) => {
+          if (payload?.from === "pc" && payload?.answer) {
+            await handleP2PAnswer(payload.answer);
+          }
+        })
+        .on("broadcast", { event: "p2p_ice" }, async ({ payload }) => {
+          if (payload?.from === "pc" && payload?.candidate) {
+            await handleICECandidate(payload.candidate);
+          }
+        })
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            // Send offer to PC agent via Realtime broadcast
+            signalingChannel.send({
+              type: "broadcast",
+              event: "p2p_offer",
+              payload: { offer: pc.localDescription, from: "phone" },
+            });
+            console.log("[P2P] Signaling channel subscribed, offer sent");
+          }
+        });
 
       peerRef.current = pc;
 
@@ -249,9 +295,16 @@ export function useP2PCommand() {
     const phonePrefix = phoneInfo?.networkPrefix || "";
     const pcPrefix = pcInfo?.networkPrefix || "";
     const sameNetwork = !!(phonePrefix && pcPrefix && phonePrefix === pcPrefix);
+    const prefixesKnownAndDifferent = !!(phonePrefix && pcPrefix && phonePrefix !== pcPrefix);
 
-    // If we don't have PC info yet (common on first load), still try discovery
-    // using the phone's network prefix.
+    // Hard stop: if we KNOW both prefixes and they differ, we're on different networks.
+    // Don't waste time probing — it will fail and confuse the latency stats.
+    if (prefixesKnownAndDifferent) {
+      console.log("[LocalP2P] Different network prefixes detected — skipping local P2P attempt.", { phonePrefix, pcPrefix });
+      return;
+    }
+
+    // If we don't have any network info yet, skip until we do.
     if (!sameNetwork && !phonePrefix && !pcInfo?.localIp) return;
     
     console.log("[LocalP2P] Attempting local P2P connection...", {
@@ -313,7 +366,27 @@ export function useP2PCommand() {
       setConnectionMode("local_p2p");
       setLatency(localP2P.state.latency);
       notifyP2PUpgrade("Local P2P");
+      // Keep screen/CPU awake during active P2P session
+      (async () => {
+        try {
+          const { Capacitor } = await import("@capacitor/core");
+          if (Capacitor.isNativePlatform()) {
+            const { KeepAwake } = await import("@capacitor-community/keep-awake");
+            await KeepAwake.keepAwake();
+          }
+        } catch { /* plugin not installed */ }
+      })();
     } else if (!localP2P.isReady && connectionMode === "local_p2p") {
+      // Release wake lock when P2P drops
+      (async () => {
+        try {
+          const { Capacitor } = await import("@capacitor/core");
+          if (Capacitor.isNativePlatform()) {
+            const { KeepAwake } = await import("@capacitor-community/keep-awake");
+            await KeepAwake.allowSleep();
+          }
+        } catch { /* plugin not installed */ }
+      })();
       if (!stableModeTimerRef.current) {
         stableModeTimerRef.current = window.setTimeout(() => {
           if (!localP2P.isReady) {
@@ -526,13 +599,7 @@ export function useP2PCommand() {
       return;
     }
 
-    // Priority 3: Direct WebSocket (~20-50ms)
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(msg);
-      return;
-    }
-
-    // Priority 4: Bluetooth BLE (~50-200ms, offline capable)
+    // Priority 3: Bluetooth BLE (~50-200ms, offline capable)
     if (bluetooth.isReady) {
       if (bluetooth.sendCommand(commandType, payload)) {
         return;
@@ -700,14 +767,26 @@ export function useP2PCommand() {
   }, [tryLocalP2PConnection]);
 
 
-  // Cleanup RAF on unmount
+  // Cleanup all timers, intervals, and RAF handles on unmount
   useEffect(() => {
     return () => {
+      // RAF batching handles
       if (mouseRafRef.current) cancelAnimationFrame(mouseRafRef.current);
       if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
       if (zoomRafRef.current) cancelAnimationFrame(zoomRafRef.current);
+      // Latency ping interval
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      // BLE auto-reconnect retry interval
+      if (bleRetryTimerRef.current) clearInterval(bleRetryTimerRef.current);
+      // Connection mode debounce timer
+      if (stableModeTimerRef.current) clearTimeout(stableModeTimerRef.current);
+      // Local P2P deferred check
+      if (localP2PCheckRef.current) clearTimeout(localP2PCheckRef.current);
+      // Clean up any open P2P / signaling connections
+      cleanupP2P();
+      cleanupSignaling();
     };
-  }, []);
+  }, [cleanupP2P, cleanupSignaling]);
 
   // Get effective latency based on current mode
   const effectiveLatency = connectionMode === "local_p2p" 
