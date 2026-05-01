@@ -206,6 +206,7 @@ export default function Settings() {
                 }}
               />
             )}
+            {activePane === "proximity" && <ProximityCard />}
             {activePane === "device" && (
               <DeviceConnectionCard
                 deviceName={selectedDevice?.name || session?.device_name || "My PC"}
