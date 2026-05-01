@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity, ChevronLeft } from "lucide-react";
+import { ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity, ChevronLeft, MapPin } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
