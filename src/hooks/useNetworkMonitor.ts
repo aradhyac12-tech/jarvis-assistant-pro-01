@@ -107,12 +107,20 @@ export function useNetworkMonitor(checkIntervalMs = 5000) {
           if (!e.candidate) return;
           
           const match = e.candidate.candidate.match(/(\d+\.\d+\.\d+\.\d+)/);
-          if (match && !match[1].startsWith("0.")) {
+          if (match) {
+            const ip = match[1];
+            // Only accept private RFC1918 ranges — skip loopback (127.x),
+            // link-local (169.254.x), APIPA, and public IPs.
+            const isPrivate =
+              ip.startsWith("10.") ||
+              ip.startsWith("192.168.") ||
+              /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
+            if (!isPrivate) return; // keep waiting for a better candidate
+
             resolved = true;
             clearTimeout(timeout);
             pc?.close();
             
-            const ip = match[1];
             const parts = ip.split(".");
             const prefix = parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}` : "";
             

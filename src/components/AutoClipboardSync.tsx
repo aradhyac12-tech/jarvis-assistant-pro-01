@@ -96,6 +96,7 @@ export const AutoClipboardSync = memo(function AutoClipboardSync({
       // Small delay to let browser update clipboard
       await new Promise(r => setTimeout(r, 50));
       try {
+        // navigator.clipboard.readText requires a user gesture — copy/cut events qualify
         if (navigator.clipboard?.readText) {
           const text = await navigator.clipboard.readText();
           if (text?.trim()) {
@@ -104,7 +105,7 @@ export const AutoClipboardSync = memo(function AutoClipboardSync({
           }
         }
       } catch {
-        // Clipboard permission denied - silent
+        // Clipboard permission denied or no user gesture — silent
       }
     };
 
@@ -160,8 +161,11 @@ export const AutoClipboardSync = memo(function AutoClipboardSync({
 
     // Initial check
     checkPcClipboard();
-    // Poll every 800ms (fast enough to feel instant, light enough with hash check)
-    pcPollTimerRef.current = window.setInterval(checkPcClipboard, 800);
+    // Poll every 2s when tab is visible (hash-based so minimal network overhead)
+    const runIfVisible = () => {
+      if (!document.hidden) checkPcClipboard();
+    };
+    pcPollTimerRef.current = window.setInterval(runIfVisible, 2000);
 
     return () => {
       if (pcPollTimerRef.current) {

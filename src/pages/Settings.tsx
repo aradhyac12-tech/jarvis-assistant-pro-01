@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity, ChevronLeft } from "lucide-react";
+import { ChevronRight, Palette, Mic, Bell, Shield, Monitor, Phone, Activity, ChevronLeft, MapPin } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
@@ -19,8 +19,9 @@ import { StreamingDiagnostics } from "@/components/StreamingDiagnostics";
 import { SystemDiagnosticsPanel } from "@/components/SystemDiagnosticsPanel";
 import { BoostPC } from "@/components/BoostPC";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
+import { ProximityCard } from "@/components/settings/ProximityCard";
 
-type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "device" | "calls" | "system";
+type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "proximity" | "device" | "calls" | "system";
 
 /* ── iOS-style settings row ── */
 function SettingsRow({ icon: Icon, label, subtitle, onClick, iconBg, trailing, isLast }: {
@@ -153,6 +154,7 @@ export default function Settings() {
       voice: "Voice",
       notifications: "Notifications",
       security: "Security",
+      proximity: "Proximity Auto-Lock",
       device: "Device",
       calls: "Call Detection",
       system: "System & Diagnostics",
@@ -204,6 +206,7 @@ export default function Settings() {
                 }}
               />
             )}
+            {activePane === "proximity" && <ProximityCard />}
             {activePane === "device" && (
               <DeviceConnectionCard
                 deviceName={selectedDevice?.name || session?.device_name || "My PC"}
@@ -327,6 +330,13 @@ export default function Settings() {
                   : "Off"}
                 onClick={() => setActivePane("security")}
                 iconBg="bg-[hsl(var(--accent-green))]"
+              />
+              <SettingsRow
+                icon={MapPin}
+                label="Proximity Auto-Lock"
+                subtitle="Auto-lock & unlock your PC"
+                onClick={() => setActivePane("proximity")}
+                iconBg="bg-primary"
                 isLast
               />
             </GroupedCard>

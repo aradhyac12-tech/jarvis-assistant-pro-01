@@ -176,21 +176,25 @@ export function P2PDiagnosticsPanel({
 
     try {
       log("🔧 Sending firewall fix command to PC via cloud...");
+      // Use open_p2p_ports command (matches agent handler)
       const result = await sendCloudCommand("open_p2p_ports");
-      if (result?.results) {
-        for (const r of result.results) {
-          log(r);
+      const resultData = result?.result ?? result;
+      if (resultData?.results && Array.isArray(resultData.results)) {
+        for (const r of resultData.results) {
+          log(`  ${r}`);
         }
+      } else if (resultData?.success) {
+        log("  ✅ Firewall rules applied");
       }
-      if (result?.hint) log(`💡 ${result.hint}`);
-      log("🔄 Now retrying P2P connection...");
-      await new Promise((r) => setTimeout(r, 1000));
+      if (resultData?.hint) log(`💡 ${resultData.hint}`);
+      log("🔄 Retrying P2P connection in 2s...");
+      await new Promise((r) => setTimeout(r, 2000));
       onAutoFix?.();
-      await new Promise((r) => setTimeout(r, 3000));
-      log(localP2PState.isConnected ? "✅ P2P connected!" : "⏳ May take a moment. Try 'Retry P2P' again.");
+      await new Promise((r) => setTimeout(r, 4000));
+      log(localP2PState.isConnected ? "✅ P2P connected!" : "⏳ Still connecting — try 'Retry P2P' button.");
     } catch (e: any) {
       log(`❌ ${e.message || "Failed to send command"}`);
-      log("💡 Make sure agent is running. If firewall fix fails, run agent as Administrator.");
+      log("💡 Make sure agent is running. If fix fails, run agent as Administrator and click 'Fix Firewall' again.");
     }
     setAutoFixing(false);
   };

@@ -54,6 +54,66 @@ AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_FILE = os.path.join(AGENT_DIR, ".update_version")
 FIREWALL_DONE_FILE = os.path.join(AGENT_DIR, ".firewall_configured")
 UPDATE_CHECK_INTERVAL = 300
+
+# ============== AGENT-SIDE COMMAND RATE LIMITER ==============
+# Protects the PC from being overwhelmed by accidental or malicious
+# command floods, independently of the cloud-function rate limiter.
+#
+# Categories and their limits (max_calls, window_seconds):
+_RATE_LIMIT_RULES: Dict[str, tuple] = {
+    # Dangerous / irreversible commands — very tight limits
+    "shutdown":        (1, 60),
+    "restart":         (1, 60),
+    "hibernate":       (1, 60),
+    "sleep":           (3, 60),
+    "lock_screen":     (5, 60),
+    # File operations — moderate limits
+    "send_file":       (20, 60),
+    "receive_file":    (20, 60),
+    "list_files":      (30, 60),
+    # Screen / camera streaming — prevent accidental loops
+    "start_screen_stream": (5, 60),
+    "start_camera_stream": (5, 60),
+    # High-frequency input — generous but bounded
+    "mouse_move":      (500, 10),
+    "mouse_click":     (60, 10),
+    "scroll":          (120, 10),
+    "key_press":       (120, 10),
+    "type_text":       (30, 10),
+    # System queries — reasonable
+    "get_system_stats": (30, 60),
+    "get_audit_log":    (10, 60),
+}
+
+_rate_limit_state: Dict[str, Dict] = {}
+_rate_limit_lock = threading.Lock()
+
+def check_agent_rate_limit(cmd: str) -> tuple:
+    """
+    Returns (allowed: bool, retry_after_s: float).
+    Commands not in _RATE_LIMIT_RULES are always allowed.
+    """
+    rule = _RATE_LIMIT_RULES.get(cmd)
+    if rule is None:
+        return True, 0.0
+
+    max_calls, window_s = rule
+    now = time.monotonic()
+
+    with _rate_limit_lock:
+        entry = _rate_limit_state.get(cmd)
+        if entry is None or now - entry["window_start"] >= window_s:
+            _rate_limit_state[cmd] = {"count": 1, "window_start": now}
+            return True, 0.0
+
+        if entry["count"] >= max_calls:
+            retry_after = window_s - (now - entry["window_start"])
+            return False, round(retry_after, 2)
+
+        entry["count"] += 1
+        return True, 0.0
+
+
 BACKUP_DIR = os.path.join(AGENT_DIR, ".backups")
 
 UPDATABLE_FILES = [
@@ -64,6 +124,123 @@ UPDATABLE_FILES = [
 TRAINING_DATA_DIR = os.path.join(AGENT_DIR, "training_data")
 FACE_EMBEDDINGS_FILE = os.path.join(AGENT_DIR, "training_data", "face_embeddings.json")
 
+# ============== COMMAND AUDIT LOG ==============
+import sqlite3
+
+AUDIT_DB_PATH = os.path.join(AGENT_DIR, "command_audit.db")
+_audit_db_lock = threading.Lock()
+
+# Persistent connection — opened once, reused for every write.
+# WAL mode allows concurrent readers without blocking writes.
+_audit_conn: Optional[sqlite3.Connection] = None
+
+def _get_audit_conn() -> sqlite3.Connection:
+    """Return the persistent audit DB connection, initialising it on first call."""
+    global _audit_conn
+    if _audit_conn is not None:
+        return _audit_conn
+    conn = sqlite3.connect(AUDIT_DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS command_audit (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts        TEXT    NOT NULL,
+            cmd_type  TEXT    NOT NULL,
+            transport TEXT,
+            success   INTEGER NOT NULL DEFAULT 1,
+            latency_ms INTEGER,
+            error     TEXT,
+            device_id TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON command_audit(ts)")
+    conn.commit()
+    _audit_conn = conn
+    return _audit_conn
+
+def audit_log_command(
+    cmd_type: str,
+    success: bool,
+    latency_ms: int = 0,
+    error: str = "",
+    transport: str = "cloud",
+    device_id: str = "",
+):
+    """Write one row to the SQLite audit log (non-blocking, best-effort)."""
+    try:
+        with _audit_db_lock:
+            conn = _get_audit_conn()
+            conn.execute(
+                "INSERT INTO command_audit (ts, cmd_type, transport, success, latency_ms, error, device_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    cmd_type,
+                    transport,
+                    1 if success else 0,
+                    latency_ms,
+                    error or "",
+                    device_id or "",
+                ),
+            )
+            # Keep DB lean — purge rows older than 7 days
+            conn.execute(
+                "DELETE FROM command_audit WHERE ts < datetime('now', '-7 days')"
+            )
+            conn.commit()
+    except Exception as _ae:
+        print(f"[audit] Warning: failed to write audit log: {_ae}")  # visible but non-fatal
+
+def get_audit_log(limit: int = 200) -> list:
+    """Return the most recent `limit` audit rows as dicts."""
+    try:
+        with _audit_db_lock:
+            conn = _get_audit_conn()
+            rows = conn.execute(
+                "SELECT ts, cmd_type, transport, success, latency_ms, error "
+                "FROM command_audit ORDER BY id DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            return [
+                {
+                    "ts": r[0], "cmd_type": r[1], "transport": r[2],
+                    "success": bool(r[3]), "latency_ms": r[4], "error": r[5],
+                }
+                for r in rows
+            ]
+    except Exception:
+        return []
+
+def get_audit_stats() -> dict:
+    """Return aggregate stats for the last 24 hours."""
+    try:
+        with _audit_db_lock:
+            conn = _get_audit_conn()
+            row = conn.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) as ok,
+                    AVG(latency_ms) as avg_lat,
+                    MIN(latency_ms) as min_lat,
+                    MAX(latency_ms) as max_lat
+                FROM command_audit
+                WHERE ts >= datetime('now', '-24 hours')
+            """).fetchone()
+            if row:
+                total, ok, avg_lat, min_lat, max_lat = row
+                return {
+                    "total": total or 0,
+                    "success": ok or 0,
+                    "failed": (total or 0) - (ok or 0),
+                    "success_rate": round((ok or 0) / max(total or 1, 1) * 100, 1),
+                    "avg_latency_ms": round(avg_lat or 0),
+                    "min_latency_ms": min_lat or 0,
+                    "max_latency_ms": max_lat or 0,
+                }
+    except Exception:
+        pass
+    return {"total": 0, "success": 0, "failed": 0, "success_rate": 0.0}
 
 def ensure_firewall_configured(p2p_port: int = 9876, log_fn=None):
     if os.path.exists(FIREWALL_DONE_FILE):
@@ -359,7 +536,7 @@ class FaceRecognizer:
         self._face_mesh = None
         self._pose = None
         self._initialized = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # RLock: reentrant — safe for train+recognize concurrency
     
     def _ensure_init(self):
         if self._initialized:
@@ -872,16 +1049,18 @@ class BluetoothServer:
         return b""
     
     def _send_chunked_notification(self, service_uuid, char_uuid, data: bytes):
-        """Send chunked data via BLE notifications with error handling."""
+        """Send chunked data via BLE GATT notifications."""
         if not self._server:
             return
         chunks = ble_encode_chunked(data)
         for chunk in chunks:
             try:
-                self._server.get_characteristic(char_uuid)
+                char = self._server.get_characteristic(char_uuid)
+                if char is not None:
+                    char.value = bytearray(chunk)
                 self._server.update_value(service_uuid, char_uuid)
-            except Exception as e:
-                # Silently catch characteristic update errors (client disconnected mid-stream)
+                time.sleep(0.01)
+            except Exception:
                 pass
     
     def _on_write(self, characteristic, value, **kwargs):
@@ -2353,15 +2532,23 @@ def _find_wasapi_loopback_device(pa):
         return None
 
 # ============== CONFIGURATION ==============
-# CRITICAL: These MUST match the web app's Supabase project
-DEFAULT_JARVIS_URL = "https://hzfmgmodkqrrrlieqsop.supabase.co"
-DEFAULT_JARVIS_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6Zm1nbW9ka3FycnJsaWVxc29wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE5NTAzMzcsImV4cCI6MjA4NzUyNjMzN30.hur36j_hFDjOQm9lEYd_I58I0An6fowouZijAwDueik"
+# Credentials are loaded from environment variables ONLY.
+# Set them in your .env file or export them before running:
+#   export JARVIS_SUPABASE_URL="https://xxxx.supabase.co"
+#   export JARVIS_SUPABASE_KEY="your-anon-key"
 
-# Optional: where the "Open Web App" button should navigate.
-DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "https://id-preview--d1b9acd5-529c-4761-84e6-7717f3667310.lovable.app")
+DEFAULT_APP_URL = os.environ.get("JARVIS_APP_URL", "")
 
-SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", DEFAULT_JARVIS_URL)
-SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", DEFAULT_JARVIS_KEY)
+SUPABASE_URL = os.environ.get("JARVIS_SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("JARVIS_SUPABASE_KEY", "")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print(
+        "\n[JARVIS] FATAL: JARVIS_SUPABASE_URL and JARVIS_SUPABASE_KEY must be set "
+        "as environment variables.\n"
+        "  Copy .env.example to .env, fill in your credentials, and re-run.\n"
+    )
+    sys.exit(1)
 
 DEVICE_NAME = platform.node() or "My PC"
 UNLOCK_PIN = os.environ.get("JARVIS_UNLOCK_PIN", "1212")
@@ -2641,24 +2828,49 @@ class InternetMonitor:
 
 
 def _add_firewall_rule(port: int):
-    """Add Windows Firewall rule for the P2P port."""
+    """Add Windows Firewall inbound rule — all profiles, auto-elevates if needed."""
     if platform.system() != "Windows":
         return
-    rule_name = f"JARVIS P2P Port {port}"
+    rule_name = f"JARVIS_P2P_{port}"
+    args = [
+        "netsh", "advfirewall", "firewall", "add", "rule",
+        f"name={rule_name}", "dir=in", "action=allow",
+        "protocol=TCP", f"localport={port}",
+        "profile=private,domain,public",
+    ]
     try:
-        check = subprocess.run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"],
-            capture_output=True, text=True, timeout=5
+        for old_name in [rule_name, f"JARVIS P2P Port {port}"]:
+            subprocess.run(
+                ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={old_name}"],
+                capture_output=True, timeout=5
+            )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=8)
+        if result.returncode == 0:
+            add_log("info", f"Firewall rule added for port {port} (all profiles)", category="p2p")
+            return
+        ps_args = " ".join(f"'{a}'" if " " in a else a for a in args[1:])
+        ps_cmd = (
+            f"Start-Process netsh -ArgumentList '{ps_args}' "
+            f"-Verb RunAs -Wait -WindowStyle Hidden"
         )
-        if "No rules match" in check.stdout or check.returncode != 0:
-            subprocess.run([
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={rule_name}", "dir=in", "action=allow",
-                "protocol=TCP", f"localport={port}",
-            ], capture_output=True, timeout=5)
-            add_log("info", f"Firewall rule added for port {port}", category="p2p")
+        elev = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=30
+        )
+        if elev.returncode == 0:
+            add_log("info", f"Firewall rule added for port {port} via elevation", category="p2p")
+        else:
+            ps_fw = (
+                f"New-NetFirewallRule -DisplayName '{rule_name}' -Direction Inbound "
+                f"-Action Allow -Protocol TCP -LocalPort {port} -Profile Any -ErrorAction SilentlyContinue"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_fw],
+                capture_output=True, text=True, timeout=15
+            )
+            add_log("info", f"Firewall rule attempted via New-NetFirewallRule for port {port}", category="p2p")
     except Exception as e:
-        add_log("warn", f"Could not add firewall rule: {e}", category="p2p")
+        add_log("warn", f"Could not add firewall rule for port {port}: {e}", category="p2p")
 
 
 # ============== LOCAL P2P WEBSOCKET SERVER ==============
@@ -3487,20 +3699,73 @@ class ThreadedScreenshot:
 
 # ============== NOTIFICATION MANAGER ==============
 class NotificationManager:
+    """Cross-platform desktop notification manager.
+    
+    Priority order:
+      Windows  → win10toast → plyer → fallback silent
+      macOS    → osascript (built-in, zero deps)
+      Linux    → notify-send (libnotify) → dbus-python → plyer → silent
+    """
     def __init__(self):
         self._toaster = None
-        if HAS_TOAST:
+        self._plyer = None
+        self._system = platform.system()
+
+        if self._system == "Windows":
+            if HAS_TOAST:
+                try:
+                    self._toaster = ToastNotifier()
+                except Exception:
+                    pass
+            if not self._toaster:
+                try:
+                    from plyer import notification as _pn
+                    self._plyer = _pn
+                except Exception:
+                    pass
+        elif self._system == "Linux":
+            # Prefer plyer if available; fall back to notify-send subprocess
             try:
-                self._toaster = ToastNotifier()
-            except:
+                from plyer import notification as _pn
+                self._plyer = _pn
+            except Exception:
                 pass
-    
-    def notify(self, title: str, message: str):
-        if self._toaster:
-            try:
-                self._toaster.show_toast(title, message, duration=3, threaded=True)
-            except:
-                pass
+
+    def notify(self, title: str, message: str, duration: int = 4):
+        """Show a desktop notification. Best-effort — never raises."""
+        try:
+            if self._system == "Windows":
+                if self._toaster:
+                    self._toaster.show_toast(title, message, duration=duration, threaded=True)
+                    return
+                if self._plyer:
+                    self._plyer.notify(title=title, message=message,
+                                       app_name="JARVIS", timeout=duration)
+                    return
+
+            elif self._system == "Darwin":
+                # macOS: use AppleScript — works on 10.9+ with no extra deps
+                safe_title   = title.replace('"', '\\"').replace("'", "\\'")
+                safe_message = message.replace('"', '\\"').replace("'", "\\'")
+                subprocess.Popen(
+                    ["osascript", "-e",
+                     f'display notification "{safe_message}" with title "{safe_title}"'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                return
+
+            elif self._system == "Linux":
+                if self._plyer:
+                    self._plyer.notify(title=title, message=message,
+                                       app_name="JARVIS", timeout=duration)
+                    return
+                # notify-send (libnotify) — standard on Ubuntu/Fedora/Arch
+                subprocess.Popen(
+                    ["notify-send", "-t", str(duration * 1000), title, message],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+        except Exception:
+            pass  # Notifications are best-effort
 
 notification_manager = NotificationManager()
 
@@ -3586,25 +3851,64 @@ class JarvisAgent:
     
     # ============== VOLUME/BRIGHTNESS ==============
     def _get_volume(self) -> int:
-        vol = _safe_pycaw_get_volume()
-        if vol is not None:
-            self._volume_cache = vol
+        sys = platform.system()
+        if sys == "Windows":
+            vol = _safe_pycaw_get_volume()
+            if vol is not None:
+                self._volume_cache = vol
+        elif sys == "Darwin":
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e", "output volume of (get volume settings)"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    self._volume_cache = max(0, min(100, int(r.stdout.strip())))
+            except Exception:
+                pass
+        elif sys == "Linux":
+            # Try pactl (PulseAudio/PipeWire) first, then amixer
+            try:
+                r = subprocess.run(
+                    ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if r.returncode == 0:
+                    import re
+                    m = re.search(r"(\d+)%", r.stdout)
+                    if m:
+                        self._volume_cache = int(m.group(1))
+            except Exception:
+                try:
+                    r = subprocess.run(
+                        ["amixer", "get", "Master"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        import re
+                        m = re.search(r"\[(\d+)%\]", r.stdout)
+                        if m:
+                            self._volume_cache = int(m.group(1))
+                except Exception:
+                    pass
         return self._volume_cache
-    
+
     def _set_volume(self, level: int) -> Dict[str, Any]:
         try:
             level = max(0, min(100, level))
             add_log("info", f"set_volume called with level={level}", category="audio")
-            
-            if platform.system() == "Windows":
-                # Method 1: pycaw
-                if _safe_pycaw_set_volume(level):
-                    self._volume_cache = level
-                    # Update device DB
-                    self._update_device_field("current_volume", level)
-                    return {"success": True, "volume": level, "method": "pycaw"}
-                
-                # Method 2: nircmd
+            sys = platform.system()
+
+            if sys == "Windows":
+                try:
+                    if _safe_pycaw_set_volume(level):
+                        self._volume_cache = level
+                        self._update_device_field("current_volume", level)
+                        return {"success": True, "volume": level, "method": "pycaw"}
+                    add_log("warning", "pycaw set_volume returned False, trying next method", category="audio")
+                except Exception as e:
+                    add_log("warning", f"pycaw set_volume exception: {e}", category="audio")
+
                 try:
                     r = subprocess.run(
                         ["nircmd", "setsysvolume", str(int(level / 100 * 65535))],
@@ -3613,30 +3917,75 @@ class JarvisAgent:
                     if r.returncode == 0:
                         self._volume_cache = level
                         self._update_device_field("current_volume", level)
-                        add_log("info", f"nircmd set volume to {level}%", category="audio")
                         return {"success": True, "volume": level, "method": "nircmd"}
                 except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                    add_log("warning", f"nircmd fallback failed: {e}", category="audio")
-                
-                # Method 3: PowerShell COM (no module needed)
-                if _powershell_set_volume(level):
-                    self._volume_cache = level
-                    self._update_device_field("current_volume", level)
-                    return {"success": True, "volume": level, "method": "powershell"}
-            
-            # Method 4: Keyboard fallback (always works)
-            add_log("info", "Using keyboard fallback for volume", category="audio")
-            current = self._volume_cache
-            diff = level - current
-            steps = abs(diff) // 2
-            key = "volumeup" if diff > 0 else "volumedown"
-            for _ in range(min(steps, 50)):
-                pyautogui.press(key)
-                import time
-                time.sleep(0.05)
-            self._volume_cache = level
-            self._update_device_field("current_volume", level)
-            return {"success": True, "volume": level, "method": "keyboard"}
+                    add_log("warning", f"nircmd not available: {e}", category="audio")
+                except Exception as e:
+                    add_log("warning", f"nircmd failed: {e}", category="audio")
+
+                try:
+                    if _powershell_set_volume(level):
+                        self._volume_cache = level
+                        self._update_device_field("current_volume", level)
+                        return {"success": True, "volume": level, "method": "powershell"}
+                except Exception as e:
+                    add_log("warning", f"PowerShell set_volume exception: {e}", category="audio")
+
+            elif sys == "Darwin":
+                try:
+                    r = subprocess.run(
+                        ["osascript", "-e", f"set volume output volume {level}"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        self._volume_cache = level
+                        self._update_device_field("current_volume", level)
+                        return {"success": True, "volume": level, "method": "osascript"}
+                except Exception as e:
+                    add_log("warning", f"macOS osascript volume failed: {e}", category="audio")
+
+            elif sys == "Linux":
+                # Try pactl (PulseAudio / PipeWire)
+                try:
+                    r = subprocess.run(
+                        ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{level}%"],
+                        capture_output=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        self._volume_cache = level
+                        self._update_device_field("current_volume", level)
+                        return {"success": True, "volume": level, "method": "pactl"}
+                except Exception:
+                    pass
+                # Fallback: amixer (ALSA)
+                try:
+                    r = subprocess.run(
+                        ["amixer", "set", "Master", f"{level}%"],
+                        capture_output=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        self._volume_cache = level
+                        self._update_device_field("current_volume", level)
+                        return {"success": True, "volume": level, "method": "amixer"}
+                except Exception as e:
+                    add_log("warning", f"amixer volume failed: {e}", category="audio")
+
+            # Final fallback: keyboard media keys
+            if pyautogui is not None:
+                current = self._volume_cache
+                diff = level - current
+                if diff == 0:
+                    return {"success": True, "volume": level, "method": "keyboard_noop"}
+                steps = max(1, round(abs(diff) / 2))
+                key = "volumeup" if diff > 0 else "volumedown"
+                for _ in range(min(steps, 50)):
+                    pyautogui.press(key)
+                    time.sleep(0.04)
+                self._volume_cache = level
+                self._update_device_field("current_volume", level)
+                return {"success": True, "volume": level, "method": "keyboard"}
+
+            return {"success": False, "error": "All volume control methods failed"}
         except Exception as e:
             add_log("error", f"set_volume failed: {e}", category="audio")
             return {"success": False, "error": str(e)}
@@ -3657,20 +4006,50 @@ class JarvisAgent:
                     self._brightness_cache = levels[0] if isinstance(levels, list) else levels
                     return int(self._brightness_cache)
 
-            # Windows fallback: WMI
-            if platform.system() == "Windows":
+            sys = platform.system()
+            if sys == "Windows":
                 try:
                     r = subprocess.run(
-                        ["powershell", "-Command", "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness"],
-                        capture_output=True,
-                        text=True,
-                        timeout=8,
+                        ["powershell", "-NoProfile", "-Command",
+                         "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness"],
+                        capture_output=True, text=True, timeout=8,
                     )
                     out = (r.stdout or "").strip()
                     if r.returncode == 0 and out:
                         self._brightness_cache = max(0, min(100, int(float(out))))
                 except Exception:
                     pass
+
+            elif sys == "Darwin":
+                # Requires `brightness` CLI: `brew install brightness`
+                try:
+                    r = subprocess.run(["brightness", "-l"], capture_output=True, text=True, timeout=5)
+                    if r.returncode == 0:
+                        import re
+                        m = re.search(r"brightness\s+([0-9.]+)", r.stdout)
+                        if m:
+                            self._brightness_cache = max(0, min(100, int(float(m.group(1)) * 100)))
+                except Exception:
+                    pass
+
+            elif sys == "Linux":
+                # Try light (most distros), then xrandr luminance
+                try:
+                    r = subprocess.run(["light", "-G"], capture_output=True, text=True, timeout=5)
+                    if r.returncode == 0:
+                        self._brightness_cache = max(0, min(100, int(float(r.stdout.strip()))))
+                except Exception:
+                    try:
+                        r = subprocess.run(
+                            ["xrandr", "--verbose"],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        import re
+                        m = re.search(r"Brightness:\s*([0-9.]+)", r.stdout)
+                        if m:
+                            self._brightness_cache = max(0, min(100, int(float(m.group(1)) * 100)))
+                    except Exception:
+                        pass
         except Exception:
             pass
         return int(self._brightness_cache)
@@ -3679,8 +4058,9 @@ class JarvisAgent:
         try:
             level = max(0, min(100, int(level)))
             add_log("info", f"set_brightness called with level={level}", category="display")
+            sys = platform.system()
 
-            # Method 1: screen_brightness_control
+            # Method 1: screen_brightness_control (cross-platform, best effort)
             if HAS_BRIGHTNESS:
                 try:
                     sbc.set_brightness(level)
@@ -3690,15 +4070,12 @@ class JarvisAgent:
                 except Exception as e:
                     add_log("warning", f"sbc set_brightness failed: {e}", category="display")
 
-            # Method 2: Windows WMI fallback
-            if platform.system() == "Windows":
+            if sys == "Windows":
                 try:
                     cmd = f"(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{level})"
                     r = subprocess.run(
-                        ["powershell", "-Command", cmd],
-                        capture_output=True,
-                        text=True,
-                        timeout=8,
+                        ["powershell", "-NoProfile", "-Command", cmd],
+                        capture_output=True, text=True, timeout=8,
                     )
                     if r.returncode == 0:
                         self._brightness_cache = level
@@ -3707,6 +4084,90 @@ class JarvisAgent:
                     add_log("warning", f"WMI set_brightness failed: {r.stderr[:200]}", category="display")
                 except Exception as e:
                     add_log("warning", f"WMI set_brightness exception: {e}", category="display")
+
+            elif sys == "Darwin":
+                # Requires `brightness` CLI: brew install brightness
+                try:
+                    scalar = round(level / 100, 2)
+                    r = subprocess.run(
+                        ["brightness", str(scalar)],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        self._brightness_cache = level
+                        self._update_device_field("current_brightness", level)
+                        return {"success": True, "brightness": level, "method": "brightness_cli"}
+                except FileNotFoundError:
+                    add_log("warning", "brightness CLI not found — install via: brew install brightness", category="display")
+                except Exception as e:
+                    add_log("warning", f"macOS brightness failed: {e}", category="display")
+                # Fallback: use keyboard brightness keys via osascript
+                try:
+                    # AppleScript key codes: 144=brightness up, 145=brightness down
+                    steps = max(1, level // 10)
+                    current = self._brightness_cache // 10
+                    diff = (level // 10) - current
+                    key_code = 144 if diff > 0 else 145
+                    for _ in range(abs(diff)):
+                        subprocess.run(
+                            ["osascript", "-e", f"tell application \"System Events\" to key code {key_code}"],
+                            capture_output=True, timeout=3
+                        )
+                    self._brightness_cache = level
+                    self._update_device_field("current_brightness", level)
+                    return {"success": True, "brightness": level, "method": "osascript_keys"}
+                except Exception as e:
+                    add_log("warning", f"osascript brightness keys failed: {e}", category="display")
+
+            elif sys == "Linux":
+                # Try light (requires user in `video` group or sudo)
+                try:
+                    r = subprocess.run(
+                        ["light", "-S", str(level)],
+                        capture_output=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        self._brightness_cache = level
+                        self._update_device_field("current_brightness", level)
+                        return {"success": True, "brightness": level, "method": "light"}
+                except Exception:
+                    pass
+                # Fallback: xrandr (changes gamma, not backlight — works on all X11)
+                try:
+                    scalar = round(level / 100, 2)
+                    # Get primary connected display name
+                    xr = subprocess.run(
+                        ["xrandr", "--query"], capture_output=True, text=True, timeout=5
+                    )
+                    import re
+                    displays = re.findall(r"^(\S+) connected", xr.stdout, re.MULTILINE)
+                    if displays:
+                        for disp in displays:
+                            subprocess.run(
+                                ["xrandr", "--output", disp, "--brightness", str(scalar)],
+                                capture_output=True, timeout=5
+                            )
+                        self._brightness_cache = level
+                        self._update_device_field("current_brightness", level)
+                        return {"success": True, "brightness": level, "method": "xrandr"}
+                except Exception as e:
+                    add_log("warning", f"xrandr brightness failed: {e}", category="display")
+                # Fallback: write directly to /sys/class/backlight
+                try:
+                    import glob
+                    backlight_dirs = glob.glob("/sys/class/backlight/*/")
+                    if backlight_dirs:
+                        bl_dir = backlight_dirs[0]
+                        with open(f"{bl_dir}max_brightness") as f:
+                            max_b = int(f.read().strip())
+                        target = int(max_b * level / 100)
+                        with open(f"{bl_dir}brightness", "w") as f:
+                            f.write(str(target))
+                        self._brightness_cache = level
+                        self._update_device_field("current_brightness", level)
+                        return {"success": True, "brightness": level, "method": "sysfs"}
+                except Exception as e:
+                    add_log("warning", f"sysfs brightness failed: {e}", category="display")
 
             return {
                 "success": False,
@@ -3719,28 +4180,31 @@ class JarvisAgent:
     # ============== SYSTEM CONTROLS ==============
     def _shutdown(self) -> Dict[str, Any]:
         if platform.system() == "Windows":
-            os.system("shutdown /s /t 5")
+            subprocess.run(["shutdown", "/s", "/t", "5"], check=False, timeout=10)
         else:
-            os.system("shutdown -h now")
+            subprocess.run(["shutdown", "-h", "now"], check=False, timeout=10)
         return {"success": True}
     
     def _restart(self) -> Dict[str, Any]:
         if platform.system() == "Windows":
-            os.system("shutdown /r /t 5")
+            subprocess.run(["shutdown", "/r", "/t", "5"], check=False, timeout=10)
         else:
-            os.system("shutdown -r now")
+            subprocess.run(["shutdown", "-r", "now"], check=False, timeout=10)
         return {"success": True}
     
     def _sleep(self) -> Dict[str, Any]:
         if platform.system() == "Windows":
-            os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+            subprocess.run(
+                ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"],
+                check=False, timeout=10
+            )
         else:
-            os.system("systemctl suspend")
+            subprocess.run(["systemctl", "suspend"], check=False, timeout=10)
         return {"success": True}
     
     def _hibernate(self) -> Dict[str, Any]:
         if platform.system() == "Windows":
-            os.system("shutdown /h")
+            subprocess.run(["shutdown", "/h"], check=False, timeout=10)
         return {"success": True}
     
     def _lock_screen(self) -> Dict[str, Any]:
@@ -4010,9 +4474,10 @@ class JarvisAgent:
             if not fans_data and platform.system() == "Windows":
                 try:
                     import subprocess
-                    # Try Win32_Fan WMI class
-                    wmi_cmd = 'powershell -Command "Get-CimInstance -Namespace root/cimv2 -ClassName Win32_Fan 2>$null | Select-Object Name,DesiredSpeed,ActiveCooling | ConvertTo-Json"'
-                    result = subprocess.run(wmi_cmd, capture_output=True, text=True, timeout=5, shell=True)
+                    # Try Win32_Fan WMI class — use list form to avoid shell injection
+                    wmi_cmd = ["powershell", "-NoProfile", "-Command",
+                               "Get-CimInstance -Namespace root/cimv2 -ClassName Win32_Fan 2>$null | Select-Object Name,DesiredSpeed,ActiveCooling | ConvertTo-Json"]
+                    result = subprocess.run(wmi_cmd, capture_output=True, text=True, timeout=5, shell=False)
                     if result.stdout.strip() and result.stdout.strip() != "":
                         import json as _json
                         fan_info = _json.loads(result.stdout)
@@ -4032,8 +4497,9 @@ class JarvisAgent:
                 # Method 3: Try thermal zone temperatures as proxy info
                 if not fans_data:
                     try:
-                        wmi_cmd2 = 'powershell -Command "Get-CimInstance MSAcpi_ThermalZoneTemperature -Namespace root/wmi 2>$null | Select-Object InstanceName,CurrentTemperature | ConvertTo-Json"'
-                        result2 = subprocess.run(wmi_cmd2, capture_output=True, text=True, timeout=5, shell=True)
+                        wmi_cmd2 = ["powershell", "-NoProfile", "-Command",
+                                    "Get-CimInstance MSAcpi_ThermalZoneTemperature -Namespace root/wmi 2>$null | Select-Object InstanceName,CurrentTemperature | ConvertTo-Json"]
+                        result2 = subprocess.run(wmi_cmd2, capture_output=True, text=True, timeout=5, shell=False)
                         if result2.stdout.strip() and result2.stdout.strip() != "":
                             import json as _json2
                             thermal_info = _json2.loads(result2.stdout)
@@ -4440,22 +4906,33 @@ class JarvisAgent:
         """Switch default audio playback device using AudioDeviceCmdlets or nircmd."""
         try:
             device_id = (device_id or "").strip() or "default"
-            # Try AudioDeviceCmdlets first
-            result = subprocess.run([
-                "powershell", "-NoProfile", "-NonInteractive", "-c",
-                f'Set-AudioDevice -ID "{device_id}"'
-            ], capture_output=True, text=True, timeout=5)
+            # Sanitize: only allow alphanumeric, spaces, hyphens, underscores,
+            # braces, dots, and curly-braces (covers Windows audio GUIDs like
+            # {0.0.0.00000000}.{abc-123} and friendly names like "Realtek Audio").
+            import re as _re
+            if not _re.match(r'^[\w\s\-\.\{\}]+$', device_id):
+                return {"success": False, "error": f"Invalid device_id: '{device_id}'"}
+            # Use $env: variable to pass the ID safely — no interpolation into script body
+            safe_ps = (
+                "$id = $env:JARVIS_AUDIO_ID\n"
+                "$devices = Get-AudioDevice -List | Where-Object { $_.Type -eq 'Playback' }\n"
+                "$target = $devices | Where-Object { $_.ID -eq $id -or $_.Name -like \"*$id*\" }\n"
+                "if ($target) { Set-AudioDevice -ID $target.ID }"
+            )
+            env = {**os.environ, "JARVIS_AUDIO_ID": device_id}
+            # Try AudioDeviceCmdlets first (simple ID match)
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-c",
+                 "$id = $env:JARVIS_AUDIO_ID; Set-AudioDevice -ID $id"],
+                capture_output=True, text=True, timeout=5, env=env,
+            )
             if result.returncode == 0:
                 return {"success": True, "device_id": device_id}
-            # Fallback: try by index
-            result2 = subprocess.run([
-                "powershell", "-NoProfile", "-NonInteractive", "-c",
-                f"""
-                $devices = Get-AudioDevice -List | Where-Object {{ $_.Type -eq 'Playback' }}
-                $target = $devices | Where-Object {{ $_.ID -eq '{device_id}' -or $_.Name -like '*{device_id}*' }}
-                if ($target) {{ Set-AudioDevice -ID $target.ID }}
-                """
-            ], capture_output=True, text=True, timeout=5)
+            # Fallback: match by name or ID
+            result2 = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-c", safe_ps],
+                capture_output=True, text=True, timeout=5, env=env,
+            )
             return {"success": result2.returncode == 0, "device_id": device_id}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -4557,8 +5034,20 @@ class JarvisAgent:
                 "screenshot_wait": int(payload.get("screenshot_wait", 10)),
                 "zoom_already_running": zoom_already_running,
             }
-            self._zoom_join_task = asyncio.create_task(self._zoom_join_background(bg_payload))
             self._zoom_meeting_active = True
+
+            def _run_zoom_bg():
+                _loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(_loop)
+                try:
+                    _loop.run_until_complete(self._zoom_join_background(bg_payload))
+                except Exception as e:
+                    add_log("error", f"Zoom background error: {e}", category="zoom")
+                finally:
+                    _loop.close()
+
+            self._zoom_join_task = threading.Thread(target=_run_zoom_bg, daemon=True, name="zoom-bg")
+            self._zoom_join_task.start()
 
             return {
                 "success": True,
@@ -5214,31 +5703,83 @@ class JarvisAgent:
             return {"success": False, "error": str(e)}
 
     # ============== MOUSE/KEYBOARD ==============
-    def _mouse_move(self, x: int, y: int, relative: bool = True) -> Dict[str, Any]:
+    def _mouse_move(self, x: float, y: float, relative: bool = True, normalized: bool = False) -> Dict[str, Any]:
+        """Move the mouse.
+        - normalized=True: x,y are 0..1 fractions of screen size (best for touch-to-screen mapping)
+        - relative=True:   x,y are pixel deltas from current position
+        - relative=False:  x,y are absolute pixel coordinates
+        """
         try:
-            if relative:
-                pyautogui.move(x, y)
+            if normalized:
+                sw, sh = pyautogui.size()
+                # Clamp to valid screen area
+                px = int(max(0, min(1, x)) * (sw - 1))
+                py = int(max(0, min(1, y)) * (sh - 1))
+                pyautogui.moveTo(px, py, _pause=False)
+            elif relative:
+                pyautogui.move(int(x), int(y), _pause=False)
             else:
-                pyautogui.moveTo(x, y)
+                pyautogui.moveTo(int(x), int(y), _pause=False)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
-    def _mouse_click(self, button: str = "left", clicks: int = 1) -> Dict[str, Any]:
+
+    def _mouse_down(self, button: str = "left", normalized_x: float = -1, normalized_y: float = -1) -> Dict[str, Any]:
+        """Press and hold a mouse button (for drag operations).
+        If normalized_x/y are >= 0, move to that position first.
+        """
         try:
-            pyautogui.click(button=button, clicks=clicks)
+            if normalized_x >= 0 and normalized_y >= 0:
+                sw, sh = pyautogui.size()
+                pyautogui.moveTo(
+                    int(max(0, min(1, normalized_x)) * (sw - 1)),
+                    int(max(0, min(1, normalized_y)) * (sh - 1)),
+                    _pause=False,
+                )
+            pyautogui.mouseDown(button=button)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
-    def _mouse_scroll(self, amount: int) -> Dict[str, Any]:
+
+    def _mouse_up(self, button: str = "left") -> Dict[str, Any]:
+        """Release a held mouse button (end of drag)."""
         try:
-            pyautogui.scroll(amount)
+            pyautogui.mouseUp(button=button)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
+
+    def _mouse_click(self, button: str = "left", clicks: int = 1,
+                     normalized_x: float = -1, normalized_y: float = -1) -> Dict[str, Any]:
+        """Click at current position, or move first if normalized coords are supplied."""
+        try:
+            if normalized_x >= 0 and normalized_y >= 0:
+                sw, sh = pyautogui.size()
+                px = int(max(0, min(1, normalized_x)) * (sw - 1))
+                py = int(max(0, min(1, normalized_y)) * (sh - 1))
+                pyautogui.click(x=px, y=py, button=button, clicks=clicks, _pause=False)
+            else:
+                pyautogui.click(button=button, clicks=clicks, _pause=False)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _mouse_scroll(self, amount: int, normalized_x: float = -1, normalized_y: float = -1) -> Dict[str, Any]:
+        """Scroll at current position or at a specific normalized position."""
+        try:
+            if normalized_x >= 0 and normalized_y >= 0:
+                sw, sh = pyautogui.size()
+                px = int(max(0, min(1, normalized_x)) * (sw - 1))
+                py = int(max(0, min(1, normalized_y)) * (sh - 1))
+                pyautogui.scroll(amount, x=px, y=py)
+            else:
+                pyautogui.scroll(amount)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # Key name mapping: app sends these -> keyboard library expects these
+
     KEY_MAP = {
         "backspace": "backspace", "enter": "enter", "return": "enter",
         "tab": "tab", "escape": "escape", "esc": "escape",
@@ -5404,7 +5945,8 @@ class JarvisAgent:
                     if target.startswith("ms-") or target.endswith(":"):
                         os.startfile(target)
                     else:
-                        subprocess.Popen([target], shell=True)
+                        # target is from our own whitelist dict — safe to launch directly
+                        subprocess.Popen([target], shell=False)
                     return {"success": True, "app": name, "method": "well_known"}
                 except Exception:
                     pass  # Fall through to other methods
@@ -5442,10 +5984,13 @@ class JarvisAgent:
                 except Exception:
                     pass
 
-                # Method 4: Shell start command
+                # Method 4: Shell start command — safe list form, no shell injection
                 try:
-                    subprocess.Popen(f'start "" "{app_name}"', shell=True)
-                    return {"success": True, "app": name, "method": "start_cmd"}
+                    # Validate app_name: reject anything with shell metacharacters
+                    _safe_name = app_name.strip()
+                    if _safe_name and not any(c in _safe_name for c in ('&', '|', ';', '`', '$', '>', '<', '\n', '\r')):
+                        subprocess.Popen(["cmd", "/c", "start", "", _safe_name], shell=False)
+                        return {"success": True, "app": name, "method": "start_cmd"}
                 except Exception:
                     pass
 
@@ -5623,7 +6168,11 @@ class JarvisAgent:
     # ============== FILES ==============
     def _list_files(self, path: str = "~") -> Dict[str, Any]:
         try:
-            path = os.path.expanduser(path)
+            path = os.path.realpath(os.path.expanduser(path))
+            # Restrict listing to the user's home directory tree
+            home = os.path.realpath(os.path.expanduser("~"))
+            if not path.startswith(home):
+                return {"success": False, "error": "Access denied: path is outside home directory"}
             items = []
             for item in os.listdir(path):
                 full_path = os.path.join(path, item)
@@ -5647,12 +6196,22 @@ class JarvisAgent:
             file_name = payload.get("file_name", "received_file")
             # Support both field names: "save_folder" (new) and "save_path" (old)
             save_folder = payload.get("save_folder") or payload.get("save_path") or ""
-            
+
+            # --- Sanitize filename: strip any path components so you can't
+            #     write to ../../.bashrc or ..\Startup\evil.bat
+            file_name = os.path.basename(file_name) or "received_file"
+
             # Default save location: ~/Downloads/Jarvis
             if not save_folder or save_folder.strip() == "":
                 save_folder = os.path.join(os.path.expanduser("~"), "Downloads", "Jarvis")
             elif save_folder.startswith("~"):
                 save_folder = os.path.expanduser(save_folder)
+
+            # Ensure save_folder is inside the user's home directory
+            home = os.path.realpath(os.path.expanduser("~"))
+            save_folder = os.path.realpath(save_folder)
+            if not save_folder.startswith(home):
+                return {"success": False, "error": "Access denied: save folder is outside home directory"}
             
             if not data_base64:
                 return {"success": False, "error": "No file data received (missing 'data' or 'chunk_data' field)"}
@@ -5681,8 +6240,16 @@ class JarvisAgent:
         try:
             file_path = payload.get("path", "")
             chunk_index = payload.get("chunk_index", 0)
-            chunk_size = payload.get("chunk_size", 64 * 1024)
-            
+            # Cap chunk_size: min 4 KB, max 512 KB — caller cannot request huge reads
+            chunk_size = max(4 * 1024, min(int(payload.get("chunk_size", 64 * 1024)), 512 * 1024))
+
+            # Resolve symlinks and check the path stays inside home directory
+            home = os.path.realpath(os.path.expanduser("~"))
+            resolved = os.path.realpath(os.path.expanduser(file_path))
+            if not resolved.startswith(home):
+                return {"success": False, "error": "Access denied: path is outside home directory"}
+            file_path = resolved
+
             if not os.path.exists(file_path):
                 return {"success": False, "error": "File not found"}
             
@@ -6186,6 +6753,27 @@ class JarvisAgent:
     
     # ============== MAIN COMMAND HANDLER ==============
     async def _handle_command(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        _t0 = time.monotonic()
+        _result = {"success": False, "error": "unhandled"}
+        try:
+            _result = await self._handle_command_impl(command_type, payload)
+            return _result
+        except Exception as _hc_exc:
+            _result = {"success": False, "error": str(_hc_exc)}
+            raise
+        finally:
+            _latency_ms = int((time.monotonic() - _t0) * 1000)
+            _transport = payload.get("_transport", "cloud") if isinstance(payload, dict) else "cloud"
+            audit_log_command(
+                cmd_type=command_type,
+                success=bool(_result.get("success", False)),
+                latency_ms=_latency_ms,
+                error=str(_result.get("error", "")),
+                transport=str(_transport),
+                device_id=str(self.device_id or ""),
+            )
+
+    async def _handle_command_impl(self, command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             cmd = command_type.lower().strip()
             
@@ -6213,7 +6801,18 @@ class JarvisAgent:
                 "boost": "get_system_stats",
             }
             cmd = alias_map.get(cmd, cmd)
-            
+
+            # ============== AGENT-SIDE RATE LIMITING ==============
+            allowed, retry_after = check_agent_rate_limit(cmd)
+            if not allowed:
+                add_log("warn", f"Rate limit hit for '{cmd}' — retry in {retry_after}s", category="system")
+                return {
+                    "success": False,
+                    "error": f"Rate limited. Retry after {retry_after}s",
+                    "rate_limited": True,
+                    "retry_after_seconds": retry_after,
+                }
+
             # ============== INPUT SESSION GATING ==============
             if cmd == "remote_input_enable":
                 session = str(payload.get("session", "") or "")
@@ -6273,7 +6872,25 @@ class JarvisAgent:
                     "has_auto_updater": True,
                     "firewall_configured": is_firewall_configured(),
                 }
-            
+
+            # ============== COMMAND AUDIT LOG ==============
+            elif cmd == "get_audit_log":
+                limit = int(payload.get("limit", 200) or 200)
+                return {"success": True, "entries": get_audit_log(limit)}
+
+            elif cmd == "get_audit_stats":
+                return {"success": True, "stats": get_audit_stats()}
+
+            elif cmd == "clear_audit_log":
+                try:
+                    with _audit_db_lock:
+                        conn = _get_audit_conn()
+                        conn.execute("DELETE FROM command_audit")
+                        conn.commit()
+                    return {"success": True, "message": "Audit log cleared"}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
             # ============== FACE/POSTURE TRAINING & RECOGNITION ==============
             elif cmd == "start_face_training":
                 return self._start_face_training(payload)
@@ -6326,11 +6943,32 @@ class JarvisAgent:
             
             # Mouse/keyboard
             elif cmd == "mouse_move":
-                return self._mouse_move(payload.get("x", 0), payload.get("y", 0), payload.get("relative", True))
+                return self._mouse_move(
+                    payload.get("x", 0), payload.get("y", 0),
+                    payload.get("relative", True),
+                    payload.get("normalized", False),
+                )
+            elif cmd == "mouse_down":
+                return self._mouse_down(
+                    payload.get("button", "left"),
+                    payload.get("normalized_x", -1),
+                    payload.get("normalized_y", -1),
+                )
+            elif cmd == "mouse_up":
+                return self._mouse_up(payload.get("button", "left"))
             elif cmd == "mouse_click":
-                return self._mouse_click(payload.get("button", "left"), payload.get("clicks", 1))
+                return self._mouse_click(
+                    payload.get("button", "left"),
+                    payload.get("clicks", 1),
+                    payload.get("normalized_x", -1),
+                    payload.get("normalized_y", -1),
+                )
             elif cmd in ["scroll", "mouse_scroll"]:
-                return self._mouse_scroll(int(payload.get("delta", payload.get("amount", 0)) or 0))
+                return self._mouse_scroll(
+                    int(payload.get("delta", payload.get("amount", 0)) or 0),
+                    payload.get("normalized_x", -1),
+                    payload.get("normalized_y", -1),
+                )
             elif cmd == "key_press":
                 return self._key_press(payload.get("key", ""))
             elif cmd == "key_combo":
@@ -6685,12 +7323,32 @@ class JarvisAgent:
                 return {"success": False, "error": "No path provided"}
             
             elif cmd == "run_command":
-                cmd_str = payload.get("command", "")
+                cmd_str = str(payload.get("command", "") or "").strip()
                 if not cmd_str:
                     return {"success": False, "error": "No command provided"}
+                # Security gate: run_command requires an active input session
+                # (same session gating used for mouse/keyboard remote input)
+                incoming_session = str(payload.get("input_session", "") or "")
+                if (not self._active_input_session or
+                        incoming_session != self._active_input_session or
+                        time.time() > self._input_session_expires_at):
+                    return {"success": False, "error": "run_command requires an active input session"}
+                # Reject clearly dangerous patterns
+                _BLOCKED = ["rm -rf /", "format c:", "del /f /s /q c:\\",
+                            "> /dev/sda", "dd if=", "mkfs.", ":(){:|:&};:"]
+                if any(b in cmd_str.lower() for b in _BLOCKED):
+                    add_log("warn", f"run_command blocked dangerous pattern: {cmd_str[:80]}", category="security")
+                    return {"success": False, "error": "Command blocked by safety filter"}
                 try:
-                    result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True, timeout=30)
-                    return {"success": True, "stdout": result.stdout[:2000], "stderr": result.stderr[:500], "returncode": result.returncode}
+                    result = subprocess.run(
+                        cmd_str, shell=True, capture_output=True, text=True, timeout=30
+                    )
+                    return {
+                        "success": True,
+                        "stdout": result.stdout[:2000],
+                        "stderr": result.stderr[:500],
+                        "returncode": result.returncode,
+                    }
                 except subprocess.TimeoutExpired:
                     return {"success": False, "error": "Command timed out (30s)"}
                 except Exception as e:
@@ -6788,11 +7446,19 @@ class JarvisAgent:
                     xml_content = f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>JARVIS PC Agent - Ghost Mode</Description>
+    <Description>JARVIS PC Agent - Ghost Mode (runs as SYSTEM before login)</Description>
   </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
   <Triggers>
-    <BootTrigger><Enabled>true</Enabled></BootTrigger>
-    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT5S</Delay>
+    </BootTrigger>
   </Triggers>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
@@ -6803,10 +7469,10 @@ class JarvisAgent:
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <Priority>4</Priority>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
       <Count>999</Count>
@@ -6833,7 +7499,7 @@ class JarvisAgent:
                     
                     # Create new task
                     result = subprocess.run(
-                        ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path],
+                        ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path, "/F"],
                         capture_output=True, text=True, timeout=10
                     )
                     
@@ -8051,8 +8717,9 @@ def main():
 
             gui = JarvisGUI(agent=agent)
             
-            # Start watchdog to auto-restart agent thread if it dies
-            watchdog = threading.Thread(target=_agent_watchdog, args=(agent_thread, agent, gui), daemon=True)
+            # Wrap thread in a mutable list so watchdog can update the reference in-place
+            thread_holder = [agent_thread]
+            watchdog = threading.Thread(target=_agent_watchdog, args=(thread_holder, agent, gui), daemon=True)
             watchdog.start()
             
             gui.run()
@@ -8064,7 +8731,8 @@ def main():
         agent_thread = threading.Thread(target=_run_agent_loop, args=(agent,), daemon=True)
         agent_thread.start()
         
-        watchdog = threading.Thread(target=_agent_watchdog, args=(agent_thread, agent), daemon=True)
+        thread_holder = [agent_thread]
+        watchdog = threading.Thread(target=_agent_watchdog, args=(thread_holder, agent), daemon=True)
         watchdog.start()
         
         # Launch system tray icon if pystray available
@@ -8111,22 +8779,42 @@ def _run_agent_loop(agent):
 
 
 # ============== WATCHDOG ==============
-def _agent_watchdog(agent_thread, agent_ref, gui_ref=None):
-    """Monitor agent thread and restart if it dies — prevents silent death."""
+def _agent_watchdog(thread_holder: list, agent_ref, gui_ref=None):
+    """Monitor agent thread and restart with a fresh instance if it dies.
+    
+    Uses a mutable list (thread_holder) so reassignment is visible to all
+    references — avoids the local-variable rebind bug where a new thread is
+    spawned every 15 s because the caller's reference stays pointing at the
+    dead thread.
+    """
+    _consecutive_failures = 0
     while True:
         time.sleep(15)
-        if not agent_thread.is_alive():
-            add_log("warn", "Watchdog: Agent thread died! Restarting...", category="system")
-            # Re-use the existing agent instance to preserve config/state
-            reuse_agent = agent_ref if agent_ref else JarvisAgent()
+        current_thread = thread_holder[0]
+        if not current_thread.is_alive():
+            _consecutive_failures += 1
+            backoff = min(10 * _consecutive_failures, 60)
+            add_log("warn", f"Watchdog: Agent thread died — restarting (attempt #{_consecutive_failures}, backoff {backoff}s)", category="system")
+            time.sleep(backoff)
+            try:
+                fresh_agent = JarvisAgent()
+            except Exception as e:
+                add_log("error", f"Watchdog: JarvisAgent() init failed: {e}. Retrying in 30s.", category="system")
+                time.sleep(30)
+                continue
             if gui_ref:
                 try:
-                    gui_ref.agent = reuse_agent
+                    gui_ref.agent = fresh_agent
                 except Exception:
                     pass
-            agent_thread = threading.Thread(target=_run_agent_loop, args=(reuse_agent,), daemon=True)
-            agent_thread.start()
-            add_log("info", "Watchdog: Agent thread restarted successfully", category="system")
+            new_thread = threading.Thread(
+                target=_run_agent_loop, args=(fresh_agent,), daemon=True, name="agent-main"
+            )
+            thread_holder[0] = new_thread  # update the shared reference
+            new_thread.start()
+            add_log("info", "Watchdog: Fresh agent thread restarted successfully", category="system")
+        else:
+            _consecutive_failures = 0  # reset on healthy check
 
 
 if __name__ == "__main__":

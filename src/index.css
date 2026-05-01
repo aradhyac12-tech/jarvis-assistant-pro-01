@@ -363,3 +363,121 @@
   .border-success\/20 { border-color: hsl(var(--success) / 0.2); }
   .border-warning\/20 { border-color: hsl(var(--warning) / 0.2); }
 }
+/* ============================================================
+   JARVIS — Mobile-first professional enhancements
+   ============================================================ */
+
+/* Prevent text selection on interactive elements */
+button, [role="button"], .cursor-pointer {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Smooth page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+/* Touch-friendly slider — larger hit area */
+[data-radix-slider-thumb] {
+  width: 22px !important;
+  height: 22px !important;
+  touch-action: none;
+  cursor: grab;
+}
+[data-radix-slider-thumb]:active {
+  cursor: grabbing;
+  transform: scale(1.15);
+}
+[data-radix-slider-track] {
+  height: 6px !important;
+}
+[data-radix-slider-range] {
+  border-radius: 3px;
+}
+
+/* Glass card effect */
+.glass-dark {
+  background: rgba(10, 10, 10, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Scrollbar — minimal dark */
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* Safe area insets — notched phones */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Haptic-ready button press effect */
+.btn-press {
+  transition: transform 80ms ease, opacity 80ms ease;
+}
+.btn-press:active {
+  transform: scale(0.96);
+  opacity: 0.85;
+}
+
+/* Status indicator pulse */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.status-pulse { animation: status-pulse 2s ease-in-out infinite; }
+
+/* Connection mode badge glow */
+.badge-p2p {
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+}
+.badge-cloud {
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
+}
+
+/* Zoom meeting active indicator */
+@keyframes zoom-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+}
+.zoom-active-dot { animation: zoom-pulse 2s ease-in-out infinite; }
+
+/* Prevent iOS bounce scroll on fixed panels */
+.no-bounce {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Card hover effect */
+.card-hover {
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.card-hover:hover {
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.1);
+}
+
+/* Volume/brightness slider track accent */
+.volume-slider [data-radix-slider-range] {
+  background: linear-gradient(to right, hsl(var(--primary)), hsl(186, 94%, 42%));
+}
+.brightness-slider [data-radix-slider-range] {
+  background: linear-gradient(to right, hsl(25, 95%, 53%), hsl(45, 100%, 60%));
+}
+
+/* Screen interaction hint fade-out animation */
+@keyframes fadeout {
+  0%   { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; pointer-events: none; }
+}

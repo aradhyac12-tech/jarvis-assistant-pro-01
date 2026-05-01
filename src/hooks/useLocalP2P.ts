@@ -21,7 +21,7 @@ const LOCAL_P2P_HTTP_PORT = 9877;
 const PROBE_TIMEOUT_MS = 1500;
 const KNOWN_IP_TIMEOUT_MS = 3000;
 const KEEPALIVE_INTERVAL_MS = 8000; // Ping every 8s to maintain connection
-const RECONNECT_COOLDOWN_MS = 15000; // Don't retry discovery more than once per 15s
+const RECONNECT_COOLDOWN_MS = 8000; // Don't retry discovery more than once per 8s
 const CONNECTION_STABLE_MS = 5000; // Wait 5s before declaring disconnected
 
 function isNativeApp(): boolean {
@@ -44,16 +44,31 @@ function canUseHttpP2P(): boolean {
   return false;
 }
 
-/** Probe an IP via HTTP GET */
+/** Probe an IP via HTTP GET — uses CapacitorHttp in native to bypass cleartext restrictions */
 async function probeHttpServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   if (!canUseHttpP2P()) return false;
+  const url = `http://${ip}:${LOCAL_P2P_HTTP_PORT}/ping`;
+  
+  // Native Capacitor: use CapacitorHttp to bypass Android cleartext/CORS restrictions
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    if (Capacitor.isNativePlatform()) {
+      const { CapacitorHttp } = await import("@capacitor/core");
+      const response = await Promise.race([
+        CapacitorHttp.get({ url, connectTimeout: timeoutMs, readTimeout: timeoutMs }),
+        new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("timeout")), timeoutMs)),
+      ]) as any;
+      return response?.data?.type === "pong";
+    }
+  } catch {
+    // Not native or CapacitorHttp not available, fall through to fetch
+  }
+  
+  // Web: plain fetch
   try {
     const controller = new AbortController();
     const tid = window.setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(`http://${ip}:${LOCAL_P2P_HTTP_PORT}/ping`, {
-      signal: controller.signal,
-      mode: "cors",
-    });
+    const res = await fetch(url, { signal: controller.signal, mode: "cors" });
     clearTimeout(tid);
     if (!res.ok) return false;
     const data = await res.json();
@@ -66,12 +81,14 @@ async function probeHttpServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promis
 /** Probe via WS */
 function probeWsServer(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   return new Promise((resolve) => {
+    let ws: WebSocket | null = null;
     try {
-      const ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
-      const timeoutId = window.setTimeout(() => { ws.close(); resolve(false); }, timeoutMs);
-      ws.onopen = () => { clearTimeout(timeoutId); ws.close(); resolve(true); };
-      ws.onerror = () => { clearTimeout(timeoutId); resolve(false); };
-    } catch { resolve(false); }
+      ws = new WebSocket(`ws://${ip}:${LOCAL_P2P_PORT}/p2p`);
+      const timeoutId = window.setTimeout(() => { try { ws?.close(); } catch {} resolve(false); }, timeoutMs);
+      ws.onopen = () => { clearTimeout(timeoutId); try { ws?.close(); } catch {} resolve(true); };
+      ws.onerror = () => { clearTimeout(timeoutId); try { ws?.close(); } catch {} resolve(false); };
+      ws.onclose = () => { /* already handled */ };
+    } catch { try { ws?.close(); } catch {} resolve(false); }
   });
 }
 
@@ -86,7 +103,7 @@ async function probeBothTransports(ip: string, timeoutMs = PROBE_TIMEOUT_MS): Pr
   return null;
 }
 
-/** Send a command via HTTP POST */
+/** Send a command via HTTP POST — uses CapacitorHttp in native */
 async function httpCommand(
   ip: string,
   commandType: string,
@@ -94,12 +111,39 @@ async function httpCommand(
   timeoutMs = 30000
 ): Promise<any> {
   const requestId = crypto.randomUUID();
+  const url = `http://${ip}:${LOCAL_P2P_HTTP_PORT}/command`;
+  const body = JSON.stringify({ commandType, payload, requestId });
+
+  // Native Capacitor: use CapacitorHttp
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    if (Capacitor.isNativePlatform()) {
+      const { CapacitorHttp } = await import("@capacitor/core");
+      const response = await Promise.race([
+        CapacitorHttp.post({
+          url,
+          headers: { "Content-Type": "application/json" },
+          data: JSON.parse(body),
+          connectTimeout: timeoutMs,
+          readTimeout: timeoutMs,
+        }),
+        new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("timeout")), timeoutMs)),
+      ]) as any;
+      if (response?.data?.type === "command_error") throw new Error(response.data.error || "Command failed");
+      return response?.data?.result;
+    }
+  } catch (e: any) {
+    if (e.message === "timeout") throw e;
+    // Fall through to fetch if CapacitorHttp fails
+  }
+
+  // Web: plain fetch
   const controller = new AbortController();
   const tid = window.setTimeout(() => controller.abort(), timeoutMs);
-  const res = await fetch(`http://${ip}:${LOCAL_P2P_HTTP_PORT}/command`, {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ commandType, payload, requestId }),
+    body,
     signal: controller.signal,
     mode: "cors",
   });
@@ -226,7 +270,7 @@ export function useLocalP2P() {
 
     const COMMON_PREFIXES = ["192.168.1", "192.168.0", "192.168.2", "10.0.0", "10.0.1"];
     const prefixes = networkPrefix ? [networkPrefix] : COMMON_PREFIXES;
-    const prioritySuffixes = [".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9", ".10", ".11", ".12", ".15", ".20", ".25", ".50", ".100", ".150", ".200", ".254"];
+    const prioritySuffixes = [".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9", ".10", ".11", ".12", ".13", ".14", ".15", ".16", ".17", ".18", ".19", ".20", ".25", ".30", ".50", ".100", ".150", ".200", ".254"];
 
     for (const prefix of prefixes) {
       const probes = prioritySuffixes.map(async (suffix) => {
@@ -376,8 +420,9 @@ export function useLocalP2P() {
 
   // Send command (fire-and-forget)
   const sendCommand = useCallback((commandType: string, payload: Record<string, unknown> = {}): boolean => {
-    if (httpModeRef.current && state.pcIp) {
-      httpCommand(state.pcIp, commandType, payload).catch(() => {});
+    const ip = connectedIpRef.current;
+    if (httpModeRef.current && ip) {
+      httpCommand(ip, commandType, payload).catch(() => {});
       return true;
     }
     if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
@@ -385,13 +430,14 @@ export function useLocalP2P() {
       wsRef.current.send(JSON.stringify({ type: "command", commandType, payload }));
       return true;
     } catch { return false; }
-  }, [state.pcIp]);
+  }, []);
 
   // Request/response command
   const invokeCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, timeoutMs = 30000) => {
-      if (httpModeRef.current && state.pcIp) {
-        return httpCommand(state.pcIp, commandType, payload, timeoutMs);
+      const ip = connectedIpRef.current;
+      if (httpModeRef.current && ip) {
+        return httpCommand(ip, commandType, payload, timeoutMs);
       }
       if (wsRef.current?.readyState !== WebSocket.OPEN) {
         throw new Error("Local P2P not connected");
@@ -407,13 +453,14 @@ export function useLocalP2P() {
       wsRef.current.send(JSON.stringify({ type: "command", requestId, commandType, payload }));
       return promise;
     },
-    [state.pcIp]
+    []
   );
 
   const sendPing = useCallback(() => {
-    if (httpModeRef.current && state.pcIp) {
+    const ip = connectedIpRef.current;
+    if (httpModeRef.current && ip) {
       const start = Date.now();
-      probeHttpServer(state.pcIp, 2000).then(() => {
+      probeHttpServer(ip, 2000).then(() => {
         setState(prev => ({ ...prev, latency: Date.now() - start }));
       });
       return;
@@ -422,7 +469,7 @@ export function useLocalP2P() {
       lastPingRef.current = Date.now();
       wsRef.current.send(JSON.stringify({ type: "ping", t: lastPingRef.current }));
     }
-  }, [state.pcIp]);
+  }, []);
 
   // Check and connect — with smart prioritization
   const checkAndConnect = useCallback(async (networkPrefix: string, knownPcIp?: string) => {
@@ -445,13 +492,13 @@ export function useLocalP2P() {
 
     for (const ip of ipsToTry) {
       console.log(`[LocalP2P] Trying known IP ${ip}...`);
-      const transport = await probeBothTransports(ip, KNOWN_IP_TIMEOUT_MS);
-      if (transport) {
-        const ok = await connect(ip);
-        if (ok) {
-          setState(prev => ({ ...prev, lastCheckTime: Date.now() }));
-          return;
-        }
+      // Go straight to connect() — it probes internally before opening the
+      // persistent connection, so a separate probeBothTransports() call here
+      // would just open and immediately close an extra WS socket.
+      const ok = await connect(ip);
+      if (ok) {
+        setState(prev => ({ ...prev, lastCheckTime: Date.now() }));
+        return;
       }
     }
 
@@ -463,6 +510,22 @@ export function useLocalP2P() {
       setState(prev => ({ ...prev, isAvailable: false, isConnected: false, lastCheckTime: Date.now() }));
     }
   }, [connect, discoverLocalServer, getKnownIp]);
+
+  // Listen for background resume trigger from useBackgroundPersistence
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "jarvis_resume_trigger" && e.newValue) {
+        // App resumed from background — immediately re-check P2P connection
+        const knownIp = getKnownIp();
+        if (knownIp && !wsRef.current?.readyState && !httpModeRef.current) {
+          console.log("[LocalP2P] Resume trigger — re-connecting to", knownIp);
+          connect(knownIp);
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [connect, getKnownIp]);
 
   // Cleanup
   useEffect(() => {

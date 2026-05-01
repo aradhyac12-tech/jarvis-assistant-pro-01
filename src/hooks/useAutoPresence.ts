@@ -102,18 +102,31 @@ export function useAutoPresence() {
   const setOnAway = useCallback((cb: () => void) => { onAwayRef.current = cb; }, []);
   const setOnHome = useCallback((cb: () => void) => { onHomeRef.current = cb; }, []);
 
-  // Check geo permission on mount
+  // Check geo permission on mount — clean up listener on unmount
   useEffect(() => {
     if (!("geolocation" in navigator)) {
       setGeoPermission("unavailable");
       return;
     }
-    if ("permissions" in navigator) {
-      navigator.permissions.query({ name: "geolocation" }).then(result => {
+    if (!("permissions" in navigator)) return;
+
+    let permResult: PermissionStatus | null = null;
+    const handler = () => {
+      if (permResult) setGeoPermission(permResult.state as any);
+    };
+
+    navigator.permissions
+      .query({ name: "geolocation" })
+      .then((result) => {
+        permResult = result;
         setGeoPermission(result.state as any);
-        result.onchange = () => setGeoPermission(result.state as any);
-      }).catch(() => {});
-    }
+        result.addEventListener("change", handler);
+      })
+      .catch(() => {});
+
+    return () => {
+      permResult?.removeEventListener("change", handler);
+    };
   }, []);
 
   // Set current location as home
@@ -140,6 +153,13 @@ export function useAutoPresence() {
 
   // Combined presence evaluation
   const evaluatePresence = useCallback(() => {
+    // If a signal hasn't produced its first reading yet (null = still initialising),
+    // treat the mode as "unknown" and skip evaluation entirely.
+    // This prevents false "away" triggers the moment the app loads.
+    if (presenceMode === "geofence" && geoInsideRef.current === null) return;
+    if (presenceMode === "device" && deviceOnlineRef.current === null) return;
+    if (presenceMode === "both" && geoInsideRef.current === null && deviceOnlineRef.current === null) return;
+
     let isPresent: boolean;
 
     if (presenceMode === "device") {
@@ -148,6 +168,7 @@ export function useAutoPresence() {
       isPresent = geoInsideRef.current === true;
     } else {
       // "both" — present if EITHER signal says home
+      // (away only when BOTH confirm absence)
       isPresent = deviceOnlineRef.current === true || geoInsideRef.current === true;
     }
 

@@ -1,53 +1,70 @@
-# JARVIS PC Agent Dependencies
+# JARVIS PC Agent — Universal Requirements
+# Supports: Windows 7/8/10/11 · Linux (Ubuntu/Debian/Fedora/Arch) · macOS 11+
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# Platform notes:
+#   Windows 7/8: pip install pywin32==305 manually first; use Python 3.8
+#   Linux:       sudo apt install python3-gi libnotify-bin light x11-xserver-utils
+#   macOS:       brew install brightness   (optional backlight control)
 
-# Core
+# ── Core ──────────────────────────────────────────────────────────────────
 supabase>=2.0.0
-asyncio-compat>=0.1.1
+requests>=2.28.0
 
-# System Control (Windows)
-requests>=2.31.0           # HTTP requests for edge function calls
-pycaw>=20230407          # Windows audio control
-comtypes>=1.2.0          # COM interface for Windows
-screen-brightness-control>=0.22.0  # Brightness control
+# ── Input Control ─────────────────────────────────────────────────────────
+pyautogui>=0.9.54
+pyperclip>=1.8.2
 
-# Input Control
-pyautogui>=0.9.54        # Mouse & keyboard automation
-keyboard>=0.13.5         # Low-level keyboard events
-pyperclip>=1.8.2         # Clipboard access
+# ── System Info ───────────────────────────────────────────────────────────
+psutil>=5.9.0
+pillow>=9.0.0
+mss>=9.0.0
 
-# System Info
-psutil>=5.9.0            # System and process utilities
-pillow>=10.0.0           # Screenshot handling
-mss>=9.0.0               # Fast multi-monitor screenshots
+# ── Audio ─────────────────────────────────────────────────────────────────
+pyaudio>=0.2.11
 
-# Streaming / realtime
-websockets>=12.0         # WS streaming (audio/camera)
-websocket-client>=1.6.0  # Supabase Realtime listener for instant commands
-pyaudio>=0.2.14          # Microphone/system audio capture
-opencv-python>=4.9.0.80  # PC camera capture
+# ── Streaming / Realtime ──────────────────────────────────────────────────
+websockets>=10.0
+websocket-client>=1.4.0
 
-# QR Code for pairing
-qrcode>=7.4.2            # QR code generation for terminal display
+# ── Video / Camera ────────────────────────────────────────────────────────
+opencv-python-headless>=4.5.0
 
-# Voice Recognition (Wake Word)
-SpeechRecognition>=3.10.0  # Voice recognition for wake word
-pyttsx3>=2.90              # Text-to-speech (offline)
+# ── Screen Brightness (cross-platform) ────────────────────────────────────
+screen-brightness-control>=0.22.0
 
-# System Tray (Windows)
-pystray>=0.19.5          # System tray icon
-win10toast-click>=0.1.2  # Windows 10/11 notifications
+# ── Notifications ─────────────────────────────────────────────────────────
+plyer>=2.1.0
 
-# Face Recognition (ML)
-mediapipe>=0.10.0        # Face mesh + pose detection
-numpy>=1.24.0            # Numerical operations for embeddings
-scipy>=1.10.0            # Distance calculations for face matching
+# ── Pairing QR Code ───────────────────────────────────────────────────────
+qrcode>=7.3.0
 
-# Bluetooth (BLE fallback transport)
-bleak>=0.21.0            # BLE client (scanning/connecting)
-bless>=0.2.5             # BLE GATT server (PC acts as peripheral)
+# ── Voice (optional) ──────────────────────────────────────────────────────
+SpeechRecognition>=3.8.0
+pyttsx3>=2.90
 
-# Optional: For music features
-# youtube-search-python>=1.6.6
+# ── Bluetooth BLE (optional, Win10+ / Linux BlueZ / macOS 10.15+) ─────────
+bleak>=0.20.0
 
-# GUI (optional but recommended for modern dark UI)
-# customtkinter>=5.2.0     # Modern dark tkinter widgets
+# ── System Tray ───────────────────────────────────────────────────────────
+pystray>=0.19.0
+
+# ── Face Recognition (optional, Python 3.8-3.11 only) ────────────────────
+# mediapipe>=0.10.0
+# numpy>=1.21.0
+# scipy>=1.7.0
+
+# ── Windows-only (install separately on Windows) ──────────────────────────
+# pycaw>=20230407
+# comtypes>=1.2.0
+# pywin32>=305
+# win10toast-click>=0.1.2
+# bless>=0.2.5
+
+# ── macOS-only (via Homebrew) ─────────────────────────────────────────────
+# brew install brightness switchaudio-osx
+
+# ── Linux-only (via apt/dnf/pacman) ───────────────────────────────────────
+# sudo apt install libnotify-bin light x11-xserver-utils python3-gi
