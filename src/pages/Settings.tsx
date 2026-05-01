@@ -154,6 +154,7 @@ export default function Settings() {
       voice: "Voice",
       notifications: "Notifications",
       security: "Security",
+      proximity: "Proximity Auto-Lock",
       device: "Device",
       calls: "Call Detection",
       system: "System & Diagnostics",
