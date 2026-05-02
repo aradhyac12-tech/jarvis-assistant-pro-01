@@ -78,6 +78,7 @@ import { DiskUsageBreakdown } from "@/components/DiskUsageBreakdown";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
+import { SuppressedCommandBadge } from "@/components/SuppressedCommandBadge";
 
 type Tab = "control" | "remote" | "media" | "apps" | "system" | "more";
 
