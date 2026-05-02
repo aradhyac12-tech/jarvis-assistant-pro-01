@@ -320,7 +320,7 @@ export function BidirectionalFileTransfer({ className }: { className?: string })
       let totalSize = pcFile.size;
       let fileName = pcFile.name;
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         if (event.data instanceof ArrayBuffer) {
           chunks.push(event.data);
           receivedBytes += event.data.byteLength;
