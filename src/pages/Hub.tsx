@@ -78,6 +78,7 @@ import { DiskUsageBreakdown } from "@/components/DiskUsageBreakdown";
 import { useSharedBluetooth } from "@/contexts/BluetoothContext";
 
 import { useHapticFeedback } from "@/hooks/useHapticFeedback";
+import { SuppressedCommandBadge } from "@/components/SuppressedCommandBadge";
 
 type Tab = "control" | "remote" | "media" | "apps" | "system" | "more";
 
@@ -792,6 +793,7 @@ export default function Hub() {
             </div>
 
             <div className="flex items-center gap-2">
+              <SuppressedCommandBadge />
               {/* Compact system stats */}
               {systemStats && (
                 <div className="flex items-center gap-2 text-[9px] text-muted-foreground font-mono bg-secondary/20 rounded-full px-2 py-0.5">

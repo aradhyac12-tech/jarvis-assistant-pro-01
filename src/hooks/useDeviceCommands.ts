@@ -4,6 +4,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDeviceSession } from "@/hooks/useDeviceSession";
 import { useDeviceContext } from "@/hooks/useDeviceContext";
 import { addLog } from "@/components/IssueLog";
+import { shouldSendCommand } from "@/lib/commandThrottle";
 
 type SendCommandOptions = {
   awaitResult?: boolean;
@@ -83,6 +84,17 @@ export function useDeviceCommands() {
 
   const sendCommand = useCallback(
     async (commandType: string, payload: Record<string, unknown> = {}, options?: SendCommandOptions) => {
+      // Throttle / de-duplicate to prevent Zoom & system command spam
+      const decision = shouldSendCommand(commandType, payload);
+      if (!decision.allow) {
+        addLog(
+          "warn",
+          "web",
+          `Command "${commandType}" suppressed (${decision.reason}); retry in ${decision.retryInMs}ms`
+        );
+        return { success: true, suppressed: true, reason: decision.reason } as const;
+      }
+
       const sessionToken = session?.session_token;
       const deviceId = selectedDevice?.id || session?.device_id;
 
