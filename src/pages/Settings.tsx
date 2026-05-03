@@ -20,6 +20,7 @@ import { SystemDiagnosticsPanel } from "@/components/SystemDiagnosticsPanel";
 import { BoostPC } from "@/components/BoostPC";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 import { ProximityCard } from "@/components/settings/ProximityCard";
+import { ProximityTestMode } from "@/components/settings/ProximityTestMode";
 
 type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "proximity" | "device" | "calls" | "system";
 
