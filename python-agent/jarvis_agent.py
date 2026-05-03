@@ -8256,13 +8256,16 @@ class ProximityMonitor:
         UNLOCK_PIN = new_pin
         self.log_fn("info", "Unlock PIN updated from app settings")
     
-    def signal_presence(self):
+    def signal_presence(self, source: str = "unknown"):
         """Called when owner presence is detected via any transport."""
         with self._lock:
             self._last_seen_time = time.time()
+            self._last_source = source
+            if source in self._signals_seen:
+                self._signals_seen[source] += 1
             if not self._owner_present:
                 self._owner_present = True
-                self.log_fn("info", "👤 Owner presence detected — marking as HOME")
+                self.log_fn("info", f"👤 Owner presence detected via {source} — marking as HOME")
                 self._on_owner_arrived()
     
     def _check_p2p_presence(self) -> bool:
