@@ -212,6 +212,7 @@ export default function Settings() {
               <div className="space-y-4">
                 <ProximityCard />
                 <ProximityTestMode />
+                <ProximityDebugPanel />
               </div>
             )}
             {activePane === "device" && (
