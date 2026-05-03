@@ -7036,7 +7036,7 @@ class JarvisAgent:
                     pm._on_owner_left()
                     return {"success": True, "simulated": "away", "is_locked": self._detect_lock_state()}
                 elif state == "home":
-                    pm.signal_presence()
+                    pm.signal_presence("simulated")
                     return {"success": True, "simulated": "home", "is_locked": self._detect_lock_state()}
                 return {"success": False, "error": "state must be 'away' or 'home'"}
             
