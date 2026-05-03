@@ -8317,10 +8317,17 @@ class ProximityMonitor:
         # Auto-unlock if PC is locked
         if self.agent._detect_lock_state():
             self.log_fn("info", "🔓 Auto-unlocking PC — owner is nearby")
+            self._last_unlock_attempt = datetime.now(timezone.utc).isoformat()
             try:
                 result = self.agent._smart_unlock(self._unlock_pin)
                 if result.get("success"):
                     self.log_fn("info", "✅ PC auto-unlocked successfully")
+                    self._last_unlock_result = "success"
+                    self._last_pin_check = {
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "ok": True,
+                        "reason": "PIN accepted (sequence dispatched)",
+                    }
                     if HAS_TOAST:
                         try:
                             toaster = ToastNotifier()
@@ -8328,9 +8335,18 @@ class ProximityMonitor:
                         except Exception:
                             pass
                 else:
-                    self.log_fn("warn", f"Auto-unlock attempt: {result.get('error', 'unknown')}")
+                    err = result.get("error", "unknown")
+                    self.log_fn("warn", f"Auto-unlock attempt: {err}")
+                    self._last_unlock_result = f"failed:{err}"
+                    if "pin" in err.lower() or "invalid" in err.lower():
+                        self._last_pin_check = {
+                            "at": datetime.now(timezone.utc).isoformat(),
+                            "ok": False,
+                            "reason": err,
+                        }
             except Exception as e:
                 self.log_fn("error", f"Auto-unlock failed: {e}")
+                self._last_unlock_result = f"failed:{e}"
         
         # Send presence notification to phone
         try:
