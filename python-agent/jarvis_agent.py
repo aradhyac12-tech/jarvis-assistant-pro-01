@@ -8420,7 +8420,9 @@ class ProximityMonitor:
                 any_present = p2p_present or ble_present or cloud_present
                 
                 if any_present:
-                    self.signal_presence()
+                    # Pick highest-priority source for telemetry
+                    src = "p2p" if p2p_present else ("ble" if ble_present else "cloud")
+                    self.signal_presence(src)
                 else:
                     # Check if we've exceeded the away threshold
                     with self._lock:
@@ -8439,10 +8441,24 @@ class ProximityMonitor:
         return {
             "enabled": self._enabled,
             "owner_present": self._owner_present,
+            "distance_state": "near" if self._owner_present else "away",
             "last_seen_ago": round(time.time() - self._last_seen_time, 1),
             "surveillance_active": self._surveillance_triggered,
             "away_threshold": self._away_threshold,
+            "grace_period": self._grace_period,
             "unlock_pin_set": bool(self._unlock_pin),
+            "last_source": self._last_source,
+            "signals_seen": dict(self._signals_seen),
+            "last_lock_attempt": self._last_lock_attempt,
+            "last_lock_result": self._last_lock_result,
+            "last_unlock_attempt": self._last_unlock_attempt,
+            "last_unlock_result": self._last_unlock_result,
+            "last_pin_check": self._last_pin_check,
+            "transport_status": {
+                "p2p_active": self._check_p2p_presence(),
+                "ble_active": self._check_ble_presence(),
+                "cloud_active": self._check_cloud_presence(),
+            },
         }
 
 
