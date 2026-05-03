@@ -21,6 +21,7 @@ import { BoostPC } from "@/components/BoostPC";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 import { ProximityCard } from "@/components/settings/ProximityCard";
 import { ProximityTestMode } from "@/components/settings/ProximityTestMode";
+import { ProximityDebugPanel } from "@/components/settings/ProximityDebugPanel";
 
 type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "proximity" | "device" | "calls" | "system";
 
@@ -211,6 +212,7 @@ export default function Settings() {
               <div className="space-y-4">
                 <ProximityCard />
                 <ProximityTestMode />
+                <ProximityDebugPanel />
               </div>
             )}
             {activePane === "device" && (

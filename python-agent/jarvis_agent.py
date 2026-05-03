@@ -7036,7 +7036,7 @@ class JarvisAgent:
                     pm._on_owner_left()
                     return {"success": True, "simulated": "away", "is_locked": self._detect_lock_state()}
                 elif state == "home":
-                    pm.signal_presence()
+                    pm.signal_presence("simulated")
                     return {"success": True, "simulated": "home", "is_locked": self._detect_lock_state()}
                 return {"success": False, "error": "state must be 'away' or 'home'"}
             
@@ -8228,6 +8228,15 @@ class ProximityMonitor:
         
         # Load PIN from settings
         self._unlock_pin = UNLOCK_PIN
+        
+        # Debug telemetry — surfaced via get_status() for the app debug panel
+        self._last_source = None       # "p2p" | "ble" | "cloud" | "simulated"
+        self._last_lock_attempt = None    # iso timestamp
+        self._last_lock_result = None     # "success" | "failed:<reason>"
+        self._last_unlock_attempt = None
+        self._last_unlock_result = None
+        self._last_pin_check = None       # {"at": iso, "ok": bool, "reason": str}
+        self._signals_seen = {"p2p": 0, "ble": 0, "cloud": 0, "simulated": 0}
     
     def start(self):
         if self.running:
@@ -8247,13 +8256,16 @@ class ProximityMonitor:
         UNLOCK_PIN = new_pin
         self.log_fn("info", "Unlock PIN updated from app settings")
     
-    def signal_presence(self):
+    def signal_presence(self, source: str = "unknown"):
         """Called when owner presence is detected via any transport."""
         with self._lock:
             self._last_seen_time = time.time()
+            self._last_source = source
+            if source in self._signals_seen:
+                self._signals_seen[source] += 1
             if not self._owner_present:
                 self._owner_present = True
-                self.log_fn("info", "👤 Owner presence detected — marking as HOME")
+                self.log_fn("info", f"👤 Owner presence detected via {source} — marking as HOME")
                 self._on_owner_arrived()
     
     def _check_p2p_presence(self) -> bool:
@@ -8305,10 +8317,17 @@ class ProximityMonitor:
         # Auto-unlock if PC is locked
         if self.agent._detect_lock_state():
             self.log_fn("info", "🔓 Auto-unlocking PC — owner is nearby")
+            self._last_unlock_attempt = datetime.now(timezone.utc).isoformat()
             try:
                 result = self.agent._smart_unlock(self._unlock_pin)
                 if result.get("success"):
                     self.log_fn("info", "✅ PC auto-unlocked successfully")
+                    self._last_unlock_result = "success"
+                    self._last_pin_check = {
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "ok": True,
+                        "reason": "PIN accepted (sequence dispatched)",
+                    }
                     if HAS_TOAST:
                         try:
                             toaster = ToastNotifier()
@@ -8316,9 +8335,18 @@ class ProximityMonitor:
                         except Exception:
                             pass
                 else:
-                    self.log_fn("warn", f"Auto-unlock attempt: {result.get('error', 'unknown')}")
+                    err = result.get("error", "unknown")
+                    self.log_fn("warn", f"Auto-unlock attempt: {err}")
+                    self._last_unlock_result = f"failed:{err}"
+                    if "pin" in err.lower() or "invalid" in err.lower():
+                        self._last_pin_check = {
+                            "at": datetime.now(timezone.utc).isoformat(),
+                            "ok": False,
+                            "reason": err,
+                        }
             except Exception as e:
                 self.log_fn("error", f"Auto-unlock failed: {e}")
+                self._last_unlock_result = f"failed:{e}"
         
         # Send presence notification to phone
         try:
@@ -8340,11 +8368,14 @@ class ProximityMonitor:
         
         # Auto-lock PC
         if not self.agent._detect_lock_state():
+            self._last_lock_attempt = datetime.now(timezone.utc).isoformat()
             try:
                 self.agent._lock_screen()
                 self.log_fn("info", "✅ PC auto-locked — owner away")
+                self._last_lock_result = "success"
             except Exception as e:
                 self.log_fn("error", f"Auto-lock failed: {e}")
+                self._last_lock_result = f"failed:{e}"
         
         # Trigger surveillance mode
         if not self._surveillance_triggered:
@@ -8389,7 +8420,9 @@ class ProximityMonitor:
                 any_present = p2p_present or ble_present or cloud_present
                 
                 if any_present:
-                    self.signal_presence()
+                    # Pick highest-priority source for telemetry
+                    src = "p2p" if p2p_present else ("ble" if ble_present else "cloud")
+                    self.signal_presence(src)
                 else:
                     # Check if we've exceeded the away threshold
                     with self._lock:
@@ -8408,10 +8441,24 @@ class ProximityMonitor:
         return {
             "enabled": self._enabled,
             "owner_present": self._owner_present,
+            "distance_state": "near" if self._owner_present else "away",
             "last_seen_ago": round(time.time() - self._last_seen_time, 1),
             "surveillance_active": self._surveillance_triggered,
             "away_threshold": self._away_threshold,
+            "grace_period": self._grace_period,
             "unlock_pin_set": bool(self._unlock_pin),
+            "last_source": self._last_source,
+            "signals_seen": dict(self._signals_seen),
+            "last_lock_attempt": self._last_lock_attempt,
+            "last_lock_result": self._last_lock_result,
+            "last_unlock_attempt": self._last_unlock_attempt,
+            "last_unlock_result": self._last_unlock_result,
+            "last_pin_check": self._last_pin_check,
+            "transport_status": {
+                "p2p_active": self._check_p2p_presence(),
+                "ble_active": self._check_ble_presence(),
+                "cloud_active": self._check_cloud_presence(),
+            },
         }
 
 
