@@ -20,6 +20,7 @@ import { SystemDiagnosticsPanel } from "@/components/SystemDiagnosticsPanel";
 import { BoostPC } from "@/components/BoostPC";
 import { OTAUpdateCard } from "@/components/OTAUpdateCard";
 import { ProximityCard } from "@/components/settings/ProximityCard";
+import { ProximityTestMode } from "@/components/settings/ProximityTestMode";
 
 type SettingsPane = null | "theme" | "voice" | "notifications" | "security" | "proximity" | "device" | "calls" | "system";
 
@@ -206,7 +207,12 @@ export default function Settings() {
                 }}
               />
             )}
-            {activePane === "proximity" && <ProximityCard />}
+            {activePane === "proximity" && (
+              <div className="space-y-4">
+                <ProximityCard />
+                <ProximityTestMode />
+              </div>
+            )}
             {activePane === "device" && (
               <DeviceConnectionCard
                 deviceName={selectedDevice?.name || session?.device_name || "My PC"}
