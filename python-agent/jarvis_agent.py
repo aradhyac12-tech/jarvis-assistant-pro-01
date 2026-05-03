@@ -8228,6 +8228,15 @@ class ProximityMonitor:
         
         # Load PIN from settings
         self._unlock_pin = UNLOCK_PIN
+        
+        # Debug telemetry — surfaced via get_status() for the app debug panel
+        self._last_source = None       # "p2p" | "ble" | "cloud" | "simulated"
+        self._last_lock_attempt = None    # iso timestamp
+        self._last_lock_result = None     # "success" | "failed:<reason>"
+        self._last_unlock_attempt = None
+        self._last_unlock_result = None
+        self._last_pin_check = None       # {"at": iso, "ok": bool, "reason": str}
+        self._signals_seen = {"p2p": 0, "ble": 0, "cloud": 0, "simulated": 0}
     
     def start(self):
         if self.running:
