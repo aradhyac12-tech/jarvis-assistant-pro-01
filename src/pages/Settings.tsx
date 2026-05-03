@@ -207,7 +207,12 @@ export default function Settings() {
                 }}
               />
             )}
-            {activePane === "proximity" && <ProximityCard />}
+            {activePane === "proximity" && (
+              <div className="space-y-4">
+                <ProximityCard />
+                <ProximityTestMode />
+              </div>
+            )}
             {activePane === "device" && (
               <DeviceConnectionCard
                 deviceName={selectedDevice?.name || session?.device_name || "My PC"}
