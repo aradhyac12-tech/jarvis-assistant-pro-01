@@ -8368,11 +8368,14 @@ class ProximityMonitor:
         
         # Auto-lock PC
         if not self.agent._detect_lock_state():
+            self._last_lock_attempt = datetime.now(timezone.utc).isoformat()
             try:
                 self.agent._lock_screen()
                 self.log_fn("info", "✅ PC auto-locked — owner away")
+                self._last_lock_result = "success"
             except Exception as e:
                 self.log_fn("error", f"Auto-lock failed: {e}")
+                self._last_lock_result = f"failed:{e}"
         
         # Trigger surveillance mode
         if not self._surveillance_triggered:
