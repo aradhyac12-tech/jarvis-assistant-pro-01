@@ -7020,6 +7020,25 @@ class JarvisAgent:
                         self._proximity_monitor.update_pin(payload["pin"])
                     return {"success": True, "config": self._proximity_monitor.get_status()}
                 return {"success": False, "error": "Proximity monitor not running"}
+            elif cmd == "get_lock_state":
+                return {"success": True, "is_locked": self._detect_lock_state()}
+            elif cmd == "proximity_simulate":
+                # Test-mode hook: simulate owner away/home so the QA wizard
+                # can verify the full lock/unlock sequence end-to-end.
+                if not (hasattr(self, '_proximity_monitor') and self._proximity_monitor):
+                    return {"success": False, "error": "Proximity monitor not running"}
+                state = str(payload.get("state", "")).lower()
+                pm = self._proximity_monitor
+                if state == "away":
+                    with pm._lock:
+                        pm._owner_present = False
+                        pm._last_seen_time = time.time() - (pm._away_threshold + pm._grace_period + 5)
+                    pm._on_owner_left()
+                    return {"success": True, "simulated": "away", "is_locked": self._detect_lock_state()}
+                elif state == "home":
+                    pm.signal_presence()
+                    return {"success": True, "simulated": "home", "is_locked": self._detect_lock_state()}
+                return {"success": False, "error": "state must be 'away' or 'home'"}
             
             # Notifications (KDE Connect style - phone → PC toast)
             elif cmd == "show_notification":
